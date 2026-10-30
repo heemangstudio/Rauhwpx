@@ -22,7 +22,11 @@ import type { TurnInterruptionReason } from './turn-interruption-reason.ts';
 
 export const AGENT_PROTOCOL_VERSION = 5;
 
-export type AgentName = 'claude' | 'codex' | 'pi' | 'grok' | 'cursor' | 'opencode';
+/**
+ * 'pi' 는 사용자 키로 도는 BYOK 하네스(내 OpenRouter 키·선물 크레딧)이고, 'hama' 는 Hama 플랜의 호스팅 하네스다.
+ * 둘 다 Pi 런타임을 쓰지만 자격·모델·사용량은 따로다.
+ */
+export type AgentName = 'claude' | 'codex' | 'pi' | 'hama' | 'grok' | 'cursor' | 'opencode';
 
 /** 활성 턴에서 파생되는 사용자 편집 잠금 상태. */
 export interface AgentEditingLease {
@@ -442,8 +446,8 @@ export interface TasteUndoResult {
   error?: { code: string; message: string };
 }
 
-/** 학습기 공급자 — auto 는 허브의 기본 차례, pi 는 사용자의 OpenRouter 키. */
-export type TasteProvider = 'auto' | 'claude' | 'codex' | 'pi';
+/** 학습기 공급자 — auto 는 허브의 기본 차례. BYOK(Pi)로는 돌지 않는다. */
+export type TasteProvider = 'auto' | 'claude' | 'codex';
 
 export interface TasteSettings {
   enabled: boolean;
@@ -886,6 +890,46 @@ export interface PiStatus {
   giftOrder?: 'first' | 'after';
 }
 
+/** Hama 플랜의 사용 한도 창. 5시간·7일은 굴러가는 창이고 이번 달은 결제 주기다. */
+export type HamaCap = 'cap_5h' | 'cap_week' | 'cap_month';
+
+/** 한도 창 하나. resetsAt 은 epoch ms — 이 창이 한도 아래로 내려오는 가장 이른 시각(이번 달은 주기 끝). */
+export interface HamaCapWindow {
+  usedUsd: number;
+  limitUsd: number;
+  resetsAt: number | null;
+}
+
+/**
+ * Hama 를 쓸 수 있는지. active: 플랜이 살아 있다. not_enrolled: 서버가 403 hama_not_enrolled 로 답했다
+ * (Free·Pro 포함 Hama 플랜이 아닌 모든 라이선스). unavailable: 브라우저 Studio, 서버 꺼짐·404, 네트워크 오류, 라이선스 없음.
+ */
+export type HamaAvailability = 'active' | 'not_enrolled' | 'unavailable';
+
+/**
+ * 허브 → Studio `hama-status` 의 스냅샷 (사이트 API `GET /v1/hama/status` 를 정리한 것). 시각은 모두 epoch ms.
+ * 언제나 온다 — active 가 아니면 plan·caps·blocked 는 null 이고 모델은 비어 있다.
+ */
+export interface HamaStatus {
+  availability: HamaAvailability;
+  plan: {
+    status: 'active' | 'disabled';
+    allowanceUsd: number | null;
+    periodStart: number | null;
+    periodEnd: number | null;
+  } | null;
+  caps: Record<HamaCap, HamaCapWindow | null> | null;
+  /** 지금 막힌 한도. cheapAvailable 이면 싼 모델로는 계속 쓸 수 있다 (이번 달 한도는 언제나 false). */
+  blocked: { cap: HamaCap; resetsAt: number | null; cheapAvailable: boolean } | null;
+  /** Hama 하네스의 모델. Claude 는 Haiku 5.5 하나뿐이고 기본 모델이다. 그 뒤가 싼 모델이다. */
+  models: PiModelConfig[];
+  defaultModelId: string;
+  /** 한도에 걸렸을 때 넘어갈 싼 모델 id (서버 순서, 첫 번째가 기본). */
+  cheapModelIds: string[];
+  /** Pi 런타임이 설치되어 있어 바로 채팅할 수 있다. */
+  ready: boolean;
+}
+
 /** 앱이 소유하는 연구 브라우저의 연결 상태와 세대. */
 export interface BrowserRuntime {
   runtimeId: string;
@@ -1309,6 +1353,8 @@ export type SidebarEvent =
   | { type: 'document-memory-changed'; documentId: string; key: string; revision: number }
   /** 취향 학습이 이 채팅의 대화에서 기억을 바꿨다. 턴이 끝난 뒤, 흔히 다른 채팅을 보는 중에 온다. */
   | ({ type: 'taste-learned' } & TasteLearned)
+  /** 허브 → Studio `rau-upgrade`. 호스팅 Rau-0.1 이 Pro 가 아니라고 거절했다. 거절마다 한 번 온다. */
+  | { type: 'rau-upgrade'; reason: 'rau_requires_pro'; upgradeUrl: string | null; threadId: string | null; documentId: string | null }
   /** 취향 학습 설정 — 요청의 답이거나 다른 창에서 바꾼 알림. */
   | { type: 'taste-settings'; settings: TasteSettings }
   /** 기록에서 배우기가 이 문서의 기억을 바꿨다 (문서를 연 뒤 자동으로, 또는 문서 기억 시트에서). */
@@ -1370,6 +1416,8 @@ export type SidebarEvent =
   | { type: 'agent-setup-error'; agent: AgentName | null; authRunId?: string; code: string; message: string; detail?: string }
   | { type: 'usage-report'; usage: UsageSummary }
   | { type: 'pi-status'; status: PiStatus }
+  /** 허브 → Studio `hama-status`. Hama 플랜 상태가 바뀌었다 (요청의 답이거나 한도·라이선스 변화). */
+  | { type: 'hama-status'; status: HamaStatus }
   | {
       type: 'pi-setup-progress';
       requestId: string;

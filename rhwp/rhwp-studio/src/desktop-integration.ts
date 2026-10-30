@@ -3,7 +3,7 @@
  *
  * Electron 은 preload IPC 로 메인 프로세스가 허브를 띄운다.
  * Vite 개발 서버는 `/__rhwp/ensure-agent-hub` 가 같은 일을 한다.
- * 패키지된 PWA/브라우저는 Node 를 띄울 수 없어 no-op 이다.
+ * 그 밖의 브라우저는 Node 를 띄울 수 없어 no-op 이다.
  */
 
 import type { DesktopFontHostApi, SystemFontIndex } from './core/desktop-fonts.ts';
@@ -165,8 +165,7 @@ export type NativeAgentDocumentOpenFailure =
 export type NativeAgentDocumentCreateFailure =
   | 'INVALID_NAME'
   | 'INVALID_FOLDER'
-  | 'WRITE_FAILED'
-  | 'LICENSE_READ_ONLY';
+  | 'WRITE_FAILED';
 
 type NativeAgentDocumentIpcResult<Code extends string> =
   | (NativeFileHandleDescriptor & { ok: true; path: string; bytes?: Uint8Array })
@@ -209,6 +208,10 @@ export interface NativeFileMovedEvent {
 
 export interface RhwpDesktopApi {
   license?: import('./ui/agent-sidebar/settings-license.ts').DesktopLicenseApi;
+  /** 호스팅 Rau-0.1(Pro) 자격과 업그레이드 페이지. 서버 호출과 lease 는 main 이 가진다. */
+  rau?: import('./ui/agent-sidebar/rau-upgrade.ts').DesktopRauApi;
+  /** 앱 요금제(무료·Pro·기존 라이선스·Hama)와 결제. 결제 주소와 ref 는 main 만 안다. */
+  plan?: import('./ui/plan/plan-types.ts').DesktopPlanApi;
   /** 특별 이벤트 선물 크레딧. macOS 에서만 쓴다(desktopGiftApi). */
   gift?: import('./ui/special-event/gift.ts').DesktopGiftApi;
   /** 앱 업데이트 확인·다운로드·재시작. */
@@ -488,31 +491,14 @@ export async function openPublishedDocumentInNewWindow(
 ): Promise<void> {
   const host = desktopHost(win);
   const openNative = host?.rhwpDesktop?.openGeneratedDocumentWindow;
-  if (openNative) {
-    if (!await openNative({
-      fileName: artifact.fileName,
-      downloadUrl: artifact.downloadUrl,
-      ...(options.readOnly ? { readOnly: true } : {}),
-    })) {
-      throw new Error('새 문서 창을 열지 못했습니다.');
-    }
-    return;
+  if (!openNative) throw new Error('새 문서 창을 열 수 없습니다.');
+  if (!await openNative({
+    fileName: artifact.fileName,
+    downloadUrl: artifact.downloadUrl,
+    ...(options.readOnly ? { readOnly: true } : {}),
+  })) {
+    throw new Error('새 문서 창을 열지 못했습니다.');
   }
-
-  const browserWindow = (win ?? globalThis) as DesktopHost & {
-    location?: { href: string };
-    open?: (url?: string | URL, target?: string, features?: string) => unknown;
-  };
-  if (!browserWindow.location?.href || !browserWindow.open) {
-    throw new Error('새 문서 창을 열 수 없습니다.');
-  }
-  const editorUrl = new URL(browserWindow.location.href);
-  editorUrl.search = '';
-  editorUrl.hash = '';
-  editorUrl.searchParams.set('url', artifact.downloadUrl);
-  editorUrl.searchParams.set('filename', artifact.fileName);
-  if (options.readOnly) editorUrl.searchParams.set('templatePreview', '1');
-  browserWindow.open(editorUrl.href, '_blank', 'noopener');
 }
 
 let inflight: Promise<boolean> | null = null;
@@ -1244,7 +1230,7 @@ const AGENT_OPEN_FAILURES: ReadonlySet<unknown> = new Set<NativeAgentDocumentOpe
   'DOC_OPEN_ELSEWHERE', 'NOT_FOUND', 'UNREADABLE', 'TOO_LARGE', 'INVALID_PATH',
 ]);
 const AGENT_CREATE_FAILURES: ReadonlySet<unknown> = new Set<NativeAgentDocumentCreateFailure>([
-  'INVALID_NAME', 'INVALID_FOLDER', 'WRITE_FAILED', 'LICENSE_READ_ONLY',
+  'INVALID_NAME', 'INVALID_FOLDER', 'WRITE_FAILED',
 ]);
 
 function nativeAgentDocumentResult<Code extends string>(
@@ -1940,7 +1926,7 @@ function serviceWorkerContainer(win?: DesktopHost): ServiceWorkerLike | undefine
       : undefined);
 }
 
-/** Electron 셸에서는 PWA SW가 IndexedDB 할당량 정리로 최근문서/자동저장 open을 멈출 수 있다. */
+/** 예전 설치본이 남긴 서비스 워커는 IndexedDB 할당량 정리로 최근문서/자동저장 open을 멈출 수 있어 Electron 셸에서 해제한다. */
 export async function suppressDesktopServiceWorker(win?: DesktopHost): Promise<void> {
   if (!isDesktopApp(win)) return;
   const sw = serviceWorkerContainer(win);
@@ -1957,19 +1943,4 @@ export async function suppressDesktopServiceWorker(win?: DesktopHost): Promise<v
   sw.addEventListener?.('controllerchange', () => {
     void unregisterAll();
   });
-}
-
-/** 브라우저 PWA만 등록하고, Electron 은 기존 SW를 끈다. */
-export function installWebAppShell(win?: DesktopHost): void {
-  if (isDesktopApp(win)) {
-    void suppressDesktopServiceWorker(win);
-    return;
-  }
-  void import('virtual:pwa-register')
-    .then(({ registerSW }) => {
-      registerSW({ immediate: true });
-    })
-    .catch(() => {
-      /* 테스트·개발 번들에는 virtual module이 없을 수 있다 */
-    });
 }

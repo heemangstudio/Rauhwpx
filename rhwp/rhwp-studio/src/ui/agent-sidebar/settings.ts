@@ -48,7 +48,7 @@ import {
 } from './settings-contract.ts';
 import { createChevron } from '../chevron.ts';
 import { createSleepyHippo } from './sleepy-hippo.ts';
-import { AGENT_LABEL, createProviderIcon, PROVIDER_ORDER } from './providers.ts';
+import { AGENT_LABEL, CONNECTABLE_PROVIDERS, createProviderIcon, PROVIDER_ORDER } from './providers.ts';
 import { createSettingsSearch, type SettingsSearchTarget } from './settings-search.ts';
 import {
   formatResetAt,
@@ -63,6 +63,7 @@ import { createLicenseSettingsSection } from './settings-license.ts';
 import { createPiGiftLine } from './settings-gift.ts';
 import { createAutofixSettingsSection } from './settings-autofix.ts';
 import { createTasteSettingsSection } from './settings-taste.ts';
+import type { DesktopRauApi } from './rau-upgrade.ts';
 import { createMarkdownEditor } from './markdown-editor.ts';
 import type { DesktopGiftApi } from '../special-event/gift.ts';
 import { AGENT_MODES, AGENT_MODE_LABEL, isAgentMode, type AgentMode } from '../../agent/types.ts';
@@ -95,6 +96,7 @@ const API_KEY_PLACEHOLDER: Record<AgentName, string> = {
   claude: 'sk-ant-…',
   codex: 'sk-proj-…',
   pi: 'sk-or-…',
+  hama: '',
   grok: 'xai-…',
   cursor: 'API 키',
   opencode: 'API 키',
@@ -352,14 +354,21 @@ export interface SettingsPanelDeps {
   deleteArchivedThread?: (thread: ThreadSummary) => Promise<boolean>;
   /** 선물 크레딧(macOS 데스크톱만). 없으면 Pi 카드에 선물 줄이 없다. */
   gift?: DesktopGiftApi | null;
+  /** 호스팅 Rau-0.1(Pro) 자격. 데스크톱만. 없으면 Rau-0.1 에 Pro 줄이 없다. */
+  rau?: DesktopRauApi | null;
   /** 주소를 앱 안 브라우저의 별도 창으로 연다(ChatGPT·Claude 로그인). */
   openSignInWindow?: (url: string, title: string) => Promise<SignInWindow>;
   /** 패스키·Google 로그인을 Google Chrome으로 넘긴다(데스크톱 앱). */
   chromeSignIn?: ChromeSignIn;
+  /** 무료 요금제면 true. AI 설정은 잠기고, 들어가려는 길마다 요금제 카드가 열린다. */
+  agentLocked?: () => boolean;
+  openPlans?: () => void;
 }
 
 export interface SettingsPanel {
   element: HTMLElement;
+  /** 요금제가 바뀌면 AI 묶음의 잠금을 맞춘다. */
+  syncPlanLock(): void;
   open(destination?: SettingsDestinationInput): void;
   close(): void;
   requestClose(): Promise<boolean>;
@@ -477,18 +486,12 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
 
   // pi 마법사 상태 — 한 장의 카드가 단계를 갈아 끼운다.
   let piStatus: PiStatus | null = null;
-  // 취향 학습(Rau-0.1) — 허브가 정본이다. 바꾸는 즉시 저장한다. renderPi 가 부르므로 먼저 만든다.
+  // 취향 학습(Rau-0.1) — 허브가 정본이다. 바꾸는 즉시 저장한다.
   const tasteSection = createTasteSettingsSection({
     bridge,
-    piStatus: () => piStatus,
-    connectOpenRouterKey: (key) => connectOpenRouterKey(key),
-    loginOpenRouter: () => loginOpenRouterForTaste(),
-    authBlocked: () => piBusy || setupBusy || connectionState !== 'connected',
-    authError: () => piMessage,
     isDisposed: () => disposed,
+    rau: deps.rau ?? null,
   });
-  /** Rau-0.1 에서 시작한 Pi 브라우저 로그인 — 끝나면 Pi 모델 고르기 대신 Rau-0.1 로 돌아온다. */
-  let piAuthReturnToTaste = false;
   let piCatalog: PiCatalogModel[] = [];
   let piCatalogLoading = false;
   /** 한 번 실패한 목록을 렌더마다 다시 부르지 않게 막는다. */
@@ -533,7 +536,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   const body = el('div', 'ag-settings-body');
   const panes = new Map<SettingsDestination, HTMLElement>();
   const navButtons = new Map<SettingsDestination, HTMLButtonElement>();
-  // 데스크톱 앱의 체험·라이선스 상태와 '이 기기 비활성화'. 웹에는 라이선스 탭이 없다.
+  // 데스크톱 앱의 라이선스 상태와 '이 기기 비활성화'. 웹에는 라이선스 탭이 없다.
   const desktopLicense = (globalThis as { rhwpDesktop?: { license?: Parameters<typeof createLicenseSettingsSection>[0] } })
     .rhwpDesktop?.license;
   const destinations: ReadonlyArray<{ id: SettingsDestination; label: string; icon: SettingsNavIconId }> = [
@@ -560,6 +563,10 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     withNavIcon(el('span', 'ag-settings-nav-group-label', 'AI'), 'ai'),
     createChevron('ag-settings-nav-group-caret'),
   );
+  const aiGroupLock = el('span', 'ag-settings-nav-group-lock');
+  aiGroupLock.setAttribute('aria-hidden', 'true');
+  aiGroupLock.append(createIcon('lock'));
+  aiGroupHeader.append(aiGroupLock);
   const aiGroupList = el('div', 'ag-settings-nav-sublist');
   aiGroupList.id = 'ag-settings-nav-ai-sections';
   aiGroupList.setAttribute('role', 'group');
@@ -680,7 +687,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     { root: HTMLDetailsElement; dot: HTMLElement; detail: HTMLElement; message: HTMLElement; setup: HTMLButtonElement }
   >();
   const providerList = el('div', 'ag-settings-provider-list');
-  for (const agent of PROVIDER_ORDER) {
+  for (const agent of CONNECTABLE_PROVIDERS) {
     const row = el('details', 'ag-settings-provider-row');
     row.dataset.agent = agent;
     const dot = el('span', 'ag-settings-dot');
@@ -1545,6 +1552,10 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   aiApply.addEventListener('click', () => void applyAiDraft());
   aiCancel.addEventListener('click', cancelAiDraft);
   aiGroupHeader.addEventListener('click', () => {
+    if (aiLocked()) {
+      deps.openPlans?.();
+      return;
+    }
     if (aiGroupExpanded && currentDestination === 'ai') {
       aiGroupExpanded = false;
       renderDestinationState();
@@ -1569,7 +1580,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     const targets: SettingsSearchTarget[] = [];
     for (const destination of destinations) {
       const pane = panes.get(destination.id);
-      if (!pane) continue;
+      if (!pane || (destination.id === 'ai' && aiLocked())) continue;
       for (const label of pane.querySelectorAll<HTMLElement>(searchSelector)) {
         const text = label.textContent?.trim();
         // 프로젝트·보관한 채팅 이름은 설정이 아니다.
@@ -1738,6 +1749,21 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
         : modelCatalogLoading.has(modelCatalogAgent));
   }
 
+  function aiLocked(): boolean {
+    return deps.agentLocked?.() === true;
+  }
+
+  function syncPlanLock(): void {
+    const locked = aiLocked();
+    aiGroupHeader.classList.toggle('ag-settings-ai-locked', locked);
+    if (locked) aiGroupHeader.title = 'Pro에서 쓸 수 있어요';
+    else aiGroupHeader.removeAttribute('title');
+    if (!locked) return;
+    aiGroupExpanded = false;
+    if (currentDestination === 'ai') selectDestination('editing');
+    else renderAiSectionState();
+  }
+
   function renderAiSectionState(): void {
     const onAi = currentDestination === 'ai';
     aiGroupHeader.setAttribute('aria-expanded', String(aiGroupExpanded));
@@ -1776,7 +1802,13 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     if (changed) panes.get('ai')?.scrollTo({ top: 0 });
   }
 
-  function selectDestination(destination: SettingsDestination, aiSection?: AiSettingsSection): void {
+  function selectDestination(requested: SettingsDestination, aiSection?: AiSettingsSection): void {
+    let destination = requested;
+    // 설정 열기, 검색, 연결 안내 어디서 오든 잠긴 AI 로는 들어가지 않는다.
+    if (destination === 'ai' && aiLocked()) {
+      deps.openPlans?.();
+      destination = currentDestination === 'ai' ? 'editing' : currentDestination;
+    }
     if (destination === 'ai') {
       aiGroupExpanded = true;
       if (aiSection) selectAiSection(aiSection);
@@ -2119,6 +2151,8 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   function selectableAgents(): readonly AgentName[] {
     return PROVIDER_ORDER.filter((agent) => {
       if (agent === 'pi') return piStatus?.setupComplete === true;
+      // Hama 는 서버가 살아 있는 플랜이라고 답했을 때만 고를 수 있다.
+      if (agent === 'hama') return setupStatuses?.hama?.connected === true;
       return true;
     });
   }
@@ -2263,7 +2297,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   function renderProviders(): void {
     if (setupStatuses) announceProviderUpdates(setupStatuses);
     const online = connectionState === 'connected';
-    for (const agent of PROVIDER_ORDER) {
+    for (const agent of CONNECTABLE_PROVIDERS) {
       const row = providerRows.get(agent);
       if (!row) continue;
       const setup = setupStatuses?.[agent];
@@ -2462,27 +2496,26 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     await startSetupAuth('oauth');
   }
 
-  /** Rau-0.1 의 브라우저로 로그인 — Pi 설정의 브라우저로 로그인과 같은 창·흐름이다. Pi 설치는 필요 없다. */
-  function loginOpenRouterForTaste(): void {
-    if (piBusy || setupBusy || connectionState !== 'connected') return;
-    openAgentSetup('pi');
-    piAuthReturnToTaste = true;
-    void startSetupAuth('oauth');
-  }
-
   function beginAgentConnect(agent: AgentName, options?: { reauth?: boolean }): void {
+    if (aiLocked()) {
+      deps.openPlans?.();
+      return;
+    }
     openAgentSetup(agent);
     void continueAgentConnect(agent, options?.reauth === true);
   }
 
   function openAgentSetup(agent: AgentName): void {
+    if (aiLocked()) {
+      deps.openPlans?.();
+      return;
+    }
     if (setupCloseTimer) {
       clearTimeout(setupCloseTimer);
       setupCloseTimer = null;
     }
     const sameAgent = setupAgent === agent;
     setupAgent = agent;
-    piAuthReturnToTaste = false;
     setupMessage = '';
     setupBusy = false;
     setupReauth = false;
@@ -2527,11 +2560,9 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       }
     }
     authAttempt += 1;
-    piAuthReturnToTaste = false;
     setupCodePending = false;
     setupBusy = false;
     clearSetupAuthPrompt();
-    tasteSection.render();
     setupOverlay.classList.remove('ag-open');
     setupOverlay.setAttribute('aria-hidden', 'true');
     if (!setupAgent || !pendingInstalls.has(setupAgent)) resetSetupInstallProgress();
@@ -3168,7 +3199,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   }
 
   function renderPi(): void {
-    tasteSection.render();
     piGift?.setPiStatus(piStatus);
     const step = piCurrentStep();
     for (const [id, node] of piSteps) node.hidden = id !== step;
@@ -3300,7 +3330,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     void refreshProviders(true);
   }
 
-  /** OpenRouter 키 저장 — Pi 설정의 키 칸과 Rau-0.1 의 키 칸이 함께 쓴다. 성공하면 true. */
+  /** OpenRouter 키 저장 — Pi 설정의 키 칸. 성공하면 true. */
   async function connectOpenRouterKey(key: string): Promise<boolean> {
     if (!key || piBusy) return false;
     piBusy = true;
@@ -3412,6 +3442,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     usageViews.setLimitsRefreshing(true);
     usageFeedback.textContent = '';
     usageFeedback.hidden = true;
+    void bridge.requestHamaStatus?.(refresh).catch(() => null);
     try {
       const result = await bridge.requestUsage(refresh);
       if (disposed) return;
@@ -3580,6 +3611,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
 
   return {
     element,
+    syncPlanLock,
     open(requested?: SettingsDestinationInput): void {
       const destination = normalizeSettingsDestination(requested);
       settingsOpen = true;
@@ -3828,13 +3860,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
           if (authenticated && setupAgent === 'pi' && setupOverlay.getAttribute('aria-hidden') === 'false') {
             setupBusy = false;
             piBusy = false;
-            if (piAuthReturnToTaste) {
-              closeAgentSetup();
-              selectDestination('ai', 'custom');
-              tasteSection.root.scrollIntoView({ block: 'nearest' });
-            } else {
-              openPiModelCatalog();
-            }
+            openPiModelCatalog();
           }
           renderPi();
           syncPrefsInputs();

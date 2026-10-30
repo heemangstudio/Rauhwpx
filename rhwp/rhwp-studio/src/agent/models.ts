@@ -53,15 +53,22 @@ const CODEX_EFFORTS = [
   { id: 'max', label: 'Max' }, { id: 'xhigh', label: 'Extra high' },
   { id: 'high', label: 'High' }, { id: 'medium', label: 'Medium' }, { id: 'low', label: 'Low' },
 ] as const;
-const PI_EFFORT_IDS = ['high', 'medium', 'low'] as const;
-const PI_EFFORT_LABELS: Record<string, string> = { low: 'Low', medium: 'Medium', high: 'High' };
+const PI_EFFORT_IDS = ['max', 'xhigh', 'high', 'medium', 'low'] as const;
+const PI_EFFORT_LABELS: Record<string, string> = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max' };
 export const DEFAULT_AGENT_MODEL: Record<CatalogAgent, string> = { claude: 'sonnet', codex: 'sol' };
 export const DEFAULT_AGENT_EFFORT: Record<CatalogAgent, string> = { claude: 'high', codex: 'medium' };
 
-let piModelRegistry: readonly PiModelConfig[] = [];
-export function setPiModels(models: readonly PiModelConfig[]): void { piModelRegistry = models; }
-export function piModels(): readonly PiModelConfig[] { return piModelRegistry; }
-function findPiModel(id: string | null | undefined): PiModelConfig | undefined { return piModelRegistry.find((model) => model.id === id); }
+/** Pi 런타임을 쓰는 하네스 — BYOK(pi) 와 Hama(hama). 모델 목록은 허브가 하네스마다 따로 준다. */
+type PiRuntimeAgent = 'pi' | 'hama';
+const piRegistries: Record<PiRuntimeAgent, readonly PiModelConfig[]> = { pi: [], hama: [] };
+function isPiRuntime(agent: AgentName): agent is PiRuntimeAgent { return agent === 'pi' || agent === 'hama'; }
+export function setPiModels(models: readonly PiModelConfig[]): void { piRegistries.pi = models; }
+export function piModels(): readonly PiModelConfig[] { return piRegistries.pi; }
+/** Hama 하네스의 모델 (HamaStatus.models). 첫 모델이 기본(Haiku 5.5)이다. */
+export function setHamaModels(models: readonly PiModelConfig[]): void { piRegistries.hama = models; }
+function findPiModel(agent: PiRuntimeAgent, id: string | null | undefined): PiModelConfig | undefined {
+  return piRegistries[agent].find((model) => model.id === id);
+}
 
 const CATALOG_STORAGE_KEY = 'rhwp-agent-model-catalog';
 const catalogs: Record<CatalogAgent, ModelCatalogEntry[]> = { claude: [], codex: [] };
@@ -207,7 +214,7 @@ export function normalizeSelectedModels(raw: unknown): SelectedModels {
 }
 
 export function modelsForAgent(agent: AgentName): readonly ModelCatalogEntry[] {
-  if (agent === 'pi') return piModelRegistry.map((model) => ({ id: model.id, label: model.name }));
+  if (isPiRuntime(agent)) return piRegistries[agent].map((model) => ({ id: model.id, label: model.name }));
   if (!isCatalogAgent(agent)) return [];
   // 고른 순서가 아니라 카탈로그 순서(프로바이더가 정한 성능 순)로 선다.
   const selected = new Set(selectedModels[agent].map((id) => concreteModelForAgent(agent, id)));
@@ -215,7 +222,7 @@ export function modelsForAgent(agent: AgentName): readonly ModelCatalogEntry[] {
 }
 export function modelGroupsForAgent(agent: AgentName): readonly AgentModelGroup[] { return [{ label: null, options: modelsForAgent(agent) }]; }
 export function defaultModelForAgent(agent: AgentName): string {
-  if (agent === 'pi') return piModelRegistry[0]?.id ?? '';
+  if (isPiRuntime(agent)) return piRegistries[agent][0]?.id ?? '';
   if (!isCatalogAgent(agent)) return '';
   const preferred = concreteModelForAgent(agent, DEFAULT_AGENT_MODEL[agent]);
   const selected = modelsForAgent(agent);
@@ -223,10 +230,10 @@ export function defaultModelForAgent(agent: AgentName): string {
 }
 export function isModelForAgent(agent: AgentName, model: string): boolean { return modelsForAgent(agent).some((option) => option.id === model); }
 export function modelSupportsImages(agent: AgentName, model?: string | null): boolean {
-  return agent !== 'pi' || findPiModel(resolveModelForAgent('pi', model))?.supportsImages === true;
+  return !isPiRuntime(agent) || findPiModel(agent, resolveModelForAgent(agent, model))?.supportsImages === true;
 }
 export function resolveModelForAgent(agent: AgentName, model?: string | null): string {
-  if (agent === 'pi' && piModelRegistry.length === 0) return model ?? '';
+  if (isPiRuntime(agent) && piRegistries[agent].length === 0) return model ?? '';
   if (isCatalogAgent(agent) && model) {
     const concrete = concreteModelForAgent(agent, model);
     if (isModelForAgent(agent, concrete)) return concrete;
@@ -241,8 +248,8 @@ export function labelForModel(agent: AgentName, modelId: string): string {
   return modelsForAgent(agent).find((model) => model.id === modelId)?.label ?? modelId;
 }
 export function effortsForAgent(agent: AgentName, model?: string | null): readonly AgentEffortOption[] {
-  if (agent === 'pi') {
-    const config = findPiModel(resolveModelForAgent('pi', model));
+  if (isPiRuntime(agent)) {
+    const config = findPiModel(agent, resolveModelForAgent(agent, model));
     if (!config) return [];
     return PI_EFFORT_IDS.filter((id) => config.efforts.includes(id)).map((id) => ({ id, label: PI_EFFORT_LABELS[id] ?? id }));
   }
@@ -257,13 +264,13 @@ export function effortsForAgent(agent: AgentName, model?: string | null): readon
 export function defaultEffortForAgent(agent: AgentName, model?: string | null): string {
   const allowed = effortsForAgent(agent, model);
   if (allowed.length === 0) return '';
-  if (agent === 'pi') return findPiModel(resolveModelForAgent('pi', model))?.defaultEffort ?? allowed[0]!.id;
+  if (isPiRuntime(agent)) return findPiModel(agent, resolveModelForAgent(agent, model))?.defaultEffort ?? allowed[0]!.id;
   const preferred = isCatalogAgent(agent) ? DEFAULT_AGENT_EFFORT[agent] : '';
   return allowed.some((effort) => effort.id === preferred) ? preferred : allowed[0]!.id;
 }
 export function isEffortForAgent(agent: AgentName, effort: string, model?: string | null): boolean { return effortsForAgent(agent, model).some((option) => option.id === effort); }
 export function resolveEffortForAgent(agent: AgentName, effort?: string | null, model?: string | null): string {
-  if (agent === 'pi' && piModelRegistry.length === 0) return effort ?? '';
+  if (isPiRuntime(agent) && piRegistries[agent].length === 0) return effort ?? '';
   return effort && isEffortForAgent(agent, effort, model) ? effort : defaultEffortForAgent(agent, model);
 }
 export function labelForEffort(agent: AgentName, effortId: string, model?: string | null): string { return effortsForAgent(agent, model).find((effort) => effort.id === effortId)?.label ?? effortId; }

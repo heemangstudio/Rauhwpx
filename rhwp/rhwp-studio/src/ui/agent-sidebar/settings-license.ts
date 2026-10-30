@@ -1,10 +1,11 @@
 // 설정 → 편집 → 라이선스. 데스크톱 앱에서만 보인다.
 // 상태는 메인 프로세스(desktop/license-manager.mjs)가 가진다. 키 입력은 메인이 띄우는 활성화 창에서 한다.
+// 편집기는 늘 무료다. 라이선스는 Pro 기능(호스팅 Rau 등)만 연다.
 
 export type LicenseState =
   | 'licensed'
-  | 'trial'
-  | 'trial_expired'
+  /** 키가 없다. 편집은 모두 된다. */
+  | 'free'
   | 'revoked'
   /** 연간 키의 기간이 끝났다(서버가 만료라고 했거나, 오프라인 유예 7일도 지났다). */
   | 'expired'
@@ -14,9 +15,13 @@ export type LicenseState =
 
 export interface LicenseStatus {
   state: LicenseState;
-  canEdit: boolean;
-  readOnly: boolean;
-  trial: { startedAt: number; endsAt: number; active: boolean };
+  /** 서명한 lease 로 Pro 기능을 쓸 수 있는지. */
+  paid: boolean;
+  /** 서버가 알려 준 판. 예전 서버는 보내지 않는다. */
+  edition?: 'pro' | null;
+  plan?: 'monthly' | 'annual' | 'lifetime' | null;
+  /** 호스팅 Rau 자격. 모르면 null. */
+  rau?: { eligible: boolean | null };
   license: {
     maskedKey: string;
     /** 서버가 정한 키 종류. 예전 메인 프로세스는 보내지 않는다. */
@@ -54,50 +59,12 @@ export interface DesktopLicenseApi {
   openSupport?: () => Promise<void>;
   /** 이 기기의 키를 클립보드에 복사한다. 키는 메인이 바로 쓰고 렌더러로 오지 않는다. 예전 메인 프로세스에는 없다. */
   copyKey?: () => Promise<boolean>;
-  /** 체험이 끝난 뒤 자동 저장용 유예를 한 번 받는다. */
-  beginExpirySave?: () => Promise<{ ok: boolean; until: number | null }>;
   onChange: (callback: (status: LicenseStatus) => void) => () => void;
 }
-
-const SECOND_MS = 1000;
-const MINUTE_MS = 60 * SECOND_MS;
-const HOUR_SECONDS = 3600;
 
 /** HAMA- 로 시작하고 다섯 묶음이 다 찼는지. 붙여 넣은 키를 바로 확인할지 정한다. */
 export function looksLikeFullKey(raw: string): boolean {
   return /^HAMA(-?[0-9A-Z]{5}){5}$/.test(raw.trim().toUpperCase().replace(/\s+/g, ''));
-}
-
-/**
- * 체험 남은 시간. '2일 13시간' → '13시간 42분' → 마지막 한 시간은 '42분 15초' → '9초'.
- * 0 이 된 단위는 뺀다.
- */
-export function trialTimeLeft(endsAt: number, now = Date.now()): string {
-  const remaining = Math.max(0, endsAt - now);
-  const seconds = Math.ceil(remaining / SECOND_MS);
-  if (seconds < HOUR_SECONDS) {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    if (mins > 0) return secs > 0 ? `${mins}분 ${secs}초` : `${mins}분`;
-    return `${secs}초`;
-  }
-  const minutes = Math.ceil(remaining / MINUTE_MS);
-  const days = Math.floor(minutes / 1440);
-  const hours = Math.floor((minutes % 1440) / 60);
-  const mins = minutes % 60;
-  if (days > 0) return hours > 0 ? `${days}일 ${hours}시간` : `${days}일`;
-  return mins > 0 ? `${hours}시간 ${mins}분` : `${hours}시간`;
-}
-
-/**
- * 표시가 다음에 바뀔 때까지의 ms. 마지막 한 시간은 초마다, 그 전에는 분마다 그 경계에 맞춘다.
- */
-export function msUntilNextTrialTick(endsAt: number, now = Date.now()): number {
-  const remaining = endsAt - now;
-  if (remaining <= 0) return SECOND_MS;
-  if (Math.ceil(remaining / SECOND_MS) < HOUR_SECONDS) return remaining % SECOND_MS || SECOND_MS;
-  const toSecondsMode = remaining - (HOUR_SECONDS - 1) * SECOND_MS;
-  return Math.min(remaining % MINUTE_MS || MINUTE_MS, toSecondsMode);
 }
 
 function formatTime(ms: number | null): string {
@@ -122,7 +89,7 @@ const SUPPORT_EMAIL = 'management@heemangstudios.com';
 export const RENEWAL_PROMPT_TITLE = '키 만료, 연장할까요?';
 
 /**
- * 결제가 실패했거나(편집은 됨) 기간이 끝난(읽기 전용) 연간 키에 띄우는 연장 안내. 해당 없으면 null.
+ * 결제가 실패했거나 기간이 끝난 연간 키에 띄우는 연장 안내. 해당 없으면 null.
  * 설정, 편집 화면의 알림 카드, 활성화 창이 같은 글을 쓴다.
  */
 export function renewalPrompt(status: LicenseStatus): {
@@ -144,7 +111,7 @@ export function renewalPrompt(status: LicenseStatus): {
     return {
       kind: 'lapsed',
       title: RENEWAL_PROMPT_TITLE,
-      detail: `${formatLicenseDate(license.licenseExpiresAt)}에 기간이 끝나 읽기 전용이에요. Groble에서 연장하면 바로 다시 편집할 수 있어요.`,
+      detail: `${formatLicenseDate(license.licenseExpiresAt)}에 Pro 기간이 끝났어요. Groble에서 연장하면 바로 다시 쓸 수 있어요.`,
       action: 'Groble에서 연장하기',
     };
   }
@@ -152,10 +119,9 @@ export function renewalPrompt(status: LicenseStatus): {
 }
 
 /** 설정 화면에 보일 한 줄 요약과 버튼. DOM 없이 시험할 수 있게 따로 둔다. */
-export function licenseSummary(status: LicenseStatus, now = Date.now()): {
+export function licenseSummary(status: LicenseStatus): {
   title: string;
   detail: string;
-  readOnly: boolean;
   canDeactivate: boolean;
   showActivate: boolean;
 } {
@@ -164,70 +130,56 @@ export function licenseSummary(status: LicenseStatus, now = Date.now()): {
   switch (status.state) {
     case 'licensed': {
       const prompt = renewalPrompt(status);
-      if (prompt) return { title: prompt.title, detail: prompt.detail, readOnly: false, canDeactivate: true, showActivate: false };
+      if (prompt) return { title: prompt.title, detail: prompt.detail, canDeactivate: true, showActivate: false };
       if (license?.graceEndsAt && license.licenseExpiresAt) {
         return {
-          title: '정품 라이선스, 갱신 확인 필요',
+          title: 'Pro, 갱신 확인 필요',
           detail: `${formatLicenseDate(license.licenseExpiresAt)}에 기간이 끝났어요. 인터넷에 연결해 갱신을 확인해 주세요. ${formatLicenseDate(license.graceEndsAt)}까지 쓸 수 있어요.`,
-          readOnly: false,
-          canDeactivate: true,
+            canDeactivate: true,
           showActivate: false,
         };
       }
       const term = licenseTermText(license);
       return {
-        title: beta ? '베타 테스터 라이선스' : '정품 라이선스',
+        title: beta ? '베타 테스터 라이선스' : 'Pro',
         detail: [license?.maskedKey ?? '', term, `마지막 확인 ${formatTime(license?.lastCheckAt ?? null)}`, status.offline ? '오프라인' : '']
           .filter(Boolean).join(', '),
-        readOnly: false,
         canDeactivate: true,
         showActivate: false,
       };
     }
     case 'expired':
       return {
-        title: '기간 끝, 읽기 전용',
-        detail: `${license?.licenseExpiresAt ? `${formatLicenseDate(license.licenseExpiresAt)}에 ` : ''}라이선스 기간이 끝났어요. 구독을 갱신하거나 새 키를 넣으면 다시 저장할 수 있어요.`,
-        readOnly: true,
+        title: 'Pro 기간 끝',
+        detail: `${license?.licenseExpiresAt ? `${formatLicenseDate(license.licenseExpiresAt)}에 ` : ''}Pro 기간이 끝났어요. 구독을 갱신하거나 새 키를 넣어 주세요.`,
         canDeactivate: true,
         showActivate: true,
       };
-    case 'trial':
-      return {
-        title: '체험 중',
-        detail: `${trialTimeLeft(status.trial.endsAt, now)} 남았어요. 끝나면 읽기 전용이 돼요.`,
-        readOnly: false,
-        canDeactivate: false,
-        showActivate: true,
-      };
-    case 'trial_expired':
-      return { title: '읽기 전용', detail: '라이선스 키를 넣으면 다시 저장할 수 있어요.', readOnly: true, canDeactivate: false, showActivate: true };
+    case 'free':
+      return { title: '무료', detail: '키를 넣으면 Pro를 쓸 수 있어요.', canDeactivate: false, showActivate: true };
     case 'revoked':
       return {
-        title: '해지된 라이선스, 읽기 전용',
+        title: '해지된 라이선스',
         detail: beta ? '베타 테스트 기간이 끝나 키가 해지되었어요.' : '환불 등으로 키가 해지되었어요. 새 키를 넣어 주세요.',
-        readOnly: true,
         canDeactivate: false,
         showActivate: true,
       };
     case 'lease_expired':
       return {
-        title: '확인 필요, 읽기 전용',
+        title: '라이선스 확인 필요',
         detail: `${beta ? 3 : 7}일 넘게 라이선스를 확인하지 못했어요. 인터넷에 연결한 뒤 ‘지금 확인’을 눌러 주세요.`,
-        readOnly: true,
         canDeactivate: true,
         showActivate: false,
       };
     case 'needs_activation':
       return {
-        title: '다시 활성화 필요, 읽기 전용',
+        title: '다시 활성화 필요',
         detail: license?.lastError ?? '이 기기에서 키를 다시 활성화해 주세요.',
-        readOnly: true,
         canDeactivate: false,
         showActivate: true,
       };
     default:
-      return { title: '개발 빌드', detail: '라이선스를 확인하지 않아요.', readOnly: false, canDeactivate: false, showActivate: false };
+      return { title: '개발 빌드', detail: '라이선스를 확인하지 않아요.', canDeactivate: false, showActivate: false };
   }
 }
 
@@ -289,7 +241,7 @@ export function createLicenseSettingsSection(
   const actions = document.createElement('span');
   actions.className = 'ag-settings-license-actions';
   const activate = button('키 넣기');
-  const buy = button('연 ₩9,900에 구매하기');
+  const buy = button('Pro 구매하기');
   const check = button('지금 확인');
   const deactivate = button('이 기기 비활성화');
   const fixPayment = button('결제 수단 바꾸기');
@@ -305,11 +257,8 @@ export function createLicenseSettingsSection(
 
   function render(status: LicenseStatus): void {
     const summary = licenseSummary(status);
-    // 결제 실패·기간 끝은 연장 안내의 제목을 쓴다. 무료 체험이 끝난 기기는 설정에서만 그렇게 부른다.
-    // 메뉴 막대 알약은 자리가 좁아 '읽기 전용'을 그대로 쓴다.
-    title.textContent = status.state === 'trial_expired'
-      ? '무료 체험 만료'
-      : renewalPrompt(status)?.title ?? summary.title;
+    // 결제 실패·기간 끝은 연장 안내의 제목을 쓴다.
+    title.textContent = renewalPrompt(status)?.title ?? summary.title;
     maskedKey = status.license?.maskedKey ?? '';
     const keyFirst = Boolean(maskedKey && api.copyKey && summary.detail.startsWith(maskedKey));
     keyButton.hidden = !keyFirst;
@@ -350,7 +299,7 @@ export function createLicenseSettingsSection(
     void api.checkNow().then(render).finally(() => { check.disabled = false; });
   });
   deactivate.addEventListener('click', () => {
-    if (!window.confirm('이 기기에서 라이선스를 비활성화할까요? 다른 기기에서 이 키를 쓸 수 있게 되고, 이 기기는 읽기 전용이 돼요.')) return;
+    if (!window.confirm('이 기기에서 라이선스를 비활성화할까요? 다른 기기에서 이 키를 쓸 수 있게 되고, 이 기기에서는 Pro 기능이 꺼져요.')) return;
     deactivate.disabled = true;
     void api.deactivate().then((result) => {
       render(result.status);

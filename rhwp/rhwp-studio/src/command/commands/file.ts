@@ -294,7 +294,7 @@ async function ensureReadPermission(handle: FileSystemFileHandleLike): Promise<b
  * - NotAllowedError: writeBlobToHandle 권한 거부 (Chrome "변경사항 저장" 프롬프트 취소)
  *
  * 두 케이스 모두 fallback download 우회 — 사용자가 명시적으로 취소했으므로
- * 의도하지 않은 Downloads 폴더 저장 + chrome-extension viewer 자동 연결 차단. */
+ * 의도하지 않은 Downloads 폴더 저장을 막는다. */
 function isUserCancelError(e: unknown): boolean {
   return e instanceof DOMException
       && (e.name === 'AbortError' || e.name === 'NotAllowedError');
@@ -626,10 +626,6 @@ function completePortableHistorySave(
 
 function reportSaveError(scope: string, error: unknown): void {
   const message = error instanceof Error ? error.message : String(error);
-  if (message.includes('LICENSE_READ_ONLY')) {
-    showToast({ message: '읽기 전용이에요. 라이선스를 활성화한 뒤 다시 저장해 주세요.', durationMs: 5000 });
-    return;
-  }
   console.error(`[${scope}] 저장 실패:`, message);
   alert(`파일 저장에 실패했습니다:\n${describeSaveError(error)}`);
 }
@@ -641,41 +637,6 @@ function assertCanSaveDocument(services: CommandServices): void {
 }
 
 export type SaveCurrentDocumentResult = SaveOutcome;
-
-/**
- * 묻지 않고 지금 파일에 덮어 저장한다(체험이 끝나는 순간의 자동 저장).
- * 새 문서·버전 기록 파일·형식을 골라야 하는 문서처럼 대화상자가 필요하면 'skipped'.
- */
-export async function saveToCurrentFileQuietly(
-  services: Pick<CommandServices, 'wasm' | 'documentState' | 'eventBus'>,
-  validateTarget?: CommandServices['validateSaveHandle'],
-): Promise<'saved' | 'skipped' | 'failed'> {
-  const handle = services.wasm.currentFileHandle;
-  if (!handle || services.wasm.isNewDocument) return 'skipped';
-  if (isPortableHistoryFileName(services.wasm.fileName) || isPortableHistoryFileName(handle.name ?? '')) return 'skipped';
-  const sourceFormat = services.wasm.getSourceFormat();
-  const target = resolveSaveTarget(sourceFormat, services.wasm.fileName, handle);
-  const hmlEnabled = target.format !== 'hml' || isHmlSaveEnabled(services);
-  if (target.forceSaveAs || requiresSaveFormatChoice(target, hmlEnabled)) return 'skipped';
-  try {
-    const revision = services.documentState.captureRevision();
-    const blob = createSaveBlob(services, target.format);
-    const result = await saveDocumentToFileSystem({
-      blob,
-      suggestedName: target.suggestedName,
-      currentHandle: handle,
-      windowLike: window as FileSystemWindowLike,
-      forceSaveAs: false,
-      saveFormat: target.format,
-      validateTarget,
-    });
-    completeHandleSave(services, sourceFormat, target.format, result, 'save', revision, await savedBlobContent(blob));
-    return 'saved';
-  } catch (error) {
-    console.warn('[file:save] 자동 저장 실패:', error);
-    return 'failed';
-  }
-}
 
 /** 저장은 한 번에 하나만 실행한다 (겹친 쓰기가 오래된 바이트로 최신 저장을 덮지 않도록). */
 const saveSession = new SaveSession();

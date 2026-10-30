@@ -225,14 +225,10 @@
   gap: 8px;
 }
 
-/* Rau-0.1: 켜기·끄기 아래에 공급자 넷을 한 줄로. */
+/* Rau-0.1 호스팅 학습 켜기·끄기. */
 .rhwp-setup-taste {
   display: grid;
   gap: 12px;
-}
-
-.rhwp-setup-taste-providers {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 /* 켜기·끄기는 공급자 카드보다 낮게 — 아이콘과 글을 한 줄에. */
@@ -466,6 +462,12 @@
   color: #4a9a86; /* token-ok */
   -webkit-mask-image: url('/icons/provider-pi.svg');
   mask-image: url('/icons/provider-pi.svg');
+}
+
+/* Hama 마크 — 앱 하마의 하품하는 자세. */
+.rhwp-setup-card-logo .ag-provider-icon-mask[data-agent='hama'] {
+  -webkit-mask-image: url('/icons/provider-hama.svg');
+  mask-image: url('/icons/provider-hama.svg');
 }
 
 .rhwp-setup-card-logo .ag-provider-icon-mask[data-agent='grok'] {

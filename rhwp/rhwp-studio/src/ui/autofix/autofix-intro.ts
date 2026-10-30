@@ -40,7 +40,7 @@ export function shouldShowAutofixIntro(settings: AutofixSettings | null | undefi
   return Boolean(settings) && settings!.decided !== true && setupComplete;
 }
 
-/** 보이는 모달(대화상자·시트·처음 설정·체험 끝 카드 등)이 떠 있는지. 숨겨 둔 모달은 치지 않는다. */
+/** 보이는 모달(대화상자·시트·처음 설정 등)이 떠 있는지. 숨겨 둔 모달은 치지 않는다. */
 export function modalOnScreen(): boolean {
   if (openModalCount() > 0) return true;
   if (typeof document === 'undefined') return false;

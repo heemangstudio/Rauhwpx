@@ -102,7 +102,7 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
   logDiagnostics: (entries) => {
     if (Array.isArray(entries) && entries.length > 0) ipcRenderer.send('desktop:diagnostic-log', entries);
   },
-  // 체험·라이선스. 활성화와 비활성화는 메인이 키 서버와 주고받고, 렌더러는 상태만 받는다.
+  // 라이선스. 활성화와 비활성화는 메인이 키 서버와 주고받고, 렌더러는 상태만 받는다.
   license: {
     getStatus: () => ipcRenderer.invoke('license:status'),
     checkNow: () => ipcRenderer.invoke('license:check'),
@@ -113,8 +113,6 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
     openPaymentFix: () => ipcRenderer.invoke('license:open-payment-fix'),
     openSupport: () => ipcRenderer.invoke('license:open-support'),
     copyKey: () => ipcRenderer.invoke('license:copy-key'),
-    // 체험이 끝날 때 열린 문서를 자동 저장하려고 한 번 유예를 받는다.
-    beginExpirySave: () => ipcRenderer.invoke('license:begin-expiry-save'),
     onChange: (callback) => {
       const listener = (_event, status) => callback(status);
       ipcRenderer.on('license:changed', listener);
@@ -129,6 +127,22 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
       const listener = (_event, status) => callback(status);
       ipcRenderer.on('gift:changed', listener);
       return () => ipcRenderer.removeListener('gift:changed', listener);
+    },
+  },
+  // 호스팅 Rau-0.1(Pro). 메인이 lease 로 서버에 묻고, 렌더러는 자격과 사용량만 받는다.
+  rau: {
+    getStatus: () => ipcRenderer.invoke('rau:status'),
+    openUpgrade: (url) => ipcRenderer.invoke('rau:open-upgrade', typeof url === 'string' ? url : ''),
+  },
+  // 앱 요금제와 앱 안 결제. 결제 확인과 키 활성화는 메인이 하고, 렌더러는 요금제와 진행 상태만 받는다.
+  plan: {
+    getStatus: () => ipcRenderer.invoke('plan:status'),
+    startCheckout: (sku) => ipcRenderer.invoke('plan:start-checkout', String(sku ?? '')),
+    cancelCheckout: () => ipcRenderer.invoke('plan:cancel-checkout'),
+    onChange: (callback) => {
+      const listener = (_event, status) => callback(status);
+      ipcRenderer.on('plan:changed', listener);
+      return () => ipcRenderer.removeListener('plan:changed', listener);
     },
   },
   // 앱 업데이트. 확인·다운로드·재시작은 메인이 하고, 렌더러는 상태를 받아 보여 준다.

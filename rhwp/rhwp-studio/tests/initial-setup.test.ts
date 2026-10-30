@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import { AGENT_MODELS } from '../src/agent/models.ts';
 import type { AgentName, AgentSetupStatus } from '../src/agent/types.ts';
-import { PROVIDER_ORDER } from '../src/ui/agent-sidebar/providers.ts';
+import { CONNECTABLE_PROVIDERS, PROVIDER_ORDER } from '../src/ui/agent-sidebar/providers.ts';
 import {
   isProviderConfigured,
   previewModelLabels,
@@ -93,7 +93,8 @@ test('카드 모델 목록은 현재 선택과 Pi 기본 안내를 짧게 보여
   assert.deepEqual(previewModelLabels('pi'), ['OpenRouter에서 고름', '최대 3개']);
   assert.equal(SUGGESTED_AGENT, 'claude');
   assert.equal(PROVIDER_ORDER[0], 'claude');
-  assert.deepEqual([...PROVIDER_ORDER], ['claude', 'codex', 'pi']);
+  // Hama 는 플랜이라 처음 설정의 연결 카드에 서지 않는다.
+  assert.deepEqual([...CONNECTABLE_PROVIDERS], ['claude', 'codex', 'pi']);
   assert.equal(PROVIDER_VENDOR.claude, 'Anthropic');
   for (const agent of PROVIDER_ORDER) {
     assert.ok(PROVIDER_VENDOR[agent]);
@@ -164,7 +165,7 @@ test('자동 버그 수정 단계는 데스크톱에서만 맨 끝에 넣는다'
 
 test('라이선스 장은 키를 넣지 않은 데스크톱 사용자에게만 자동 버그 수정 앞에 뜬다', () => {
   const status = (state: LicenseStatus['state']) => ({ state } as LicenseStatus);
-  for (const state of ['trial', 'trial_expired', 'needs_activation'] as const) assert.equal(needsLicenseStep(status(state)), true);
+  for (const state of ['free', 'needs_activation'] as const) assert.equal(needsLicenseStep(status(state)), true);
   for (const state of ['licensed', 'unenforced', 'lease_expired', 'revoked', 'expired'] as const) assert.equal(needsLicenseStep(status(state)), false);
   // 웹 빌드처럼 라이선스 API 가 없으면 장이 없다.
   assert.equal(needsLicenseStep(null), false);

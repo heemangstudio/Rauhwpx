@@ -8,7 +8,7 @@ import {
   modelsForAgent,
   resolveModelForAgent,
 } from '../../agent/models.ts';
-import { AGENT_LABEL, PROVIDER_ORDER, createProviderIcon } from './providers.ts';
+import { AGENT_LABEL, CONNECTABLE_PROVIDERS, createProviderIcon } from './providers.ts';
 import type {
   AgentName,
   PiStatus,
@@ -28,7 +28,7 @@ const MAX_FILES = 20;
 const MAX_FILE_BYTES = 20 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 50 * 1024 * 1024;
 const ACK_TIMEOUT_MS = 10_000;
-const AGENTS: readonly AgentName[] = PROVIDER_ORDER;
+const AGENTS: readonly AgentName[] = CONNECTABLE_PROVIDERS;
 
 const PROGRESS_STAGES: ReadonlyArray<{
   state: WritingStyleProgressState;

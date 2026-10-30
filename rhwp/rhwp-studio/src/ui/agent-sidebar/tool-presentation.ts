@@ -817,7 +817,6 @@ const ERROR_TEXT: Record<string, string> = {
   TOO_LARGE: '문서가 너무 큼',
   WRITE_FAILED: '파일을 만들지 못함',
   DESKTOP_ONLY: '데스크톱 앱에서만 가능',
-  LICENSE_READ_ONLY: '읽기 전용 라이선스',
   DOCUMENT_REQUIRED: '문서가 필요함',
   RPC_ERROR: '실행 오류',
   PERMISSION_REQUIRED: '허용 필요',

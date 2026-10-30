@@ -70,6 +70,11 @@ export const DEFAULT_SIGNATURE_PRICE = 29000;
  * when the failure event carries no grace end of its own.
  */
 export const DEFAULT_PAYMENT_GRACE_DAYS = 10;
+/** A failed renewal never keeps a key usable longer than this past its expiry, so a monthly key's grace stays under a month. */
+export const DEFAULT_PAYMENT_GRACE_MAX_DAYS = 14;
+export const DEFAULT_PRO_MONTHLY_PRICE = 3900;
+export const DEFAULT_PRO_YEARLY_PRICE = 39000;
+export const DEFAULT_PRO_UPGRADE_URL = 'https://heemangstudios.com/pricing.html#pro';
 /** Groble's buyer 주문조회 page, where a buyer sees the subscription and pays again. */
 export const DEFAULT_PAYMENT_FIX_URL = 'https://groble.im/manage/purchase';
 
@@ -104,14 +109,36 @@ function productPriceOverrides(text) {
   return overrides;
 }
 
+/** `GROBLE_PRO_PRODUCT_IDS`: `id:months` entries, months 1 (monthly) or 12 (yearly). */
+export function parseProProducts(text) {
+  const products = [];
+  if (!text) return products;
+  for (const part of text.split(',')) {
+    const entry = part.trim();
+    if (!entry) continue;
+    const [id, monthsText, extra] = entry.split(':').map((s) => s.trim());
+    const months = Number(monthsText);
+    if (!id || extra !== undefined || (months !== 1 && months !== 12)) {
+      throw new Error(`GROBLE_PRO_PRODUCT_IDS entry is not id:1 or id:12: ${entry}`);
+    }
+    products.push({ id, months });
+  }
+  return products;
+}
+
 export function buildProductCatalog({
   onetimeProductIds,
   subscriptionProductIds,
   signatureProductIds,
+  proProducts = [],
   expectedPrice,
   minAmount,
   signatureExpectedPrice,
   signatureMinAmount,
+  proMonthlyPrice = DEFAULT_PRO_MONTHLY_PRICE,
+  proMonthlyMinAmount = proMonthlyPrice,
+  proYearlyPrice = DEFAULT_PRO_YEARLY_PRICE,
+  proYearlyMinAmount = proYearlyPrice,
   priceOverrides = new Map(),
 }) {
   const groups = [
@@ -121,19 +148,30 @@ export function buildProductCatalog({
   ];
   const seen = new Map();
   const products = [];
+  const add = (label, product) => {
+    const previous = seen.get(product.id);
+    if (previous) throw new Error(`Groble product ${product.id} is both ${previous} and ${label}`);
+    seen.set(product.id, label);
+    const override = priceOverrides.get(product.id);
+    products.push({
+      ...product,
+      expectedPrice: override?.expectedPrice ?? product.expectedPrice,
+      minAmount: override?.minAmount ?? product.minAmount,
+    });
+  };
   for (const [label, kind, ids, price, min] of groups) {
-    for (const id of ids) {
-      const previous = seen.get(id);
-      if (previous) throw new Error(`Groble product ${id} is both ${previous} and ${label}`);
-      seen.set(id, label);
-      const override = priceOverrides.get(id);
-      products.push({
-        id,
-        kind,
-        expectedPrice: override?.expectedPrice ?? price,
-        minAmount: override?.minAmount ?? min,
-      });
-    }
+    for (const id of ids) add(label, { id, kind, expectedPrice: price, minAmount: min });
+  }
+  // Pro products are subscriptions with their own billing cycle; it wins over the event's.
+  for (const { id, months } of proProducts) {
+    add('pro', {
+      id,
+      kind: 'subscription',
+      edition: 'pro',
+      cycleMonths: months,
+      expectedPrice: months === 12 ? proYearlyPrice : proMonthlyPrice,
+      minAmount: months === 12 ? proYearlyMinAmount : proMonthlyMinAmount,
+    });
   }
   for (const id of priceOverrides.keys()) {
     if (!seen.has(id)) throw new Error(`GROBLE_PRODUCT_PRICES names ${id}, which is not a configured Groble product`);
@@ -160,19 +198,31 @@ export function resolveLicenseConfig(env = process.env) {
   const onetimeProductIds = commaList(trimmed(env.GROBLE_ONETIME_PRODUCT_IDS) || trimmed(env.GROBLE_CONTENT_ID), DEFAULT_ONETIME_PRODUCT_IDS);
   const subscriptionProductIds = commaList(trimmed(env.GROBLE_SUBSCRIPTION_PRODUCT_IDS), DEFAULT_SUBSCRIPTION_PRODUCT_IDS);
   const signatureProductIds = commaList(trimmed(env.GROBLE_SIGNATURE_PRODUCT_IDS), DEFAULT_SIGNATURE_PRODUCT_IDS);
+  const proProducts = parseProProducts(trimmed(env.GROBLE_PRO_PRODUCT_IDS));
+  const proMonthlyPrice = integerKrw('GROBLE_PRO_MONTHLY_PRICE', trimmed(env.GROBLE_PRO_MONTHLY_PRICE), DEFAULT_PRO_MONTHLY_PRICE);
+  const proYearlyPrice = integerKrw('GROBLE_PRO_YEARLY_PRICE', trimmed(env.GROBLE_PRO_YEARLY_PRICE), DEFAULT_PRO_YEARLY_PRICE);
   const products = buildProductCatalog({
     onetimeProductIds,
     subscriptionProductIds,
     signatureProductIds,
+    proProducts,
     expectedPrice: price,
     minAmount,
     signatureExpectedPrice,
     signatureMinAmount,
+    proMonthlyPrice,
+    proMonthlyMinAmount: integerKrw('GROBLE_PRO_MONTHLY_MIN_AMOUNT', trimmed(env.GROBLE_PRO_MONTHLY_MIN_AMOUNT), proMonthlyPrice),
+    proYearlyPrice,
+    proYearlyMinAmount: integerKrw('GROBLE_PRO_YEARLY_MIN_AMOUNT', trimmed(env.GROBLE_PRO_YEARLY_MIN_AMOUNT), proYearlyPrice),
     priceOverrides: productPriceOverrides(trimmed(env.GROBLE_PRODUCT_PRICES)),
   });
   const paymentGraceDays = positiveNumber('GROBLE_PAYMENT_GRACE_DAYS', trimmed(env.GROBLE_PAYMENT_GRACE_DAYS), DEFAULT_PAYMENT_GRACE_DAYS);
+  const paymentGraceMaxDays = positiveNumber('GROBLE_PAYMENT_GRACE_MAX_DAYS', trimmed(env.GROBLE_PAYMENT_GRACE_MAX_DAYS), DEFAULT_PAYMENT_GRACE_MAX_DAYS);
+  if (paymentGraceMaxDays >= 28) throw new Error(`GROBLE_PAYMENT_GRACE_MAX_DAYS must stay under a month (< 28): ${paymentGraceMaxDays}`);
   const paymentFixUrl = trimmed(env.GROBLE_PAYMENT_FIX_URL) || DEFAULT_PAYMENT_FIX_URL;
   if (!/^https:\/\/(?:www\.)?groble\.im\//.test(paymentFixUrl)) throw new Error(`GROBLE_PAYMENT_FIX_URL must be an https://groble.im/ page: ${paymentFixUrl}`);
+  const proUpgradeUrl = trimmed(env.PRO_UPGRADE_URL) || DEFAULT_PRO_UPGRADE_URL;
+  if (!/^https:\/\//.test(proUpgradeUrl)) throw new Error(`PRO_UPGRADE_URL must be an https:// page: ${proUpgradeUrl}`);
   return {
     webhookSecret: trimmed(env.GROBLE_WEBHOOK_SECRET),
     webhookSecretPrevious: trimmed(env.GROBLE_WEBHOOK_SECRET_PREVIOUS),
@@ -182,8 +232,11 @@ export function resolveLicenseConfig(env = process.env) {
     signatureExpectedPrice,
     signatureMinAmount,
     products,
+    proProducts,
     paymentGraceMs: paymentGraceDays * 24 * 60 * 60 * 1000,
+    paymentGraceMaxMs: paymentGraceMaxDays * 24 * 60 * 60 * 1000,
     paymentFixUrl,
+    proUpgradeUrl,
     expectedPrice: price,
     minAmount,
     signingPrivateKey: trimmed(env.LICENSE_SIGNING_PRIVATE_KEY),
@@ -231,6 +284,123 @@ export function resolveGiftConfig(env = process.env) {
     modelPrefixes: commaList(trimmed(env.GIFT_MODEL_PREFIXES), 'anthropic/'),
     platforms: commaList(trimmed(env.GIFT_PLATFORMS), 'darwin,win32'),
     maxOutputTokens,
+    apiBase: (trimmed(env.OPENROUTER_API_BASE) || DEFAULT_OPENROUTER_API_BASE).replace(/\/+$/, ''),
+  };
+}
+
+export function resolveHamaDbPath(env = process.env) {
+  return path.join(resolveDataDir(env), 'hama.json');
+}
+
+/** Per-license JSONL usage logs of the Hama plan. */
+export function resolveHamaUsageDir(env = process.env) {
+  return path.join(resolveDataDir(env), 'hama-usage');
+}
+
+export const DEFAULT_ANTHROPIC_API_BASE = 'https://api.anthropic.com';
+export const DEFAULT_HAMA_CHEAP_MODELS = 'deepseek/deepseek-v4.1-flash';
+const HAMA_REASONING_EFFORTS = ['low', 'high', 'max'];
+const HAMA_PRICE_FIELDS = [
+  'inputPerMTok', 'outputPerMTok', 'cacheReadPerMTok', 'cacheWrite5mPerMTok', 'cacheWrite1hPerMTok',
+  'longContextTokens', 'longContextMultiplier',
+];
+
+function hamaPercent(name, text, fallback) {
+  const value = positiveNumber(name, text, fallback);
+  if (value > 100) throw new Error(`${name} must be at most 100: ${text}`);
+  return value;
+}
+
+function apiBase(name, text, fallback) {
+  const value = (text || fallback).replace(/\/+$/, '');
+  let url;
+  try { url = new URL(value); } catch { url = null; }
+  if (!url || (url.protocol !== 'https:' && url.protocol !== 'http:')) throw new Error(`${name} must be an http(s) URL: ${value}`);
+  return value;
+}
+
+/**
+ * Hama plan settings. HAMA_ENABLED turns the routes on; the upstream keys can arrive later (calls
+ * answer 503 until one is set). The hosted Claude model is a code constant in hama.mjs, so nothing
+ * here can add Sonnet or Opus; HAMA_CHEAP_MODELS refuses Claude ids for the same reason.
+ */
+export function resolveHamaConfig(env = process.env) {
+  const enabledText = trimmed(env.HAMA_ENABLED).toLowerCase();
+  if (enabledText && !['1', 'true', 'yes', 'on', '0', 'false', 'no', 'off'].includes(enabledText)) {
+    throw new Error(`HAMA_ENABLED must be true or false: ${env.HAMA_ENABLED}`);
+  }
+  const cheapModels = commaList(trimmed(env.HAMA_CHEAP_MODELS), DEFAULT_HAMA_CHEAP_MODELS);
+  for (const model of cheapModels) {
+    if (/^anthropic\//i.test(model) || /claude/i.test(model)) throw new Error(`HAMA_CHEAP_MODELS must not name a Claude model: ${model}`);
+  }
+  const cheapReasoningEffort = trimmed(env.HAMA_CHEAP_REASONING_EFFORT).toLowerCase() || 'high';
+  if (!HAMA_REASONING_EFFORTS.includes(cheapReasoningEffort)) {
+    throw new Error(`HAMA_CHEAP_REASONING_EFFORT must be one of ${HAMA_REASONING_EFFORTS.join(', ')}: ${cheapReasoningEffort}`);
+  }
+  const maxOutputTokens = positiveNumber('HAMA_MAX_OUTPUT_TOKENS', trimmed(env.HAMA_MAX_OUTPUT_TOKENS), 16000);
+  if (!Number.isSafeInteger(maxOutputTokens)) throw new Error('HAMA_MAX_OUTPUT_TOKENS must be an integer');
+  const pricesText = trimmed(env.HAMA_PRICES);
+  let prices = {};
+  if (pricesText) {
+    try { prices = JSON.parse(pricesText); } catch { prices = null; }
+    if (!prices || typeof prices !== 'object' || Array.isArray(prices)) throw new Error('HAMA_PRICES must be a JSON object');
+    for (const [field, value] of Object.entries(prices)) {
+      if (!HAMA_PRICE_FIELDS.includes(field)) throw new Error(`HAMA_PRICES has an unknown field: ${field}`);
+      if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) throw new Error(`HAMA_PRICES.${field} must be a number ≥ 0`);
+    }
+  }
+  return {
+    enabled: ['1', 'true', 'yes', 'on'].includes(enabledText),
+    allowanceUsd: positiveNumber('HAMA_MONTHLY_ALLOWANCE_USD', trimmed(env.HAMA_MONTHLY_ALLOWANCE_USD), 15),
+    cap5hPct: hamaPercent('HAMA_CAP_5H_PCT', trimmed(env.HAMA_CAP_5H_PCT), 20),
+    capWeekPct: hamaPercent('HAMA_CAP_WEEK_PCT', trimmed(env.HAMA_CAP_WEEK_PCT), 50),
+    capMonthPct: hamaPercent('HAMA_CAP_MONTH_PCT', trimmed(env.HAMA_CAP_MONTH_PCT), 100),
+    cheapModels,
+    cheapReasoningEffort,
+    maxOutputTokens,
+    prices,
+    anthropicKey: trimmed(env.ANTHROPIC_API_KEY),
+    anthropicBase: apiBase('ANTHROPIC_API_BASE', trimmed(env.ANTHROPIC_API_BASE), DEFAULT_ANTHROPIC_API_BASE),
+    openrouterKey: trimmed(env.HAMA_OPENROUTER_KEY),
+    openrouterBase: apiBase('OPENROUTER_API_BASE', trimmed(env.OPENROUTER_API_BASE), DEFAULT_OPENROUTER_API_BASE),
+  };
+}
+
+export function resolveRauDbPath(env = process.env) {
+  return path.join(resolveDataDir(env), 'rau.json');
+}
+
+export const DEFAULT_RAU_MODEL = 'deepseek/deepseek-v4.1-flash';
+/** OpenRouter's `reasoning.effort` values. */
+export const RAU_REASONING_EFFORTS = Object.freeze(['xhigh', 'high', 'medium', 'low', 'minimal', 'none']);
+
+/**
+ * Hosted Rau-0.1 from env. It runs when the OpenRouter management key is set, unless
+ * RAU_ENABLED turns it off. The model is a pinned OpenRouter id: a `~` alias (`~deepseek/...-latest`)
+ * can move to a pricier model on its own, so it is refused at startup.
+ */
+export function resolveRauConfig(env = process.env) {
+  const enabledText = trimmed(env.RAU_ENABLED).toLowerCase();
+  if (enabledText && !['1', '0', 'true', 'false', 'on', 'off'].includes(enabledText)) {
+    throw new Error(`RAU_ENABLED must be true or false: ${env.RAU_ENABLED}`);
+  }
+  const model = trimmed(env.RAU_MODEL) || DEFAULT_RAU_MODEL;
+  if (!/^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._:-]*$/i.test(model)) {
+    throw new Error(`RAU_MODEL must be a pinned OpenRouter model id like ${DEFAULT_RAU_MODEL}: ${model}`);
+  }
+  const reasoningEffort = trimmed(env.RAU_REASONING_EFFORT).toLowerCase() || 'low';
+  if (!RAU_REASONING_EFFORTS.includes(reasoningEffort)) {
+    throw new Error(`RAU_REASONING_EFFORT must be one of ${RAU_REASONING_EFFORTS.join(', ')}: ${env.RAU_REASONING_EFFORT}`);
+  }
+  const maxOutputTokens = positiveNumber('RAU_MAX_OUTPUT_TOKENS', trimmed(env.RAU_MAX_OUTPUT_TOKENS), 2000);
+  if (!Number.isSafeInteger(maxOutputTokens)) throw new Error('RAU_MAX_OUTPUT_TOKENS must be an integer');
+  return {
+    enabled: !['0', 'false', 'off'].includes(enabledText),
+    provisioningKey: trimmed(env.OPENROUTER_PROVISIONING_KEY),
+    model,
+    reasoningEffort,
+    maxOutputTokens,
+    monthlyCapUsd: positiveNumber('RAU_MONTHLY_CAP_USD', trimmed(env.RAU_MONTHLY_CAP_USD), 1),
     apiBase: (trimmed(env.OPENROUTER_API_BASE) || DEFAULT_OPENROUTER_API_BASE).replace(/\/+$/, ''),
   };
 }

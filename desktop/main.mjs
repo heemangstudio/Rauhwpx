@@ -131,11 +131,17 @@ import {
 import { reportUniqueInstall, uniqueInstallStatePath } from './unique-install.mjs';
 import { createLicenseClient, DEFAULT_LICENSE_API_BASE } from './license-client.mjs';
 import { PRODUCTION_LICENSE_PUBLIC_KEYS } from './license-lease.mjs';
-import { createLicenseManager, licenseStatePath, TRIAL_DURATION_MS } from './license-manager.mjs';
+import { createLicenseManager, licenseStatePath } from './license-manager.mjs';
 import { installLicenseHost } from './license-host.mjs';
 import { createGiftClient } from './gift-client.mjs';
 import { createGiftManager } from './gift-manager.mjs';
 import { handleGiftRequest, installGiftHost, staleGiftResponse } from './gift-host.mjs';
+import { createHamaClient } from './hama-client.mjs';
+import { handleHamaRequest, staleHamaResponse } from './hama-host.mjs';
+import { createRauClient } from './rau-client.mjs';
+import { handleRauRequest, installRauHost, staleRauResponse } from './rau-host.mjs';
+import { createPlanManager } from './plan-manager.mjs';
+import { installPlanHost } from './plan-host.mjs';
 import { createSystemFontService } from './system-fonts.mjs';
 import { createFontFolderStore } from './font-folders.mjs';
 import {
@@ -495,6 +501,10 @@ class AgentHubOwner {
         RHWP_DOWNLOADS_DIR: app.getPath('downloads'),
         // 선물 크레딧은 macOS·Windows 에서만 준다. 다른 OS 의 허브는 선물 경로를 모른다.
         ...(process.platform === 'darwin' || process.platform === 'win32' ? { RHWP_GIFT_BROKER: 'ipc' } : {}),
+        // Hama 플랜: 메인이 lease 로 플랜 상태를 묻고, 살아 있는 플랜일 때만 Pi 에 줄 lease 를 넘긴다.
+        RHWP_HAMA_BROKER: 'ipc',
+        // 호스팅 Rau-0.1 은 메인이 lease 로 대신 묻는다. 허브는 결과만 받는다.
+        RHWP_RAU_BROKER: 'ipc',
         ...(rhwpExecutable ? { RHWP_BIN: rhwpExecutable } : {}),
       },
     });
@@ -518,6 +528,26 @@ class AgentHubOwner {
         }
         if (message?.type === 'rhwp-activity-response') {
           if (source === this.#child && typeof message.id === 'string') this.#activityQueries.get(message.id)?.(message.busy !== false);
+          return;
+        }
+        if (message?.type === 'rhwp-hama-request') {
+          if (source !== this.#child || this.#stoppingChild === source || this.#disposed || quitting) {
+            if (source.connected) source.send(staleHamaResponse(message));
+            return;
+          }
+          void handleHamaRequest(hamaDeps, message).then((response) => {
+            if (response && source.connected) source.send(response);
+          });
+          return;
+        }
+        if (message?.type === 'rhwp-rau-request') {
+          if (source !== this.#child || this.#stoppingChild === source || this.#disposed || quitting) {
+            if (source.connected) source.send(staleRauResponse(message));
+            return;
+          }
+          void handleRauRequest(rauDeps, message).then((response) => {
+            if (response && source.connected) source.send(response);
+          });
           return;
         }
         if (message?.type === 'rhwp-gift-request') {
@@ -635,7 +665,21 @@ class AgentHubOwner {
     return this.#suspendPromise;
   }
 
+  /** 라이선스가 바뀌었다고 지금 허브에 알린다. 허브가 Hama 플랜 상태를 다시 묻는다. */
+  notifyHamaChanged() {
+    const child = this.#child;
+    if (!child || this.#stoppingChild === child || this.#disposed || quitting || !child.connected) return;
+    try { child.send({ type: 'rhwp-hama-changed' }); } catch { /* 끝나는 자식 */ }
+  }
+
   /** 선물 크레딧 상태가 바뀌었다고 지금 허브에 알린다. 허브가 다시 자격 증명을 묻는다. */
+  /** 라이선스가 바뀌었다고 지금 허브에 알린다. 허브는 호스팅 Rau 의 거절·한도 기억을 지운다. */
+  notifyLicenseChanged() {
+    const child = this.#child;
+    if (!child || this.#stoppingChild === child || this.#disposed || quitting || !child.connected) return;
+    try { child.send({ type: 'rhwp-rau-changed' }); } catch { /* 끝나는 자식 */ }
+  }
+
   notifyGiftChanged() {
     const child = this.#child;
     if (!child || this.#stoppingChild === child || this.#disposed || quitting || !child.connected) return;
@@ -1114,8 +1158,7 @@ function configureAutoUpdater({ restartManifest }) {
 }
 
 function installMenu() {
-  appMenu = installAppMenu({
-    agentEnabled: () => licenseAllowsAgent,
+  installAppMenu({
     checkForUpdates: () => {
       if (!app.isPackaged && !fakeUpdateVersion) {
         void shell.openExternal(RELEASES_URL);
@@ -1511,27 +1554,14 @@ ipcMain.handle('desktop:finish-rebrand-import', (event, token, outcome) => {
   return rebrandImport.finish(token, outcome);
 });
 
-// ── 체험·라이선스 ─────────────────────────────────────────────────────────
-// 출시 빌드만 막는다. 소스에서 실행하면 HAMA_LICENSE_GATE=on 일 때만 막고, 그때만
+// ── 라이선스 ───────────────────────────────────────────────────────────
+// 출시 빌드만 키 서버에 묻는다. 소스에서 실행하면 HAMA_LICENSE_GATE=on 일 때만 묻고, 그때만
 // HAMA_LICENSE_API_BASE·HAMA_LICENSE_DEV_PUBLIC_KEY(kid:base64)로 시험용 키 서버를 쓸 수 있다.
 function licensePublicKeys() {
   const dev = !app.isPackaged ? String(process.env.HAMA_LICENSE_DEV_PUBLIC_KEY ?? '') : '';
   const split = dev.indexOf(':');
   if (split <= 0) return PRODUCTION_LICENSE_PUBLIC_KEYS;
   return { ...PRODUCTION_LICENSE_PUBLIC_KEYS, [dev.slice(0, split)]: dev.slice(split + 1) };
-}
-// 라이선스가 읽기 전용이면 앱은 문서 보기 전용이다. 메뉴의 에이전트 항목도 끈다.
-let licenseAllowsAgent = true;
-let appMenu = null;
-function noteLicenseStatus(status) {
-  licenseAllowsAgent = status?.canEdit !== false;
-  appMenu?.refresh();
-}
-/** 소스 실행에서만 HAMA_LICENSE_DEV_TRIAL_MS 로 체험 길이를 줄여 시험한다. 출시 빌드는 늘 3일이다. */
-function licenseTrialDurationMs() {
-  if (app.isPackaged) return TRIAL_DURATION_MS;
-  const value = Number(process.env.HAMA_LICENSE_DEV_TRIAL_MS);
-  return Number.isSafeInteger(value) && value > 0 ? value : TRIAL_DURATION_MS;
 }
 const licenseApiBase = (!app.isPackaged && process.env.HAMA_LICENSE_API_BASE) || DEFAULT_LICENSE_API_BASE;
 const isTrustedStudioEvent = (event) => {
@@ -1554,9 +1584,19 @@ const giftManager = createGiftManager({
   },
 });
 const giftHost = installGiftHost({ ipcMain, manager: giftManager, isTrustedStudioEvent, studioWebContents });
+// Hama 플랜: 키 서버와 같은 주소의 /v1/hama/status 에 라이선스 lease 로 묻는다.
+const hamaDeps = {
+  client: createHamaClient({ baseUrl: licenseApiBase }),
+  currentLease: () => licenseManager.currentLease(),
+};
+// 호스팅 Rau-0.1(Pro): 키 서버와 같은 주소에 라이선스 lease 로 묻는다.
+const rauDeps = {
+  client: createRauClient({ baseUrl: licenseApiBase }),
+  currentLease: () => licenseManager.currentLease(),
+};
+installRauHost({ ipcMain, shell, isTrustedStudioEvent, ...rauDeps });
 const licenseManager = createLicenseManager({
   statePath: licenseStatePath(app.getPath('userData')),
-  trialDurationMs: licenseTrialDurationMs(),
   client: createLicenseClient({ baseUrl: licenseApiBase }),
   publicKeys: licensePublicKeys(),
   existingInstallId: async () => {
@@ -1568,9 +1608,11 @@ const licenseManager = createLicenseManager({
   platform: process.platform,
   enforce: app.isPackaged || process.env.HAMA_LICENSE_GATE === 'on',
   onChange: (status) => {
-    noteLicenseStatus(status);
     licenseHost.broadcast(status);
+    hubOwner.notifyHamaChanged();
+    hubOwner.notifyLicenseChanged();
     void giftManager.licenseChanged().catch((error) => console.warn('[hamaeditor] gift refresh failed:', error));
+    void planManager.licenseChanged(status).catch((error) => console.warn('[hamaeditor] plan refresh failed:', error));
   },
 });
 const licenseHost = installLicenseHost({
@@ -1583,6 +1625,17 @@ const licenseHost = installLicenseHost({
   studioWebContents,
   parentWindow: () => BrowserWindow.getFocusedWindow() ?? sessions.windows().at(-1) ?? null,
 });
+// 앱 요금제: 라이선스로 무료·Pro·예전 키를 정하고, 앱 안 결제를 ref 로 확인해 키를 활성화한다.
+const planManager = createPlanManager({
+  licenseManager,
+  fetchImpl: (url, init) => net.fetch(url, init),
+  apiBase: licenseApiBase,
+  userDataDir: app.getPath('userData'),
+  // 결제 주소는 plan-manager 가 groble.im 의 https 주소만 넘긴다. 여기서 한 번 더 거른다.
+  openExternal: (url) => (/^https:\/\//.test(url) ? shell.openExternal(url) : Promise.reject(new Error('not https'))),
+  onChange: (status) => planHost.broadcast(status),
+});
+const planHost = installPlanHost({ ipcMain, manager: planManager, isTrustedStudioEvent, studioWebContents });
 
 // ── 문제 보고 ─────────────────────────────────────────────────────────────
 installIssueReportHost({
@@ -1680,6 +1733,7 @@ app.on('child-process-gone', (_event, details) => {
   console.warn('[hamaeditor] child process gone:', details?.type, details?.name ?? '', details?.reason, `exit ${details?.exitCode ?? '?'}`);
 });
 app.on('will-quit', () => diagnosticLog.flushSync());
+app.on('will-quit', () => planManager.stop());
 
 ipcMain.handle('desktop:get-session-context', (event, agentSessionId = null) => {
   sessionForEvent(event);
@@ -1932,12 +1986,6 @@ ipcMain.handle('desktop:open-native-document-at-path', async (event, filePath) =
 });
 ipcMain.handle('desktop:create-named-native-document', async (event, payload = {}) => {
   const session = sessionForEvent(event);
-  try {
-    await licenseHost.guardSave();
-  } catch (error) {
-    if (error?.code === 'LICENSE_READ_ONLY') return { ok: false, code: 'LICENSE_READ_ONLY' };
-    throw error;
-  }
   const result = await createAgentDocument(session.sessionId, {
     name: payload?.name,
     folder: payload?.folder,
@@ -1953,8 +2001,6 @@ ipcMain.handle('desktop:create-named-native-document', async (event, payload = {
 });
 ipcMain.handle('desktop:pick-native-save-file', async (event, options = {}) => {
   const session = sessionForEvent(event);
-  // 체험이 끝났으면 저장 위치를 고르기 전에 막고 활성화 창을 띄운다.
-  await licenseHost.guardSave();
   const window = BrowserWindow.fromWebContents(event.sender);
   if (!window) throw new Error('Save picker sender window is unavailable');
   const extension = String(options.extension ?? '').toLowerCase();
@@ -2060,11 +2106,7 @@ ipcMain.handle('desktop:native-file-validate-save', (event, handleId, identity) 
 });
 ipcMain.handle('desktop:native-file-write', async (event, handleId, bytes, identity) => {
   const session = sessionForEvent(event);
-  // 읽기 전용(체험 끝·해지·오프라인 7일 초과)이면 쓰지 않는다. 문서 열기와 보기는 막지 않는다.
-  const written = await licenseHost.save(
-    () => nativeFiles.write(session.sessionId, handleId, bytes, identity, documentLeases),
-    { sender: event.sender },
-  );
+  const written = await nativeFiles.write(session.sessionId, handleId, bytes, identity, documentLeases);
   noteRecentDocument(session.sessionId, handleId);
   // 저장한 내용 표시(크기·sha256)를 북마크에 남겨 옮겨진 파일을 다음 실행에도 알아본다.
   void persistNativeBookmarks().catch(() => {});
@@ -2524,12 +2566,12 @@ if (!hasSingleInstanceLock) {
       root: devUrl ? null : studioDist(),
       systemFonts: { fonts: systemFonts, key: systemFontKey, allowOrigin: devOrigin },
     });
-    // 첫 창보다 먼저 체험 시작 시각을 남긴다(로컬 파일만 읽으므로 빠르다). 서버 확인은 기다리지 않는다.
+    // 라이선스 상태 파일은 로컬만 읽으므로 빠르다. 서버 확인은 기다리지 않는다.
     await licenseManager.load().catch((error) => {
       console.warn('[hamaeditor] license state failed to load:', error);
     });
-    await licenseManager.status().then(noteLicenseStatus, () => {});
     licenseManager.start();
+    void planManager.start();
     desktopReady = true;
     let failedLaunches = 0;
     const restoredDocumentIds = (restartManifest?.windows ?? [])
@@ -2555,9 +2597,6 @@ if (!hasSingleInstanceLock) {
       });
     }
     initialLaunchesOpened = true;
-    void licenseHost.showIfReadOnly().catch((error) => {
-      console.warn('[hamaeditor] license status failed:', error);
-    });
     if (failedLaunches > 0 && sessions.windows().length === 0) {
       app.quit();
       return;

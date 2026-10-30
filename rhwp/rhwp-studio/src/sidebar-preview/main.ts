@@ -58,9 +58,15 @@ import { typingActivity, type TypingActivity } from '../ui/agent-sidebar/typing-
 import { provideLocalPasswordsApi } from '../ui/agent-sidebar/browser-local-passwords.ts';
 import { createPreviewLocalPasswords } from './mock-local-passwords.ts';
 import { createMockGift, mockGiftMode } from './mock-gift.ts';
+import { mockHamaMode, mockHamaModes, mockHamaStatus, type MockHamaMode } from './mock-hama.ts';
 import { createMockAutofix, mockAutofixOutcomes } from './mock-autofix.ts';
 import { setAutofixApi, type AutofixStatus } from '../ui/autofix/autofix.ts';
 import { createMockLicense, mockLicenseMode } from './mock-license.ts';
+import { createMockRau, mockRauMode, MOCK_RAU_UPGRADE_URL } from './mock-rau.ts';
+import { createMockPlan, mockCheckoutMode, mockCheckoutModes, mockPlanTier, mockPlanTiers, type MockCheckoutMode } from './mock-plan.ts';
+import type { PlanTier } from '../ui/plan/plan-types.ts';
+import { createPlanStore } from '../ui/plan/plan-store.ts';
+import { mountHomeScene } from './home-scene.ts';
 import { startSpecialEvent } from '../ui/special-event/special-event-trigger.ts';
 import { startAutofixIntro } from '../ui/autofix/autofix-intro.ts';
 import { installManualAutofix } from '../ui/autofix/autofix-manual.ts';
@@ -200,10 +206,25 @@ const liveChat = reload === 'running' || reload === 'question' || reload === 'en
  * Pi 는 내 OpenRouter 키가 있는 상태로 시작한다. `pikey=none` 이면 키 없이 시작해 예전 창(받기만)이 뜬다.
  */
 /*
- * 라이선스. `license=trial|expired|licensed` 면 처음 설정에 라이선스 장이 생긴다. 선물(`gift=`)과 함께 주면
+ * 라이선스. `license=free|expired` 면 처음 설정에 라이선스 장이 생긴다. 선물(`gift=`)과 함께 주면
  * 앱처럼 키를 활성화한 뒤에야 선물이 보이고, 처음 설정 위에 선물 창이 뜬다.
  */
-const mockLicense = createMockLicense(mockLicenseMode(params), report);
+/*
+ * 앱 요금제. `plan=free|pro|legacy|hama` 면 데스크톱 요금제 API 가 생긴다(없으면 웹처럼 잠금·↑ 단추 없음).
+ * 요금제 카드의 '키 직접 입력'이 쓰도록 라이선스 대역도 무료 상태로 함께 둔다(HAMA- 키가 Pro 를 연다).
+ */
+const mockPlan = createMockPlan(mockPlanTier(params), {
+  checkout: mockCheckoutMode(params),
+  hold: params.get('checkoutHold') === '1',
+  report,
+});
+const mockLicense = createMockLicense(
+  mockPlan && mockLicenseMode(params) === 'off' ? 'free' : mockLicenseMode(params), report);
+mockLicense?.onLicensed(() => {
+  if (mockPlan && mockPlan.status().tier === 'free') mockPlan.setTier('pro');
+});
+/* 호스팅 Rau(Pro). `rau=free|pro` 가 설정 → Rau-0.1 의 Pro 줄을, `rau=upgrade` 는 입력창 위 업그레이드 칩도 띄운다. */
+const mockRau = createMockRau(mockRauMode(params), report);
 const mockGift = createMockGift(mockGiftMode(params), {
   failClaim: params.get('claim') === 'fail',
   locked: mockLicense !== null && mockLicenseMode(params) !== 'licensed',
@@ -215,8 +236,20 @@ const mock = createMockBridge(report, () => {
     restoreState.ready.add(restoreState.turnKey);
     notifyRestore();
   }
-}, { liveChat, piGift: () => mockGift?.active() === true });
+}, { liveChat, piGift: () => mockGift?.active() === true, hama: mockHamaStatus(mockHamaMode(params)) });
 mockGift?.api.onChange(() => mock.syncPiStatus());
+const hamaDesktop = params.has('hama');
+/** 잠긴 Hama 를 누르면 앱이 띄울 플랜 안내 요청 — 미리보기는 기록만 한다. */
+const planCardRequests: unknown[] = [];
+window.addEventListener('rhwp:open-plan-card', (event) => {
+  planCardRequests.push((event as CustomEvent).detail);
+  report('Plan card placeholder');
+});
+/** `sidebarPreview.setHama('cap5h')` — Hama 플랜 상태를 바꿔 hama-status 를 다시 보낸다. */
+function setHama(mode: MockHamaMode): void {
+  if (!mockHamaModes.includes(mode)) throw new Error(`hama mode: ${mockHamaModes.join(', ')}`);
+  mock.setHamaStatus(mockHamaStatus(mode));
+}
 /** 자동 수정(데스크톱). `autofix=fixed|failed|unavailable|off|undecided`, 없으면 웹 빌드처럼 단추가 없다. */
 const mockAutofix = createMockAutofix(params);
 setAutofixApi(mockAutofix?.api ?? null);
@@ -593,6 +626,10 @@ const sidebar = initAgentSidebar({
   turnRestore,
   gift: mockGift?.api ?? null,
   license: mockLicense?.api ?? null,
+  // `hama=` 를 주면 데스크톱 앱이다 — `off`(unavailable, Free)면 잠긴 Hama 항목이 보인다. 생략하면 웹 Studio 라 항목이 없다.
+  desktopApp: hamaDesktop,
+  rau: mockRau,
+  plan: mockPlan?.api ?? null,
   // 웹 빌드처럼 창 세션만 안다(앱 실행 id 는 데스크톱만). 이 사이드바가 창의 기본 허브 세션을 쓴다.
   interruptionScope: () => ({ windowSessionId: PREVIEW_WINDOW_SESSION_ID, appLaunchId: null }),
   ownsWindowSession: true,
@@ -610,6 +647,10 @@ const sidebar = initAgentSidebar({
 });
 mock.boot();
 if (params.get('hub') === 'down') mock.setConnection('disconnected');
+/* `home=1`: 문서 홈(표본 최근 문서). Pro·기존 라이선스면 위 막대에 Hama 입구가 선다. */
+const home = params.get('home') === '1'
+  ? mountHomeScene({ plan: mockPlan ? createPlanStore(mockPlan.api) : null, license: mockLicense?.api ?? null, report })
+  : null;
 const projectScene = createProjectScene(sidebar);
 sessions.push({ sidebar, mock, documentId: () => documentId });
 chats.push({ sidebar, mock });
@@ -706,6 +747,19 @@ for (const outcome of mockAutofixOutcomes) autofixSelect.add(new Option(outcome,
 autofixSelect.closest('label')!.hidden = !mockAutofix;
 if (mockAutofix) autofixSelect.value = mockAutofix.outcome();
 autofixSelect.addEventListener('change', () => mockAutofix?.setOutcome(autofixSelect.value as AutofixStatus));
+const planSelect = document.querySelector<HTMLSelectElement>('#plan')!;
+const checkoutSelect = document.querySelector<HTMLSelectElement>('#checkout')!;
+for (const tier of mockPlanTiers) planSelect.add(new Option(tier, tier));
+for (const mode of mockCheckoutModes) checkoutSelect.add(new Option(mode, mode));
+planSelect.closest('label')!.hidden = !mockPlan;
+checkoutSelect.closest('label')!.hidden = !mockPlan;
+if (mockPlan) {
+  planSelect.value = mockPlan.status().tier;
+  checkoutSelect.value = mockCheckoutMode(params);
+  mockPlan.api.onChange((status) => { planSelect.value = status.tier; });
+}
+planSelect.addEventListener('change', () => mockPlan?.setTier(planSelect.value as PlanTier));
+checkoutSelect.addEventListener('change', () => mockPlan?.setCheckout(checkoutSelect.value as MockCheckoutMode));
 const theme = document.querySelector<HTMLSelectElement>('#theme')!;
 theme.value = userSettings.getThemeSettings().mode;
 theme.addEventListener('change', () =>
@@ -749,6 +803,8 @@ document.querySelector('#detach-document')!.addEventListener('click', () => {
 document.querySelector('#save-gate')!.addEventListener('click', () => {
   if (previewUnlinkedChat()) mock.emitDocumentRequired('project_edit');
 });
+document.querySelector('#rau-upgrade')!.addEventListener('click', () => mock.emitRauUpgrade(MOCK_RAU_UPGRADE_URL));
+if (mockRauMode(params) === 'upgrade') mock.emitRauUpgrade(MOCK_RAU_UPGRADE_URL);
 document
   .querySelector('#settings')!
   .addEventListener('click', () =>
@@ -839,7 +895,11 @@ if (parallel === 'locked') {
 // Typed hooks for browser checks and custom scenario scripts.
 const preview = { ...mock, sidebar, versions, eventBus, enterFocusMode, undoState, restoreState, navigation, typingHold, linkCalls, detachCalls,
   gift: mockGift,
+  setHama,
+  planCardRequests,
   autofix: mockAutofix,
+  plan: mockPlan,
+  home,
   sessions, attachSession, chats, showChat, openChatCalls, attention, attentionNotices, attentionCounts,
   openFromAttention,
   projects: previewProjects, projectScene, localPasswords,

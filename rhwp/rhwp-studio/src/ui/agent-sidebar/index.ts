@@ -8,6 +8,7 @@
  */
 import './motion.css';
 import './agent-sidebar.css';
+import './hama-harness.css';
 import './plan-presentation.css';
 import '../../styles/inline-rename.css';
 import '../../styles/worktree-chip.css';
@@ -35,6 +36,7 @@ import type {
   AgentWorkflowState,
   CompactionSupport,
   CompactionTrigger,
+  HamaStatus,
   PermissionProfile,
   ServiceTier,
   PendingChangeSet,
@@ -63,6 +65,7 @@ import {
   modelSupportsImages,
   resolveEffortForAgent,
   resolveModelForAgent,
+  isModelForAgent,
   resolveServiceTier,
   agentSupportsFast,
 } from '../../agent/models.ts';
@@ -213,6 +216,7 @@ import { createChatScrollRail } from './chat-scroll-rail.ts';
 import { formatTokens } from './usage-format.ts';
 import { createComposerRestingMotion } from './composer-resting.ts';
 import { createChatHama, type ChatHama } from './chat-hama.ts';
+import { hamaEntry, hamaIsDefault, readHarnessChoice, recordHarnessChoice } from './hama-harness.ts';
 import { createArrivalGuard, typingActivity as windowTypingActivity, type TypingActivity } from './typing-guard.ts';
 import { createDelayedStatus, revealAfterDelay } from './delayed-status.ts';
 import { ownsTextInput } from '../../command/shortcut-target.ts';
@@ -359,15 +363,14 @@ import { fitPopupAboveViewportTop } from './popup-fit.ts';
 import { createTurnRestoreActions } from './turn-restore-action.ts';
 import type { TurnRestoreControl } from '../../agent/turn-checkpoints.ts';
 import { desktopGiftApi, type DesktopGiftApi } from '../special-event/gift.ts';
+import { createRauUpgradeChip, desktopRauApi, type DesktopRauApi } from './rau-upgrade.ts';
 import type { DesktopLicenseApi } from './settings-license.ts';
+import { createPlanStore, desktopPlanApi, planLocksAgent } from '../plan/plan-store.ts';
+import type { DesktopPlanApi } from '../plan/plan-types.ts';
+import { listenForPlanCardEvents, openPlanCard, type PlanCardFocus } from '../plan/upgrade-card.ts';
+import '../plan/plan-lock.css';
 import { agentModeFor, agentModeTarget, planTodoTitle, type AgentMode } from '../../agent/types.ts';
 import { formatThreadTranscript } from '../issue-report/transcript.ts';
-import {
-  isLicenseViewerMode,
-  noteAgentOpenBeforeLock,
-  onLicenseViewerModeChange,
-  takeAgentOpenBeforeLock,
-} from '../license-viewer-mode.ts';
 import './sidebar-button-modern.css';
 
 export interface AgentSidebarDeps {
@@ -383,6 +386,12 @@ export interface AgentSidebarDeps {
   gift?: DesktopGiftApi | null;
   /** 처음 설정의 라이선스 장. 생략하면 rhwpDesktop.license 를 쓰고, null 이면 장이 없다. */
   license?: DesktopLicenseApi | null;
+  /** 데스크톱 앱인가 — Hama 플랜이 없을 때 잠긴 Hama 항목을 보인다. 생략하면 rhwpDesktop 이 있는지로 정한다. */
+  desktopApp?: boolean;
+  /** 호스팅 Rau-0.1(Pro) 자격과 업그레이드 페이지. 생략하면 rhwpDesktop.rau 를 쓰고, null 이면 없다. */
+  rau?: DesktopRauApi | null;
+  /** 앱 요금제. 생략하면 rhwpDesktop.plan 을 쓰고, null 이면 없다(잠금·업그레이드 단추 없음). */
+  plan?: DesktopPlanApi | null;
   /** 헤더에 표시할 현재 문서와 선택 상태. */
   getDocumentContext?: () => {
     documentId?: string | null;
@@ -498,7 +507,6 @@ export interface AgentSidebarDeps {
   reportIssue?: () => void;
 }
 
-const LICENSE_VIEWER_REASON = '라이선스를 활성화하면 에이전트를 쓸 수 있어요.';
 
 /** 떼기 시작한 채팅 — 저장소의 id 와 뗄 문서. draft 면 저장하지 않은 초안이다. */
 /** 채팅을 다른 사이드바로 옮길 때 넘기는 입력기 상태 — 쓰던 글·첨부·멘션과 초점이 있던 자리. */
@@ -524,6 +532,8 @@ export interface AgentSidebarHandle {
   openProject(target?: ProjectPreviewTarget, tab?: ProjectTab): void;
   sendInlinePrompt(submission: InlinePromptSubmission): InlinePromptSendResponse;
   queueCaptureDraft(draft: DocumentCaptureDraft): InlinePromptSendResponse;
+  /** 무료 요금제라 에이전트가 잠겼으면 요금제 카드를 열고 true. 에이전트를 부르려는 쪽이 먼저 묻는다. */
+  planBlocksAgent(): boolean;
   /** 화면에 붙인다 — 페이지 배치(펼침·폭·집중 모드·목록)를 이어받고 애니메이션은 다시 돌리지 않는다. */
   activate(): void;
   /** 화면에서 내린다. 브리지와 대화 상태는 그대로 두고, 페이지 배치는 다음 사이드바에 넘긴다. */
@@ -1330,17 +1340,13 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   let restoringLiveQuestion = false;
   let skillsPanelOpen = false;
   let settingsPanelOpen = false;
+  let settingsOpening = false;
   // 문서 홈의 톱니로 연 설정은 닫을 때 문서 홈으로 돌아간다.
   let settingsReturnsHome = false;
   /** 홈에서 설정을 열며 집중 화면으로 들어왔으면, 홈으로 돌아갈 때 그 화면을 접는다. */
   let settingsExitsFullscreenOnHome = false;
   /** 설정은 집중 화면에만 있다 — 좁은 사이드바에서 열며 집중 화면으로 넓혔으면, 닫을 때 사이드바로 돌아간다. */
   let settingsExitsFullscreen = false;
-  /**
-   * 라이선스가 잠긴 채 홈에서 설정을 누르면, 설정 화면을 잠긴 카드 뒤에 흐리게 깔아 둔다.
-   * 이 동안만 접기·집중 화면 잠금을 비켜 가고, 사이드바는 inert 로 두어 조작은 닿지 않는다.
-   */
-  let lockedSettingsBackdrop = false;
   let versionsPanelOpen = false;
   let deferredVersionsOpenTimer: number | null = null;
   /** 에이전트 집중 모드 — 스레드 레일과 대화 무대로 문서를 덮는다. */
@@ -1474,6 +1480,26 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     openSettings: () => requestSettingsOpen('ai-connection'),
     restartSession: () => restartAgentSession(),
     resend: (retry, failure) => resendFailedRequest(retry, failure),
+    hamaCheapModel: () => {
+      const status = bridge.hamaStatus();
+      const id = status.cheapModelIds[0];
+      const model = status.models.find((entry) => entry.id === id);
+      return model ? { id: model.id, name: model.name } : null;
+    },
+    switchHamaModel: (modelId) => {
+      if (selectedAgent !== 'hama' || isSelectionLocked() || !isModelForAgent('hama', modelId)) return false;
+      selectModel(modelId);
+      return selectedModel === modelId;
+    },
+    switchToByok: () => {
+      // 키가 있으면 프로바이더 전환과 같은 길(기록 전달)로 옮기고, 없으면 BYOK 설정을 연다.
+      if (connectedProviders.has('pi')) {
+        selectAgent('pi');
+        return;
+      }
+      requestSettingsOpen('ai-connection');
+      settingsPanel.openAgentSetup('pi');
+    },
     ...(deps.reportIssue ? { reportIssue: deps.reportIssue } : {}),
     ...(deps.failureResumeGraceMs !== undefined ? { resumeGraceMs: deps.failureResumeGraceMs } : {}),
     autofix: { ready: autofixReady, create: createAutofixButton },
@@ -1535,6 +1561,37 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   const rauIcon = el('span', 'ag-rau-icon');
   rauIcon.setAttribute('aria-hidden', 'true');
   collapseTab.appendChild(rauIcon);
+  const collapseTabLock = el('span', 'ag-collapse-tab-lock');
+  collapseTabLock.setAttribute('aria-hidden', 'true');
+  collapseTabLock.append(createIcon('lock'));
+  collapseTabLock.hidden = true;
+  collapseTab.appendChild(collapseTabLock);
+
+  /* 앱 요금제 — 무료면 에이전트 화면은 그대로 두고, 턴을 시작하려는 모든 길을 요금제 카드로 돌린다.
+     요금제 API 가 없으면(웹 Studio·예전 데스크톱) 잠금도 업그레이드 단추도 없다. */
+  const planStore = createPlanStore(deps.plan === undefined ? desktopPlanApi() : deps.plan);
+  const planLicenseApi: DesktopLicenseApi | null = deps.license !== undefined ? deps.license
+    : (globalThis as { rhwpDesktop?: { license?: DesktopLicenseApi } }).rhwpDesktop?.license ?? null;
+  // 'rhwp:open-plan-card' 는 화면에 붙은 사이드바 하나만 받는다(activate·deactivate 가 옮긴다).
+  let detachPlanCardEvents = planStore.api && active
+    ? listenForPlanCardEvents({ store: planStore, license: planLicenseApi })
+    : () => {};
+  function openPlans(focus?: PlanCardFocus): void {
+    openPlanCard({ store: planStore, license: planLicenseApi, ...(focus ? { focus } : {}) });
+  }
+  function agentLockedByPlan(): boolean {
+    return planLocksAgent(planStore.status());
+  }
+  /** 설정을 열거나 보는 중이 아니면 무료 요금제에서 사이드바와 집중 화면을 쓸 수 없다. */
+  function agentSurfaceLocked(): boolean {
+    return agentLockedByPlan() && !settingsPanelOpen && !settingsOpening;
+  }
+  /** 잠겼으면 카드를 열고 true — 부른 쪽은 아무것도 보내지 않는다. */
+  function planBlocksAgent(): boolean {
+    if (!agentLockedByPlan()) return false;
+    openPlans('pro');
+    return true;
+  }
 
   const resizeHandle = el('div', 'ag-resize-handle');
   resizeHandle.setAttribute('role', 'separator');
@@ -1765,12 +1822,12 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     };
   }
 
-  function setCollapsed(collapsed: boolean, opts?: { recenter?: boolean }): void {
-    // 라이선스가 읽기 전용이면 문서 보기 전용이다. 어느 길로 와도 펼치지 않는다.
-    if (isLicenseViewerMode() && !lockedSettingsBackdrop) collapsed = true;
+  function setCollapsed(requestedCollapsed: boolean, opts?: { recenter?: boolean }): void {
+    // 무료 요금제의 사이드바는 접힌 채로 있다. 설정만 이 안에서 열린다.
+    const collapsed = requestedCollapsed || agentSurfaceLocked();
     // 접힌 사이드바 안의 시트는 보이지 않으므로 취소로 닫고, 포커스·키가 닿지 않게 한다.
     if (collapsed && active) dismissOpenSheets();
-    root.inert = collapsed || lockedSettingsBackdrop;
+    root.inert = collapsed;
     root.classList.toggle('ag-collapsed', collapsed);
     syncWorkbenchVisibility();
     setPageClass('ag-sidebar-open', !collapsed);
@@ -1859,7 +1916,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     e.preventDefault();
     e.stopPropagation();
     if (fullscreen) return;
-    setCollapsed(!root.classList.contains('ag-collapsed'));
+    const opening = root.classList.contains('ag-collapsed');
+    // 잠긴 에이전트는 펼치지 않고 요금제 카드를 연다.
+    if (opening && planBlocksAgent()) return;
+    setCollapsed(!opening);
   });
 
   resizeHandle.addEventListener('pointerdown', onResizeHandlePointerDown);
@@ -1905,13 +1965,19 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   let providerIcon = createProviderIcon(selectedAgent);
   providerTrigger.append(providerIcon);
 
-  const providerMenu = el('div', 'ag-model-menu');
+  const providerMenu = el('div', 'ag-model-menu ag-provider-menu');
   providerMenu.setAttribute('role', 'menu');
   providerMenu.setAttribute('aria-hidden', 'true');
   const providerItems = new Map<AgentName, HTMLButtonElement>();
 
+  /** Hama 플랜 상태 (hama-status). 피커의 Hama 항목과 기본 하네스가 읽는다. */
+  let hamaStatus: HamaStatus | null = bridge.hamaStatus?.() ?? null;
+  const desktopApp = deps.desktopApp
+    ?? typeof (window as Window & { rhwpDesktop?: unknown }).rhwpDesktop !== 'undefined';
+
   function selectAgent(agent: AgentName): void {
     if (isSelectionLocked()) return;
+    recordHarnessChoice(agent);
     setSelectedAgent(agent);
     selectedModel = resolveModelForAgent(agent, selectedModel);
     selectedEffort = resolveEffortForAgent(agent, selectedEffort, selectedModel);
@@ -1924,14 +1990,27 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     providerTrigger.focus();
   }
 
+  const hamaLock = el('span', 'ag-provider-lock');
+  hamaLock.append(createIcon('lock'));
   for (const agent of PROVIDER_ORDER) {
     const item = el('button', 'ag-model-item ag-provider-item');
     item.type = 'button';
     item.dataset.agent = agent;
     item.setAttribute('role', 'menuitemradio');
     item.setAttribute('aria-checked', 'false');
-    item.append(createProviderIcon(agent), document.createTextNode(AGENT_LABEL[agent]));
-    item.addEventListener('click', () => selectAgent(agent));
+    item.title = AGENT_LABEL[agent];
+    item.setAttribute('aria-label', AGENT_LABEL[agent]);
+    item.append(createProviderIcon(agent), el('span', 'ag-provider-name', AGENT_LABEL[agent]));
+    if (agent === 'hama') item.append(hamaLock);
+    item.addEventListener('click', () => {
+      if (agent === 'hama' && item.dataset.locked === 'true') {
+        // 잠긴 Hama — 하네스를 바꾸지 않고 플랜 안내를 연다(카드는 앱 쪽이 이 이벤트로 띄운다).
+        setConfigPanelOpen(false);
+        window.dispatchEvent(new CustomEvent('rhwp:open-plan-card', { detail: { focus: 'hama' } }));
+        return;
+      }
+      selectAgent(agent);
+    });
     providerItems.set(agent, item);
     providerMenu.appendChild(item);
   }
@@ -1944,7 +2023,23 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
 
   function syncProviderMenu(): void {
-    for (const [agent, item] of providerItems) item.hidden = !connectedProviders.has(agent);
+    for (const [agent, item] of providerItems) {
+      if (agent !== 'hama') {
+        item.hidden = !connectedProviders.has(agent);
+        continue;
+      }
+      const entry = hamaEntry(hamaStatus, desktopApp);
+      const locked = entry === 'locked';
+      item.hidden = entry === 'hidden';
+      item.dataset.locked = locked ? 'true' : 'false';
+      item.setAttribute('role', locked ? 'menuitem' : 'menuitemradio');
+      if (locked) item.removeAttribute('aria-checked');
+      else if (!item.hasAttribute('aria-checked')) item.setAttribute('aria-checked', String(selectedAgent === 'hama'));
+      if (locked) item.setAttribute('aria-haspopup', 'dialog');
+      else item.removeAttribute('aria-haspopup');
+      item.setAttribute('aria-label', locked ? `${AGENT_LABEL.hama} (잠김)` : AGENT_LABEL.hama);
+      hamaLock.hidden = !locked;
+    }
     if (document.activeElement instanceof HTMLButtonElement
       && document.activeElement.hidden
       && providerMenu.contains(document.activeElement)) {
@@ -2884,7 +2979,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       setFullscreen(false, { then: () => setCollapsed(true) });
       return;
     }
-    setCollapsed(!root.classList.contains('ag-collapsed'));
+    const opening = root.classList.contains('ag-collapsed');
+    if (opening && planBlocksAgent()) return;
+    setCollapsed(!opening);
   }
 
   function toggleFocusChat(): void {
@@ -3898,6 +3995,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   calibrationChipOpen.addEventListener('click', () => writingStyleCalibration.open());
   calibrationChipClose.addEventListener('click', () => settleCalibrationChip('skipped'));
 
+  /* 호스팅 Rau-0.1 업그레이드 칩 — 허브가 Pro 가 아니라는 거절을 받은 뒤 한 번. 닫으면 그 거절에는 다시 뜨지 않는다. */
+  const rauApi = deps.rau === undefined ? desktopRauApi() : deps.rau;
+  const rauUpgradeChip = createRauUpgradeChip({ rau: rauApi, openPlans: planStore.api ? () => openPlans('pro') : null });
+
   function settleCalibrationChip(step: 'done' | 'skipped'): void {
     saveInitialSetup({ calibrationStep: step });
     calibrationChip.hidden = true;
@@ -3994,7 +4095,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
 
   function providerNeedsLogin(agent: AgentName): boolean {
-    if (!(PROVIDER_ORDER as readonly AgentName[]).includes(agent)) return false;
+    // Hama 는 로그인하지 않는다 — 플랜이 없으면 피커에 보이지 않을 뿐이다.
+    if (agent === 'hama' || !(PROVIDER_ORDER as readonly AgentName[]).includes(agent)) return false;
     const status = setupStatuses?.[agent];
     if (!status || status.authenticating) return false;
     // 설치만 됐고 한 번도 연결하지 않은 프로바이더는 입력기 메뉴에 없다.
@@ -4553,7 +4655,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   // 입력기 위에 흐름으로 쌓인 것들의 높이. 떠 있는 요소는 이들을 덮지 않고 한 겹 위에 선다.
   // attached 는 입력기와 한 면을 이루는 질문 카드, stack 은 그 위의 변경 막대와 칩이다.
   // 위치만 바꾸고 크기는 건드리지 않아 관찰 고리가 생기지 않는다.
-  const composerStackNodes = [compactChanges, reconnectChip, setupChip, calibrationChip, watchStrip.root, followUpStrip.root];
+  const composerStackNodes = [compactChanges, reconnectChip, setupChip, calibrationChip, rauUpgradeChip.root, watchStrip.root, followUpStrip.root];
   let composerStackFrame = 0;
   function syncComposerStack(): void {
     const question = questionController.root;
@@ -4592,7 +4694,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       reroll: threadChanged,
     });
   }
-  chatPage.append(header, messages, focusGreeting.root, review, compactChanges, planSurface, planRestore, reconnectChip, setupChip, calibrationChip, watchStrip.root, followUpStrip.root, questionController.root, composer);
+  chatPage.append(header, messages, focusGreeting.root, review, compactChanges, planSurface, planRestore, reconnectChip, setupChip, calibrationChip, rauUpgradeChip.root, watchStrip.root, followUpStrip.root, questionController.root, composer);
   messages.after(latestDock);
   const scrollRail = createChatScrollRail({ messages, scrollToTurn: scrollConversationToTurn });
 
@@ -5060,6 +5162,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     ...(chromeSignIn ? { chromeSignIn } : {}),
     // ChatGPT·Claude 로그인은 앱 안 브라우저를 별도 창으로 연다(설정이 만들어진 뒤에 정의된다).
     openSignInWindow: (url, title) => openSignInWindow(url, title),
+    agentLocked: agentLockedByPlan,
+    openPlans: () => openPlans('pro'),
     projectSettings: bridge.projects?.service ?? null,
     eventBus,
     editorRuntime: editorSettingsRuntime ?? {
@@ -5079,6 +5183,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     refreshSkills: () => bridge.listSkills(),
     deleteArchivedThread: (thread) => deleteThreadWithConfirm(thread),
     gift: deps.gift === undefined ? desktopGiftApi() : deps.gift,
+    rau: rauApi,
   });
   const settingsPage = settingsPanel.element;
   const initialSetupDeps: InitialSetupDeps = {
@@ -6136,7 +6241,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   /** `then` 은 새 배치가 DOM 에 반영된 뒤에 부른다 — 교차 페이드는
       다음 프레임에 배치를 바꾸므로, 바뀐 배치에 기대는 후속 동작은 여기로 넘긴다. */
   function setFullscreen(on: boolean, opts?: { then?: () => void; instant?: boolean }): void {
-    if (on && isLicenseViewerMode() && !lockedSettingsBackdrop) return;
+    if (on && !fullscreen && agentSurfaceLocked()) {
+      planBlocksAgent();
+      return;
+    }
     if (fullscreen === on) {
       opts?.then?.();
       return;
@@ -6377,6 +6485,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   /** 스킬·설정·목록 세 페이지는 서로를 닫는다 — 무대에는 하나만 선다. */
   function closeSettingsPage(): void {
     settingsPanelOpen = false;
+    settingsOpening = false;
     settingsReturnsHome = false;
     settingsExitsFullscreenOnHome = false;
     settingsExitsFullscreen = false;
@@ -6411,6 +6520,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     // 집중 화면이 남아 있으면 홈의 돌아가기 단추가 '새 채팅'을 가리키므로 화면을 접은 뒤에 홈을 연다.
     if (exitFullscreen) setFullscreen(false, { instant: true, then: () => openDocumentHome?.({ instant: true }) });
     else if (returnHome) openDocumentHome?.({ instant: true });
+    // 무료 요금제는 설정을 닫으면 사이드바도 다시 접는다.
+    if (agentLockedByPlan()) {
+      if (fullscreen) setFullscreen(false);
+      setCollapsed(true);
+    }
     return true;
   }
 
@@ -6467,6 +6581,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   /** 다음에 여는 설정이 지시의 변경안 카드로 옮겨 간다(취향 학습 구분선의 지시에 추가 제안). */
   let revealInstructionsOnSettingsOpen = false;
   function setSettingsPanelOpen(open: boolean, destination?: SettingsDestinationInput): void {
+    if (open) settingsOpening = true;
     // 설정은 집중 화면에만 연다 — 좁은 사이드바에서 부르면 집중 화면으로 넓힌 뒤 열고, 닫으면 사이드바로 돌아간다.
     if (open && !fullscreen && !settingsPanelOpen) {
       setFullscreen(true, {
@@ -6513,8 +6628,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       settingsPanel.open(destination);
       settingsPage.querySelector<HTMLElement>('.ag-settings-nav-button.ag-active')?.focus();
       if (revealInstructionsOnSettingsOpen) settingsPanel.revealInstructions();
+      settingsOpening = false;
     } else {
       settingsPanel.close();
+      settingsOpening = false;
+      if (agentLockedByPlan()) setCollapsed(true);
     }
     revealInstructionsOnSettingsOpen = false;
   }
@@ -6524,6 +6642,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       eventBus.emit('settings:open', destination ? { destination } : undefined);
       return;
     }
+    settingsOpening = true;
     setCollapsed(false);
     setSettingsPanelOpen(true, destination);
   }
@@ -7113,6 +7232,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   /** 대기 메시지를 지금 보낼 수 없는 이유(단추 제목). null 이면 보낼 수 있다. */
   function followUpSendBlockedReason(): string | null {
+    if (agentLockedByPlan()) return 'Pro에서 쓸 수 있어요';
     if (mergeResolverLocked) return '병합 검토가 끝나면 보낼 수 있어요';
     if (connState !== 'connected') return '연결되면 보낼 수 있어요';
     if (planningPhase === 'switching' || workflowTransitionPending || planActionPending
@@ -7328,6 +7448,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     const requestText = decorateRequestText(request.requestText, currentThread.id, request.carriesContinuation === true);
     failureNotices.noteSend(currentThread.id, request.retryPayload, request.source ?? null);
     const mentions = splitThreadMentions(request.mentions);
+    // 이 하네스로 대화해 봤다 — 다음 새 채팅의 기본 하네스 판단에 쓴다.
+    recordHarnessChoice(selectedAgent);
     const sent = bridge.sendUserMessage(
       requestText,
       request.skillName,
@@ -7470,6 +7592,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       return;
     }
     if (readOnlyDocLabel !== null || mergeResolverLocked) return;
+    // 무료 요금제: 보내기·Enter·슬래시·스킬 모두 여기로 온다. 아무것도 보내지 않고 요금제 카드를 연다.
+    if (planBlocksAgent()) return;
     if (questionController.isPresented()) {
       // 입력기로 답한 것도 보내기다 — 쓰기가 끝났다.
       if (questionController.handleComposerSubmit()) typing.noteSend();
@@ -7672,6 +7796,26 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   // resizeHandle 을 마지막에 두어 왼쪽 가장자리 히트 테스트를 확실히 가져간다.
   // 토글은 상단 아이콘 도구 모음의 오른쪽 끝에 둔다.
   root.append(stage, resizeHandle);
+  /** 요금제가 바뀌면 다시 불러오지 않고 잠금·단추를 맞춘다. */
+  function syncPlan(): void {
+    const status = planStore.status();
+    const locked = planLocksAgent(status);
+    if (status) root.dataset.tier = status.tier;
+    else delete root.dataset.tier;
+    root.classList.toggle('ag-pricing-locked', locked);
+    collapseTabLock.hidden = !locked;
+    settingsPanel.syncPlanLock();
+    if (agentSurfaceLocked()) {
+      if (fullscreen) setFullscreen(false);
+      // 이미 접혔으면 건드리지 않는다. 다시 접으면 결제 중인 요금제 카드가 닫힌다.
+      if (!root.classList.contains('ag-collapsed')) setCollapsed(true);
+    }
+    updateComposer();
+  }
+  const unsubscribePlan = planStore.subscribe(() => {
+    if (root.dataset.disposed !== 'true') syncPlan();
+  });
+  syncPlan();
   // 화면에 붙지 않은 채로 시작한 사이드바는 activate() 에서 페이지 배치를 이어받으며 붙는다.
   if (active) {
     document.body.appendChild(root);
@@ -7679,32 +7823,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
   setCollapsed(false, { recenter: false });
 
-  /* 라이선스 읽기 전용: 에이전트 단추를 끄고, 펼쳐 있던 사이드바·집중 화면을 접는다.
-     대화는 그대로 둔다. 펼쳐 있었는지는 창 단위로 적어 두어, 잠긴 동안 문서를 바꿨어도
-     다시 편집할 수 있게 되면 그때 화면에 붙은 사이드바가 펼친다. */
-  function syncLicenseLockedTab(locked: boolean): void {
-    collapseTab.disabled = locked;
-    collapseTab.setAttribute('aria-disabled', locked ? 'true' : 'false');
-  }
-  function applyLicenseViewerMode(locked: boolean): void {
-    syncLicenseLockedTab(locked);
-    // 잠긴 카드 뒤에 깔아 둔 설정은 활성화되면 그대로 쓸 수 있는 설정이 된다.
-    if (!locked && lockedSettingsBackdrop) {
-      lockedSettingsBackdrop = false;
-      root.inert = false;
-      return;
-    }
-    if (!active) return;
-    if (locked) {
-      noteAgentOpenBeforeLock(fullscreen || !root.classList.contains('ag-collapsed'));
-      if (fullscreen) setFullscreen(false, { then: () => setCollapsed(true) });
-      else setCollapsed(true);
-      return;
-    }
-    if (takeAgentOpenBeforeLock()) setCollapsed(false);
-  }
-  syncLicenseLockedTab(isLicenseViewerMode());
-  const unsubLicenseViewerMode = onLicenseViewerModeChange(applyLicenseViewerMode);
 
   // ── 배치: #editor-area ↔ #status-bar 사이에 맞춘다 ────
   function updateComposerCompactLayout(): void {
@@ -9283,9 +9401,32 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     }
   }
 
+  /** 새 채팅을 Hama 로 열지 — Hama 플랜 가입자이고 다른 하네스를 고르거나 써 본 적이 없을 때. */
+  function hamaIsDefaultNow(): boolean {
+    return hamaIsDefault(hamaStatus, { choice: readHarnessChoice(), hasChats: peekThreads().length > 0 });
+  }
+
+  /**
+   * Hama 플랜 상태가 연결로 처음 닿으면, 아직 아무것도 보내지 않은 빈 채팅을 Hama 로 세운다. 일하는 채팅·보낸
+   * 채팅·열람 중인 채팅은 바꾸지 않는다.
+   */
+  function adoptHamaDefault(): void {
+    if (selectedAgent === 'hama' || !hamaIsDefaultNow()) return;
+    const next = firstRunAgentForChat('hama', {
+      selectedAgent,
+      userMessages: currentThread.messages.filter((message) => message.role === 'user').length,
+      working: agentWorking() || bridge.isTurnRunning() || bridge.getPendingUserQuestion() !== null,
+      readOnly: readOnlyDocLabel !== null,
+    });
+    if (!next) return;
+    applyDefaultSelection();
+    startCurrentBridgeChat();
+    refreshSidebarWidthMin();
+  }
+
   /** 저장된 기본값을 지금 선택으로 세운다 (새 대화 진입점에서만 부른다). */
   function applyDefaultSelection(): void {
-    const nextAgent = agentPrefs.defaultAgent;
+    const nextAgent = hamaIsDefaultNow() ? 'hama' : agentPrefs.defaultAgent;
     const nextModel = resolveModelForAgent(nextAgent, agentPrefs.defaultModel);
     const nextEffort = resolveEffortForAgent(nextAgent, agentPrefs.defaultEffort, nextModel);
     selectedModel = nextModel;
@@ -9745,7 +9886,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     for (const [name, item] of providerItems) {
       const active = name === agent;
       item.classList.toggle('ag-active', active);
-      item.setAttribute('aria-checked', active ? 'true' : 'false');
+      if (item.dataset.locked !== 'true') item.setAttribute('aria-checked', active ? 'true' : 'false');
     }
     syncProviderMenu();
     if (activeComposerSkill) composerSkill.dataset.agent = agent;
@@ -10008,6 +10149,13 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       send.disabled = true;
       composerSkillClear.disabled = true;
       input.placeholder = `"${readOnlyDocLabel}" 문서의 채팅 — 읽기 전용`;
+    } else if (agentLockedByPlan()) {
+      // 무료 요금제: 입력은 그대로 받고, 보내기는 요금제 카드를 연다(submit 처리기).
+      showComposerLock(false);
+      input.disabled = false;
+      send.disabled = false;
+      composerSkillClear.disabled = false;
+      input.placeholder = 'Pro에서 쓸 수 있어요';
     } else {
       // disabled 는 구조적인 잠금(질문이 입력기를 넘겨받음)에만 쓴다. 연결·시작·전환처럼
       // 잠깐 지나가는 잠금은 400ms 를 넘긴 뒤에만 readOnly 로 보인다. 보내기는 언제나
@@ -10041,11 +10189,12 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
             : '문서 작업 입력';
     }
     const stopping = turnRunning && !(questionPresented && questionUsesComposer);
+    const planLocked = !stopping && agentLockedByPlan();
     const sendLabel = questionPresented && questionUsesComposer ? '답변 계속'
-      : stopping ? '중지' : '보내기';
-    const sendIcon = stopping ? 'stop' : 'send';
+      : stopping ? '중지' : planLocked ? '요금제 보기' : '보내기';
+    const sendIcon = stopping ? 'stop' : planLocked ? 'lock' : 'send';
     if (send.dataset.icon !== sendIcon) {
-      send.replaceChildren(stopping ? createStopIcon() : createIcon('send'));
+      send.replaceChildren(stopping ? createStopIcon() : createIcon(planLocked ? 'lock' : 'send'));
       send.dataset.icon = sendIcon;
     }
     send.setAttribute('aria-label', sendLabel);
@@ -10056,7 +10205,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     syncSendIdle();
     // 실행 중에는 Enter 가 전송이 아니므로 힌트를 숨긴다.
     // 잠깐 지나가는 잠금은 입력기처럼 보이는 잠금을 따른다 — 힌트도 깜빡이지 않는다.
-    sendHint.hidden = stopping || shownLock !== null
+    sendHint.hidden = stopping || planLocked || shownLock !== null
       || referenceLibrary.hasBlockingDrafts()
       || readOnlyDocLabel !== null
       || mergeResolverLocked;
@@ -10428,6 +10577,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
    * 건드리지 않고, 컴포저와 같은 조건에서만 보낸다. 보내지 못했으면 false.
    */
   function resendFailedRequest(retry: ThreadRetryPayload, failure: ProviderFailure | null = null): boolean {
+    if (planBlocksAgent()) return false;
     if (readOnlyDocLabel !== null || agentWorking() || questionController.hasPending()
       || engineTrap() !== null || followUpSendBlockedReason() !== null) {
       if (active) showToast({ message: '지금은 다시 보낼 수 없어요', durationMs: 2400 });
@@ -10482,6 +10632,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   /** 설정 탭에서 저장된 기본값 — 새 대화부터 적용된다. */
   function applyAgentPrefs(prefs: AgentPrefs): void {
+    // 기본 프로바이더를 바꿔 저장했다 — 직접 고른 것이다(Hama 기본값이 덮지 않는다).
+    if (prefs.defaultAgent !== agentPrefs.defaultAgent) recordHarnessChoice(prefs.defaultAgent);
     agentPrefs = prefs;
     rebuildLlmMenu();
   }
@@ -11069,6 +11221,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
    * 풀어 그 턴이 정상으로 끝나면 대기 메시지를 보내게 한다(U1).
    */
   function resumeInterruptedTurn(): boolean {
+    if (planBlocksAgent()) return false;
     const pending = unresolvedInterruption(currentThread);
     if (!pending || draftChat || readOnlyDocLabel !== null || mergeResolverLocked) return false;
     if (resumeBlockedReason(false) !== null) return false;
@@ -12547,6 +12700,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         }
       case 'connection':
         setConnection(e.state, { attempt: e.attempt, retryInMs: e.retryInMs });
+        // 허브에 붙을 때마다 Hama 플랜 상태를 묻는다(답은 hama-status 로 온다).
+        if (e.state === 'connected') void bridge.requestHamaStatus?.().catch(() => null);
         permissionController.setConnection(e.state === 'connected');
         // 재연결 시 진행 상태를 브리지와 다시 동기화한다. 붙이지 않은 허브 턴은 초안의 일이 아니다.
         setTurnRunning(bridge.isTurnRunning() && !hubChatUnbound());
@@ -12709,12 +12864,28 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         persistCurrentThread();
         if (e.reason === 'deleted') systemMessage('템플릿이 삭제되어 해제했습니다.');
         break;
-      case 'pi-status':
+      case 'hama-status':
+        hamaStatus = e.status;
         syncProviderMenu();
-        if (selectedAgent === 'pi') {
-          selectedModel = resolveModelForAgent('pi', selectedModel);
-          selectedEffort = resolveEffortForAgent('pi', selectedEffort, selectedModel);
+        if (selectedAgent === 'hama') {
+          // 브리지가 Hama 모델 레지스트리를 먼저 바꿨다. 지금 선택도 새 목록으로 접는다.
+          selectedModel = resolveModelForAgent('hama', selectedModel);
+          selectedEffort = resolveEffortForAgent('hama', selectedEffort, selectedModel);
+          rebuildLlmMenu();
+          rebuildEffortMenu();
+          scheduleSidebarWidthMin();
         }
+        adoptHamaDefault();
+        break;
+      case 'pi-status':
+      case 'hama-status':
+        syncProviderMenu();
+        // 브리지가 이 하네스의 모델 레지스트리를 먼저 갱신했다. 현재 선택을 새 목록으로 접는다.
+        if (selectedAgent === (e.type === 'pi-status' ? 'pi' : 'hama')) {
+          selectedModel = resolveModelForAgent(selectedAgent, selectedModel);
+          selectedEffort = resolveEffortForAgent(selectedAgent, selectedEffort, selectedModel);
+        }
+        if (e.type === 'hama-status') failureNotices.refresh();
         rebuildLlmMenu();
         rebuildEffortMenu();
         scheduleSidebarWidthMin();
@@ -12773,6 +12944,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         break;
       case 'taste-learned':
         handleTasteLearned(e);
+        break;
+      case 'rau-upgrade':
+        rauUpgradeChip.show({ reason: e.reason, upgradeUrl: e.upgradeUrl });
         break;
       case 'taste-history-learned':
         handleTasteHistoryLearned(e);
@@ -13271,6 +13445,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   /** 계획 초안 지시는 에이전트에게만 보낸다. 입력 중인 글이 있으면 그 글만 대화에 보인다. */
   function requestPlanDraft(): boolean {
+    if (planBlocksAgent()) return false;
     if (turnRunning || planActionPending || planningPhase !== 'planning' || connState !== 'connected') return false;
     const hasDraft = Boolean(input.value.trim()) || (composerMentions?.list().length ?? 0) > 0
       || referenceLibrary.hasDrafts() || captureInbox.hasDrafts();
@@ -13294,7 +13469,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   async function approveActivePlan(planId: string, profile: PermissionProfile, anchor?: HTMLElement): Promise<void> {
     const canApprove = (): boolean => planApprovable && !planActionPending && chatModeLockReason === null
       && planningPhase === 'awaiting-approval' && !turnRunning && activePlan?.planId === planId;
-    if (!canApprove()) return;
+    if (!canApprove() || planBlocksAgent()) return;
     // 정확히 이 계획 id 로만 승인한다 — 오래된 카드가 다른 계획을 통과시키지 않는다.
     planActionPending = true;
     rebuildReview();
@@ -13747,18 +13922,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
           setCollapsed(false);
           openConfiguredVersionControl();
         }),
-        eventBus.on('settings:close-locked-backdrop', () => {
-          if (!lockedSettingsBackdrop) return;
-          closeSettingsPage();
-          chatPage.setAttribute('aria-hidden', 'false');
-          setFullscreen(false, {
-            instant: true,
-            then: () => {
-              lockedSettingsBackdrop = false;
-              setCollapsed(true);
-            },
-          });
-        }),
         eventBus.on('settings:open', (payload) => {
           const request = payload as {
             destination?: unknown;
@@ -13768,11 +13931,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
           } | undefined;
           const requested = request?.destination;
           const destination = isSettingsDestination(requested) ? requested : undefined;
-          // 잠긴 동안에는 홈에서 연 설정만 잠긴 카드의 배경으로 띄운다.
-          if (isLicenseViewerMode()) {
-            if (request?.from !== 'home') return;
-            lockedSettingsBackdrop = true;
-          }
+          settingsOpening = true;
           setCollapsed(false);
           const wasFullscreen = fullscreen;
           const open = (): void => {
@@ -13795,6 +13954,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   setSelectedAgent(selectedAgent);
   setConnection(connState);
   setTurnRunning(turnRunning);
+  // Hama 플랜 상태 — 이미 받아 둔 것이 있으면 바로 쓰고, 붙어 있으면 다시 묻는다.
+  adoptHamaDefault();
+  if (connState === 'connected') void bridge.requestHamaStatus?.().catch(() => null);
   updateWorkflowControl();
   updateDocumentContext();
   /**
@@ -13891,7 +14053,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   /** 선택 의견은 로컬에 남기고 입력기에 첨부한다. 실제 전송은 일반 보내기에서만 한다. */
   async function sendInlinePrompt(submission: InlinePromptSubmission): Promise<Awaited<InlinePromptSendResponse>> {
-    if (isLicenseViewerMode()) return { ok: false, reason: LICENSE_VIEWER_REASON };
+    if (planBlocksAgent()) return { ok: false, reason: 'Pro에서 쓸 수 있어요' };
     const prompt = submission.prompt.trim();
     if (!prompt) return { ok: false, reason: '의견 입력 필요' };
     if (submission.signal?.aborted) return { ok: false, reason: '선택 자료 저장이 취소되었습니다.' };
@@ -13913,7 +14075,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
 
   function queueCaptureDraft(draft: DocumentCaptureDraft): Awaited<InlinePromptSendResponse> {
-    if (isLicenseViewerMode()) return { ok: false, reason: LICENSE_VIEWER_REASON };
     if (!captureInbox.queue(draft)) return { ok: false, reason: '저장한 자료는 해당 문서의 입력기에서 확인할 수 있습니다.' };
     setCollapsed(false);
     if (threadsPanelOpen) setThreadsPanelOpen(false);
@@ -13954,7 +14115,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       environmentPanelOpen = layout.environmentPanelOpen;
       desktopEnvironmentPanelOpen = layout.desktopEnvironmentPanelOpen;
     }
-    const nextFullscreen = !isLicenseViewerMode() && (layout?.fullscreen ?? fullscreen);
+    const nextFullscreen = layout?.fullscreen ?? fullscreen;
     const fullscreenChanged = nextFullscreen !== fullscreen || fullscreenLayoutOn !== nextFullscreen;
     if (fullscreenChanged) {
       fullscreen = nextFullscreen;
@@ -14022,6 +14183,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   function activate(): void {
     if (active || root.dataset.disposed === 'true') return;
     active = true;
+    if (planStore.api) detachPlanCardEvents = listenForPlanCardEvents({ store: planStore, license: planLicenseApi });
     syncWorkbenchVisibility();
     // 배치는 문서에 붙이기 전에 맞춘다 — 스타일이 한 번에 계산되어 전이가 걸리지 않는다.
     adoptPageLayout(readSidebarPageLayout());
@@ -14049,6 +14211,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   function deactivate(): void {
     if (!active || root.dataset.disposed === 'true') return;
+    detachPlanCardEvents();
     browserActivation++;
     sharedHumanBrowserView = workbenchBrowser?.suspendShared() ?? null;
     sharedFloatingBrowserView = floatingBrowser?.suspendShared() ?? null;
@@ -14104,6 +14267,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     },
     sendInlinePrompt,
     queueCaptureDraft,
+    planBlocksAgent,
     activate,
     deactivate,
     isActive: () => active,
@@ -14277,7 +14441,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       window.removeEventListener('focus', scheduleSeenCheck);
       document.removeEventListener('visibilitychange', scheduleSeenCheck);
       unsubChatModeLock();
-      unsubLicenseViewerMode();
       unsubTurnRestore();
       unsubBridge();
       unsubThreads();
@@ -14388,6 +14551,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         );
       }
       sweepUnresolvedToolRows();
+      unsubscribePlan();
+      detachPlanCardEvents();
+      planStore.dispose();
       collapseTab.remove();
       root.remove();
     },

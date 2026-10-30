@@ -1,4 +1,4 @@
-/* 활성화 화면. 체험이 끝났거나 키가 해지되면 메인이 이 창을 띄운다. 설정에서도 연다. */
+/* 활성화 화면. 설정과 메뉴 막대의 라이선스 알약이 연다. */
 (function () {
   const api = window.hamaLicense;
   const $ = (id) => document.getElementById(id);
@@ -29,23 +29,6 @@
     }
   }
 
-  /** 체험 남은 시간. Studio 의 trialTimeLeft 와 같은 규칙이다. */
-  function timeLeft(endsAt) {
-    const remaining = Math.max(0, endsAt - Date.now());
-    const seconds = Math.ceil(remaining / 1000);
-    if (seconds < 3600) {
-      const m = Math.floor(seconds / 60);
-      const sec = seconds % 60;
-      return m > 0 ? (sec > 0 ? `${m}분 ${sec}초` : `${m}분`) : `${sec}초`;
-    }
-    const minutes = Math.ceil(remaining / 60000);
-    const days = Math.floor(minutes / 1440);
-    const hours = Math.floor((minutes % 1440) / 60);
-    const mins = minutes % 60;
-    if (days > 0) return hours > 0 ? `${days}일 ${hours}시간` : `${days}일`;
-    return mins > 0 ? `${hours}시간 ${mins}분` : `${hours}시간`;
-  }
-
   function summaryFor(status) {
     const beta = status.license?.tier === 'beta';
     switch (status.state) {
@@ -58,17 +41,15 @@
         }
         return [status.offline ? '라이선스가 활성화되어 있어요. 지금은 오프라인이라 마지막 확인으로 쓰고 있어요.' : '라이선스가 활성화되어 있어요.', false];
       case 'expired':
-        return [`${status.license?.licenseExpiresAt ? `${date(status.license.licenseExpiresAt)}에 ` : ''}라이선스 기간이 끝나 읽기 전용이에요. 구독을 갱신하거나 새 키를 넣으면 다시 저장할 수 있어요.`, true];
-      case 'trial':
-        return [`체험 중이에요. ${timeLeft(status.trial.endsAt)} 남았어요.`, false];
-      case 'trial_expired':
-        return ['편집하려면 라이선스가 필요합니다.', true];
+        return [`${status.license?.licenseExpiresAt ? `${date(status.license.licenseExpiresAt)}에 ` : ''}Pro 기간이 끝났어요. 구독을 갱신하거나 새 키를 넣어 주세요.`, true];
+      case 'free':
+        return ['키를 넣으면 Pro 기능을 쓸 수 있어요.', false];
       case 'revoked':
         return [beta
-          ? '베타 테스트 기간이 끝나 키가 해지되었어요. 읽기 전용이에요.'
-          : '이 라이선스는 해지되었어요(환불 등). 읽기 전용이에요. 새 키를 넣으면 다시 저장할 수 있어요.', true];
+          ? '베타 테스트 기간이 끝나 키가 해지되었어요.'
+          : '이 라이선스는 해지되었어요(환불 등). 새 키를 넣어 주세요.', true];
       case 'lease_expired':
-        return [`${beta ? 3 : 7}일 넘게 라이선스를 확인하지 못해 읽기 전용이에요. 인터넷에 연결한 뒤 ‘지금 확인’을 눌러 주세요.`, true];
+        return [`${beta ? 3 : 7}일 넘게 라이선스를 확인하지 못했어요. 인터넷에 연결한 뒤 ‘지금 확인’을 눌러 주세요.`, true];
       case 'needs_activation':
         return ['이 기기에서 라이선스를 다시 활성화해야 해요. 키를 다시 넣어 주세요.', true];
       default:
@@ -120,7 +101,7 @@
     if (result.ok) {
       keyInput.value = '';
       licensedNote.classList.add('ok');
-      licensedNote.textContent = '활성화했어요. 이제 저장할 수 있어요.';
+      licensedNote.textContent = '활성화했어요.';
     } else {
       setNote(activateNote, result.message);
     }
@@ -140,13 +121,13 @@
     activateNote.textContent = status.offline ? '라이선스 서버에 연결하지 못했어요.' : status.state === 'expired' ? '아직 갱신되지 않았어요.' : '';
     if (status.state === 'licensed') {
       licensedNote.classList.add('ok');
-      licensedNote.textContent = '갱신을 확인했어요. 이제 저장할 수 있어요.';
+      licensedNote.textContent = '갱신을 확인했어요.';
     }
     render(status);
   });
 
   $('deactivate').addEventListener('click', async (event) => {
-    if (!window.confirm('이 기기에서 라이선스를 비활성화할까요? 다른 기기에서 키를 쓸 수 있게 되고, 이 기기는 읽기 전용이 돼요.')) return;
+    if (!window.confirm('이 기기에서 라이선스를 비활성화할까요? 다른 기기에서 키를 쓸 수 있게 되고, 이 기기에서는 Pro 기능이 꺼져요.')) return;
     const result = await busy(event.currentTarget, () => api.deactivate());
     licensedNote.classList.remove('ok');
     setNote(licensedNote, result.ok ? '' : result.message);

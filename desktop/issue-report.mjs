@@ -191,7 +191,7 @@ export async function submitFeedback(payload, {
 
 function licenseMeta(status) {
   if (!status) return {};
-  const tier = status.license?.tier ?? (status.state === 'trial' || status.state === 'trial_expired' ? 'trial' : 'none');
+  const tier = status.license?.tier ?? (status.state === 'free' ? 'free' : 'none');
   return { licenseTier: tier, licenseState: String(status.state ?? '') };
 }
 
