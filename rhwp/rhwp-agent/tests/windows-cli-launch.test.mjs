@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn as nodeSpawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -13,6 +13,7 @@ import { buildPiArgv, createPiSession } from '../agents/pi.mjs';
 import {
   applyManagedCliLaunch,
   applyNpmCliLaunch,
+  NODE_HOST_PRELOAD_FILE,
   parseNpmCmdShimScript,
   resolveCommandOnPath,
   resolveNpmCliLaunch,
@@ -509,6 +510,137 @@ test('native Claude SDK launch points at the exe behind a Windows npm .cmd', asy
   assert.equal(sdkOptions[0].pathToClaudeCodeExecutable, exePath);
 });
 
+/** A Claude SDK fake that starts the CLI through the hub's spawn hook, then settles one turn. */
+function spawningClaudeQuery(sdkOptions, { onClose = () => {} } = {}) {
+  return ({ prompt, options }) => {
+    sdkOptions.push(options);
+    const query = (async function* () {
+      for await (const _message of prompt) {
+        options.spawnClaudeCodeProcess?.({
+          command: 'C:\\managed\\claude.exe',
+          args: ['--output-format', 'stream-json'],
+          cwd: options.cwd,
+          env: options.env,
+          signal: new AbortController().signal,
+        });
+        yield { type: 'system', subtype: 'init', session_id: options.sessionId ?? options.resume, model: 'claude-test' };
+        yield { type: 'result', subtype: 'success', is_error: false, stop_reason: 'end_turn', result: 'done' };
+      }
+    })();
+    query.close = onClose;
+    return query;
+  };
+}
+
+function fakeClaudeProcess() {
+  return Object.assign(new EventEmitter(), {
+    pid: 4321,
+    exitCode: null,
+    signalCode: null,
+    killed: false,
+    stdin: Object.assign(new EventEmitter(), { write() { return true; }, end() {} }),
+    stdout: new EventEmitter(),
+    stderr: new EventEmitter(),
+    kill() { return true; },
+  });
+}
+
+// Windows 의 SDK close() 는 claude.exe 리더만 끝낸다. 도는 Bash 도구의 bash → ping 같은 자손은 허브
+// 종료 뒤에도 남았다(live: 창 닫기 중 ping -n 30). 허브가 띄운 CLI 가 유예 안에 끝나지 않으면 트리째 끝낸다.
+test('Windows Claude SDK sessions own the CLI process and end its tree when it outlives close', async (t) => {
+  const events = [];
+  const sdkOptions = [];
+  const spawns = [];
+  const terminated = [];
+  const proc = fakeClaudeProcess();
+  const session = createClaudeSession({
+    ...claudeOpts,
+    agentRole: 'chat',
+    requestUserInput: async () => ({ status: 'cancelled', reason: 'user-stop' }),
+    onEvent: (event) => events.push(event),
+  }, {
+    platform: 'win32',
+    queryAgent: spawningClaudeQuery(sdkOptions),
+    spawnSdkProcess(command, args, options) {
+      spawns.push({ command, args, options });
+      return proc;
+    },
+    spawnProcess() { throw new Error('legacy transport should not spawn'); },
+    terminateProcess(child) {
+      terminated.push(child);
+      child.exitCode = 1;
+      child.emit('exit', 1, null);
+      return true;
+    },
+    waitForExit: async () => true,
+    closeGraceMs: 5,
+  });
+  session.sendUserMessage('run the long shell command');
+  await waitUntil(() => events.some((event) => event.type === 'turn-end'));
+  assert.equal(spawns.length, 1);
+  assert.equal(spawns[0].command, 'C:\\managed\\claude.exe');
+  assert.equal(spawns[0].options.windowsHide, true);
+  assert.equal(spawns[0].options.detached, undefined);
+  assert.deepEqual(spawns[0].options.stdio, ['pipe', 'pipe', 'pipe']);
+
+  assert.equal(await session.dispose(), true);
+  assert.deepEqual(terminated, [proc]);
+});
+
+test('Windows Claude SDK close leaves a CLI that exits on its own to the SDK', async (t) => {
+  const events = [];
+  const sdkOptions = [];
+  const terminated = [];
+  const proc = fakeClaudeProcess();
+  const session = createClaudeSession({
+    ...claudeOpts,
+    agentRole: 'chat',
+    requestUserInput: async () => ({ status: 'cancelled', reason: 'user-stop' }),
+    onEvent: (event) => events.push(event),
+  }, {
+    platform: 'win32',
+    queryAgent: spawningClaudeQuery(sdkOptions, {
+      onClose() {
+        // stdin EOF 에 스스로 끝나는 CLI.
+        proc.exitCode = 0;
+        proc.emit('exit', 0, null);
+      },
+    }),
+    spawnSdkProcess: () => proc,
+    spawnProcess() { throw new Error('legacy transport should not spawn'); },
+    terminateProcess(child) { terminated.push(child); return true; },
+    waitForExit: async () => true,
+    closeGraceMs: 1_000,
+  });
+  session.sendUserMessage('hello');
+  await waitUntil(() => events.some((event) => event.type === 'turn-end'));
+  assert.equal(await session.dispose(), true);
+  assert.deepEqual(terminated, []);
+});
+
+test('Claude SDK sessions off Windows keep the SDK spawn', async (t) => {
+  const events = [];
+  const sdkOptions = [];
+  const session = createClaudeSession({
+    ...claudeOpts,
+    agentRole: 'chat',
+    requestUserInput: async () => ({ status: 'cancelled', reason: 'user-stop' }),
+    onEvent: (event) => events.push(event),
+  }, {
+    platform: 'darwin',
+    queryAgent: spawningClaudeQuery(sdkOptions),
+    spawnSdkProcess() { throw new Error('the SDK spawns the CLI itself off Windows'); },
+    spawnProcess() { throw new Error('legacy transport should not spawn'); },
+    terminateProcess() { return true; },
+    waitForExit: async () => true,
+    closeGraceMs: 1,
+  });
+  t.after(() => session.dispose());
+  session.sendUserMessage('hello');
+  await waitUntil(() => events.some((event) => event.type === 'turn-end'));
+  assert.equal(sdkOptions[0].spawnClaudeCodeProcess, undefined);
+});
+
 test('managed launch without env does not replace process.env with an empty object', () => {
   const launched = applyManagedCliLaunch('claude', ['--version'], {
     platform: 'linux',
@@ -542,18 +674,58 @@ test('managed launch prepends the Node-host PATH and unwraps a .cmd', async (t) 
   const electron = path.join(root, 'HamaEditor.exe');
   const shimDir = path.join(root, 'node-host');
   await writeNodeHostShim(shimDir, electron, { platform: 'win32' });
+  // win32 계약은 Windows 경로로 프리로드를 알린다. Linux/macOS CI 에서는 그 경로를 디스크의 사본으로 잇는다.
+  const preloadCopy = path.join(shimDir, NODE_HOST_PRELOAD_FILE);
+  const preload = path.win32.join(shimDir, NODE_HOST_PRELOAD_FILE);
   const launched = applyManagedCliLaunch(cmdPath, ['exec', '--json'], {
     platform: 'win32',
     nodeCommand: electron,
     env: { PATH: 'C:\\Windows\\System32' },
     shimDir,
+    existsSync: (file) => existsSync(file === preload ? preloadCopy : file),
   });
   assert.equal(launched.command, electron);
-  assert.deepEqual(launched.argv, [scriptPath, 'exec', '--json']);
+  // 콘솔 없는 Electron 호스트는 node-host 의 콘솔 숨김 프리로드를 먼저 읽는다.
+  assert.deepEqual(launched.argv, ['--require', preload, scriptPath, 'exec', '--json']);
+  assert.deepEqual(
+    readFileSync(preloadCopy),
+    readFileSync(new URL('../windows-hide-console.cjs', import.meta.url)),
+  );
   assert.equal(launched.env.ELECTRON_RUN_AS_NODE, '1');
   assert.equal(launched.env.npm_node_execpath, electron);
   assert.equal(launched.env.PATH.startsWith(`${shimDir};`), true);
   assert.equal(/\.(?:cmd|bat)$/i.test(launched.command), false);
+});
+
+test('managed Electron launch skips a missing console-hide preload instead of failing to start', () => {
+  const electron = 'C:\\Apps\\HamaEditor.exe';
+  const launched = applyManagedCliLaunch(electron, ['C:\\cli\\npm-cli.js', 'install'], {
+    platform: 'win32',
+    nodeCommand: electron,
+    env: { PATH: '', ELECTRON_RUN_AS_NODE: '1', RHWP_NODE_PRELOAD: 'C:\\gone\\rhwp-hide-console.cjs' },
+    existsSync: (file) => file === electron,
+  });
+  assert.deepEqual(launched.argv, ['C:\\cli\\npm-cli.js', 'install']);
+});
+
+// Pi 는 자식 env 를 화이트리스트로 줄인다. 허브가 알린 node-host 프리로드는 그래도 붙는다.
+test('managed Electron launch with an allowlisted env still loads the hub console-hide preload', (t) => {
+  const electron = 'C:\\Apps\\HamaEditor.exe';
+  const preload = 'C:\\cli\\node-host\\rhwp-hide-console.cjs';
+  const previous = process.env.RHWP_NODE_PRELOAD;
+  process.env.RHWP_NODE_PRELOAD = preload;
+  t.after(() => {
+    if (previous === undefined) delete process.env.RHWP_NODE_PRELOAD;
+    else process.env.RHWP_NODE_PRELOAD = previous;
+  });
+  const launched = applyManagedCliLaunch(electron, ['C:\\pi\\cli.js', '--mode', 'json'], {
+    platform: 'win32',
+    nodeCommand: electron,
+    env: { PATH: '', ELECTRON_RUN_AS_NODE: '1' },
+    existsSync: (file) => file === electron || file === preload,
+  });
+  assert.deepEqual(launched.argv, ['--require', preload, 'C:\\pi\\cli.js', '--mode', 'json']);
+  assert.equal(launched.env.RHWP_NODE_PRELOAD, undefined);
 });
 
 test('createCodexSession unwraps a Windows .cmd bin before spawn', async (t) => {
