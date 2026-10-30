@@ -1,14 +1,12 @@
-// Rau-0.1 취향 학습기: 경로 고르기(고른 공급자·내 OpenRouter 키), 설정 검증, 적용·빈 결과, 토글, 최신 요청 우선, 신호 모으기, 직접 쓰기와 묶기,
+// Rau-0.1 호스팅 취향 학습기: 설정 검증, 적용·빈 결과, 토글, 최신 요청 우선, 신호 모으기, 직접 쓰기와 묶기,
 // 되돌리기, AGENTS.md 제안 문턱.
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
 import { DocumentMemoryStore } from '../document-memory-store.mjs';
-import { createPiManager } from '../pi-manager.mjs';
-import { createMemorySecretStore } from '../secret-store.mjs';
 import { createTasteSignalBuffer } from '../taste-signals.mjs';
 import {
   RAU_TASTE_NAME,
@@ -18,12 +16,9 @@ import {
   guardTasteOps,
   newTasteTurn,
   noteTasteTurnEvent,
-  tasteCandidates,
-  tasteOwnOpenRouter,
 } from '../taste-learner.mjs';
 
 const at = '2026-10-22T00:00:00.000Z';
-const ready = { claude: { ready: true }, codex: { ready: true }, pi: { ready: true } };
 
 function tempDir(t) {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'rhwp-taste-learner-'));
@@ -32,11 +27,12 @@ function tempDir(t) {
 }
 
 const json = (ops) => JSON.stringify({ ops });
+const styleNote = (text) => json([{ op: 'add', kind: 'style', subject: '문체.종결', text, userCandidate: true }]);
 
 /**
- * 진짜 runOneShot 에 공급자 실행만 바꿔 끼운다. outputs[provider] 는 문자열이거나 (call) => 문자열·Promise.
+ * 호스팅 경로의 응답만 바꿔 끼운다. outputs.rau 는 문자열이거나 (call) => 문자열·Promise.
  */
-function harness(t, { outputs = {}, readiness = ready, settings = { enabled: true }, routeExtra = {}, running = () => false, promote, timing = {} } = {}) {
+function harness(t, { outputs = {}, settings = { enabled: true }, running = () => false, promote, timing = {} } = {}) {
   const dir = tempDir(t);
   const store = new DocumentMemoryStore({ dir });
   const signals = createTasteSignalBuffer();
@@ -48,17 +44,16 @@ function harness(t, { outputs = {}, readiness = ready, settings = { enabled: tru
     store,
     signals,
     settings: () => settings,
-    routes: () => ({
-      readiness,
-      ...routeExtra,
-      deps: {
-        runProvider: async (call) => {
-          calls.push(call);
-          const output = outputs[call.provider];
-          return typeof output === 'function' ? output(call) : (output ?? null);
-        },
+    routes: () => ({ hosted: {
+      usable: () => true,
+      async learn(prompt, { signal } = {}) {
+        const call = { prompt, provider: 'rau', model: 'rau-0.1', signal };
+        calls.push(call);
+        const output = outputs.rau;
+        const text = await (typeof output === 'function' ? output(call) : output ?? '{"ops":[]}');
+        return { ok: true, text, model: 'rau-0.1' };
       },
-    }),
+    } }),
     resolveKey: ({ documentId }) => store.resolveKey({ documentId }),
     isTurnRunning: running,
     emit: (frame) => frames.push(frame),
@@ -72,8 +67,6 @@ function harness(t, { outputs = {}, readiness = ready, settings = { enabled: tru
     acceptCapMs: 400,
     deferredCapMs: 300,
     ...timing,
-    providerTimeoutMs: 5_000,
-    overallTimeoutMs: 10_000,
   });
   t.after(() => learner.close());
   return { store, signals, learner, calls, frames, changedEvents, proposals };
@@ -92,7 +85,7 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 80));
 test('a successful turn applies learned notes and emits one marker; nothing durable emits nothing', async (t) => {
   const h = harness(t, {
     outputs: {
-      claude: (call) => (call.prompt.includes('합니다체 말고')
+      rau: (call) => (call.prompt.includes('합니다체 말고')
         ? json([{ op: 'add', kind: 'style', subject: '문체.종결', text: '본문은 한다체 사용' }])
         : '{"ops":[]}'),
     },
@@ -107,9 +100,8 @@ test('a successful turn applies learned notes and emits one marker; nothing dura
   assert.deepEqual([frame.threadId, frame.turnId, frame.documentId], ['th1', 'turn-1', 'doc-1']);
   assert.deepEqual(frame.items.map(({ op, text, origin }) => [op, text, origin]), [['add', '본문은 한다체 사용', 'learned']]);
   assert.equal(frame.changes.length, 1);
-  assert.equal(h.calls[0].provider, 'claude');
-  assert.equal(h.calls[0].model, 'claude-haiku-5-5');
-  assert.equal(h.calls[0].effort, 'medium');
+  assert.equal(h.calls[0].provider, 'rau');
+  assert.equal(h.calls[0].model, 'rau-0.1');
   assert.match(h.calls[0].prompt, new RegExp(RAU_TASTE_NAME));
 
   const memory = await h.store.read(frame.key);
@@ -124,41 +116,8 @@ test('a successful turn applies learned notes and emits one marker; nothing dura
   assert.equal((await h.store.read(frame.key)).revision, 1);
 });
 
-test('unusable output falls through to the next ready route; Codex waits for quota', async (t) => {
-  const h = harness(t, {
-    outputs: {
-      claude: '네, 한다체를 기억하겠습니다.',
-      codex: json([{ op: 'add', kind: 'term', text: "'고객' 대신 '이용자'로 통일" }]),
-      pi: json([{ op: 'add', kind: 'term', subject: '용어.고객', text: "'고객' 대신 '이용자'로 통일" }]),
-    },
-    routeExtra: { codexQuota: { status: 'ok', session: { percent: 99 } } },
-  });
-  await h.learner.turnEnded({ threadId: 'th1', turnId: 't1', documentId: 'doc-1', userText: '고객은 늘 이용자로 써 줘', learn: true });
-  await until(() => h.frames.length === 1, 'marker');
-  assert.deepEqual(h.calls.map((call) => call.provider), ['claude', 'pi']);
-  assert.equal(h.calls[1].model, 'deepseek/deepseek-v4.1-flash');
-  assert.equal(h.calls[1].effort, 'max');
-  assert.equal((await h.store.read(h.frames[0].key)).entries[0].subject, '용어.고객');
-});
-
-test('Pi gift mode resolves a gift model or skips Pi', async (t) => {
-  const resolved = tasteCandidates({ readiness: ready, giftMode: true, resolveModel: { pi: async () => 'gift/cheap' } });
-  assert.equal(typeof resolved.find((candidate) => candidate.provider === 'pi').resolveModel, 'function');
-  const skipped = tasteCandidates({ readiness: ready, giftMode: true });
-  assert.equal(skipped.find((candidate) => candidate.provider === 'pi').ready, false);
-
-  const h = harness(t, {
-    readiness: { pi: { ready: true } },
-    routeExtra: { giftMode: true, resolveModel: { pi: async () => 'gift/cheap' } },
-    outputs: { pi: '{"ops":[]}' },
-  });
-  await h.learner.turnEnded({ threadId: 'th1', turnId: 't1', documentId: 'doc-1', userText: '안녕', learn: true });
-  await until(() => h.calls.length === 1, 'pi run');
-  assert.equal(h.calls[0].model, 'gift/cheap');
-});
-
 test('with the toggle off the learner never runs and shows nothing', async (t) => {
-  const h = harness(t, { settings: { enabled: false }, outputs: { claude: json([{ op: 'add', kind: 'fact', text: '마감 11월 3일' }]) } });
+  const h = harness(t, { settings: { enabled: false }, outputs: { rau: json([{ op: 'add', kind: 'fact', text: '마감 11월 3일' }]) } });
   h.signals.ingest({ threadId: 'th1', documentId: 'doc-1', signals: [{ kind: 'rejected', at, after: '열립니다' }] });
   await h.learner.turnEnded({ threadId: 'th1', turnId: 't1', documentId: 'doc-1', userText: '한다체로 기억해 줘', learn: true });
   await settle();
@@ -172,7 +131,7 @@ test('while a run is busy only the newest request waits', async (t) => {
   const gate = new Promise((resolve) => { release = resolve; });
   const h = harness(t, {
     outputs: {
-      claude: async (call) => {
+      rau: async (call) => {
         if (call.prompt.includes('첫 턴')) await gate;
         return '{"ops":[]}';
       },
@@ -193,7 +152,7 @@ test('signals while idle are gathered for a moment and learned once; signals dur
   let turnRunning = false;
   const h = harness(t, {
     running: () => turnRunning,
-    outputs: { claude: json([{ op: 'add', kind: 'style', subject: '문체.종결', text: '본문은 한다체 사용', userCandidate: true }]) },
+    outputs: { rau: json([{ op: 'add', kind: 'style', subject: '문체.종결', text: '본문은 한다체 사용', userCandidate: true }]) },
   });
   h.learner.signalsArrived('doc-1', {});
   h.signals.onReviewSignals((documentId, info) => h.learner.signalsArrived(documentId, info));
@@ -216,7 +175,7 @@ test('signals while idle are gathered for a moment and learned once; signals dur
 test('undo reverts what is unchanged and reports what was edited since', async (t) => {
   const h = harness(t, {
     outputs: {
-      claude: json([
+      rau: json([
         { op: 'add', kind: 'style', subject: '문체.종결', text: '본문은 한다체 사용' },
         { op: 'add', kind: 'term', subject: '용어.고객', text: "'고객' 대신 '이용자'로 통일" },
       ]),
@@ -242,7 +201,7 @@ test('undo reverts what is unchanged and reports what was edited since', async (
 
 test('a preference learned in two documents is proposed once; a rejected one is never proposed again', async (t) => {
   const userCandidate = json([{ op: 'add', kind: 'style', subject: '문체.종결', text: '본문은 한다체 사용', userCandidate: true }]);
-  const h = harness(t, { outputs: { claude: userCandidate } });
+  const h = harness(t, { outputs: { rau: userCandidate } });
   await h.learner.turnEnded({ threadId: 'a', turnId: 't1', documentId: 'doc-a', userText: '한다체로', learn: true });
   await until(() => h.frames.length === 1, 'doc a');
   assert.equal(h.proposals.length, 0, 'one document is not enough');
@@ -269,7 +228,7 @@ test('a busy proposal slot leaves the candidate for a later run', async (t) => {
   const proposals = [];
   const h = harness(t, {
     outputs: {
-      claude: (call) => json([
+      rau: (call) => json([
         { op: 'add', kind: 'style', subject: '문체.종결', text: '본문은 한다체 사용', userCandidate: true },
         ...(call.prompt.includes('셋') ? [{ op: 'add', kind: 'term', subject: '용어.고객', text: "'고객' 대신 '이용자'로 통일" }] : []),
       ]),
@@ -332,9 +291,9 @@ test('learner provider settings validate, reset with the provider and read old f
   assert.deepEqual(settings.get(), { enabled: false, provider: 'auto', model: null, effort: null });
 
   await settings.set({ provider: 'pi', model: 'qwen/qwen3-max', effort: 'high' });
-  assert.deepEqual((await new TasteSettingsStore({ dir }).init()).get(), { enabled: false, provider: 'pi', model: 'qwen/qwen3-max', effort: 'high' });
+  assert.deepEqual((await new TasteSettingsStore({ dir }).init()).get(), { enabled: false, provider: 'auto', model: null, effort: null });
   // 공급자를 바꾸면 이전 공급자의 모델·추론을 버린다. 자동은 늘 비운다.
-  assert.deepEqual(await settings.set({ provider: 'codex' }), { enabled: false, provider: 'codex', model: null, effort: null });
+  assert.deepEqual(await settings.set({ provider: 'codex' }), { enabled: false, provider: 'auto', model: null, effort: null });
   assert.deepEqual(await settings.set({ provider: 'auto', model: 'gpt-6-sol', effort: 'low' }), { enabled: false, provider: 'auto', model: null, effort: null });
 
   for (const patch of [{ provider: 'openai' }, { model: '' }, { model: ' padded ' }, { model: 'x'.repeat(201) }, { effort: 'ultra' }, {}, null]) {
@@ -344,67 +303,12 @@ test('learner provider settings validate, reset with the provider and read old f
 
   // 손상된 칸은 그 칸만 기본값이 된다.
   writeFileSync(path.join(dir, 'taste-settings.json'), JSON.stringify({ enabled: true, provider: 'claude', model: 42, effort: 'max' }));
-  assert.deepEqual((await new TasteSettingsStore({ dir }).init()).get(), { enabled: true, provider: 'claude', model: null, effort: 'max' });
+  assert.deepEqual((await new TasteSettingsStore({ dir }).init()).get(), { enabled: true, provider: 'auto', model: null, effort: null });
+  assert.deepEqual(JSON.parse(readFileSync(path.join(dir, 'taste-settings.json'), 'utf8')), { schemaVersion: 1, enabled: true, provider: 'auto', model: null, effort: null });
 });
-
-test('a chosen learner provider runs only that route with its own or the default model', () => {
-  const quotaLow = { status: 'ok', session: { percent: 99 } };
-  assert.deepEqual(tasteCandidates({ readiness: ready }, { provider: 'auto' }).map((c) => c.provider), ['claude', 'codex', 'pi']);
-  assert.deepEqual(tasteCandidates({ readiness: ready }, { provider: 'claude', model: null, effort: null }),
-    [{ provider: 'claude', model: 'claude-haiku-5-5', effort: 'medium', ready: true }]);
-  assert.deepEqual(tasteCandidates({ readiness: ready }, { provider: 'codex', model: 'gpt-6-sol', effort: 'high' }),
-    [{ provider: 'codex', model: 'gpt-6-sol', effort: 'high', ready: true }]);
-  // 고른 Codex 도 사용량 문턱을 지킨다 — 다른 공급자로 넘어가지 않는다.
-  assert.deepEqual(tasteCandidates({ readiness: ready, codexQuota: quotaLow }, { provider: 'codex' }).map((c) => [c.provider, c.ready]), [['codex', false]]);
-  assert.equal(tasteCandidates({ readiness: { claude: { ready: false } } }, { provider: 'claude' })[0].ready, false);
-
-  // 고른 OpenRouter 는 내 키로만 돈다. 선물 모드여도 선물 모델로 바꾸지 않는다.
-  const gift = { readiness: ready, giftMode: true, resolveModel: { pi: async () => 'gift/cheap' } };
-  const noKey = tasteCandidates({ ...gift, ownOpenRouter: { apiKey: () => null } }, { provider: 'pi', model: 'qwen/qwen3-max' });
-  assert.deepEqual(noKey, [{ provider: 'pi', model: 'qwen/qwen3-max', effort: 'max', ready: false, ownKey: true }]);
-  const ownKey = tasteCandidates({ ...gift, ownOpenRouter: { apiKey: () => 'sk-or-own' } }, { provider: 'pi' });
-  assert.deepEqual(ownKey, [{ provider: 'pi', model: 'deepseek/deepseek-v4.1-flash', effort: 'max', ready: true, ownKey: true }]);
-});
-
-test('a chosen OpenRouter model is called with the user\'s own key, and skipped without one', async (t) => {
-  const dir = tempDir(t);
-  const store = new DocumentMemoryStore({ dir });
-  const runs = [];
-  const logs = [];
-  let ownKey = null;
-  const learner = createTasteLearner({
-    store,
-    signals: createTasteSignalBuffer(),
-    settings: () => ({ enabled: true, provider: 'pi', model: 'qwen/qwen3-max', effort: 'high' }),
-    routes: () => ({
-      readiness: ready,
-      giftMode: true,
-      ownOpenRouter: { apiKey: () => ownKey },
-      deps: { piManager: { apiKey: () => 'gift-lease' } },
-    }),
-    resolveKey: ({ documentId }) => store.resolveKey({ documentId }),
-    runOneShot: async ({ candidates, deps }) => {
-      runs.push({ candidates, key: deps.piManager.apiKey() });
-      return { provider: 'pi', model: candidates[0].model, value: [], output: '{"ops":[]}' };
-    },
-    log: (line) => logs.push(line),
-  });
-  t.after(() => learner.close());
-  await learner.turnEnded({ threadId: 'th1', turnId: 't1', documentId: 'doc-1', userText: '한다체로 써 줘', learn: true });
-  await until(() => logs.some((line) => line.includes('no pi learner route is ready')), 'skip without a key');
-  assert.equal(runs.length, 0);
-
-  ownKey = 'sk-or-own';
-  await learner.turnEnded({ threadId: 'th1', turnId: 't2', documentId: 'doc-1', userText: '한다체로 써 줘', learn: true });
-  await until(() => runs.length === 1, 'pi run');
-  assert.equal(runs[0].key, 'sk-or-own');
-  assert.deepEqual(runs[0].candidates.map((c) => [c.provider, c.model, c.effort]), [['pi', 'qwen/qwen3-max', 'high']]);
-});
-
-const styleNote = (text) => json([{ op: 'add', kind: 'style', subject: '문체.종결', text, userCandidate: true }]);
 
 test('promotion counts only the same preference text; a decline sticks to that text', async (t) => {
-  const h = harness(t, { outputs: { claude: (call) => styleNote(call.prompt.includes('"user_message":"합니다체로"') ? '본문은 합니다체 사용' : '본문은 한다체 사용') } });
+  const h = harness(t, { outputs: { rau: (call) => styleNote(call.prompt.includes('"user_message":"합니다체로"') ? '본문은 합니다체 사용' : '본문은 한다체 사용') } });
   const end = async (documentId, userText) => {
     const before = h.frames.length;
     await h.learner.turnEnded({ threadId: documentId, turnId: 't1', documentId, userText, learn: true });
@@ -432,7 +336,7 @@ test('a line already in AGENTS.md marks its notes promoted and the next candidat
   const proposals = [];
   const h = harness(t, {
     outputs: {
-      claude: json([
+      rau: json([
         { op: 'add', kind: 'style', subject: '문체.종결', text: '본문은 한다체 사용', userCandidate: true },
         { op: 'add', kind: 'style', subject: '문장부호.쉼표', text: '쉼표 뒤 한 칸 띄움', userCandidate: true },
       ]),
@@ -459,7 +363,7 @@ test('closing lets a nearly finished learn land, then aborts what still runs and
   const slow = new Promise((resolve) => { release = resolve; });
   const h = harness(t, {
     outputs: {
-      claude: async (call) => {
+      rau: async (call) => {
         if (call.prompt.includes('느린')) await slow;
         else await new Promise((resolve) => setTimeout(resolve, 30));
         return styleNote('본문은 한다체 사용');
@@ -474,7 +378,7 @@ test('closing lets a nearly finished learn land, then aborts what still runs and
   t.after(() => release());
   const slowHarness = harness(t, {
     outputs: {
-      claude: async (call) => {
+      rau: async (call) => {
         if (call.prompt.includes('느린')) await slow;
         return '{"ops":[]}';
       },
@@ -497,7 +401,7 @@ test('closing lets a nearly finished learn land, then aborts what still runs and
 
 test('signals that arrive during a failed turn, or while a debounce fires mid-turn, are still learned', async (t) => {
   let turnRunning = true;
-  const h = harness(t, { running: () => turnRunning, outputs: { claude: '{"ops":[]}' } });
+  const h = harness(t, { running: () => turnRunning, outputs: { rau: '{"ops":[]}' } });
   h.signals.onReviewSignals((documentId, info) => h.learner.signalsArrived(documentId, info));
   h.signals.ingest({ threadId: 'th1', turnId: 't1', documentId: 'doc-1', signals: [{ kind: 'rejected', at, after: '회의는 화요일에 열립니다.' }] });
   await settle();
@@ -518,7 +422,7 @@ test('signals that arrive during a failed turn, or while a debounce fires mid-tu
 
 test('a run learns only its own chat\'s signals; another chat\'s signals get their own run under that chat', async (t) => {
   const h = harness(t, {
-    outputs: { claude: (call) => (call.prompt.includes('보고서를 제출한다') ? styleNote('본문은 한다체 사용') : '{"ops":[]}') },
+    outputs: { rau: (call) => (call.prompt.includes('보고서를 제출한다') ? styleNote('본문은 한다체 사용') : '{"ops":[]}') },
   });
   h.signals.ingest({ threadId: 'chat-1', turnId: 'c1-t1', documentId: 'doc-1', signals: [{ kind: 'rewritten', at, after: '보고서를 제출해 주시기 바랍니다.', userText: '보고서를 제출한다.' }] });
   h.signals.ingest({ threadId: 'chat-2', turnId: 'c2-t1', documentId: 'doc-1', signals: [{ kind: 'rejected', at, after: '표를 지웁니다.' }] });
@@ -536,7 +440,7 @@ test('a history job runs in arrival order, not behind turns that arrive while it
   const gate = new Promise((resolve) => { release = resolve; });
   const h = harness(t, {
     outputs: {
-      claude: async (call) => {
+      rau: async (call) => {
         if (call.prompt.includes('첫 턴')) await gate;
         return '{"ops":[]}';
       },
@@ -557,7 +461,7 @@ test('a history job runs in arrival order, not behind turns that arrive while it
 });
 
 test('a turn waiting for review learns once, together with the accept and the rewrite', async (t) => {
-  const h = harness(t, { outputs: { claude: styleNote('본문은 한다체 사용') } });
+  const h = harness(t, { outputs: { rau: styleNote('본문은 한다체 사용') } });
   h.signals.onReviewSignals((documentId, info) => h.learner.signalsArrived(documentId, info));
   const key = await h.store.resolveKey({ documentId: 'doc-1' });
   await h.learner.turnEnded({
@@ -582,7 +486,7 @@ test('a turn waiting for review learns once, together with the accept and the re
 });
 
 test('accepts alone never call the model: the window closes into one run with the waiting turn, or nothing', async (t) => {
-  const h = harness(t, { outputs: { claude: '{"ops":[]}' } });
+  const h = harness(t, { outputs: { rau: '{"ops":[]}' } });
   h.signals.onReviewSignals((documentId, info) => h.learner.signalsArrived(documentId, info));
   await h.learner.turnEnded({ threadId: 'th1', turnId: 't1', documentId: 'doc-1', userText: '공지 문단을 써 줘', learn: true, reviewPending: true });
   h.signals.ingest({ threadId: 'th1', turnId: 't1', documentId: 'doc-1', signals: [{ kind: 'accepted', at, after: '공지합니다.' }] });
@@ -602,7 +506,7 @@ test('accepts alone never call the model: the window closes into one run with th
 });
 
 test('a waiting turn runs alone after the cap, or rides along with the next turn of its chat', async (t) => {
-  const h = harness(t, { outputs: { claude: '{"ops":[]}' } });
+  const h = harness(t, { outputs: { rau: '{"ops":[]}' } });
   await h.learner.turnEnded({ threadId: 'th1', turnId: 't1', documentId: 'doc-1', userText: '표를 고쳐 줘', learn: true, reviewPending: true });
   await new Promise((resolve) => setTimeout(resolve, 150));
   assert.equal(h.calls.length, 0, 'still waiting for review');
@@ -618,7 +522,7 @@ test('a waiting turn runs alone after the cap, or rides along with the next turn
 });
 
 test('undo prefers the hub\'s own change list and refuses another document\'s learning', async (t) => {
-  const h = harness(t, { outputs: { claude: styleNote('본문은 한다체 사용') } });
+  const h = harness(t, { outputs: { rau: styleNote('본문은 한다체 사용') } });
   await h.learner.turnEnded({ threadId: 'th1', turnId: 't1', documentId: 'doc-1', userText: '한다체로', learn: true });
   await until(() => h.frames.length === 1, 'marker');
   const { key, learnId, items } = h.frames[0];
@@ -635,7 +539,7 @@ test('undo prefers the hub\'s own change list and refuses another document\'s le
 
 test('a one-off request never overwrites a confirmed note; general phrasing or repeated rewrites do', async (t) => {
   let noteId = '';
-  const h = harness(t, { outputs: { claude: () => json([{ op: 'update', id: noteId, text: '본문은 합니다체 사용' }]) } });
+  const h = harness(t, { outputs: { rau: () => json([{ op: 'update', id: noteId, text: '본문은 합니다체 사용' }]) } });
   h.signals.onReviewSignals((documentId, info) => h.learner.signalsArrived(documentId, info));
   const key = await h.store.resolveKey({ documentId: 'doc-1' });
   const note = { op: 'add', kind: 'style', subject: '문체.종결', text: '본문은 한다체 사용' };
@@ -668,32 +572,4 @@ test('a one-off request never overwrites a confirmed note; general phrasing or r
   assert.deepEqual(guardTasteOps(swap, once, { userTexts: ['여기는 한다체로 써 줘'], signals: [{ kind: 'accepted' }] }), []);
   assert.deepEqual(guardTasteOps(swap, once, { userTexts: ['본문은 한다체로 써 줘'] }), swap);
   assert.deepEqual(guardTasteOps(swap, [{ ...once[0], origin: 'user' }], { userTexts: ['본문은 한다체로 써 줘'] }), []);
-});
-
-test('the chosen OpenRouter route uses the Pi agent\'s own auth, whether pasted or from the browser login', async (t) => {
-  const rootDir = tempDir(t);
-  const openRouter = {
-    async validateKey() { return { valid: true, label: 'rhwp', limit: null, usage: 0, isFreeTier: false }; },
-    async catalog() { return []; },
-    async credits() { return null; },
-    clearCache() {},
-  };
-  const manager = await createPiManager({
-    rootDir,
-    openRouter,
-    secretStore: createMemorySecretStore(),
-    // OpenRouter PKCE 키 교환만 흉내 낸다 — 네트워크는 쓰지 않는다.
-    fetchImpl: async () => ({ ok: true, json: async () => ({ key: 'sk-or-v1-from-oauth' }) }),
-  }).init();
-  const own = tasteOwnOpenRouter(manager);
-  const chosen = { provider: 'pi' };
-  assert.equal(tasteCandidates({ readiness: ready, ownOpenRouter: own }, chosen)[0].ready, false, 'no auth yet');
-
-  const started = manager.beginOAuth('http://127.0.0.1:5175/oauth/openrouter/callback');
-  await manager.completeOAuth('one-time-code', started.state);
-  assert.equal(own.apiKey(), 'sk-or-v1-from-oauth');
-  assert.equal(tasteCandidates({ readiness: ready, ownOpenRouter: own }, chosen)[0].ready, true);
-
-  await manager.setApiKey('sk-or-v1-pasted');
-  assert.equal(own.apiKey(), 'sk-or-v1-pasted');
 });

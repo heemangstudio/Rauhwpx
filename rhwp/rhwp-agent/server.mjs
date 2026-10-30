@@ -136,7 +136,6 @@ import {
   createTasteLearner,
   newTasteTurn,
   noteTasteTurnEvent,
-  tasteOwnOpenRouter,
 } from './taste-learner.mjs';
 import { createTasteHistoryHandler } from './taste-history.mjs';
 import { createFontHttpHandler, isFontPath } from './hub-fonts.mjs';
@@ -4878,21 +4877,9 @@ function tasteMemoryKey({ threadId, documentId }) {
   return record ? documentMemoryHub.keyFor(record, documentId) : documentMemoryHub.store.resolveKey({ documentId });
 }
 
-/** 학습기의 공급자 경로 — 제목 생성과 같은 준비 상태·격리 환경을 쓴다. */
-async function tasteLearnerRoutes(context) {
-  const record = tasteRecord(context) ?? [...sessions.values()].find((candidate) => !candidate.disposed) ?? null;
-  if (!record) return { readiness: {} };
-  const health = providerHealth.cached() ?? await providerHealth.check().catch(() => null);
-  const { readiness, resolvePiTitleModel, resolveCodexTitleModel: _codex, signal: _signal, ...deps } = checkpointTitleDeps(record, health, undefined);
-  return {
-    readiness,
-    codexQuota: providerLimits.snapshot().codex,
-    giftMode: piManager.access().mode === 'gift',
-    resolveModel: { pi: resolvePiTitleModel },
-    ownOpenRouter: tasteOwnOpenRouter(piManager),
-    hosted: hostedRau,
-    deps,
-  };
+/** Rau-0.1 은 라이선스로 인증하는 호스팅 경로만 쓴다. */
+function tasteLearnerRoutes() {
+  return { hosted: hostedRau };
 }
 
 /** taste-learned·rau-upgrade 는 한 창에만 보낸다 — 그 채팅을 가진 창, 없으면 그 문서를 연 창, 없으면 아무 창. */

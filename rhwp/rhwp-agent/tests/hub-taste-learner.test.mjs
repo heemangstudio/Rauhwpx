@@ -1,5 +1,5 @@
 // 허브의 Rau-0.1 연결: 턴 끝 학습 → taste-learned 하나(직접 쓰기 + 학습), 되돌리기, 설정 토글,
-// 여러 문서의 취향 → AGENTS.md 제안 하나와 확인 표시. 모델은 가짜 runOneShot 이다.
+// 여러 문서의 취향 → AGENTS.md 제안 하나와 확인 표시. 모델은 가짜 HostedRau 이다.
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -13,7 +13,7 @@ import { registerHubSession } from '../../../desktop/agent-hub.mjs';
 import { HUB_PROTOCOL_VERSION, startHub } from './hub-harness.mjs';
 
 /**
- * 가짜 Pi(채팅 공급자)와 가짜 runOneShot(학습기 모델)을 허브에 끼운다. 학습기 출력은 outputs.json 의
+ * 가짜 Pi(채팅 공급자)와 가짜 HostedRau(학습기 모델)을 허브에 끼운다. 학습기 출력은 outputs.json 의
  * 앞에서부터 하나씩 꺼내고, 받은 프롬프트는 learner-prompts.jsonl 에 남긴다.
  */
 function fakePreload(root) {
@@ -23,7 +23,7 @@ function fakePreload(root) {
   const release = path.join(root, 'release');
   const aborted = path.join(root, 'learner-aborted');
   const piUrl = new URL('../agents/pi.mjs', import.meta.url).href;
-  const oneShotUrl = new URL('../agents/one-shot-llm.mjs', import.meta.url).href;
+  const hostedUrl = new URL('../rau-hosted.mjs', import.meta.url).href;
   const piSource = `
     import { appendFileSync, existsSync, rmSync, writeFileSync } from 'node:fs';
     export function canResumePiSession() { return false; }
@@ -55,31 +55,28 @@ function fakePreload(root) {
       };
     }
   `;
-  const oneShotStub = `
+  const hostedStub = `
     import { appendFileSync as __append, existsSync as __exists, readFileSync as __read, writeFileSync as __write } from 'node:fs';
-    export async function runOneShot(opts) {
-      __append(${JSON.stringify(learnerLog)}, JSON.stringify(opts.prompt) + '\\n');
+    export function createHostedRau() { return { usable: () => true, async learn(prompt, { signal } = {}) {
+      __append(${JSON.stringify(learnerLog)}, JSON.stringify(prompt) + '\\n');
       const queue = __exists(${JSON.stringify(outputs)}) ? JSON.parse(__read(${JSON.stringify(outputs)}, 'utf8')) : [];
       const output = queue.shift() ?? '{"ops":[]}';
       __write(${JSON.stringify(outputs)}, JSON.stringify(queue));
       if (output === '__hang__') {
-        await new Promise((resolve) => opts.deps.signal.addEventListener('abort', resolve, { once: true }));
+        await new Promise((resolve) => signal.addEventListener('abort', resolve, { once: true }));
         __write(${JSON.stringify(aborted)}, '1');
         return null;
       }
-      const candidate = opts.candidates.find((route) => route.ready);
-      if (!candidate) return null;
-      const value = opts.parse(output);
-      return value == null ? null : { provider: candidate.provider, model: candidate.model, value, output };
-    }
+      return { ok: true, text: output, model: 'rau-0.1' };
+    } }; }
   `;
   writeFileSync(path.join(root, 'loader.mjs'), `
     export async function load(url, context, nextLoad) {
       if (url === ${JSON.stringify(piUrl)}) return { format: 'module', shortCircuit: true, source: ${JSON.stringify(piSource)} };
-      if (url === ${JSON.stringify(oneShotUrl)}) {
+      if (url === ${JSON.stringify(hostedUrl)}) {
         const original = await nextLoad(url, context);
-        const source = String(original.source).replace('export async function runOneShot(', 'async function realRunOneShot(');
-        return { ...original, shortCircuit: true, source: source + ${JSON.stringify(oneShotStub)} };
+        const source = String(original.source).replace('export function createHostedRau(', 'function realCreateHostedRau(');
+        return { ...original, shortCircuit: true, source: source + ${JSON.stringify(hostedStub)} };
       }
       return nextLoad(url, context);
     }
@@ -271,7 +268,7 @@ test('Rau-0.1 learns at turn end, shows one marker per turn, undoes, honours the
 
   // 7. 공급자·모델·추론을 고른다. 잘못된 값은 거절하고 설정을 그대로 둔다.
   const chosen = await request({ type: 'taste-settings-set', provider: 'pi', model: 'qwen/qwen3-max', effort: 'high' }, 'taste-settings');
-  assert.deepEqual(chosen.settings, { enabled: false, provider: 'pi', model: 'qwen/qwen3-max', effort: 'high' });
+  assert.deepEqual(chosen.settings, { enabled: false, provider: 'auto', model: null, effort: null });
   const rejected = await request({ type: 'taste-settings-set', provider: 'openai' }, 'taste-settings');
   assert.equal(rejected.ok, false);
   assert.equal(rejected.error.code, 'TASTE_SETTINGS_INVALID');
