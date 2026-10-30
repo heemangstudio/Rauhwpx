@@ -37,12 +37,12 @@ test('하마 설정은 기본으로 꺼져 있고, 끄고 켜면 입력기의 �
 
     await page.click(track);
     await clickApply(page);
-    await page.waitForSelector('.ag-composer .ag-hama-perch .ag-hama canvas');
+    await page.waitForSelector('.ag-composer .ag-hama-perch .ag-hama-hippo canvas');
     assert.deepEqual(await state(page, toggle), { checked: true, hama: true, stored: true });
 
     await page.click(track);
     await clickApply(page);
-    await page.waitForFunction(() => !document.querySelector('.ag-composer .ag-hama'));
+    await page.waitForFunction(() => !document.querySelector('.ag-composer .ag-hama-hippo'));
     const off = await state(page, toggle);
     assert.deepEqual(off, { checked: false, hama: false, stored: false }, '끄고 적용하면 새로고침 없이 사라지고 저장된다');
 
@@ -53,7 +53,7 @@ test('하마 설정은 기본으로 꺼져 있고, 끄고 켜면 입력기의 �
 
     await page.click(track);
     await clickApply(page);
-    await page.waitForSelector('.ag-composer .ag-hama-perch .ag-hama canvas');
+    await page.waitForSelector('.ag-composer .ag-hama-perch .ag-hama-hippo canvas');
     assert.deepEqual(await state(page, toggle), { checked: true, hama: true, stored: true }, '다시 켜면 돌아온다');
   } finally {
     await browser.close();
@@ -67,7 +67,7 @@ async function state(page: Page, toggle: string) {
     const stored = raw ? JSON.parse(raw).view?.showHama ?? null : null;
     return {
       checked: document.querySelector<HTMLInputElement>(selector)!.checked,
-      hama: document.querySelectorAll('.ag-composer .ag-hama').length === 1,
+      hama: document.querySelectorAll('.ag-composer .ag-hama-hippo').length === 1,
       stored,
     };
   }, toggle);

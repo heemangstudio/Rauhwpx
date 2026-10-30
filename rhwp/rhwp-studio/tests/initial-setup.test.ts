@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import { AGENT_MODELS } from '../src/agent/models.ts';
 import type { AgentName, AgentSetupStatus } from '../src/agent/types.ts';
-import { PROVIDER_ORDER } from '../src/ui/agent-sidebar/providers.ts';
+import { CONNECTABLE_PROVIDERS, PROVIDER_ORDER } from '../src/ui/agent-sidebar/providers.ts';
 import {
   isProviderConfigured,
   previewModelLabels,
@@ -93,7 +93,8 @@ test('카드 모델 목록은 현재 선택과 Pi 기본 안내를 짧게 보여
   assert.deepEqual(previewModelLabels('pi'), ['OpenRouter에서 고름', '최대 3개']);
   assert.equal(SUGGESTED_AGENT, 'claude');
   assert.equal(PROVIDER_ORDER[0], 'claude');
-  assert.deepEqual([...PROVIDER_ORDER], ['claude', 'codex', 'pi']);
+  // Hama 는 플랜이라 처음 설정의 연결 카드에 서지 않는다.
+  assert.deepEqual([...CONNECTABLE_PROVIDERS], ['claude', 'codex', 'pi']);
   assert.equal(PROVIDER_VENDOR.claude, 'Anthropic');
   for (const agent of PROVIDER_ORDER) {
     assert.ok(PROVIDER_VENDOR[agent]);

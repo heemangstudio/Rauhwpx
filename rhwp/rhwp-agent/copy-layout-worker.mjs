@@ -23,6 +23,8 @@ export async function launchCopyLayoutWorker(record, job, dependencies) {
     piManager,
     piModelConfig,
     piSpawnHooks,
+    piRuntimeSpawnHooks = null,
+    piRuntimeModelConfig = null,
     SESSION_FACTORIES,
     unknownAgentError,
   } = dependencies;
@@ -102,9 +104,11 @@ export async function launchCopyLayoutWorker(record, job, dependencies) {
     piBin: piManager.piBin,
     piRoot: piManager.rootDir,
     openRouterApiKey: job.agent === 'pi' ? piManager.apiKey() ?? undefined : undefined,
-    reasoning: job.agent === 'pi' ? Boolean(piModelConfig(job.model)?.reasoning) : false,
-    // 선물 크레딧 리스는 스폰마다 새로 받는다.
-    ...(job.agent === 'pi' ? piSpawnHooks?.() : {}),
+    reasoning: piRuntimeModelConfig
+      ? Boolean(piRuntimeModelConfig(job.agent, job.model)?.reasoning)
+      : job.agent === 'pi' && Boolean(piModelConfig(job.model)?.reasoning),
+    // 선물 크레딧·Hama 리스는 스폰마다 새로 받는다.
+    ...(piRuntimeSpawnHooks ? piRuntimeSpawnHooks(job.agent) : job.agent === 'pi' ? piSpawnHooks?.() : {}),
   };
   const createBackend = SESSION_FACTORIES[job.agent];
   if (!createBackend) throw unknownAgentError(job.agent);

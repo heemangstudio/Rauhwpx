@@ -136,6 +136,8 @@ import { installLicenseHost } from './license-host.mjs';
 import { createGiftClient } from './gift-client.mjs';
 import { createGiftManager } from './gift-manager.mjs';
 import { handleGiftRequest, installGiftHost, staleGiftResponse } from './gift-host.mjs';
+import { createHamaClient } from './hama-client.mjs';
+import { handleHamaRequest, staleHamaResponse } from './hama-host.mjs';
 import { createRauClient } from './rau-client.mjs';
 import { handleRauRequest, installRauHost, staleRauResponse } from './rau-host.mjs';
 import { createPlanManager } from './plan-manager.mjs';
@@ -499,6 +501,8 @@ class AgentHubOwner {
         RHWP_DOWNLOADS_DIR: app.getPath('downloads'),
         // 선물 크레딧은 macOS·Windows 에서만 준다. 다른 OS 의 허브는 선물 경로를 모른다.
         ...(process.platform === 'darwin' || process.platform === 'win32' ? { RHWP_GIFT_BROKER: 'ipc' } : {}),
+        // Hama 플랜: 메인이 lease 로 플랜 상태를 묻고, 살아 있는 플랜일 때만 Pi 에 줄 lease 를 넘긴다.
+        RHWP_HAMA_BROKER: 'ipc',
         // 호스팅 Rau-0.1 은 메인이 lease 로 대신 묻는다. 허브는 결과만 받는다.
         RHWP_RAU_BROKER: 'ipc',
         ...(rhwpExecutable ? { RHWP_BIN: rhwpExecutable } : {}),
@@ -524,6 +528,16 @@ class AgentHubOwner {
         }
         if (message?.type === 'rhwp-activity-response') {
           if (source === this.#child && typeof message.id === 'string') this.#activityQueries.get(message.id)?.(message.busy !== false);
+          return;
+        }
+        if (message?.type === 'rhwp-hama-request') {
+          if (source !== this.#child || this.#stoppingChild === source || this.#disposed || quitting) {
+            if (source.connected) source.send(staleHamaResponse(message));
+            return;
+          }
+          void handleHamaRequest(hamaDeps, message).then((response) => {
+            if (response && source.connected) source.send(response);
+          });
           return;
         }
         if (message?.type === 'rhwp-rau-request') {
@@ -649,6 +663,13 @@ class AgentHubOwner {
       },
     ).finally(() => { this.#suspendPromise = null; });
     return this.#suspendPromise;
+  }
+
+  /** 라이선스가 바뀌었다고 지금 허브에 알린다. 허브가 Hama 플랜 상태를 다시 묻는다. */
+  notifyHamaChanged() {
+    const child = this.#child;
+    if (!child || this.#stoppingChild === child || this.#disposed || quitting || !child.connected) return;
+    try { child.send({ type: 'rhwp-hama-changed' }); } catch { /* 끝나는 자식 */ }
   }
 
   /** 선물 크레딧 상태가 바뀌었다고 지금 허브에 알린다. 허브가 다시 자격 증명을 묻는다. */
@@ -1563,6 +1584,11 @@ const giftManager = createGiftManager({
   },
 });
 const giftHost = installGiftHost({ ipcMain, manager: giftManager, isTrustedStudioEvent, studioWebContents });
+// Hama 플랜: 키 서버와 같은 주소의 /v1/hama/status 에 라이선스 lease 로 묻는다.
+const hamaDeps = {
+  client: createHamaClient({ baseUrl: licenseApiBase }),
+  currentLease: () => licenseManager.currentLease(),
+};
 // 호스팅 Rau-0.1(Pro): 키 서버와 같은 주소에 라이선스 lease 로 묻는다.
 const rauDeps = {
   client: createRauClient({ baseUrl: licenseApiBase }),
@@ -1583,6 +1609,7 @@ const licenseManager = createLicenseManager({
   enforce: app.isPackaged || process.env.HAMA_LICENSE_GATE === 'on',
   onChange: (status) => {
     licenseHost.broadcast(status);
+    hubOwner.notifyHamaChanged();
     hubOwner.notifyLicenseChanged();
     void giftManager.licenseChanged().catch((error) => console.warn('[hamaeditor] gift refresh failed:', error));
     void planManager.licenseChanged(status).catch((error) => console.warn('[hamaeditor] plan refresh failed:', error));

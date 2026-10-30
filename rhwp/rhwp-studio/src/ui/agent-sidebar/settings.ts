@@ -47,7 +47,7 @@ import {
 } from './settings-contract.ts';
 import { createChevron } from '../chevron.ts';
 import { createSleepyHippo } from './sleepy-hippo.ts';
-import { AGENT_LABEL, createProviderIcon, PROVIDER_ORDER } from './providers.ts';
+import { AGENT_LABEL, CONNECTABLE_PROVIDERS, createProviderIcon, PROVIDER_ORDER } from './providers.ts';
 import { createSettingsSearch, type SettingsSearchTarget } from './settings-search.ts';
 import {
   formatResetAt,
@@ -95,6 +95,7 @@ const API_KEY_PLACEHOLDER: Record<AgentName, string> = {
   claude: 'sk-ant-…',
   codex: 'sk-proj-…',
   pi: 'sk-or-…',
+  hama: '',
   grok: 'xai-…',
   cursor: 'API 키',
   opencode: 'API 키',
@@ -683,7 +684,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     { root: HTMLDetailsElement; dot: HTMLElement; detail: HTMLElement; message: HTMLElement; setup: HTMLButtonElement }
   >();
   const providerList = el('div', 'ag-settings-provider-list');
-  for (const agent of PROVIDER_ORDER) {
+  for (const agent of CONNECTABLE_PROVIDERS) {
     const row = el('details', 'ag-settings-provider-row');
     row.dataset.agent = agent;
     const dot = el('span', 'ag-settings-dot');
@@ -2146,6 +2147,8 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   function selectableAgents(): readonly AgentName[] {
     return PROVIDER_ORDER.filter((agent) => {
       if (agent === 'pi') return piStatus?.setupComplete === true;
+      // Hama 는 서버가 살아 있는 플랜이라고 답했을 때만 고를 수 있다.
+      if (agent === 'hama') return setupStatuses?.hama?.connected === true;
       return true;
     });
   }
@@ -2290,7 +2293,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   function renderProviders(): void {
     if (setupStatuses) announceProviderUpdates(setupStatuses);
     const online = connectionState === 'connected';
-    for (const agent of PROVIDER_ORDER) {
+    for (const agent of CONNECTABLE_PROVIDERS) {
       const row = providerRows.get(agent);
       if (!row) continue;
       const setup = setupStatuses?.[agent];

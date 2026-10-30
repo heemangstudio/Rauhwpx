@@ -39,7 +39,7 @@ function capabilityError(code, message) {
 }
 
 function requireActivePiTurn(activeSession) {
-  if (activeSession?.agent !== 'pi') {
+  if (activeSession?.agent !== 'pi' && activeSession?.agent !== 'hama') {
     throw capabilityError('PI_SUBAGENT_ROOT_REQUIRED', 'A Pi root turn is required');
   }
   if (activeSession.providerRole !== 'chat' || !activeSession.providerCapabilityResource) {
