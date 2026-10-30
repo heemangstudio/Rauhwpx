@@ -112,6 +112,7 @@ import { createCodexModelCatalog, createCodexModelResolver, createCodexModelStor
 import { createOpenRouter } from './openrouter.mjs';
 import { createIpcSecretStore } from './secret-store.mjs';
 import { createIpcGiftSource } from './gift-source.mjs';
+import { createHostedRau, createIpcRauSource } from './rau-hosted.mjs';
 import { handlePiToolDefinitions } from './pi/tool-schema.mjs';
 import { PiSubagentCapabilityRegistry } from './pi/subagent-capabilities.mjs';
 import { resolveHwpExtractor } from './reference-extractor.mjs';
@@ -390,6 +391,8 @@ if (process.env.RHWP_AGENT_MODE === 'production' && !secretStore.available) {
 }
 // 선물 크레딧 리스는 데스크톱(macOS·Windows)이 준다. 그 밖에서는 언제나 꺼져 있다.
 const giftSource = createIpcGiftSource();
+// 호스팅 Rau-0.1(Pro): 데스크톱 main 이 라이선스 lease 로 대신 묻는다. 브라우저 Studio 에서는 쓸 수 없다.
+const hostedRau = createHostedRau({ source: createIpcRauSource() });
 const piManager = createPiManager({
   rootDir: PI_ROOT, openRouter, secretStore, giftSource, routingSort: process.env.RHWP_PI_ROUTING_SORT,
 });
@@ -4895,16 +4898,17 @@ async function tasteLearnerRoutes(context) {
     giftMode: piManager.access().mode === 'gift',
     resolveModel: { pi: resolvePiTitleModel },
     ownOpenRouter: tasteOwnOpenRouter(piManager),
+    hosted: hostedRau,
     deps,
   };
 }
 
-/** taste-learned 는 한 창에만 보낸다 — 그 채팅을 가진 창, 없으면 그 문서를 연 창, 없으면 아무 창. */
+/** taste-learned·rau-upgrade 는 한 창에만 보낸다 — 그 채팅을 가진 창, 없으면 그 문서를 연 창, 없으면 아무 창. */
 function sendTasteFrame(frame) {
   const record = tasteRecord(frame, { socket: true })
     ?? [...sessions.values()].find((candidate) => !candidate.disposed && candidate.studioSocket)
     ?? null;
-  if (!record || !sendJson(record.studioSocket, frame)) log(`${RAU_TASTE_NAME}: no Studio window for ${frame.learnId}`);
+  if (!record || !sendJson(record.studioSocket, frame)) log(`${RAU_TASTE_NAME}: no Studio window for ${frame.learnId ?? frame.type}`);
 }
 
 function sendTasteSettings(sock, requestId, extra = {}) {

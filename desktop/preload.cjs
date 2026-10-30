@@ -128,6 +128,11 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
       return () => ipcRenderer.removeListener('gift:changed', listener);
     },
   },
+  // 호스팅 Rau-0.1(Pro). 메인이 lease 로 서버에 묻고, 렌더러는 자격과 사용량만 받는다.
+  rau: {
+    getStatus: () => ipcRenderer.invoke('rau:status'),
+    openUpgrade: (url) => ipcRenderer.invoke('rau:open-upgrade', typeof url === 'string' ? url : ''),
+  },
   // 앱 업데이트. 확인·다운로드·재시작은 메인이 하고, 렌더러는 상태를 받아 보여 준다.
   updates: {
     getAllState: () => ipcRenderer.invoke('desktop:update-all-get-state'),
