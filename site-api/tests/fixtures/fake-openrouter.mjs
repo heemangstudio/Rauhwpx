@@ -15,6 +15,8 @@ export function createFakeOpenRouter({ provisioningKey = 'pk-test', autoRelease 
   let patchFailure = null; // status
   let patchHold = null; // promise the next PATCH response waits for, after the change is applied
   let chatFailure = null; // { status, body }
+  let chatReply = 'hello';
+  let chatSpend = { credit: 0.0125, byok: 0.25 }; // what one chat completion costs
   let waiters = [];
   const release = () => { const w = waiters; waiters = []; w.forEach((fn) => fn()); };
   const gate = () => (autoRelease > 0
@@ -31,7 +33,9 @@ export function createFakeOpenRouter({ provisioningKey = 'pk-test', autoRelease 
   const keyInfo = (hash, k) => ({
     hash, name: k.name, label: `${k.key.slice(0, 12)}...`, disabled: k.disabled,
     limit: k.limit, usage: k.usage, byok_usage: k.byokUsage, include_byok_in_limit: k.includeByok,
-    limit_remaining: Math.max(0, k.limit - spent(k)), limit_reset: null,
+    limit_remaining: Math.max(0, k.limit - spent(k)), limit_reset: k.limitReset ?? null,
+    // The fake never crosses a month, so this month's usage is all of it.
+    usage_monthly: k.usage, byok_usage_monthly: k.byokUsage,
   });
   const byKey = (auth) => [...keys.entries()].find(([, k]) => `Bearer ${k.key}` === auth);
 
@@ -50,7 +54,7 @@ export function createFakeOpenRouter({ provisioningKey = 'pk-test', autoRelease 
       createFailure = null;
       const hash = randomBytes(8).toString('hex');
       const key = `sk-or-v1-${randomBytes(16).toString('hex')}`;
-      if (!failure || failure.createAnyway) keys.set(hash, { name: body.name, key, limit: body.limit, usage: 0, byokUsage: 0, includeByok: body.include_byok_in_limit === true, disabled: false });
+      if (!failure || failure.createAnyway) keys.set(hash, { name: body.name, key, limit: body.limit, limitReset: body.limit_reset ?? null, usage: 0, byokUsage: 0, includeByok: body.include_byok_in_limit === true, disabled: false });
       if (failure) return json(res, failure.status, { error: { code: failure.status, message: 'boom' } });
       return json(res, 201, { key, data: keyInfo(hash, keys.get(hash)) });
     }
@@ -69,6 +73,7 @@ export function createFakeOpenRouter({ provisioningKey = 'pk-test', autoRelease 
         if (patchFailure) { const status = patchFailure; patchFailure = null; return json(res, status, { error: { code: status, message: 'boom' } }); }
         if (body.disabled !== undefined) k.disabled = body.disabled;
         if (body.limit !== undefined) k.limit = body.limit;
+        if (body.limit_reset !== undefined) k.limitReset = body.limit_reset;
         if (patchHold) { const held = patchHold; patchHold = null; await held; }
         return json(res, 200, { data: keyInfo(keyPath[1], k) });
       }
@@ -96,11 +101,14 @@ export function createFakeOpenRouter({ provisioningKey = 'pk-test', autoRelease 
       if (spent(k) >= k.limit) {
         return json(res, 403, { error: { code: 403, message: 'Key limit exceeded (total limit).', metadata: { limit_source: 'openrouter_key_limit' } } });
       }
-      k.byokUsage += 0.25; // Claude via the owner's BYOK key
-      k.usage += 0.0125; // OpenRouter's 5% BYOK fee
+      k.byokUsage += chatSpend.byok; // Claude via the owner's BYOK key
+      k.usage += chatSpend.credit; // OpenRouter's 5% BYOK fee
       if (!body.stream) {
         chat.finished = true;
-        return json(res, 200, { id: 'gen-1', choices: [{ message: { role: 'assistant', content: 'hello' } }] });
+        const usage = chatSpend.byok
+          ? { cost: chatSpend.credit, is_byok: true, cost_details: { upstream_inference_cost: chatSpend.byok } }
+          : { cost: chatSpend.credit, is_byok: false };
+        return json(res, 200, { id: 'gen-1', model: body.model, choices: [{ message: { role: 'assistant', content: chatReply } }], usage });
       }
       res.writeHead(200, { 'Content-Type': 'text/event-stream' });
       for (const word of ['Hel', 'lo', ' there']) {
@@ -126,6 +134,9 @@ export function createFakeOpenRouter({ provisioningKey = 'pk-test', autoRelease 
     failNextPatch(status) { patchFailure = status; },
     /** The next PATCH changes the key at once but answers only after the returned function is called. */
     failNextChat(status, body) { chatFailure = { status, body }; },
+    /** What each later chat completion costs: `credit` on OpenRouter credits, `byok` on the owner's provider key. */
+    setChatSpend(spend) { chatSpend = { credit: 0, byok: 0, ...spend }; },
+    setChatReply(text) { chatReply = text; },
     holdNextPatch() { let resume; patchHold = new Promise((resolve) => { resume = resolve; }); return resume; },
     async listen(port = 0) {
       await new Promise((resolve) => server.listen(port, '127.0.0.1', resolve));

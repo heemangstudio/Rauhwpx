@@ -365,3 +365,42 @@ export function resolveHamaConfig(env = process.env) {
     openrouterBase: apiBase('OPENROUTER_API_BASE', trimmed(env.OPENROUTER_API_BASE), DEFAULT_OPENROUTER_API_BASE),
   };
 }
+
+export function resolveRauDbPath(env = process.env) {
+  return path.join(resolveDataDir(env), 'rau.json');
+}
+
+export const DEFAULT_RAU_MODEL = 'deepseek/deepseek-v4.1-flash';
+/** OpenRouter's `reasoning.effort` values. */
+export const RAU_REASONING_EFFORTS = Object.freeze(['xhigh', 'high', 'medium', 'low', 'minimal', 'none']);
+
+/**
+ * Hosted Rau-0.1 from env. It runs when the OpenRouter management key is set, unless
+ * RAU_ENABLED turns it off. The model is a pinned OpenRouter id: a `~` alias (`~deepseek/...-latest`)
+ * can move to a pricier model on its own, so it is refused at startup.
+ */
+export function resolveRauConfig(env = process.env) {
+  const enabledText = trimmed(env.RAU_ENABLED).toLowerCase();
+  if (enabledText && !['1', '0', 'true', 'false', 'on', 'off'].includes(enabledText)) {
+    throw new Error(`RAU_ENABLED must be true or false: ${env.RAU_ENABLED}`);
+  }
+  const model = trimmed(env.RAU_MODEL) || DEFAULT_RAU_MODEL;
+  if (!/^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._:-]*$/i.test(model)) {
+    throw new Error(`RAU_MODEL must be a pinned OpenRouter model id like ${DEFAULT_RAU_MODEL}: ${model}`);
+  }
+  const reasoningEffort = trimmed(env.RAU_REASONING_EFFORT).toLowerCase() || 'low';
+  if (!RAU_REASONING_EFFORTS.includes(reasoningEffort)) {
+    throw new Error(`RAU_REASONING_EFFORT must be one of ${RAU_REASONING_EFFORTS.join(', ')}: ${env.RAU_REASONING_EFFORT}`);
+  }
+  const maxOutputTokens = positiveNumber('RAU_MAX_OUTPUT_TOKENS', trimmed(env.RAU_MAX_OUTPUT_TOKENS), 2000);
+  if (!Number.isSafeInteger(maxOutputTokens)) throw new Error('RAU_MAX_OUTPUT_TOKENS must be an integer');
+  return {
+    enabled: !['0', 'false', 'off'].includes(enabledText),
+    provisioningKey: trimmed(env.OPENROUTER_PROVISIONING_KEY),
+    model,
+    reasoningEffort,
+    maxOutputTokens,
+    monthlyCapUsd: positiveNumber('RAU_MONTHLY_CAP_USD', trimmed(env.RAU_MONTHLY_CAP_USD), 1),
+    apiBase: (trimmed(env.OPENROUTER_API_BASE) || DEFAULT_OPENROUTER_API_BASE).replace(/\/+$/, ''),
+  };
+}

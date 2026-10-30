@@ -1010,9 +1010,11 @@ export function createLicensesService({
   /**
    * Check a lease the app presents as a bearer token: our own signature, not expired, the
    * license still active, the device still activated and the key unchanged. Read-only.
-   * Returns `{ keyId, deviceId, platform, source, tier }`; anything else is `unauthorized` (401).
+   * Returns `{ keyId, deviceId, platform, source, tier, edition, active, rauEligible }`; anything else is
+   * `unauthorized` (401). `allowInactive` also answers for a revoked or expired key (`active: false`),
+   * so hosted Rau can tell such a key to upgrade; the lease itself must still be ours and unexpired.
    */
-  async function authenticateLease(lease) {
+  async function authenticateLease(lease, { allowInactive = false } = {}) {
     if (!signingKey) throw licenseError('unauthorized', 401);
     leasePublicKeys ??= { [leaseKid]: publicKeyFromPrivate(signingKey) };
     const checked = verifyLease(lease, leasePublicKeys, { now: now() });
@@ -1021,11 +1023,10 @@ export function createLicensesService({
     const state = await read();
     const license = Object.hasOwn(state.licenses, keyId) ? state.licenses[keyId] : undefined;
     const device = license?.devices && Object.hasOwn(license.devices, deviceId) ? license.devices[deviceId] : undefined;
+    if (!license || !device || licenseKeyHash(license.key) !== keyHash) throw licenseError('unauthorized', 401);
     const end = accessEnd(license);
-    if (!license || license.status !== 'active' || !device || licenseKeyHash(license.key) !== keyHash
-      || (end !== null && now() >= end)) {
-      throw licenseError('unauthorized', 401);
-    }
+    const active = license.status === 'active' && !(end !== null && now() >= end);
+    if (!active && !allowInactive) throw licenseError('unauthorized', 401);
     return {
       keyId,
       deviceId,
@@ -1033,6 +1034,7 @@ export function createLicensesService({
       source: license.source,
       tier: tierOf(license),
       edition: license.edition ?? null,
+      active,
       rauEligible: rauEligible(license, now(), paymentGraceMaxMs),
     };
   }
