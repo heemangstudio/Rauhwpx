@@ -282,7 +282,6 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     { id: 'auto', label: '자동' },
     { id: 'claude', label: AGENT_LABEL.claude },
     { id: 'codex', label: AGENT_LABEL.codex },
-    { id: 'pi', label: 'OpenRouter' },
   ];
   const tasteProviderChoices = TASTE_PROVIDER_CHOICES.map(({ id, label }) => {
     const root = button('rhwp-setup-card-action');

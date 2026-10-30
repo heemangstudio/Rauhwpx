@@ -64,7 +64,7 @@ export function readTasteUndoResult(msg: Record<string, unknown>): TasteUndoResu
   };
 }
 
-const TASTE_PROVIDERS: readonly TasteProvider[] = ['auto', 'claude', 'codex', 'pi'];
+const TASTE_PROVIDERS: readonly TasteProvider[] = ['auto', 'claude', 'codex'];
 
 /**
  * 공급자를 고르고 모델·추론을 비웠을 때 학습기가 쓰는 값. 허브 taste-learner.mjs 의 TASTE_ROUTES 와 같다.
@@ -72,13 +72,12 @@ const TASTE_PROVIDERS: readonly TasteProvider[] = ['auto', 'claude', 'codex', 'p
 export const TASTE_DEFAULT_ROUTES: Readonly<Record<Exclude<TasteProvider, 'auto'>, { model: string; effort: string }>> = {
   claude: { model: 'claude-haiku-5-5', effort: 'medium' },
   codex: { model: 'gpt-6-luna', effort: 'medium' },
-  pi: { model: 'deepseek/deepseek-v4.1-flash', effort: 'max' },
 };
 
 /** 학습기 한 번짜리 호출이 받는 추론 강도 (허브 TASTE_EFFORTS). */
 export const TASTE_EFFORTS: readonly string[] = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 
-/** 옛 허브는 enabled 만 보낸다 — 그때는 자동 경로다. */
+/** 옛 허브는 enabled 만 보낸다 — 그때는 자동 경로다. 옛 'pi' 도 자동으로 읽는다. */
 export function readTasteSettings(value: unknown): TasteSettings | null {
   if (!isRecord(value) || typeof value.enabled !== 'boolean') return null;
   const provider = TASTE_PROVIDERS.find((entry) => entry === value.provider) ?? 'auto';

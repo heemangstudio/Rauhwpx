@@ -136,7 +136,6 @@ import {
   createTasteLearner,
   newTasteTurn,
   noteTasteTurnEvent,
-  tasteOwnOpenRouter,
 } from './taste-learner.mjs';
 import { createTasteHistoryHandler } from './taste-history.mjs';
 import { createFontHttpHandler, isFontPath } from './hub-fonts.mjs';
@@ -4891,13 +4890,10 @@ async function tasteLearnerRoutes(context) {
   const record = tasteRecord(context) ?? [...sessions.values()].find((candidate) => !candidate.disposed) ?? null;
   if (!record) return { readiness: {} };
   const health = providerHealth.cached() ?? await providerHealth.check().catch(() => null);
-  const { readiness, resolvePiTitleModel, resolveCodexTitleModel: _codex, signal: _signal, ...deps } = checkpointTitleDeps(record, health, undefined);
+  const { readiness, resolvePiTitleModel: _pi, resolveCodexTitleModel: _codex, signal: _signal, ...deps } = checkpointTitleDeps(record, health, undefined);
   return {
     readiness,
     codexQuota: providerLimits.snapshot().codex,
-    giftMode: piManager.access().mode === 'gift',
-    resolveModel: { pi: resolvePiTitleModel },
-    ownOpenRouter: tasteOwnOpenRouter(piManager),
     hosted: hostedRau,
     deps,
   };

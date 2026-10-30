@@ -477,19 +477,12 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
 
   // pi 마법사 상태 — 한 장의 카드가 단계를 갈아 끼운다.
   let piStatus: PiStatus | null = null;
-  // 취향 학습(Rau-0.1) — 허브가 정본이다. 바꾸는 즉시 저장한다. renderPi 가 부르므로 먼저 만든다.
+  // 취향 학습(Rau-0.1) — 허브가 정본이다. 바꾸는 즉시 저장한다.
   const tasteSection = createTasteSettingsSection({
     bridge,
-    piStatus: () => piStatus,
-    connectOpenRouterKey: (key) => connectOpenRouterKey(key),
-    loginOpenRouter: () => loginOpenRouterForTaste(),
-    authBlocked: () => piBusy || setupBusy || connectionState !== 'connected',
-    authError: () => piMessage,
     isDisposed: () => disposed,
     rau: deps.rau ?? null,
   });
-  /** Rau-0.1 에서 시작한 Pi 브라우저 로그인 — 끝나면 Pi 모델 고르기 대신 Rau-0.1 로 돌아온다. */
-  let piAuthReturnToTaste = false;
   let piCatalog: PiCatalogModel[] = [];
   let piCatalogLoading = false;
   /** 한 번 실패한 목록을 렌더마다 다시 부르지 않게 막는다. */
@@ -2462,14 +2455,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     await startSetupAuth('oauth');
   }
 
-  /** Rau-0.1 의 브라우저로 로그인 — Pi 설정의 브라우저로 로그인과 같은 창·흐름이다. Pi 설치는 필요 없다. */
-  function loginOpenRouterForTaste(): void {
-    if (piBusy || setupBusy || connectionState !== 'connected') return;
-    openAgentSetup('pi');
-    piAuthReturnToTaste = true;
-    void startSetupAuth('oauth');
-  }
-
   function beginAgentConnect(agent: AgentName, options?: { reauth?: boolean }): void {
     openAgentSetup(agent);
     void continueAgentConnect(agent, options?.reauth === true);
@@ -2482,7 +2467,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     }
     const sameAgent = setupAgent === agent;
     setupAgent = agent;
-    piAuthReturnToTaste = false;
     setupMessage = '';
     setupBusy = false;
     setupReauth = false;
@@ -2527,11 +2511,9 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       }
     }
     authAttempt += 1;
-    piAuthReturnToTaste = false;
     setupCodePending = false;
     setupBusy = false;
     clearSetupAuthPrompt();
-    tasteSection.render();
     setupOverlay.classList.remove('ag-open');
     setupOverlay.setAttribute('aria-hidden', 'true');
     if (!setupAgent || !pendingInstalls.has(setupAgent)) resetSetupInstallProgress();
@@ -3168,7 +3150,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   }
 
   function renderPi(): void {
-    tasteSection.render();
     piGift?.setPiStatus(piStatus);
     const step = piCurrentStep();
     for (const [id, node] of piSteps) node.hidden = id !== step;
@@ -3300,7 +3281,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     void refreshProviders(true);
   }
 
-  /** OpenRouter 키 저장 — Pi 설정의 키 칸과 Rau-0.1 의 키 칸이 함께 쓴다. 성공하면 true. */
+  /** OpenRouter 키 저장 — Pi 설정의 키 칸. 성공하면 true. */
   async function connectOpenRouterKey(key: string): Promise<boolean> {
     if (!key || piBusy) return false;
     piBusy = true;
@@ -3828,13 +3809,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
           if (authenticated && setupAgent === 'pi' && setupOverlay.getAttribute('aria-hidden') === 'false') {
             setupBusy = false;
             piBusy = false;
-            if (piAuthReturnToTaste) {
-              closeAgentSetup();
-              selectDestination('ai', 'custom');
-              tasteSection.root.scrollIntoView({ block: 'nearest' });
-            } else {
-              openPiModelCatalog();
-            }
+            openPiModelCatalog();
           }
           renderPi();
           syncPrefsInputs();
