@@ -40,15 +40,14 @@ function open(t: test.TestContext) {
   const core = new HmCore(adapter);
   text.insertText(core, 0, 0, 0, 'abcdef', true);
   const note = notes.insertFootnote(core, 0, 0, 3);
-  notes.insertTextInFootnote(core, 0, note.paraIdx, note.controlIdx, 0, 0, 'NOTE');
+  const start = notes.getFootnoteInfo(core, 0, note.paraIdx, note.controlIdx).textStart;
+  notes.insertTextInFootnote(core, 0, note.paraIdx, note.controlIdx, start.fnParaIndex, start.charOffset, 'NOTE');
   const footnotes = () => core.paragraph({ section: 0, steps: [] }, 0).controls.filter(c => c.kind === 'footnote')
-    .map(c => ({ number: c.number, text: notes.getFootnoteInfo(core, 0, 0, c.index).texts.join('\n') }));
+    .map(c => ({ number: c.number, text: notes.getFootnoteInfo(core, 0, 0, c.index).noteText }));
   return { core, footnotes, body: () => core.paragraph({ section: 0, steps: [] }, 0).text };
 }
 
-const engineCarriesNotes = '엔진 복사 조각이 각주·미주를 아직 담지 않는다 (E1)';
-
-test('각주 표시를 복사해 붙이면 붙인 쪽이 제 각주와 다음 번호를 얻는다', { todo: engineCarriesNotes }, t => {
+test('각주 표시를 복사해 붙이면 붙인 쪽이 제 각주와 다음 번호를 얻는다', t => {
   const { core, footnotes, body } = open(t);
   clipboard.copySelection(core, 0, 0, 2, 0, 5);
   clipboard.pasteInternal(core, 0, 0, 7);
@@ -59,7 +58,7 @@ test('각주 표시를 복사해 붙이면 붙인 쪽이 제 각주와 다음 �
   assert.deepEqual(footnotes().map(note => note.number), [1, 2, 3]);
 });
 
-test('각주 표시를 잘라내어 붙이면 각주가 글자와 함께 옮겨 간다', { todo: engineCarriesNotes }, t => {
+test('각주 표시를 잘라내어 붙이면 각주가 글자와 함께 옮겨 간다', t => {
   const { core, footnotes, body } = open(t);
   clipboard.copySelection(core, 0, 0, 2, 0, 5);
   text.deleteRange(core, 0, 0, 2, 0, 5, true);
