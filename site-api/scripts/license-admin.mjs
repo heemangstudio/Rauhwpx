@@ -112,7 +112,8 @@ function expiryLine(license) {
   const renews = license.subscription?.autoRenew === false ? '갱신 안 함' : '자동 갱신';
   const failed = license.subscription?.status === 'past_due' && license.subscription.paymentGraceEndsAt
     ? ` · 결제 실패, ${kstDate(license.subscription.paymentGraceEndsAt)}까지 유예` : '';
-  return `${license.key} annual · ${license.status} · ${kstDate(license.expiresAt)}까지 · ${renews}${failed}`;
+  const plan = `${license.edition === 'pro' ? 'pro ' : ''}${license.plan ?? 'annual'}`;
+  return `${license.key} ${plan} · ${license.status} · ${kstDate(license.expiresAt)}까지 · ${renews}${failed}`;
 }
 if (command === 'downloads' && res.ok && parsed) {
   const pairs = (counts) => Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([k, n]) => `${k} ${n}`).join(', ') || '-';

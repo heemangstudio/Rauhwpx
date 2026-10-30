@@ -70,6 +70,11 @@ export const DEFAULT_SIGNATURE_PRICE = 29000;
  * when the failure event carries no grace end of its own.
  */
 export const DEFAULT_PAYMENT_GRACE_DAYS = 10;
+/** A failed renewal never keeps a key usable longer than this past its expiry, so a monthly key's grace stays under a month. */
+export const DEFAULT_PAYMENT_GRACE_MAX_DAYS = 14;
+export const DEFAULT_PRO_MONTHLY_PRICE = 3900;
+export const DEFAULT_PRO_YEARLY_PRICE = 39000;
+export const DEFAULT_PRO_UPGRADE_URL = 'https://heemangstudios.com/pricing.html#pro';
 /** Groble's buyer 주문조회 page, where a buyer sees the subscription and pays again. */
 export const DEFAULT_PAYMENT_FIX_URL = 'https://groble.im/manage/purchase';
 
@@ -104,14 +109,36 @@ function productPriceOverrides(text) {
   return overrides;
 }
 
+/** `GROBLE_PRO_PRODUCT_IDS`: `id:months` entries, months 1 (monthly) or 12 (yearly). */
+export function parseProProducts(text) {
+  const products = [];
+  if (!text) return products;
+  for (const part of text.split(',')) {
+    const entry = part.trim();
+    if (!entry) continue;
+    const [id, monthsText, extra] = entry.split(':').map((s) => s.trim());
+    const months = Number(monthsText);
+    if (!id || extra !== undefined || (months !== 1 && months !== 12)) {
+      throw new Error(`GROBLE_PRO_PRODUCT_IDS entry is not id:1 or id:12: ${entry}`);
+    }
+    products.push({ id, months });
+  }
+  return products;
+}
+
 export function buildProductCatalog({
   onetimeProductIds,
   subscriptionProductIds,
   signatureProductIds,
+  proProducts = [],
   expectedPrice,
   minAmount,
   signatureExpectedPrice,
   signatureMinAmount,
+  proMonthlyPrice = DEFAULT_PRO_MONTHLY_PRICE,
+  proMonthlyMinAmount = proMonthlyPrice,
+  proYearlyPrice = DEFAULT_PRO_YEARLY_PRICE,
+  proYearlyMinAmount = proYearlyPrice,
   priceOverrides = new Map(),
 }) {
   const groups = [
@@ -121,19 +148,30 @@ export function buildProductCatalog({
   ];
   const seen = new Map();
   const products = [];
+  const add = (label, product) => {
+    const previous = seen.get(product.id);
+    if (previous) throw new Error(`Groble product ${product.id} is both ${previous} and ${label}`);
+    seen.set(product.id, label);
+    const override = priceOverrides.get(product.id);
+    products.push({
+      ...product,
+      expectedPrice: override?.expectedPrice ?? product.expectedPrice,
+      minAmount: override?.minAmount ?? product.minAmount,
+    });
+  };
   for (const [label, kind, ids, price, min] of groups) {
-    for (const id of ids) {
-      const previous = seen.get(id);
-      if (previous) throw new Error(`Groble product ${id} is both ${previous} and ${label}`);
-      seen.set(id, label);
-      const override = priceOverrides.get(id);
-      products.push({
-        id,
-        kind,
-        expectedPrice: override?.expectedPrice ?? price,
-        minAmount: override?.minAmount ?? min,
-      });
-    }
+    for (const id of ids) add(label, { id, kind, expectedPrice: price, minAmount: min });
+  }
+  // Pro products are subscriptions with their own billing cycle; it wins over the event's.
+  for (const { id, months } of proProducts) {
+    add('pro', {
+      id,
+      kind: 'subscription',
+      edition: 'pro',
+      cycleMonths: months,
+      expectedPrice: months === 12 ? proYearlyPrice : proMonthlyPrice,
+      minAmount: months === 12 ? proYearlyMinAmount : proMonthlyMinAmount,
+    });
   }
   for (const id of priceOverrides.keys()) {
     if (!seen.has(id)) throw new Error(`GROBLE_PRODUCT_PRICES names ${id}, which is not a configured Groble product`);
@@ -160,19 +198,31 @@ export function resolveLicenseConfig(env = process.env) {
   const onetimeProductIds = commaList(trimmed(env.GROBLE_ONETIME_PRODUCT_IDS) || trimmed(env.GROBLE_CONTENT_ID), DEFAULT_ONETIME_PRODUCT_IDS);
   const subscriptionProductIds = commaList(trimmed(env.GROBLE_SUBSCRIPTION_PRODUCT_IDS), DEFAULT_SUBSCRIPTION_PRODUCT_IDS);
   const signatureProductIds = commaList(trimmed(env.GROBLE_SIGNATURE_PRODUCT_IDS), DEFAULT_SIGNATURE_PRODUCT_IDS);
+  const proProducts = parseProProducts(trimmed(env.GROBLE_PRO_PRODUCT_IDS));
+  const proMonthlyPrice = integerKrw('GROBLE_PRO_MONTHLY_PRICE', trimmed(env.GROBLE_PRO_MONTHLY_PRICE), DEFAULT_PRO_MONTHLY_PRICE);
+  const proYearlyPrice = integerKrw('GROBLE_PRO_YEARLY_PRICE', trimmed(env.GROBLE_PRO_YEARLY_PRICE), DEFAULT_PRO_YEARLY_PRICE);
   const products = buildProductCatalog({
     onetimeProductIds,
     subscriptionProductIds,
     signatureProductIds,
+    proProducts,
     expectedPrice: price,
     minAmount,
     signatureExpectedPrice,
     signatureMinAmount,
+    proMonthlyPrice,
+    proMonthlyMinAmount: integerKrw('GROBLE_PRO_MONTHLY_MIN_AMOUNT', trimmed(env.GROBLE_PRO_MONTHLY_MIN_AMOUNT), proMonthlyPrice),
+    proYearlyPrice,
+    proYearlyMinAmount: integerKrw('GROBLE_PRO_YEARLY_MIN_AMOUNT', trimmed(env.GROBLE_PRO_YEARLY_MIN_AMOUNT), proYearlyPrice),
     priceOverrides: productPriceOverrides(trimmed(env.GROBLE_PRODUCT_PRICES)),
   });
   const paymentGraceDays = positiveNumber('GROBLE_PAYMENT_GRACE_DAYS', trimmed(env.GROBLE_PAYMENT_GRACE_DAYS), DEFAULT_PAYMENT_GRACE_DAYS);
+  const paymentGraceMaxDays = positiveNumber('GROBLE_PAYMENT_GRACE_MAX_DAYS', trimmed(env.GROBLE_PAYMENT_GRACE_MAX_DAYS), DEFAULT_PAYMENT_GRACE_MAX_DAYS);
+  if (paymentGraceMaxDays >= 28) throw new Error(`GROBLE_PAYMENT_GRACE_MAX_DAYS must stay under a month (< 28): ${paymentGraceMaxDays}`);
   const paymentFixUrl = trimmed(env.GROBLE_PAYMENT_FIX_URL) || DEFAULT_PAYMENT_FIX_URL;
   if (!/^https:\/\/(?:www\.)?groble\.im\//.test(paymentFixUrl)) throw new Error(`GROBLE_PAYMENT_FIX_URL must be an https://groble.im/ page: ${paymentFixUrl}`);
+  const proUpgradeUrl = trimmed(env.PRO_UPGRADE_URL) || DEFAULT_PRO_UPGRADE_URL;
+  if (!/^https:\/\//.test(proUpgradeUrl)) throw new Error(`PRO_UPGRADE_URL must be an https:// page: ${proUpgradeUrl}`);
   return {
     webhookSecret: trimmed(env.GROBLE_WEBHOOK_SECRET),
     webhookSecretPrevious: trimmed(env.GROBLE_WEBHOOK_SECRET_PREVIOUS),
@@ -182,8 +232,11 @@ export function resolveLicenseConfig(env = process.env) {
     signatureExpectedPrice,
     signatureMinAmount,
     products,
+    proProducts,
     paymentGraceMs: paymentGraceDays * 24 * 60 * 60 * 1000,
+    paymentGraceMaxMs: paymentGraceMaxDays * 24 * 60 * 60 * 1000,
     paymentFixUrl,
+    proUpgradeUrl,
     expectedPrice: price,
     minAmount,
     signingPrivateKey: trimmed(env.LICENSE_SIGNING_PRIVATE_KEY),

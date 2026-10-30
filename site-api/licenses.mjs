@@ -32,6 +32,7 @@ export const SIGNATURE_UPDATE_MONTHS = 36;
 const SIGNATURE_SUPPORT = { channel: 'email', sla: '1_business_day', timezone: 'Asia/Seoul' };
 const KST_OFFSET_MS = 9 * 60 * 60 * 1000;
 const MAX_EXTEND_YEARS = 10;
+const DEFAULT_PAYMENT_GRACE_MAX_MS = 14 * 24 * 60 * 60 * 1000;
 
 export function emptyLicensesState() {
   return { licenses: {}, keyIndex: {}, orders: {}, refs: {}, webhookEvents: {}, grandfathered: {} };
@@ -122,21 +123,51 @@ function expiryOf(license) {
   return parseTime(license?.expiresAt) ?? null;
 }
 
-/** End of Groble's retry and grace window after a failed renewal, while the subscription is past due. */
-function paymentGraceEndOf(license) {
-  return license?.subscription?.status === 'past_due' ? parseTime(license.subscription.paymentGraceEndsAt) ?? null : null;
+/**
+ * End of Groble's retry and grace window after a failed renewal, while the subscription is past due.
+ * Never more than `maxMs` past the expiry, so a monthly key cannot run on unpaid for another month.
+ */
+function paymentGraceEndOf(license, maxMs = DEFAULT_PAYMENT_GRACE_MAX_MS) {
+  if (license?.subscription?.status !== 'past_due') return null;
+  const end = parseTime(license.subscription.paymentGraceEndsAt);
+  if (end === undefined) return null;
+  const expiry = expiryOf(license);
+  return expiry === null ? end : Math.min(end, expiry + maxMs);
 }
 
 /** When the key stops working: its paid end, or the end of the payment grace window when that is later. */
-function accessEndOf(license) {
+function accessEndOf(license, graceMaxMs) {
   const expiry = expiryOf(license);
   if (expiry === null) return null;
-  return Math.max(expiry, paymentGraceEndOf(license) ?? 0);
+  return Math.max(expiry, paymentGraceEndOf(license, graceMaxMs) ?? 0);
 }
 
-function cycleMonths(object) {
+/** The event's `billingCycleMonths` when it is a whole 1–12, else undefined. */
+function eventCycleMonths(object) {
   const months = object?.subscription?.billingCycleMonths;
+  return Number.isInteger(months) && months >= 1 && months <= 12 ? months : undefined;
+}
+
+/** Months one paid round of this key buys: its own cycle, else the GLJFC9 default. */
+function keyCycleMonths(license) {
+  const months = license?.billingCycleMonths ?? license?.subscription?.billingCycleMonths;
   return Number.isInteger(months) && months >= 1 && months <= 12 ? months : SUBSCRIPTION_CYCLE_MONTHS;
+}
+
+/** `lifetime` without an expiry, `monthly` for a 1-month key, else `annual`. */
+export function planOf(license) {
+  if (expiryOf(license) === null) return 'lifetime';
+  return keyCycleMonths(license) === 1 ? 'monthly' : 'annual';
+}
+
+/**
+ * Hosted Rau-0.1 is for active Pro keys only: a Pro subscription key, not revoked, before its
+ * expiry or inside its payment grace. Lifetime, Signature, GLJFC9, beta, grandfathered and manual keys never qualify.
+ */
+export function rauEligible(license, nowMs, graceMaxMs) {
+  if (!license || license.status !== 'active' || license.edition !== 'pro') return false;
+  const end = accessEndOf(license, graceMaxMs);
+  return end !== null && nowMs < end;
 }
 
 function normalizeState(state) {
@@ -162,7 +193,7 @@ function signatureView(license) {
   return {
     prioritySupport,
     ...(license.edition ? { edition: license.edition } : {}),
-    ...(license.productId && license.edition === 'signature' ? { productId: license.productId } : {}),
+    ...(license.productId && (license.edition === 'signature' || license.edition === 'pro') ? { productId: license.productId } : {}),
     ...(license.updatesUntil ? { updatesUntil: license.updatesUntil } : {}),
     ...(license.support ? { support: license.support } : {}),
     ...(prioritySupport ? { supportSlaLabel: '1영업일 내 첫 답변' } : {}),
@@ -197,8 +228,9 @@ function licenseView(license, { includeKey = true } = {}) {
     createdAt: license.createdAt,
     revokedAt: license.revokedAt,
     revokeReason: license.revokeReason,
-    plan: expiryOf(license) === null ? 'lifetime' : 'annual',
+    plan: planOf(license),
     ...signatureView(license),
+    ...(license.edition === 'pro' ? { billingCycleMonths: keyCycleMonths(license) } : {}),
     expiresAt: license.expiresAt ?? null,
     subscription: license.subscription,
     extensions: license.extensions,
@@ -209,27 +241,29 @@ function licenseView(license, { includeKey = true } = {}) {
 }
 
 /** `lifetime`, or for an annual key `active`, `past_due` (renewal failed, still in grace) or `lapsed`. */
-function subscriptionStatusOf(license, nowMs) {
+function subscriptionStatusOf(license, nowMs, graceMaxMs) {
   if (expiryOf(license) === null) return 'lifetime';
-  if (nowMs >= accessEndOf(license)) return 'lapsed';
-  return paymentGraceEndOf(license) === null ? 'active' : 'past_due';
+  if (nowMs >= accessEndOf(license, graceMaxMs)) return 'lapsed';
+  return paymentGraceEndOf(license, graceMaxMs) === null ? 'active' : 'past_due';
 }
 
 /** One paid key for the admin customer list. */
-function customerView(license, nowMs) {
+function customerView(license, nowMs, graceMaxMs) {
   const delivery = license.emailDelivery ?? {};
   const expiry = expiryOf(license);
+  const graceEnd = paymentGraceEndOf(license, graceMaxMs);
   return {
     keyId: license.keyId,
     key: license.key,
     email: license.email,
     status: license.status,
     source: license.source,
-    subscriptionStatus: subscriptionStatusOf(license, nowMs),
+    subscriptionStatus: subscriptionStatusOf(license, nowMs, graceMaxMs),
+    plan: planOf(license),
     ...signatureView(license),
     expiresAt: license.expiresAt ?? null,
     autoRenew: expiry === null ? null : license.subscription?.autoRenew !== false,
-    paymentGraceEndsAt: paymentGraceEndOf(license) === null ? null : iso(paymentGraceEndOf(license)),
+    paymentGraceEndsAt: graceEnd === null ? null : iso(graceEnd),
     deviceLimit: deviceLimitOf(license),
     devices: Object.entries(license.devices ?? {}).map(([deviceId, d]) => ({ deviceId, platform: d.platform, lastSeenAt: d.lastSeenAt })),
     emailDelivery: license.emailDelivery ? {
@@ -262,11 +296,13 @@ export function createLicensesService({
   subscriptionProductIds = ['GLJFC9'],
   signatureProductIds = ['8Xy27f'],
   paymentGraceMs = 10 * 24 * 60 * 60 * 1000,
+  paymentGraceMaxMs = DEFAULT_PAYMENT_GRACE_MAX_MS,
   paymentFixUrl = 'https://groble.im/manage/purchase',
   expectedPrice = 9900,
   minAmount = expectedPrice,
   signatureExpectedPrice = 29000,
   signatureMinAmount = signatureExpectedPrice,
+  proProducts = [],
   products,
   grandfatherCutoff = undefined,
   grandfatherPlatforms = ['darwin'],
@@ -283,7 +319,10 @@ export function createLicensesService({
     minAmount,
     signatureExpectedPrice,
     signatureMinAmount,
+    proProducts,
   })).map((product) => [product.id, product]));
+  const graceEndOf = (license) => paymentGraceEndOf(license, paymentGraceMaxMs);
+  const accessEnd = (license) => accessEndOf(license, paymentGraceMaxMs);
 
   let mutation = Promise.resolve();
   function withLock(fn) {
@@ -390,7 +429,22 @@ export function createLicensesService({
     if (subscription !== (product.kind === 'subscription')) return `wrong_product:${contentId}`;
     const expectedType = product.kind === 'subscription' ? 'SUBSCRIPTION' : 'ONE_TIME';
     if (paymentType && paymentType !== expectedType) return `wrong_payment_type:${paymentType}`;
+    // A Pro product bills on its own cycle. An event that names another one is held instead of
+    // trusted, so a monthly buyer can never get a year; a missing or unreadable field uses the product's.
+    const eventMonths = eventCycleMonths(object);
+    if (product.cycleMonths && eventMonths !== undefined && eventMonths !== product.cycleMonths) return `cycle_mismatch:${eventMonths}`;
     return priceProblem(object, product, { renewal });
+  }
+
+  /** Months the round buys: a Pro product's own cycle, else the event's, else 12 (GLJFC9). */
+  function orderCycleMonths(object) {
+    const product = catalog.get(str(object?.content?.id, 128) ?? '');
+    return product?.cycleMonths ?? eventCycleMonths(object) ?? SUBSCRIPTION_CYCLE_MONTHS;
+  }
+
+  /** Pro keys carry the edition, product and cycle on the record itself. */
+  function proEntitlement(product, months) {
+    return product?.edition === 'pro' ? { edition: 'pro', productId: product.id, billingCycleMonths: months } : {};
   }
 
   /** Create or update the order record of one paid round. */
@@ -412,7 +466,7 @@ export function createLicensesService({
       completedAt: event.occurredAt,
       completedEventId: str(event.id, 128),
       ...(kind ? {
-        billingCycleMonths: cycleMonths(object),
+        billingCycleMonths: orderCycleMonths(object),
         round: Number.isSafeInteger(object?.subscription?.currentRound) ? object.subscription.currentRound : undefined,
       } : {}),
     });
@@ -505,6 +559,7 @@ export function createLicensesService({
       amount: order.amount,
       occurredAt: event.occurredAt,
       ...(subscription ? subscriptionStart(order, object) : {}),
+      ...(subscription ? proEntitlement(product, order.billingCycleMonths) : {}),
       ...(product?.kind === 'signature' ? signatureEntitlement(product.id, paidAtOf(order)) : {}),
     });
     queueEmail(license);
@@ -535,7 +590,8 @@ export function createLicensesService({
     // A late renewal (a retry or re-payment after the key lapsed) starts the new year on the day it was paid.
     const paidMs = paidAtOf(order);
     const from = Math.max(expiryOf(license) ?? paidMs, paidMs);
-    const to = subscriptionEnd(from, order.billingCycleMonths ?? SUBSCRIPTION_CYCLE_MONTHS);
+    // Each round buys the key's own cycle: a monthly Pro key gains a month, an annual key a year.
+    const to = subscriptionEnd(from, keyCycleMonths(license));
     license.expiresAt = iso(to);
     order.status = 'renewed';
     order.keyId = license.keyId;
@@ -554,7 +610,8 @@ export function createLicensesService({
     if (nextBillingDate) sub.nextBillingDate = nextBillingDate;
     delete sub.lastFailure;
     delete sub.paymentGraceEndsAt;
-    if (license.email) license.emailDelivery = { status: 'pending', queuedAt: new Date(now()).toISOString(), renewal: true };
+    // A monthly key keeps its key, so it gets no key email every month; Groble sends the receipt.
+    if (license.email && keyCycleMonths(license) !== 1) license.emailDelivery = { status: 'pending', queuedAt: new Date(now()).toISOString(), renewal: true };
     return { action: 'renewed', keyId: license.keyId, expiresAt: license.expiresAt };
   }
 
@@ -587,8 +644,10 @@ export function createLicensesService({
       };
       for (const k of Object.keys(sub.lastFailure)) if (sub.lastFailure[k] === undefined) delete sub.lastFailure[k];
       const fromEvent = parseTime(failure.gracePeriodEndsAt);
-      const derived = Math.max(parseTime(sub.paymentGraceEndsAt) ?? 0, (expiryOf(license) ?? now()) + paymentGraceMs);
-      sub.paymentGraceEndsAt = iso(fromEvent ?? derived);
+      const base = expiryOf(license) ?? now();
+      const derived = Math.max(parseTime(sub.paymentGraceEndsAt) ?? 0, base + paymentGraceMs);
+      // Groble's window or ours, but never more than paymentGraceMaxMs past the expiry.
+      sub.paymentGraceEndsAt = iso(Math.min(fromEvent ?? derived, base + paymentGraceMaxMs));
     }
     return { action: 'payment_failure_recorded', keyId: license.keyId, paymentGraceEndsAt: sub.paymentGraceEndsAt };
   }
@@ -780,6 +839,7 @@ export function createLicensesService({
         downloadUrl,
         expiresAt: expiryOf(license),
         autoRenew: license.subscription?.autoRenew !== false,
+        cycleMonths: keyCycleMonths(license),
         updatesUntil: parseTime(license.updatesUntil) ?? null,
       });
       let outcome;
@@ -822,6 +882,7 @@ export function createLicensesService({
         status: 'issued',
         key: license.key,
         licenseExpiresAt: expiryOf(license),
+        ...(license.edition === 'pro' ? { edition: 'pro', plan: planOf(license) } : {}),
         ...(license.edition === 'signature' ? {
           edition: 'signature',
           prioritySupport: true,
@@ -850,7 +911,7 @@ export function createLicensesService({
     const license = key ? state.licenses[state.keyIndex[key]] : undefined;
     if (!license) throw licenseError('invalid_key', 404);
     if (license.status === 'revoked') throw Object.assign(licenseError('revoked', 403), { tier: tierOf(license) });
-    const end = accessEndOf(license);
+    const end = accessEnd(license);
     if (end !== null && now() >= end) {
       throw Object.assign(licenseError('expired', 403), { tier: tierOf(license), licenseExpiresAt: expiryOf(license), paymentFixUrl });
     }
@@ -860,7 +921,7 @@ export function createLicensesService({
   /** `submittedKey` is what the app sent; the lease's keyHash is over the app's normalization of it. */
   function leaseResponse(license, deviceId, submittedKey) {
     const licenseExpiresAt = expiryOf(license);
-    const paymentGraceEndsAt = paymentGraceEndOf(license);
+    const paymentGraceEndsAt = graceEndOf(license);
     const { lease, payload } = signLease({
       kid: leaseKid,
       keyId: license.keyId,
@@ -892,6 +953,10 @@ export function createLicensesService({
         prioritySupport: license.status === 'active',
         updatesUntil: parseTime(license.updatesUntil) ?? null,
       } : {}),
+      ...(license.edition === 'pro' ? { edition: 'pro' } : {}),
+      plan: planOf(license),
+      // Hosted Rau-0.1 (POST /v1/rau/learn) answers only active Pro keys.
+      rau: { eligible: rauEligible(license, now(), paymentGraceMaxMs) },
     };
   }
 
@@ -956,7 +1021,7 @@ export function createLicensesService({
     const state = await read();
     const license = Object.hasOwn(state.licenses, keyId) ? state.licenses[keyId] : undefined;
     const device = license?.devices && Object.hasOwn(license.devices, deviceId) ? license.devices[deviceId] : undefined;
-    const end = accessEndOf(license);
+    const end = accessEnd(license);
     if (!license || license.status !== 'active' || !device || licenseKeyHash(license.key) !== keyHash
       || (end !== null && now() >= end)) {
       throw licenseError('unauthorized', 401);
@@ -967,6 +1032,8 @@ export function createLicensesService({
       platform: device.platform,
       source: license.source,
       tier: tierOf(license),
+      edition: license.edition ?? null,
+      rauEligible: rauEligible(license, now(), paymentGraceMaxMs),
     };
   }
 
@@ -1214,6 +1281,7 @@ export function createLicensesService({
           occurredAt: order.completedAt,
           note: `released from hold: ${order.holdReason ?? ''}`.trim(),
           ...(order.kind === 'subscription' ? subscriptionStart(order) : {}),
+          ...(order.kind === 'subscription' ? proEntitlement(catalog.get(order.contentId), order.billingCycleMonths ?? SUBSCRIPTION_CYCLE_MONTHS) : {}),
           ...(catalog.get(order.contentId)?.kind === 'signature'
             ? signatureEntitlement(order.contentId, paidAtOf(order))
             : {}),
@@ -1304,7 +1372,7 @@ export function createLicensesService({
       const list = Object.values(state.licenses)
         .filter((l) => tierOf(l) === 'paid')
         .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
-        .map((l) => customerView(l, nowMs));
+        .map((l) => customerView(l, nowMs, paymentGraceMaxMs));
       return { ok: true, count: list.length, customers: list };
     },
     /**
