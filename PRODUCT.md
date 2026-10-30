@@ -26,7 +26,7 @@ An HWP/HWPX editor with agentic features as a first-class part of the product—
 - AI writes run autonomously with editor undo history: semantic edits use a live staged preview and commit on successful turn completion; raw engine batches are atomic and restore the prior snapshot on failure.
 - A separate planning workflow can research with web, subagents, the app-owned browser, and managed research downloads while local files and the live document remain read-only. The agent presents a structured plan; only an explicit `Approve & execute` action unlocks implementation.
 - Everything document-related runs locally in the browser WASM engine; the agent hub is a thin localhost router with no document logic.
-- Adjacent surfaces exist (browser extensions, VS Code viewer, embeddable npm editor, CLI) but the primary product experience for this record is the studio editor + AI sidebar.
+- The product ships only as the desktop app. The engine CLI is a supporting tool; the primary experience is the studio editor + AI sidebar.
 
 ## Capabilities and Constraints
 

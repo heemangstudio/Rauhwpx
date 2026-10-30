@@ -3,10 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { performance } from 'node:perf_hooks';
 
-import {
-  detectDocumentByteKind,
-  assertRemoteDocumentBytes,
-} from '../src/core/document-signature.ts';
+import { detectDocumentByteKind } from '../src/core/document-signature.ts';
 
 function bytes(...nums: number[]): Uint8Array {
   return new Uint8Array(nums);
@@ -48,19 +45,15 @@ test('HWP3 매직을 hwp 로 인식한다 (#1657)', () => {
 test('서버가 text/html 404 를 보내도 HWP3 본문 매직이 우선한다 (pps.go.kr 케이스)', () => {
   // 조달청은 HWP3 본문에 Content-Type: text/html, HTTP 404 를 보낸다.
   assert.equal(detectDocumentByteKind(HWP3_HEADER, 'text/html'), 'hwp');
-  assert.doesNotThrow(() => assertRemoteDocumentBytes(HWP3_HEADER, 'text/html'));
 });
 
 test('HWP5(CFB) / HWPX(ZIP) 회귀 없음', () => {
   assert.equal(detectDocumentByteKind(HWP5_CFB, null), 'hwp');
   assert.equal(detectDocumentByteKind(HWPX_ZIP, null), 'hwpx');
-  assert.doesNotThrow(() => assertRemoteDocumentBytes(HWP5_CFB, null));
-  assert.doesNotThrow(() => assertRemoteDocumentBytes(HWPX_ZIP, null));
 });
 
 test('HWPML signature는 잘못된 text/html Content-Type보다 우선한다', () => {
   assert.equal(detectDocumentByteKind(HML_UTF8, 'text/html'), 'hml');
-  assert.doesNotThrow(() => assertRemoteDocumentBytes(HML_UTF8, 'text/html'));
 });
 
 test('UTF-8 BOM과 UTF-16LE/BE BOM HWPML signature를 인식한다', () => {
@@ -79,7 +72,6 @@ test('실물 legacy HWPML fixture는 namespace 없이도 HML로 인식한다', (
     readFileSync(new URL('../../samples/hml/aligns.hml', import.meta.url)),
   );
   assert.equal(detectDocumentByteKind(fixture, 'text/html'), 'hml');
-  assert.doesNotThrow(() => assertRemoteDocumentBytes(fixture, 'text/html'));
 });
 
 test('legacy HWPML은 HEAD/BODY가 64KiB 뒤에 있어도 root 속성으로 인식한다', () => {
@@ -120,25 +112,16 @@ test('HWPML 태그가 중첩된 일반 XML은 HML로 오인하지 않는다', ()
 test('XML 선언으로 시작하는 HTML 오류 페이지는 html로 분류한다', () => {
   const html = ascii('<?xml version="1.0"?><html><body>login required</body></html>');
   assert.equal(detectDocumentByteKind(html, 'text/html'), 'html');
-  assert.throws(() => assertRemoteDocumentBytes(html, 'text/html'), /미리보기\/오류 페이지/);
 });
 
-test('실제 HTML 오류/미리보기 페이지는 계속 거부한다', () => {
+test('실제 HTML 오류/미리보기 페이지는 html로 분류한다', () => {
   const html = ascii('<!DOCTYPE html><html><body>error</body></html>');
   assert.equal(detectDocumentByteKind(html, 'text/html'), 'html');
-  assert.throws(
-    () => assertRemoteDocumentBytes(html, 'text/html'),
-    /미리보기\/오류 페이지/,
-  );
 });
 
-test('매직 없는 알 수 없는 바이트는 거부한다', () => {
+test('매직 없는 알 수 없는 바이트는 unknown으로 분류한다', () => {
   const junk = bytes(0x01, 0x02, 0x03, 0x04);
   assert.equal(detectDocumentByteKind(junk, null), 'unknown');
-  assert.throws(
-    () => assertRemoteDocumentBytes(junk, null),
-    /시그니처를 확인할 수 없습니다/,
-  );
 });
 
 test('HWP3 매직보다 짧은 바이트는 오인식하지 않는다', () => {

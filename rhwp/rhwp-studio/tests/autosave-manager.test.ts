@@ -246,7 +246,7 @@ test('AutosaveManager는 저장 진행 중 discard가 끼어들면 저장 완료
   await manager.beginDocument({ fileName: 'race.hwp', sourceFormat: 'hwp' });
   const flushPromise = manager.flushNow('typing');
   await saveEntered; // 저장이 IndexedDB put 대기 중인 시점
-  const discardPromise = manager.discardCurrentDraft('host-save');
+  const discardPromise = manager.discardCurrentDraft('save');
   await discardPromise;
   resolveSave(); // put 완료 — draft 부활 시점
   await flushPromise;

@@ -676,19 +676,18 @@ function tapChild(child, dir, {
 }
 
 /**
- * While recording, the Agent SDK's spawn hook: spawns the CLI the way the
- * SDK's own local spawn does (pipes, `windowsHide`, the forwarded abort
- * signal) and taps it. The SDK never reads stderr from a custom process, so
- * the spawner drains it, keeping the last 2048 characters as the SDK's own
- * spawn does: `stderrTail()` returns them for the most recent process, and
- * `withSdkStderrTail` puts them back into the SDK's exit error. Returns
- * undefined when recording is off so the SDK keeps its own spawn.
+ * The Agent SDK's spawn hook shape shared by the owned and recording
+ * spawners: spawns the CLI the way the SDK's own local spawn does (pipes,
+ * `windowsHide`, the forwarded abort signal). The SDK never reads stderr from
+ * a custom process, so the spawner drains it, keeping the last 2048
+ * characters as the SDK's own spawn does: `stderrTail()` returns them for the
+ * most recent process, and `withSdkStderrTail` puts them back into the SDK's
+ * exit error.
  */
-export function recordingClaudeSdkSpawner({ secrets = [], cli = null, platform = process.platform, hubEnv = process.env } = {}) {
-  if (!providerTranscriptDir(hubEnv)) return undefined;
+function claudeSdkSpawner(spawnProcess, wrap) {
   let tail = '';
-  const spawnRecorded = (sdkOptions) => {
-    const child = spawnChildProcess(sdkOptions.command, sdkOptions.args, {
+  const spawnSdk = (sdkOptions) => {
+    const child = spawnProcess(sdkOptions.command, sdkOptions.args, {
       cwd: sdkOptions.cwd,
       env: sdkOptions.env,
       signal: sdkOptions.signal,
@@ -705,20 +704,40 @@ export function recordingClaudeSdkSpawner({ secrets = [], cli = null, platform =
     });
     child.stderr?.once('end', () => { tail += decoder.end(); });
     child.stderr?.on('error', () => {});
-    return tapProviderProcess(child, {
-      agent: 'claude',
-      transport: 'sdk',
-      stdin: 'ndjson',
-      argv: sdkOptions.args,
-      env: sdkOptions.env,
-      secrets,
-      cli,
-      platform,
-      hubEnv,
-    });
+    return wrap(child, sdkOptions);
   };
-  spawnRecorded.stderrTail = () => tail;
-  return spawnRecorded;
+  spawnSdk.stderrTail = () => tail;
+  return spawnSdk;
+}
+
+/**
+ * The Agent SDK's spawn hook when the hub must own the CLI process (Windows:
+ * the SDK's close() only ends stdin and later kills the claude.exe leader, so
+ * the hub needs the ChildProcess to end the whole tree). Same spawn options
+ * and stderr tail as the SDK's own spawn; nothing is recorded.
+ */
+export function ownedClaudeSdkSpawner({ spawnProcess = spawnChildProcess } = {}) {
+  return claudeSdkSpawner(spawnProcess, (child) => child);
+}
+
+/**
+ * While recording, the Agent SDK's spawn hook: the owned spawn above, tapped
+ * into the transcript. Returns undefined when recording is off so the SDK
+ * keeps its own spawn.
+ */
+export function recordingClaudeSdkSpawner({ secrets = [], cli = null, platform = process.platform, hubEnv = process.env } = {}) {
+  if (!providerTranscriptDir(hubEnv)) return undefined;
+  return claudeSdkSpawner(spawnChildProcess, (child, sdkOptions) => tapProviderProcess(child, {
+    agent: 'claude',
+    transport: 'sdk',
+    stdin: 'ndjson',
+    argv: sdkOptions.args,
+    env: sdkOptions.env,
+    secrets,
+    cli,
+    platform,
+    hubEnv,
+  }));
 }
 
 const SDK_PROCESS_EXIT_ERROR = /Claude Code process (?:exited with code -?\d+|terminated by signal [A-Z0-9]+)/;

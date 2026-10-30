@@ -92,6 +92,12 @@ const LICENSE_EMAIL_COPY = {
     heading: '라이선스가 갱신됐어요.',
     noteHtml: '쓰던 키를 그대로 계속 쓰면 돼요. 키 하나로 <strong>Mac 2대</strong>까지 쓸 수 있어요.',
   },
+  pro: {
+    subject: '[HamaEditor] Pro 라이선스 키를 보내드려요',
+    heading: 'Pro를 구독해 주셔서 고마워요.',
+    preheader: 'Pro 키를 담았어요. Rau-0.1 문서 기억도 바로 쓸 수 있어요.',
+    noteHtml: 'Pro 키예요. 앱의 모든 기능과 <strong>Rau-0.1 문서 기억</strong>을 쓸 수 있고, 키 하나로 <strong>기기 2대</strong>(Mac · Windows)까지 쓸 수 있어요.',
+  },
   signature: {
     subject: '[HamaEditor] Signature 라이선스 키를 보내드려요',
     heading: 'Signature를 구매해 주셔서 고마워요.',
@@ -106,6 +112,7 @@ export const LICENSE_EMAIL_SUBJECT = LICENSE_EMAIL_COPY.purchase.subject;
 export function licenseEmailKind(license) {
   if (license?.emailDelivery?.renewal) return 'renewal';
   if (license?.edition === 'signature') return 'signature';
+  if (license?.edition === 'pro' && !license?.emailDelivery?.resend) return 'pro';
   if (license?.emailDelivery?.resend) return 'resend';
   if (license?.source === 'groble' || license?.merchantUid || license?.amount > 0) return 'purchase';
   return 'free';
@@ -119,10 +126,11 @@ export function signatureUpdatesLine(updatesUntil) {
 }
 
 /** The line under the key card for a subscription key, e.g. `다음 갱신일은 2027년 10월 19일이에요.` Lifetime keys get none. */
-export function licenseExpiryLine(expiresAt, { autoRenew = true } = {}) {
+export function licenseExpiryLine(expiresAt, { autoRenew = true, cycleMonths = 12 } = {}) {
   if (!Number.isSafeInteger(expiresAt)) return '';
   const date = KST_DATE.format(new Date(expiresAt));
-  return autoRenew ? `매년 자동으로 갱신돼요. 다음 갱신일은 ${date}이에요.` : `${date}까지 쓸 수 있어요.`;
+  const every = cycleMonths === 1 ? '매달' : '매년';
+  return autoRenew ? `${every} 자동으로 갱신돼요. 다음 갱신일은 ${date}이에요.` : `${date}까지 쓸 수 있어요.`;
 }
 
 /**
@@ -135,6 +143,7 @@ export function licenseEmail({
   kind = 'purchase',
   expiresAt = null,
   autoRenew = true,
+  cycleMonths = 12,
   updatesUntil = null,
   downloadUrl = MAC_DMG_URL,
   bannerUrl = EMAIL_BANNER_URL,
@@ -150,11 +159,11 @@ export function licenseEmail({
   const html = renderEmail({
     subject,
     preheader: copy.preheader ?? preheader,
-    banner: { url: bannerUrl, alt: kind === 'signature' ? 'HamaEditor · Signature 라이선스 키' : 'HamaEditor · Mac 라이선스 키' },
+    banner: { url: bannerUrl, alt: kind === 'signature' ? 'HamaEditor · Signature 라이선스 키' : kind === 'pro' ? 'HamaEditor · Pro 라이선스 키' : 'HamaEditor · Mac 라이선스 키' },
     heading: copy.heading,
     noteHtml: copy.noteHtml ?? DEFAULT_NOTE_HTML,
     card: { value: key, iconUrl: keyIconUrl, bgUrl: cardBgUrl },
-    cardNote: kind === 'signature' ? signatureUpdatesLine(updatesUntil) : licenseExpiryLine(expiresAt, { autoRenew }),
+    cardNote: kind === 'signature' ? signatureUpdatesLine(updatesUntil) : licenseExpiryLine(expiresAt, { autoRenew, cycleMonths }),
     cta: { href, label: 'Mac용 내려받기', icon: '&#8595;', caption: 'Apple Silicon (M1 이후) · .dmg' },
   });
   return { subject, text: String(key), html };

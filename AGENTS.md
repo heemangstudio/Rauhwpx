@@ -83,7 +83,7 @@ PR checks run only for the paths a change touches (`scripts/ci-changes.mjs`). Ni
 ## Studio (from `rhwp/rhwp-studio/`)
 
 - `npm run dev` serves http://127.0.0.1:7700 and starts its own authenticated hub.
-- `npm test` runs fast Node tests and `../npm/editor/tests`; `npm run test:browser` runs browser integrations (see `tests/README.md`).
+- `npm test` runs fast Node tests; `npm run test:browser` runs browser integrations (see `tests/README.md`).
 - `npm run build` type-checks and builds.
 - Smoke: `npm run e2e:smoke` starts its own hub and Vite, runs eight user flows in headless Chrome (fake provider, offline) and exits nonzero on failure. Set `CHROME_PATH` if Chrome is not in `/Applications`. See `e2e/README.md`. Perf tools are `npm run bench:*` (see `bench/README.md`); the `*-quota` ones spend real provider quota.
 - To drive Studio and a real hub from a script, import `e2e/agent-bench-harness.mjs` (`findAvailablePort`, `startHub`, `startVite`, `ensureChromePath`, `stopServer`) instead of picking ports and env vars by hand.
@@ -116,15 +116,15 @@ Pipeline: parser → model → document_core → renderer → serializer, expose
 
 ## Studio (`rhwp/rhwp-studio/src/`)
 
-`engine/` wraps wasm; `core/`, `view/`, `command/`, `history/` (undo), `ui/` (dialogs, command palette, `agent-sidebar/`), `hwpctl/`, `embed/`. `agent/` is the Studio side of the AI bridge: `bridge.ts` (WS client), `tool-executor.ts` (MCP tools against the engine, including `apply_edits`), `pending-edits.ts` and `pending-overlay.ts` (staging). One agent mode selector maps onto the wire's `workflow` + `permissionProfile` (`AgentMode` in `agent/types.ts`): **채팅** = question (read-only), **플랜** = plan (read-only until the user approves; approval picks the run profile), **에이전트** = direct + safe (writes stage as a live preview and are held for review at turn end), **전체** = direct + unrestricted (no review: each write tool call commits as its own undo step).
+`engine/` wraps wasm; `core/`, `view/`, `command/`, `history/` (undo), `ui/` (dialogs, command palette, `agent-sidebar/`). `agent/` is the Studio side of the AI bridge: `bridge.ts` (WS client), `tool-executor.ts` (MCP tools against the engine, including `apply_edits`), `pending-edits.ts` and `pending-overlay.ts` (staging). One agent mode selector maps onto the wire's `workflow` + `permissionProfile` (`AgentMode` in `agent/types.ts`): **채팅** = question (read-only), **플랜** = plan (read-only until the user approves; approval picks the run profile), **에이전트** = direct + safe (writes stage as a live preview and are held for review at turn end), **전체** = direct + unrestricted (no review: each write tool call commits as its own undo step).
 
 ## Hub (`rhwp/rhwp-agent/`)
 
 `server.mjs` is the WS hub (`/studio`, `/mcp`, `/healthz`). Adapters: `agents/claude.mjs`, `agents/codex.mjs` (+ `codex-app-server.mjs`), `agents/pi.mjs`; shared briefs in `agents/backend.mjs`. Each CLI spawns `mcp-stdio.mjs`, which forwards tool calls to the hub and on to the Studio tab. Tools are `mcp__rhwp__<name>` in `tools.mjs`. Revision contract: every read returns `revision`, every write requires `expectedRevision`, mismatch returns `REVISION_MISMATCH`; saving does not bump the revision. Coordinates are 0-based body-text `sectionIdx`/`paraIdx`/`charOffset`.
 
-## Other deliverables
+## Other folders
 
-`rhwp-chrome/`, `rhwp-firefox/`, `rhwp-safari/`, `rhwp-vscode/`, `npm/editor`, `rhwp-shared/`. `rhwp/pkg/` is generated; `samples/` holds fixtures; `saved/` and `output/` hold generated artifacts.
+The product ships only as the desktop app; there are no browser extensions, VS Code viewer or npm packages. `rhwp-shared/fonts/` holds font discovery shared by Studio, the desktop app and the hub. `rhwp/pkg/` is generated; `samples/` holds fixtures; `saved/` and `output/` hold generated artifacts.
 
 # Pull Requests
 

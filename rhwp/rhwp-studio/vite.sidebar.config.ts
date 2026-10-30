@@ -4,7 +4,7 @@ import { resolve } from 'node:path';
 import { liveUsagePlugin } from './sidebar-preview/live-usage-plugin.mjs';
 import { rhwpPdfjsAssetsPlugin } from './vite-plugin-pdfjs-assets.mjs';
 
-// Deliberately independent of vite.config.ts: no agent hub, WASM, or PWA plugin.
+// Deliberately independent of vite.config.ts: no agent hub or WASM.
 export default defineConfig({
   // 같은 의존성 폴더를 쓰는 편집기와 작업 트리도 최적화 캐시를 공유하지 않는다.
   cacheDir: resolve(import.meta.dirname, '.run/vite-cache/sidebar'),
@@ -16,10 +16,6 @@ export default defineConfig({
     alias: {
       '@': resolve(import.meta.dirname, 'src'),
       '/src': resolve(import.meta.dirname, 'src'),
-      'virtual:pwa-register': resolve(
-        import.meta.dirname,
-        'src/sidebar-preview/pwa-placeholder.ts',
-      ),
       '@wasm/rhwp.js': resolve(
         import.meta.dirname,
         'src/sidebar-preview/wasm-placeholder.ts',
