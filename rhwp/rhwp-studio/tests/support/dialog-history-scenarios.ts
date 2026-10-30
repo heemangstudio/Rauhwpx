@@ -727,7 +727,7 @@ async function bookmarks(): Promise<{ add: StepResult; rename: StepResult; remov
 }
 
 type LayoutEntry = 'page:setup' | 'file:page-setup' | 'page:page-border' | 'page:col-settings'
-  | 'page:section-settings' | 'page:new-page-num' | 'insert:endnote-shape';
+  | 'page:section-settings' | 'page:new-page-num' | 'insert:endnote-shape' | 'insert:note-shape';
 
 /** 쪽·구역·번호 대화상자: 값 하나를 바꾸고 확인. */
 async function layoutDialog(entry: LayoutEntry): Promise<StepResult> {
@@ -762,7 +762,26 @@ async function layoutDialog(entry: LayoutEntry): Promise<StepResult> {
       case 'insert:endnote-shape':
         setValue(field(root, '앞 장식 문자'), '(');
         break;
+      case 'insert:note-shape':
+        // 본문에서 열면 각주 탭이다. 두 탭을 함께 고쳐도 확인 한 번이 한 칸이다.
+        setValue(field(root, '뒤 장식 문자'), ']');
+        button(root, '미주 모양').click();
+        setValue(field(root, '앞 장식 문자'), '(');
+        break;
     }
+    confirmDialog(root);
+  });
+}
+
+/** 각주/미주 모양: 탭만 오가고 확인하면 문서도 이력도 그대로다. */
+async function noteShapeNoChange(): Promise<{ before: string; after: string; entries: number }> {
+  freshDocument(() => wasm.insertText(0, 0, 0, '주석 모양'));
+  host.moveCursorTo({ sectionIndex: 0, paragraphIndex: 0, charOffset: 1 });
+  return noStep(() => {
+    run('insert:note-shape');
+    const root = dialog();
+    button(root, '미주 모양').click();
+    button(root, '각주 모양').click();
     confirmDialog(root);
   });
 }
@@ -975,6 +994,7 @@ export const scenarios = {
   tableDialog,
   bookmarks,
   layoutDialog,
+  noteShapeNoChange,
   formModePageSetup,
   equationInsert,
   equationInsertAfterDocumentChange,
