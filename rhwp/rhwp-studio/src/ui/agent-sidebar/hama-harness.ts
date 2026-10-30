@@ -1,6 +1,6 @@
 /**
  * Hama 하네스의 표시 규칙 — 피커 항목(열림·잠김·숨김), 새 채팅의 기본 하네스, 사용량 게이지 계산.
- * DOM 이 없는 순수 함수만 둔다(그리는 쪽은 hama-usage.ts, 붙이는 쪽은 index.ts).
+ * DOM 이 없는 순수 함수만 둔다(붙이는 쪽은 index.ts, 사용량 카드는 provider-quota.ts).
  */
 import { HAMA_CAPS, hamaConnected } from '../../agent/hama-status.ts';
 import type { AgentName, HamaCap, HamaStatus } from '../../agent/types.ts';
@@ -90,40 +90,4 @@ export function hamaGauge(status: HamaStatus | null | undefined): HamaGaugeWindo
     out.push({ cap, percent, resetsAt, blocked });
   }
   return out;
-}
-
-/** 지금 가장 빠듯한 창 — 막힌 창, 아니면 사용률이 가장 높은 창(같으면 짧은 창). */
-export function bindingWindow(windows: readonly HamaGaugeWindow[]): HamaGaugeWindow | null {
-  let best: HamaGaugeWindow | null = null;
-  for (const window of windows) {
-    if (window.blocked) return window;
-    if (!best || window.percent > best.percent) best = window;
-  }
-  return best;
-}
-
-const MINUTE = 60_000;
-const HOUR = 60 * MINUTE;
-const DAY = 24 * HOUR;
-
-/** 초기화까지 남은 시간 — 두 단위까지, 분은 올림. 지났으면 null. */
-export function formatResetIn(resetsAt: number | null, now: number): string | null {
-  if (resetsAt === null) return null;
-  const left = resetsAt - now;
-  if (left <= 0) return null;
-  const minutes = Math.ceil(left / MINUTE);
-  if (minutes < 60) return `${minutes}분`;
-  if (left < DAY) {
-    const hours = Math.floor(minutes / 60);
-    const rest = minutes % 60;
-    return rest ? `${hours}시간 ${rest}분` : `${hours}시간`;
-  }
-  const days = Math.floor(left / DAY);
-  const hours = Math.floor((left % DAY) / HOUR);
-  return hours ? `${days}일 ${hours}시간` : `${days}일`;
-}
-
-/** 다음 분 경계까지(최소 1초) — 카운트다운은 분 단위로만 바뀐다. */
-export function msToNextMinute(now: number): number {
-  return Math.max(1_000, MINUTE - (now % MINUTE));
 }

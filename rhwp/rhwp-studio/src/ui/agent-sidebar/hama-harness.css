@@ -72,11 +72,10 @@
   height: 11px;
 }
 
-/* 입력기 줄의 Hama 표 — Hama 를 고른 동안만. 사용량 고리를 품는다. */
+/* 입력기 줄의 Hama 표 — Hama 를 고른 동안만. */
 .ag-hama-badge {
   display: none;
   align-items: center;
-  gap: 5px;
   padding: 1px 5px;
   border-radius: var(--ag-r-code);
   background: var(--ag-hama-wash);
@@ -94,92 +93,4 @@
 /* 입력기 줄에서는 표가 마크를 대신한다 — 모델 이름에 자리를 남긴다. */
 .ag-root[data-agent='hama'] .ag-composer-meta .ag-provider .ag-provider-icon {
   display: none;
-}
-
-.ag-hama-meter {
-  display: inline-flex;
-  align-items: center;
-}
-
-.ag-hama-meter[hidden] {
-  display: none;
-}
-
-.ag-hama-ring {
-  width: 10px;
-  height: 10px;
-  transform: rotate(-90deg);
-}
-
-.ag-hama-ring circle {
-  fill: none;
-  stroke-width: 2.4;
-}
-
-.ag-hama-ring-track {
-  stroke: color-mix(in srgb, var(--ag-hama) 28%, transparent);
-}
-
-.ag-hama-ring-fill {
-  stroke: var(--ag-hama);
-  stroke-dasharray: 0 100;
-}
-
-.ag-hama-meter[data-blocked='true'] .ag-hama-ring-fill {
-  stroke: var(--ag-err);
-}
-
-/* 설정 패널의 '사용량' — 창마다 한 줄: 이름 · 막대 · % · 초기화까지. */
-.ag-hama-usage-rows {
-  display: grid;
-  grid-template-columns: auto minmax(48px, 1fr) auto auto;
-  align-items: center;
-  column-gap: 10px;
-  row-gap: 6px;
-  padding-top: 5px;
-  font-size: var(--ag-fs-meta);
-  line-height: var(--ag-lh-tight);
-  font-variant-numeric: tabular-nums;
-}
-
-.ag-hama-usage-row {
-  display: contents;
-}
-
-.ag-hama-usage-name {
-  color: var(--ag-text-secondary);
-}
-
-.ag-hama-usage-bar {
-  position: relative;
-  height: 4px;
-  overflow: hidden;
-  border-radius: var(--ag-r-pill);
-  background: var(--ag-hover);
-}
-
-.ag-hama-usage-fill {
-  position: absolute;
-  inset: 0 auto 0 0;
-  border-radius: inherit;
-  background: var(--ag-hama);
-}
-
-.ag-hama-usage-pct {
-  min-width: 4ch;
-  color: var(--ag-text);
-  text-align: right;
-}
-
-.ag-hama-usage-reset {
-  color: var(--ag-text-tertiary);
-}
-
-.ag-hama-usage-row[data-blocked='true'] .ag-hama-usage-fill {
-  background: var(--ag-err);
-}
-
-.ag-hama-usage-row[data-blocked='true'] .ag-hama-usage-pct,
-.ag-hama-usage-row[data-blocked='true'] .ag-hama-usage-reset {
-  color: var(--ag-err);
 }

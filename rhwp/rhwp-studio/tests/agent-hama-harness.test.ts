@@ -3,8 +3,6 @@ import assert from 'node:assert/strict';
 import { inactiveHamaStatus } from '../src/agent/hama-status.ts';
 import type { HamaStatus, PiModelConfig } from '../src/agent/types.ts';
 import {
-  bindingWindow,
-  formatResetIn,
   hamaEntry,
   hamaGauge,
   hamaIsDefault,
@@ -92,28 +90,5 @@ test('gauge percentages round, clamp, and read a blocked window as full', () => 
   ]);
   // The blocked window's reset comes from the block when the window has none.
   assert.equal(windows[0]!.resetsAt, NOW + 2 * HOUR);
-  assert.equal(bindingWindow(windows)?.cap, 'cap_5h');
   assert.deepEqual(hamaGauge(inactiveHamaStatus('not_enrolled')), []);
-});
-
-test('binding window is the fullest one, the shorter window on ties', () => {
-  const windows = hamaGauge(active({
-    caps: {
-      cap_5h: { usedUsd: 1.5, limitUsd: 3, resetsAt: null },
-      cap_week: { usedUsd: 3.75, limitUsd: 7.5, resetsAt: null },
-      cap_month: { usedUsd: 6, limitUsd: 15, resetsAt: null },
-    },
-  }));
-  assert.equal(bindingWindow(windows)?.cap, 'cap_5h');
-  assert.equal(bindingWindow([]), null);
-});
-
-test('reset countdown keeps two units and rounds minutes up', () => {
-  assert.equal(formatResetIn(null, NOW), null);
-  assert.equal(formatResetIn(NOW - 1, NOW), null);
-  assert.equal(formatResetIn(NOW + 1_000, NOW), '1분');
-  assert.equal(formatResetIn(NOW + 59 * 60_000 + 1, NOW), '1시간');
-  assert.equal(formatResetIn(NOW + 3 * HOUR + 12 * 60_000, NOW), '3시간 12분');
-  assert.equal(formatResetIn(NOW + 2 * 24 * HOUR + 5 * HOUR + 30 * 60_000, NOW), '2일 5시간');
-  assert.equal(formatResetIn(NOW + 9 * 24 * HOUR, NOW), '9일');
 });

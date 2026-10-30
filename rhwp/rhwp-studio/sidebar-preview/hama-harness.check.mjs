@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 
-/** Hama 하네스: 잠긴 항목은 플랜 안내만 열고, 게이지는 Hama 에서만, 기본 하네스는 고른 적 없는 가입자만. */
+/** Hama 하네스: 잠긴 항목은 플랜 안내만 열고, 사용량은 설정에만, 기본 하네스는 고른 적 없는 가입자만. */
 export async function checkHamaHarness({ page, origin, open, screenshot }) {
   const viewport = page.viewport();
   const agent = () => page.$eval('.ag-root', (root) => root.dataset.agent);
@@ -38,7 +38,7 @@ export async function checkHamaHarness({ page, origin, open, screenshot }) {
   // Hama 가입자, 고른 적 없음 — 첫 빈 채팅이 Hama 로 열리고 게이지가 보인다.
   await open('reset=1&hama=active');
   await page.waitForFunction(() => document.querySelector('.ag-root').dataset.agent === 'hama');
-  assert.equal(await shown('.ag-hama-meter'), true, 'the usage ring shows on Hama');
+  assert.equal(await shown('.ag-provider .ag-hama-badge'), true);
   await openPicker();
   const rowTops = await page.$$eval('.ag-provider-item:not([hidden])', (items) => new Set(items.map((item) => item.offsetTop)).size);
   assert.equal(rowTops, 1, 'Hama sits on the same row as the other providers');
@@ -49,25 +49,31 @@ export async function checkHamaHarness({ page, origin, open, screenshot }) {
   });
   assert.deepEqual(narrow, { rows: 1, fits: true }, 'the row holds at the narrowest sidebar');
   await page.setViewport(viewport);
-  assert.equal(await page.$$eval('.ag-hama-usage .ag-hama-usage-row', (rows) => rows.length), 3);
-  assert.equal(await shown('.ag-hama-usage'), true);
+  const panelText = await page.$eval('.ag-config-panel', (panel) => panel.textContent);
+  assert.doesNotMatch(panelText, /사용량|5시간/, 'the picker shows no usage');
+  assert.equal(await page.$('.ag-provider svg circle'), null, 'no usage ring next to the logo');
 
-  // 막힌 창은 꽉 찬 것으로 읽힌다.
+  // 사용량은 설정의 사용량 탭에 있다. 막힌 창은 0% 남음으로 읽힌다.
+  await open('hama=active&page=settings&destination=ai-usage');
+  await page.waitForSelector('.ag-settings-quota-card[data-provider="hama"]', { visible: true });
+  assert.equal(await page.$$eval('.ag-settings-quota-card[data-provider="hama"] .ag-settings-quota-meter', (rows) => rows.length), 3);
   await page.evaluate(() => window.sidebarPreview.setHama('cap5h'));
-  await page.waitForSelector('.ag-hama-usage-row[data-cap="cap_5h"][data-blocked="true"]');
-  const blocked = await page.$eval('.ag-hama-usage-row[data-cap="cap_5h"]', (row) => ({
-    pct: row.querySelector('.ag-hama-usage-pct').textContent,
-    reset: row.querySelector('.ag-hama-usage-reset').textContent,
-  }));
-  assert.equal(blocked.pct, '100%');
-  assert.match(blocked.reset, /^3시간 1\d분 후 초기화$/);
-  await screenshot('hama-cap5h');
+  await page.waitForFunction(() => document
+    .querySelector('.ag-settings-quota-card[data-provider="hama"] [data-cap="cap_5h"] .ag-settings-quota-caption')
+    ?.textContent === '5시간: 0% 남음');
+  const blockedReset = await page.$eval('.ag-settings-quota-card[data-provider="hama"] [data-cap="cap_5h"] .ag-settings-usage-updated', (node) => node.textContent);
+  assert.match(blockedReset, /^3시간 후 리셋$/);
+  await screenshot('hama-settings-usage');
 
-  // BYOK 로 바꾸면 게이지가 사라지고, 그 선택이 남는다.
+  // 플랜이 없으면 카드도 없다.
+  await open('reset=1&hama=notenrolled&page=settings&destination=ai-usage');
+  await page.waitForSelector('.ag-settings-quota-card[data-provider="claude"]', { visible: true });
+  assert.equal(await page.$('.ag-settings-quota-card[data-provider="hama"]'), null);
+
+  // BYOK 를 고르면 그 선택이 남는다.
+  await open('hama=active');
   await pick('pi');
   assert.equal(await agent(), 'pi');
-  assert.equal(await shown('.ag-hama-meter'), false, 'no usage ring on BYOK');
-  assert.equal(await page.$eval('.ag-hama-usage', (node) => node.hidden), true, 'no usage group on BYOK');
 
   // 다시 열어도(같은 저장소) 고른 하네스가 이긴다 — Hama 상태가 다시 와도 바꾸지 않는다.
   await page.goto(`${origin}/?theme=light&width=480&hama=active`, { waitUntil: 'networkidle0' });

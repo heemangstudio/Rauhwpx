@@ -8,6 +8,7 @@
  */
 import './motion.css';
 import './agent-sidebar.css';
+import './hama-harness.css';
 import './plan-presentation.css';
 import '../../styles/inline-rename.css';
 import '../../styles/worktree-chip.css';
@@ -216,7 +217,6 @@ import { formatTokens } from './usage-format.ts';
 import { createComposerRestingMotion } from './composer-resting.ts';
 import { createChatHama, type ChatHama } from './chat-hama.ts';
 import { hamaEntry, hamaIsDefault, readHarnessChoice, recordHarnessChoice } from './hama-harness.ts';
-import { createHamaUsage } from './hama-usage.ts';
 import { createArrivalGuard, typingActivity as windowTypingActivity, type TypingActivity } from './typing-guard.ts';
 import { createDelayedStatus, revealAfterDelay } from './delayed-status.ts';
 import { ownsTextInput } from '../../command/shortcut-target.ts';
@@ -1928,11 +1928,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   providerTrigger.setAttribute('aria-expanded', 'false');
   providerTrigger.setAttribute('aria-controls', 'ag-config-panel');
   let providerIcon = createProviderIcon(selectedAgent);
-  // Hama 를 고른 동안만 보이는 작은 표(CSS 가 .ag-root[data-agent] 로 켠다). 사용량 고리가 그 안에 산다 —
-  // 누르면 설정 패널이 열리고 거기에 창별 사용량이 있다.
-  const hamaUsage = createHamaUsage();
+  // Hama 를 고른 동안만 보이는 작은 표(CSS 가 .ag-root[data-agent] 로 켠다). 사용량은 설정의 사용량 탭에 있다.
   const hamaBadge = el('span', 'ag-hama-badge', AGENT_LABEL.hama);
-  hamaBadge.append(hamaUsage.meter);
   providerTrigger.append(providerIcon, hamaBadge);
 
   const providerMenu = el('div', 'ag-model-menu ag-provider-menu');
@@ -1940,7 +1937,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   providerMenu.setAttribute('aria-hidden', 'true');
   const providerItems = new Map<AgentName, HTMLButtonElement>();
 
-  /** Hama 플랜 상태 (hama-status). 피커의 Hama 항목·기본 하네스·사용량 게이지가 읽는다. */
+  /** Hama 플랜 상태 (hama-status). 피커의 Hama 항목과 기본 하네스가 읽는다. */
   let hamaStatus: HamaStatus | null = bridge.hamaStatus?.() ?? null;
   const desktopApp = deps.desktopApp
     ?? typeof (window as Window & { rhwpDesktop?: unknown }).rhwpDesktop !== 'undefined';
@@ -2434,7 +2431,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   providerGroup.append(el('span', 'ag-config-label', '에이전트'), providerMenu);
   const llmGroup = el('div', 'ag-config-group');
   llmGroup.append(el('span', 'ag-config-label', '모델'), llmMenu);
-  configPanelInner.append(providerGroup, llmGroup, effortGroup, hamaUsage.group);
+  configPanelInner.append(providerGroup, llmGroup, effortGroup);
   configPanel.append(configPanelInner);
 
   const contextRow = el('div', 'ag-context-row');
@@ -9809,7 +9806,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     syncProviderMenu();
     if (activeComposerSkill) composerSkill.dataset.agent = agent;
     updateWorkspaceAgentContext();
-    hamaUsage.update(hamaStatus, agent === 'hama');
   }
 
   function setConnection(
@@ -12784,7 +12780,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
           rebuildEffortMenu();
           scheduleSidebarWidthMin();
         }
-        hamaUsage.update(hamaStatus, selectedAgent === 'hama');
         adoptHamaDefault();
         break;
       case 'pi-status':
@@ -14356,7 +14351,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       runStatus.dispose();
       unsubscribeHamaSetting();
       hamaRootObserver?.disconnect();
-      hamaUsage.dispose();
       chatHama?.dispose();
       attentionViewObserver?.disconnect();
       window.removeEventListener('focus', scheduleSeenCheck);
