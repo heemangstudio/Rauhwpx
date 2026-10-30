@@ -1,4 +1,5 @@
 import { licenseError, tokenEquals } from './licenses.mjs';
+import { createOpenRouterClient, finite, isKeyLimitReached, readBounded, upstreamFailure, usd } from './openrouter.mjs';
 import { createRateLimiter } from './rate-limit.mjs';
 import { createMemoryStore } from './store.mjs';
 
@@ -22,9 +23,6 @@ export const GIFT_REQUESTS_PER_MINUTE = 60;
 const MINUTE = 60 * 1000;
 const BALANCE_CACHE_MS = 15 * 1000;
 const CATALOG_CACHE_MS = 10 * MINUTE;
-const UPSTREAM_TIMEOUT_MS = 15 * 1000;
-const MAX_UPSTREAM_JSON_BYTES = 16 * 1024 * 1024;
-const MAX_KEY_LIST_PAGES = 50;
 export const MAX_GIFT_AMOUNT_USD = 1000;
 const INSUFFICIENT_CREDITS = 'Insufficient credits: the HamaEditor gift credit for this license is used up.';
 
@@ -47,33 +45,9 @@ function own(map, key) {
   return map && typeof map === 'object' && Object.hasOwn(map, key) ? map[key] : undefined;
 }
 
-function upstreamFailure(code, { definite = false, status } = {}) {
-  const error = new Error(code);
-  error.code = code;
-  error.definite = definite; // true: OpenRouter answered and certainly did not act
-  error.status = status;
-  return error;
-}
-
-function finite(value) {
-  const n = Number(value);
-  return value !== null && value !== undefined && Number.isFinite(n) ? n : null;
-}
-
 function bearer(req) {
   const match = String(req.headers.authorization ?? '').match(/^Bearer\s+(.+)$/i);
   return match?.[1]?.trim() ?? '';
-}
-
-async function readBounded(stream, maxBytes) {
-  const chunks = [];
-  let size = 0;
-  for await (const chunk of stream) {
-    size += chunk.length;
-    if (size > maxBytes) return null;
-    chunks.push(chunk);
-  }
-  return Buffer.concat(chunks);
 }
 
 /** Resolves when the response can take more data or has closed. */
@@ -87,11 +61,6 @@ function writable(res) {
     res.on('drain', done);
     res.on('close', done);
   });
-}
-
-/** Round to a cent-safe precision so float sums never drift past the budget. */
-function usd(value) {
-  return Math.round(value * 1e6) / 1e6;
 }
 
 export function createGiftsService({
@@ -115,6 +84,7 @@ export function createGiftsService({
     apiBase = 'https://openrouter.ai/api/v1',
   } = config;
   const configured = Boolean(provisioningKey && eventId);
+  const openrouter = createOpenRouterClient({ apiBase, provisioningKey, fetchImpl });
 
   let mutation = Promise.resolve();
   function withLock(fn) {
@@ -185,61 +155,6 @@ export function createGiftsService({
 
   // ------------------------------------------------------------ OpenRouter
 
-  async function upstreamJson(url, { method = 'GET', key = provisioningKey, body } = {}) {
-    let response;
-    try {
-      response = await fetchImpl(url, {
-        method,
-        headers: {
-          Authorization: `Bearer ${key}`,
-          Accept: 'application/json',
-          ...(body ? { 'Content-Type': 'application/json' } : {}),
-        },
-        body: body ? JSON.stringify(body) : undefined,
-        signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
-      });
-    } catch {
-      throw upstreamFailure('upstream_network');
-    }
-    const raw = response.body ? await readBounded(response.body, MAX_UPSTREAM_JSON_BYTES).catch(() => null) : Buffer.alloc(0);
-    let parsed = null;
-    try { parsed = raw && raw.length ? JSON.parse(raw.toString('utf8')) : null; } catch { parsed = null; }
-    return { status: response.status, ok: response.ok, body: parsed };
-  }
-
-  /**
-   * POST /keys → 201 {key, data:{hash,...}}. include_byok_in_limit makes Claude calls billed to the
-   * owner's Anthropic key (BYOK) count toward the gift limit, so OpenRouter enforces the cap.
-   */
-  async function createKey(name, limit) {
-    const { status, ok, body } = await upstreamJson(`${apiBase}/keys`, {
-      method: 'POST',
-      body: { name, limit, limit_reset: null, include_byok_in_limit: true },
-    });
-    const key = body?.key;
-    const hash = body?.data?.hash;
-    if (!ok || typeof key !== 'string' || !key || typeof hash !== 'string' || !hash) {
-      throw upstreamFailure('upstream_create_failed', { definite: status >= 400 && status < 500, status });
-    }
-    return { key, hash };
-  }
-
-  /** Delete keys left behind by a crashed claim. Their secret was never stored, so nobody can use them. */
-  async function removeOrphans(name) {
-    for (let page = 0; page < MAX_KEY_LIST_PAGES; page += 1) {
-      const url = `${apiBase}/keys?include_disabled=true&offset=${page * 100}`;
-      const { ok, body } = await upstreamJson(url);
-      if (!ok || !Array.isArray(body?.data)) throw upstreamFailure('upstream_list_failed');
-      for (const candidate of body.data) {
-        if (candidate?.name !== name || typeof candidate?.hash !== 'string') continue;
-        const removed = await upstreamJson(`${apiBase}/keys/${encodeURIComponent(candidate.hash)}`, { method: 'DELETE' });
-        if (!removed.ok && removed.status !== 404) throw upstreamFailure('upstream_delete_failed');
-      }
-      if (body.data.length < 100) return;
-    }
-    throw upstreamFailure('upstream_list_failed');
-  }
-
   const balances = new Map();
   /**
    * GET /key with the gift key → {limit, usage, remaining}. `usage` there is OpenRouter credit spend
@@ -249,12 +164,12 @@ export function createGiftsService({
   async function balance(grant, { fresh = false } = {}) {
     const cached = balances.get(grant.keyId);
     if (!fresh && cached && now() - cached.at < BALANCE_CACHE_MS) return cached.value;
-    const { ok, body } = await upstreamJson(`${apiBase}/key`, { key: grant.openrouterKey });
-    const limit = finite(body?.data?.limit) ?? grant.limitUsd;
-    const credit = finite(body?.data?.usage);
-    if (!ok || credit === null) throw upstreamFailure('upstream_key_failed');
-    const spent = credit + (finite(body?.data?.byok_usage) ?? 0);
-    const reported = finite(body?.data?.limit_remaining);
+    const data = await openrouter.keyInfo(grant.openrouterKey);
+    const limit = finite(data.limit) ?? grant.limitUsd;
+    const credit = finite(data.usage);
+    if (credit === null) throw upstreamFailure('upstream_key_failed');
+    const spent = credit + (finite(data.byok_usage) ?? 0);
+    const reported = finite(data.limit_remaining);
     const remaining = usd(Math.max(0, reported ?? limit - spent));
     const value = { limit, usage: usd(Math.min(limit, reported === null ? spent : limit - remaining)), remaining };
     balances.set(grant.keyId, { at: now(), value });
@@ -350,8 +265,8 @@ export function createGiftsService({
     let created;
     try {
       // A provisioning record without a live attempt is a crash between create and save.
-      if (reserved.stale) await removeOrphans(name);
-      created = await createKey(name, reserved.limit);
+      if (reserved.stale) await openrouter.removeOrphans(name);
+      created = await openrouter.createKey(name, reserved.limit);
     } catch (error) {
       log(`[site-api] gift key for ${who.keyId} not created: ${error?.code ?? 'error'}${error?.status ? ` (${error.status})` : ''}`);
       if (error?.definite) {
@@ -386,7 +301,7 @@ export function createGiftsService({
 
   async function filteredCatalog() {
     if (catalog && now() - catalog.at < CATALOG_CACHE_MS) return catalog.value;
-    const { ok, body } = await upstreamJson(`${apiBase}/models`, { key: provisioningKey }).catch(() => ({}));
+    const { ok, body } = await openrouter.json('/models').catch(() => ({}));
     if (!ok || !Array.isArray(body?.data)) {
       if (catalog) return catalog.value; // a stale list beats a failure
       throw upstreamFailure('upstream_models_failed');
@@ -410,13 +325,6 @@ export function createGiftsService({
       capped = true;
     }
     if (!capped) payload.max_tokens = maxOutputTokens;
-  }
-
-  /** Only the gift key's own limit. A 402 for the owner's account balance passes through as is. */
-  function isGiftExhausted(status, body) {
-    const source = body?.error?.metadata?.limit_source;
-    if (status === 402) return source === 'openrouter_key_limit';
-    return status === 403 && (source === 'openrouter_key_limit' || /key limit exceeded/i.test(String(body?.error?.message ?? '')));
   }
 
   /** Handles every request under GIFT_PROXY_PREFIX. Errors use OpenRouter's {error:{code,message}} shape. */
@@ -535,7 +443,7 @@ export function createGiftsService({
       const errorRaw = upstream.body ? await readBounded(upstream.body, 64 * 1024).catch(() => null) : null;
       let errorBody = null;
       try { errorBody = errorRaw ? JSON.parse(errorRaw.toString('utf8')) : null; } catch { errorBody = null; }
-      if (isGiftExhausted(upstream.status, errorBody)) return fail(402, INSUFFICIENT_CREDITS);
+      if (isKeyLimitReached(upstream.status, errorBody)) return fail(402, INSUFFICIENT_CREDITS);
       const retryAfter = upstream.headers.get('retry-after');
       return sendJson(upstream.status, errorBody ?? { error: { code: upstream.status, message: 'Upstream refused the request.' } },
         retryAfter ? { 'Retry-After': retryAfter } : {});
@@ -664,10 +572,7 @@ export function createGiftsService({
           return { ok: true, gift: plan.gift };
         }
 
-        const { ok, status: code } = await upstreamJson(`${apiBase}/keys/${encodeURIComponent(plan.hash)}`, {
-          method: 'PATCH',
-          body: { limit: amount },
-        }).catch(() => ({ ok: false }));
+        const { ok, status: code } = await openrouter.patchKey(plan.hash, { limit: amount });
         if (!ok) {
           log(`[site-api] gift limit for ${keyId} not changed: ${code ?? 'network'}`);
           // A refusal frees the reservation. After a network failure the new limit may be live, so it stays counted.
@@ -708,10 +613,7 @@ export function createGiftsService({
       if (grant.status === 'revoked') return { ok: true, changed: false, gift: grantView(grant) };
       if (grant.status === 'provisioning') throw giftError('gift_provisioning', 409);
       if (grant.openrouterHash) {
-        const { ok, status: code } = await upstreamJson(`${apiBase}/keys/${encodeURIComponent(grant.openrouterHash)}`, {
-          method: 'PATCH',
-          body: { disabled: true },
-        }).catch(() => ({ ok: false }));
+        const { ok, status: code } = await openrouter.patchKey(grant.openrouterHash, { disabled: true });
         if (!ok && code !== 404) throw giftError('upstream_unavailable', 502);
       }
       const reason = typeof body?.reason === 'string' && body.reason.trim() ? body.reason.trim().slice(0, 200) : 'manual';

@@ -294,7 +294,7 @@ async function ensureReadPermission(handle: FileSystemFileHandleLike): Promise<b
  * - NotAllowedError: writeBlobToHandle 권한 거부 (Chrome "변경사항 저장" 프롬프트 취소)
  *
  * 두 케이스 모두 fallback download 우회 — 사용자가 명시적으로 취소했으므로
- * 의도하지 않은 Downloads 폴더 저장 + chrome-extension viewer 자동 연결 차단. */
+ * 의도하지 않은 Downloads 폴더 저장을 막는다. */
 function isUserCancelError(e: unknown): boolean {
   return e instanceof DOMException
       && (e.name === 'AbortError' || e.name === 'NotAllowedError');

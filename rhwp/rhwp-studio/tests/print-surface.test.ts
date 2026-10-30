@@ -57,8 +57,8 @@ test('print surface URL은 Studio와 같은 origin의 전용 문서로 해석된
     'https://studio.example.test/app/print.html',
   );
   assert.equal(
-    resolvePrintSurfaceUrl('chrome-extension://abcdefghijklmnop/index.html'),
-    'chrome-extension://abcdefghijklmnop/print.html',
+    resolvePrintSurfaceUrl('rauhwpx://app/index.html'),
+    'rauhwpx://app/print.html',
   );
 });
 

@@ -13,7 +13,6 @@ import {
   installDesktopGeneratedDocumentHandling,
   installDesktopPlainTextPasteHandling,
   installDesktopEditCommandHandling,
-  installWebAppShell,
   isDesktopApp,
   isLegacyPortableHistoryFolderHandle,
   openPublishedDocumentInNewWindow,
@@ -204,27 +203,6 @@ test('published artifact links open through a fresh editor window on desktop', a
     },
   }, { readOnly: true });
   assert.equal(opened[1]?.readOnly, true);
-});
-
-test('browser artifact links open another Studio page with an authenticated source URL', async () => {
-  const artifact = parsePublishedDocumentLink(
-    'http://localhost:5175/artifacts/artifact_token_1234567890/report.hwpx?sessionId=a&token=b',
-  );
-  const opened: string[] = [];
-  await openPublishedDocumentInNewWindow(artifact!, {
-    location: { href: 'http://localhost:7700/editor?old=1#page' },
-    open: (url: string) => { opened.push(String(url)); },
-  } as any);
-  const target = new URL(opened[0]!);
-  assert.equal(target.origin + target.pathname, 'http://localhost:7700/editor');
-  assert.equal(target.searchParams.get('url'), artifact?.downloadUrl);
-  assert.equal(target.searchParams.get('filename'), 'report.hwpx');
-
-  await openPublishedDocumentInNewWindow(artifact!, {
-    location: { href: 'http://localhost:7700/editor' },
-    open: (url: string) => { opened.push(String(url)); },
-  } as any, { readOnly: true });
-  assert.equal(new URL(opened[1]!).searchParams.get('templatePreview'), '1');
 });
 
 test('generated-document startup fallback and event delivery open only once', async () => {
@@ -674,7 +652,7 @@ test('releasing a replaced native handle bookmarks it first', async () => {
   assert.deepEqual(released, ['old']);
 });
 
-test('데스크톱 셸은 서비스 워커를 끄고 PWA 등록을 건너뛴다', async () => {
+test('데스크톱 셸은 남은 서비스 워커를 해제한다', async () => {
   const unregisters: string[] = [];
   await suppressDesktopServiceWorker({
     rhwpDesktop: { ensureAgentHub: async () => true },
@@ -691,8 +669,6 @@ test('데스크톱 셸은 서비스 워커를 끄고 PWA 등록을 건너뛴다'
     },
   });
   assert.deepEqual(unregisters, ['sw']);
-
-  installWebAppShell({});
 });
 
 

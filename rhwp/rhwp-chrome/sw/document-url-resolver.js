@@ -1,1 +1,0 @@
-../../rhwp-shared/sw/document-url-resolver.js
