@@ -13,7 +13,7 @@ const selected = (files) => {
 const everything = selected(['<full-check>']);
 
 for (const [description, files, expected] of [
-  ['notes, media and local tools', ['docs/releasing.md', 'promo/a.mp4', 'output/x.png', 'research/a.md', 'THIRD_PARTY_LICENSES.md', 'rhwp/pdf/a.pdf', 'rhwp/tools/compare.py', 'rhwp/rhwp-vscode/src/a.ts', 'build/entitlements.mac.plist'], []],
+  ['notes, media and local tools', ['docs/releasing.md', 'promo/a.mp4', 'output/x.png', 'research/a.md', 'THIRD_PARTY_LICENSES.md', 'rhwp/pdf/a.pdf', 'rhwp/tools/compare.py', 'build/entitlements.mac.plist'], []],
   ['publish docs and website', ['README.md', 'DESIGN.md', 'PRODUCT.md', 'rhwp/rhwp-agent/README.md', 'website/index.html'], []],
   ['engine source', ['rhwp/src/parser/hwp.rs'], ['app:studio', 'engine']],
   ['Cargo manifest', ['rhwp/Cargo.toml', 'rhwp/Cargo.lock'], ['app:studio', 'engine']],
@@ -22,13 +22,11 @@ for (const [description, files, expected] of [
   ['Studio UI', ['rhwp/rhwp-studio/src/ui/toolbar.ts'], ['app:studio']],
   ['Studio agent bridge', ['rhwp/rhwp-studio/src/agent/tool-executor.ts'], ['app:hub', 'app:studio']],
   ['Studio desktop tests', ['rhwp/rhwp-studio/tests/desktop-shell.test.ts'], ['app:studio', 'sessions']],
-  ['npm editor package', ['rhwp/npm/editor/index.js'], ['app:studio']],
   ['agent hub', ['rhwp/rhwp-agent/server.mjs', 'rhwp/rhwp-agent/tools.mjs', 'rhwp/rhwp-agent/owned-browser-service.mjs'], ['app:hub', 'app:studio', 'sessions']],
   ['desktop shell', ['desktop/main.mjs', 'tests/desktop-file-replace.test.mjs'], ['app:desktop', 'app:hub', 'app:studio', 'sessions']],
   ['site service', ['site-api/server.mjs'], ['app:site']],
   ['email images', ['website/assets/email/banner.png'], ['app:site']],
-  ['extension', ['rhwp/rhwp-chrome/sw/fetch-security.mjs'], ['app:extensions']],
-  ['shared fonts', ['rhwp/rhwp-shared/fonts/font-index-core.mjs'], ['app:desktop', 'app:extensions', 'app:hub', 'app:studio', 'sessions']],
+  ['shared fonts', ['rhwp/rhwp-shared/fonts/font-index-core.mjs'], ['app:desktop', 'app:hub', 'app:studio', 'sessions']],
 ]) {
   test(`change selection covers ${description}`, () => assert.deepEqual(selected(files), expected));
 }

@@ -17,7 +17,6 @@ import {
   type AutosaveScheduleSettings,
   type AutosaveStatus,
 } from '@/recovery/autosave-manager';
-import { HostSaveTracker } from '@/recovery/host-save';
 import { exportDraftContent } from '@/versioning/snapshot';
 import { isPortableHistoryFileName } from '@/versioning/portable-bundle';
 import { documentSourceDigest } from '@/recent/document-preflight';
@@ -60,7 +59,6 @@ export interface DocumentSession {
   readonly bus: EventBus;
   readonly documentState: DocumentDirtyState;
   readonly autosave: AutosaveManager;
-  readonly hostSave: HostSaveTracker;
   /** 화면에서 떨어져 있는 동안의 히스토리와 캐럿. 같은 객체를 계속 쓴다. */
   readonly editorState: EditorDocumentState;
   /** 화면에서 떨어져 있는 동안 에이전트 편집을 받는 편집기 대역 */
@@ -154,19 +152,6 @@ export function createDocumentSessionCore(options: DocumentSessionCoreOptions): 
       schedule: options.autosave.schedule,
       onStatus: (status) => options.autosave.onStatus(session, status),
       locks: options.autosave.locks,
-    }),
-    hostSave: new HostSaveTracker({
-      documentState,
-      setFileName: (fileName) => { wasm.fileName = fileName; },
-      emitSaved: () => {
-        bus.emit('document-context-changed');
-        bus.emit('document-saved', {
-          reason: 'host-save',
-          fileName: wasm.fileName,
-          sourceFormat: wasm.getSourceFormat(),
-        });
-      },
-      discardDraft: (reason) => session.autosave.discardCurrentDraft(reason),
     }),
     editorState,
     editorHost: new HeadlessEditorHost({

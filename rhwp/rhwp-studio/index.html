@@ -5,11 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="color-scheme" content="light dark" />
   <meta name="theme-color" content="#ffffff" />
-  <!-- 다크테마 FOUC 방지 — 확장 CSP가 인라인 스크립트를 금지하므로 외부 파일로 분리(#1444).
+  <!-- 다크테마 FOUC 방지 — 앱 CSP가 인라인 스크립트를 금지하므로 외부 파일로 분리(#1444).
        module/defer 금지(동기 로드)로 번들 전 즉시 실행되어 FOUC 방지를 유지한다. -->
   <script src="/theme-init.js"></script>
   <link rel="icon" href="/favicon.ico" />
-  <link rel="apple-touch-icon" href="/icons/icon-256.png" />
   <title>HamaEditor</title>
   <link rel="stylesheet" href="/src/style.css" />
 </head>

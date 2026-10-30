@@ -105,7 +105,7 @@ import {
 import { AuthRunRegistry } from './auth-run-registry.mjs';
 import { createProviderMaintenance, runHarnessUpdateRound } from './provider-maintenance.mjs';
 import { createCliSetupManager } from './cli-setup-manager.mjs';
-import { NODE_HOST_ENV } from './npm-cli-launch.mjs';
+import { NODE_HOST_ENV, NODE_HOST_PRELOAD_ENV, NODE_HOST_PRELOAD_FILE } from './npm-cli-launch.mjs';
 import { createCliVersionCache } from './cli-version-cache.mjs';
 import { createClaudeModelCatalog } from './claude-model-catalog.mjs';
 import { createCodexModelCatalog, createCodexModelResolver, createCodexModelStore } from './codex-model-routing.mjs';
@@ -234,8 +234,12 @@ import {
   textFitsByteLimit,
 } from './input-bounds.mjs';
 import { installStaleFrameGuard } from './stale-frame-guard.mjs';
+import { installWindowsHideConsole } from './windows-hide-console.cjs';
 
 installStaleFrameGuard();
+// 패키지 앱의 허브(Electron-as-node)와 `npm start` 의 detached 허브는 콘솔이 없다. 허브 안의
+// 서드파티 스폰(cross-spawn, node-pty, Playwright 등)이 windowsHide 를 빠뜨려도 창이 뜨지 않게 기본값을 건다.
+installWindowsHideConsole();
 
 const REQUESTED_PORT = Number(process.env.RHWP_AGENT_PORT ?? 5175);
 const PRODUCTION = process.env.NODE_ENV === 'production' || process.env.RHWP_AGENT_MODE === 'production';
@@ -466,7 +470,11 @@ function ensureBootWork() {
     process.env.PATH = [cliSetup.nodeHostDir(), cliSetup.binDir, process.env.PATH]
       .filter(Boolean).join(path.delimiter);
     // 에이전트 셸이 PATH 의 node.cmd 를 부를 때도 실행 파일 경로를 환경 변수로 넘긴다.
-    if (process.platform === 'win32' && cliSetup.nodeHostDir()) process.env[NODE_HOST_ENV] = process.execPath;
+    if (process.platform === 'win32' && cliSetup.nodeHostDir()) {
+      process.env[NODE_HOST_ENV] = process.execPath;
+      // env 없이 띄우는 관리형 CLI 도 node-host 의 콘솔 숨김 프리로드를 찾게 한다(applyManagedCliLaunch).
+      process.env[NODE_HOST_PRELOAD_ENV] = path.win32.join(cliSetup.nodeHostDir(), NODE_HOST_PRELOAD_FILE);
+    }
     piStatus = await piManager.status();
     // 선물 자격은 데스크톱 서버 응답을 기다릴 수 있다 — 기동을 막지 않고 끝나면 알린다.
     if (giftSource.available) void refreshGiftAndBroadcast(false);

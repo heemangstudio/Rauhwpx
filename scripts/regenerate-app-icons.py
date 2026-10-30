@@ -14,7 +14,6 @@ ROOT = Path(__file__).resolve().parents[1]
 LOGO_DIR = ROOT / "rhwp" / "assets" / "logo"
 BUILD_DIR = ROOT / "build"
 STUDIO_PUBLIC = ROOT / "rhwp" / "rhwp-studio" / "public"
-VSCODE_ICON = ROOT / "rhwp" / "rhwp-vscode" / "media" / "icon.png"
 PNG_SIZES = (16, 32, 128, 256, 300, 512, 1024)
 ICO_SIZES = (16, 32, 48, 64, 128, 256)
 
@@ -115,26 +114,15 @@ def strokes_on_transparent(master: Image.Image, size: int) -> Image.Image:
 
 def write_ui_copies(master: Image.Image) -> None:
     studio_icons = STUDIO_PUBLIC / "icons"
-    for size in (128, 192, 256, 512):
-        dest = studio_icons / f"icon-{size}.png"
-        master.resize((size, size), Image.Resampling.NEAREST).save(
-            dest, format="PNG", optimize=True
-        )
-        print(f"wrote {dest}")
-    for extension in ("rhwp-chrome/icons", "rhwp-firefox/icons", "rhwp-safari/src/icons"):
-        for size in (16, 32, 48, 128):
-            dest = ROOT / "rhwp" / extension / f"icon-{size}.png"
-            master.resize((size, size), Image.Resampling.NEAREST).save(dest, optimize=True)
+    dest = studio_icons / "icon-128.png"
+    master.resize((128, 128), Image.Resampling.NEAREST).save(dest, format="PNG", optimize=True)
+    print(f"wrote {dest}")
     shutil.copy2(LOGO_DIR / "logo-1024.png", ROOT / "website/assets/hamaeditor-logo.png")
     shutil.copy2(LOGO_DIR / "logo-1024.png", ROOT / "rhwp/rhwp-logo.png")
     rau = strokes_on_transparent(master, 128)
     rau.save(studio_icons / "rau.png", format="PNG", optimize=True)
     rau.save(ROOT / "site-api/public/rau.png", format="PNG", optimize=True)
-    master.resize((128, 128), Image.Resampling.NEAREST).save(
-        VSCODE_ICON, format="PNG", optimize=True
-    )
     print(f"wrote {studio_icons / 'rau.png'}")
-    print(f"wrote {VSCODE_ICON}")
 
 
 def main() -> int:

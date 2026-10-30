@@ -40,13 +40,6 @@ export interface CanvasKitBundledFontSource {
   aliases: string[];
 }
 
-export interface CanvasKitFontPlanOptions extends WebFontLoadOptions {
-  /** `fonts/` 상대 경로를 이 URL 아래의 확장/앱 자산으로 바꾼다. */
-  localFontBaseUrl?: string;
-  /** 배포 표면이 실제로 포함한 로컬 파일만 허용한다. 미지정 시 전체 카탈로그를 허용한다. */
-  availableLocalFiles?: ReadonlySet<string>;
-}
-
 export interface CanvasKitFontPlan {
   sources: CanvasKitBundledFontSource[];
   unavailableFonts: string[];
@@ -279,16 +272,10 @@ function normalizeFontFamily(value: string): string {
     .toLocaleLowerCase('en-US');
 }
 
-function canvasKitFontUrl(file: string, localFontBaseUrl?: string): string {
-  if (isExternalFontFile(file) || !localFontBaseUrl) return file;
-  const base = localFontBaseUrl.replace(/\/+$/, '');
-  return `${base}/${file.replace(/^fonts\//, '')}`;
-}
-
 /** CanvasKit이 첫 replay 전에 등록해야 하는 실제 font byte source를 계산한다. */
 export function resolveCanvasKitFontPlan(
   requiredFontFamilies: readonly string[],
-  options: CanvasKitFontPlanOptions = {},
+  options: WebFontLoadOptions = {},
 ): CanvasKitFontPlan {
   const canvasKitSubstitutes = new Map([
     [normalizeFontFamily('휴먼명조'), normalizeFontFamily('HY신명조')],
@@ -311,14 +298,7 @@ export function resolveCanvasKitFontPlan(
       unavailableFonts.set(normalized, requested.trim());
       continue;
     }
-    const localFile = entry.file.startsWith('fonts/')
-      ? entry.file.slice('fonts/'.length)
-      : null;
-    const unavailable = (options.disableExternalWebFonts === true && isExternalFontFile(entry.file))
-      || (localFile !== null
-        && options.availableLocalFiles !== undefined
-        && !options.availableLocalFiles.has(localFile));
-    if (unavailable) {
+    if (options.disableExternalWebFonts === true && isExternalFontFile(entry.file)) {
       unavailableFonts.set(normalized, requested.trim());
       continue;
     }
@@ -326,7 +306,7 @@ export function resolveCanvasKitFontPlan(
   }
 
   for (const { entry, requested } of requiredEntries) {
-    const url = canvasKitFontUrl(entry.file, options.localFontBaseUrl);
+    const url = entry.file;
     const aliases = sourcesByUrl.get(url) ?? new Set<string>();
     aliases.add(requested);
     for (const candidate of FONT_LIST) {

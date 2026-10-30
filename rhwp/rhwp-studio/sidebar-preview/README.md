@@ -342,8 +342,7 @@ origin and is unaffected.
   after a queued send (screenshots `queue-gap-locked.png` and `queue-gap-switched.png`).
 
 `vite.sidebar.config.ts` is independent of the application's Vite config. Keep it
-free of the agent-hub and PWA plugins and imports of the application entry point.
-The shared desktop module's optional PWA import resolves to a preview-only no-op.
+free of the agent-hub plugin and imports of the application entry point.
 
 The version graph uses compact rows. Dates appear on hover or keyboard focus;
 selecting a commit keeps its details and restore actions below the scrolling list.

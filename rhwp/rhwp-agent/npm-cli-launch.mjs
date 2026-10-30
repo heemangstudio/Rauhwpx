@@ -1,6 +1,7 @@
 import { existsSync as fsExistsSync, readFileSync as fsReadFileSync, realpathSync, promises as fsPromises } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
 const which = require('which');
@@ -60,12 +61,58 @@ export function nodeHostShimFileName(platform) {
 export const NODE_HOST_ENV = 'RHWP_NODE_HOST';
 
 /**
+ * Windows Node 호스트가 먼저 읽는 콘솔 숨김 프리로드(windows-hide-console.cjs)의 node-host 사본.
+ * Electron 호스트는 콘솔이 없어서, 그 안의 스크립트가 stdio 'inherit' 로 띄운 콘솔 프로그램이 보이는
+ * 창을 연다. node.cmd 는 자기 폴더의 사본을(windowsNodeHostShim), 관리형 CLI 실행은 NODE_HOST_PRELOAD_ENV
+ * 경로를 `--require` 한다.
+ */
+export const NODE_HOST_PRELOAD_FILE = 'rhwp-hide-console.cjs';
+export const NODE_HOST_PRELOAD_ENV = 'RHWP_NODE_PRELOAD';
+const NODE_HOST_PRELOAD_SOURCE = fileURLToPath(new URL('./windows-hide-console.cjs', import.meta.url));
+
+/**
+ * node.cmd 본문. cmd.exe 는 배치 파일을 OEM 코드 페이지로 읽으므로 한글이 들어갈 수 있는 경로는 파일에
+ * 적지 않고 %~dp0, PATH 검색, 환경 변수(UTF-16)로 얻는다.
+ *
+ * 프리로드는 아래 순서로 찾고, 그 파일이 있을 때만 `--require` 한다(없으면 숨김 없이 그대로 띄운다).
+ * 1. 경로를 붙여 부른 경우의 %~dp0. 이름만으로 불렸으면 쓰지 않는다: npm cmd-shim 의 `"%_prog%"`(=`"node"`)나
+ *    npm.cmd 의 `"%NODE_EXE%"` 처럼 따옴표 친 이름으로 PATH 에서 찾은 배치 파일이면 cmd 가 %~dp0 을 현재
+ *    폴더로 푼다. 그러면 프리로드를 못 찾아 호스트가 뜨지 않거나, 작업 폴더의 같은 이름 파일을 읽는다.
+ * 2. PATH 에서 찾은 node.cmd 의 폴더(`%%~dp$PATH:I`). cmd 가 이름만으로 찾은 파일이 바로 이것이고,
+ *    현재 폴더는 보지 않는다.
+ * 3. 허브가 알린 NODE_HOST_PRELOAD_ENV.
+ * setlocal 이라 이 변수들과 ELECTRON_RUN_AS_NODE 가 `call node` 로 부른 쪽 cmd 에 남지 않는다. `%*` 는 괄호
+ * 블록 밖 마지막 줄에만 두어 인자의 `)` 를 cmd 가 블록 끝으로 읽지 않고, 종료 코드는 호스트의 것이다.
+ *
+ * @param {string} exe 환경 변수가 없을 때 쓰는 호스트 경로(ASCII 경로일 때만 그대로 동작한다)
+ */
+function windowsNodeHostShim(exe) {
+  const shimName = nodeHostShimFileName('win32');
+  const preload = NODE_HOST_PRELOAD_FILE;
+  return [
+    '@echo off',
+    'setlocal',
+    'set ELECTRON_RUN_AS_NODE=1',
+    `if not defined ${NODE_HOST_ENV} set "${NODE_HOST_ENV}=${exe}"`,
+    'set "_rhwp_preload="',
+    `if /i not "%~0"=="%~nx0" if exist "%~dp0${preload}" set "_rhwp_preload=%~dp0${preload}"`,
+    `if not defined _rhwp_preload for %%I in (${shimName}) do if not "%%~$PATH:I"=="" if exist "%%~dp$PATH:I${preload}" set "_rhwp_preload=%%~dp$PATH:I${preload}"`,
+    `if not defined _rhwp_preload if exist "%${NODE_HOST_PRELOAD_ENV}%" set "_rhwp_preload=%${NODE_HOST_PRELOAD_ENV}%"`,
+    'set "_rhwp_require="',
+    'if defined _rhwp_preload set _rhwp_require=--require "%_rhwp_preload%"',
+    `"%${NODE_HOST_ENV}%" %_rhwp_require% %*`,
+    '',
+  ].join('\r\n');
+}
+
+/**
  * @param {string} dir
  * @param {string} nodeCommand
  * @param {{
  *   platform?: string,
  *   mkdir?: typeof fsPromises.mkdir,
  *   writeFile?: typeof fsPromises.writeFile,
+ *   readFile?: typeof fsPromises.readFile,
  * }} [options]
  * @returns {Promise<string>}
  */
@@ -73,13 +120,23 @@ export async function writeNodeHostShim(dir, nodeCommand, {
   platform = 'win32',
   mkdir = fsPromises.mkdir,
   writeFile = fsPromises.writeFile,
+  readFile = fsPromises.readFile,
 } = {}) {
   await mkdir(dir, { recursive: true });
   const file = path.join(dir, nodeHostShimFileName(platform));
   const exe = String(nodeCommand ?? '').replace(/"/g, '');
   if (platform === 'win32') {
-    // 파일에 적은 경로는 환경 변수가 없을 때만 쓴다. ASCII 경로라면 그 경우에도 그대로 동작한다.
-    await writeFile(file, `@echo off\r\nset ELECTRON_RUN_AS_NODE=1\r\nif not defined ${NODE_HOST_ENV} set "${NODE_HOST_ENV}=${exe}"\r\n"%${NODE_HOST_ENV}%" %*\r\n`);
+    // 프리로드를 node.cmd 보다 먼저 쓴다 — node.cmd 가 있으면 사본도 있다. 앱 폴더(asar 안일 수 있다)가
+    // 아니라 node-host 의 실제 파일이라 어떤 Node 호스트도 읽을 수 있다. 두 파일 모두 내용이 같으면 다시
+    // 쓰지 않는다: 다른 프로세스(허브, 자동 수정)의 `node` 가 마침 읽는 중인 사본을 잘라 쓰지 않게.
+    // cmd.exe 는 배치 파일을 줄마다 다시 읽으므로 실행 중인 node.cmd 를 고쳐 쓰면 중간에 끊긴다.
+    const preload = path.join(dir, NODE_HOST_PRELOAD_FILE);
+    const source = await readFile(NODE_HOST_PRELOAD_SOURCE, 'utf8');
+    const current = await readFile(preload, 'utf8').catch(() => null);
+    if (current !== source) await writeFile(preload, source);
+    const shim = windowsNodeHostShim(exe);
+    const currentShim = await readFile(file, 'utf8').catch(() => null);
+    if (currentShim !== shim) await writeFile(file, shim);
   } else {
     await writeFile(file, `#!/bin/sh\nELECTRON_RUN_AS_NODE=1 exec "${exe}" "$@"\n`, { mode: 0o755 });
   }
@@ -126,6 +183,7 @@ export function applyNodeHostEnv(env, { nodeCommand, shimDir, platform = 'win32'
     next.PATH = current ? `${shimDir}${delimiter}${current}` : shimDir;
     if (platform === 'win32') next.Path = next.PATH;
     if (platform === 'win32' && nodeCommand) next[NODE_HOST_ENV] = nodeCommand;
+    if (platform === 'win32') next[NODE_HOST_PRELOAD_ENV] = path.win32.join(shimDir, NODE_HOST_PRELOAD_FILE);
   }
   if (nodeCommand) next.npm_node_execpath = nodeCommand;
   if (nodeCommand && !isNodeBinary(nodeCommand)) next.ELECTRON_RUN_AS_NODE = '1';
@@ -346,20 +404,39 @@ export function applyManagedCliLaunch(command, argv, deps = {}) {
     nodeCommand,
     ...(resolvedEnv !== undefined ? { env: resolvedEnv } : {}),
   });
+  const preloadDeps = { platform, nodeCommand, existsSync: deps.existsSync ?? fsExistsSync };
   if (resolvedEnv !== undefined) {
-    return {
+    return withNodeHostPreload({
       command: launched.command,
       argv: launched.argv,
       env: { ...resolvedEnv, ...launched.env },
-    };
+    }, preloadDeps);
   }
   const extra = launched.env;
   if (!extra || Object.keys(extra).length === 0) {
-    return { command: launched.command, argv: launched.argv, env: undefined };
+    return withNodeHostPreload({ command: launched.command, argv: launched.argv, env: undefined }, preloadDeps);
   }
-  return {
+  return withNodeHostPreload({
     command: launched.command,
     argv: launched.argv,
     env: { ...process.env, ...extra },
-  };
+  }, preloadDeps);
+}
+
+/**
+ * Windows 에서 Electron 호스트(ELECTRON_RUN_AS_NODE)로 도는 관리형 CLI(npm, JS 래퍼 등)는 콘솔이 없다.
+ * 그 스크립트가 콘솔 프로그램을 stdio 'inherit' 로 띄워도 창이 보이지 않게 콘솔 숨김 프리로드를
+ * 먼저 읽힌다. 프리로드 파일이 실제로 있을 때만 붙인다 — 없는 파일을 `--require` 하면 호스트가 뜨지 않는다.
+ *
+ * @param {{ command: string, argv: string[], env: NodeJS.ProcessEnv | undefined }} launch
+ * @param {{ platform: string, nodeCommand: string, existsSync: typeof fsExistsSync }} deps
+ */
+function withNodeHostPreload(launch, { platform, nodeCommand, existsSync }) {
+  if (platform !== 'win32' || launch.command !== nodeCommand || isNodeBinary(nodeCommand)) return launch;
+  const env = launch.env ?? process.env;
+  // 자식 env 를 화이트리스트로 줄이는 CLI(Pi)도 허브가 알린 node-host 프리로드를 쓴다.
+  const preload = env[NODE_HOST_PRELOAD_ENV] ?? process.env[NODE_HOST_PRELOAD_ENV];
+  if (env.ELECTRON_RUN_AS_NODE !== '1' || typeof preload !== 'string' || !preload) return launch;
+  if (!existsSync(preload)) return launch;
+  return { ...launch, argv: ['--require', preload, ...launch.argv] };
 }

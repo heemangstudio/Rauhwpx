@@ -25,7 +25,7 @@ import {
   piToolSelection,
 } from './pi-prompt.mjs';
 import { piResourceArgs } from '../pi/resources.mjs';
-import { applyManagedCliLaunch } from '../npm-cli-launch.mjs';
+import { applyManagedCliLaunch, NODE_HOST_ENV, NODE_HOST_PRELOAD_ENV } from '../npm-cli-launch.mjs';
 import { tapProviderProcess } from '../provider-transcript.mjs';
 import {
   PROCESS_TREE_CLEANUP_OUTCOME,
@@ -53,6 +53,9 @@ const ENV_PASSTHROUGH = [
   'PATH', 'HOME', 'SHELL', 'LANG', 'LC_ALL', 'TMPDIR',
   // Windows 에서 cross-spawn/셸이 요구하는 값들.
   'SystemRoot', 'ComSpec', 'PATHEXT', 'APPDATA', 'LOCALAPPDATA', 'USERPROFILE', 'TEMP', 'TMP',
+  // PATH 의 node-host\node.cmd 가 띄울 Node 호스트와 콘솔 숨김 프리로드. Pi 하위 에이전트(pi.cmd → "node")와
+  // 셸 도구의 `node` 도 이 값을 받아야 한글 설치 경로에서 호스트를 찾는다(배치 파일에 적힌 경로는 깨진다).
+  NODE_HOST_ENV, NODE_HOST_PRELOAD_ENV,
 ];
 
 /** 화이트리스트에 실수로 자격증명이 섞여도 걸러낸다. */

@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 // Checks a path can select. `app` is one job whose steps run per part.
-export const APP_PARTS = ['studio', 'hub', 'desktop', 'site', 'extensions'];
+export const APP_PARTS = ['studio', 'hub', 'desktop', 'site'];
 const JOBS = ['engine', 'sessions'];
 const ALL = [...JOBS, ...APP_PARTS];
 
@@ -12,7 +12,7 @@ const ALL = [...JOBS, ...APP_PARTS];
 const RULES = [
   // Not read by any build or test.
   [/^(?:docs|research|promo|output|build|\.audit|\.claude|\.impeccable|\.commandcode)\//, []],
-  [/^rhwp\/(?:docs|pdf|pdf-large|bindings|typescript|rhwp-vscode|scripts)\//, []],
+  [/^rhwp\/(?:docs|pdf|pdf-large|scripts)\//, []],
   [/^rhwp\/tools\/(?!rhwp-subsecond\/)/, []],
   [/(?:^|\/)(?:LICENSE[^/]*|THIRD_PARTY_LICENSES\.md|CHANGELOG\.md|SECURITY\.md)$/, []],
   // Publish docs and the website are checked at release and before the Pages deploy.
@@ -28,16 +28,13 @@ const RULES = [
   [/^rhwp\/rhwp-studio\/src\/agent\//, ['studio', 'hub']],
   [/^rhwp\/rhwp-studio\/tests\/desktop-/, ['studio', 'sessions']],
   [/^rhwp\/rhwp-studio\//, ['studio']],
-  // Studio `npm test` runs the npm/editor tests.
-  [/^rhwp\/npm\//, ['studio']],
   [/^rhwp\/rhwp-agent\//, ['hub', 'studio', 'sessions']],
   // Root tests, packaging script tests, Studio desktop-* tests and the hub all import desktop modules.
   [/^(?:desktop|tests)\//, ['desktop', 'studio', 'hub', 'sessions']],
   [/^site-api\//, ['site']],
   // Studio, the desktop and the hub font index use rhwp-shared/fonts.
-  [/^rhwp\/rhwp-shared\/fonts\//, ['extensions', 'studio', 'desktop', 'hub', 'sessions']],
-  [/^rhwp\/rhwp-shared\//, ['extensions', 'studio']],
-  [/^rhwp\/rhwp-(?:chrome|firefox|safari)\//, ['extensions']],
+  [/^rhwp\/rhwp-shared\/fonts\//, ['studio', 'desktop', 'hub', 'sessions']],
+  [/^rhwp\/rhwp-shared\//, ['studio']],
 ];
 
 export function selectChecks(paths) {

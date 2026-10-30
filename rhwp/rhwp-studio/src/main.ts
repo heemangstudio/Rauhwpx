@@ -2,23 +2,17 @@ import { installLicenseGate, mountLicenseRegisterButton } from './ui/license-gat
 import { WasmBridge, installDeclaredFontAvailabilityProbe, type PreparedWasmDocument } from '@/core/wasm-bridge';
 import { installDocumentTitle } from '@/ui/document-title';
 import { worktreeIdentity } from '@/ui/worktree-chip';
-import { FALLBACK_DOCUMENT_FILE_NAME } from '@/core/document-names';
 import type { DocumentInfo, DocumentPosition, SelectionRect } from '@/core/types';
 import { AttachableEventBus } from '@/core/event-bus';
 import { createAttachableFacade } from '@/core/attachable-facade';
-import { assertRemoteDocumentBytes } from '@/core/document-signature';
 import { consumeExactLocalFileRead } from '@/core/local-file-grant';
 import {
   EXACT_LOCAL_DOCUMENT_MAX_BYTES,
   INSERTED_IMAGE_MAX_BYTES,
   UNTRUSTED_DOCUMENT_MAX_BYTES,
-  cancelResponseBody,
   readBlobBytesWithLimit,
-  readResponseBytesWithLimit,
 } from '@/core/document-input-limits';
 import { prepareDocumentImage } from '@/core/document-image';
-import { RemoteDocumentUrlError, validateRemoteDocumentUrl } from '@/core/remote-document-url';
-import { ExtensionRemoteProxyUnavailableError } from '@/core/extension-file-transfer';
 import { CanvasView } from '@/view/canvas-view';
 import {
   assertEncodedImageDecodeDimensions,
@@ -38,7 +32,6 @@ import { installDesktopMenuCommands, installDesktopNativeMenu } from '@/desktop-
 import { syncSpacingPresetMenus } from '@/ui/spacing-preset-menu';
 import { loadWebFonts, resolveCanvasKitFontPlan } from '@/core/font-loader';
 import { withCanvasKitSurfaceBlockers } from '@/core/canvaskit-document-preflight';
-import { loadExtensionViewerSettings, type ExtensionViewerSettings } from '@/core/extension-settings';
 import { CommandRegistry } from '@/command/registry';
 import { CommandDispatcher } from '@/command/dispatcher';
 import { defaultShortcuts, matchShortcut } from '@/command/shortcut-map';
@@ -72,7 +65,6 @@ import { insertCommands } from '@/command/commands/insert';
 import { tableCommands } from '@/command/commands/table';
 import { pageCommands } from '@/command/commands/page';
 import { toolCommands } from '@/command/commands/tool';
-import { installPwaFileHandling, type FileHandlingWindowLike } from '@/command/pwa-file-handling';
 import {
   captureDroppedFileHandle,
   isSupportedDocumentFileName,
@@ -184,7 +176,6 @@ import {
   type AutosaveDraft,
   type AutosaveDraftSummary,
 } from '@/recovery/autosave-store';
-import type { HostSaveTracker } from '@/recovery/host-save';
 import {
   MAX_PARALLEL_CHATS,
   chatHoldsDocumentWrites,
@@ -268,7 +259,6 @@ import {
   type RenderBackendFallbackReason,
 } from '@/view/render-backend';
 import { calculateFitPageZoom, calculateFitWidthZoom } from '@/view/zoom-fit';
-import { installEmbedRuntime } from '@/embed/runtime';
 import {
   adoptLoadedNativeFileContent,
   bindNativeFileHandleIdentity,
@@ -285,8 +275,8 @@ import {
   installDesktopPlainTextPasteHandling,
   installDesktopEditCommandHandling,
   installDesktopWindowChrome,
-  installWebAppShell,
   isDesktopApp,
+  suppressDesktopServiceWorker,
   isLegacyPortableHistoryFolderHandle,
   pickDesktopNativeOpenFile,
   pickDesktopNativeSaveFile,
@@ -376,7 +366,6 @@ import {
 } from './versioning/index.ts';
 import type { AgentEditingLease, TasteHistoryLearned } from './agent/types.ts';
 import { mountUpdateHippo } from './ui/update-hippo/update-hippo.ts';
-import type { EmbedRendererRuntimeRequestV1 } from '@/embed/rpc-router';
 import {
   contextualEditingToolbarMode,
   contextualObjectCommandEnabled,
@@ -497,11 +486,11 @@ let disposeAgentSidebar = (): void => {};
 const autosaveFacade = createAttachableFacade<AutosaveManager>(firstSession.autosave);
 const autosaveManager = autosaveFacade.facade;
 /**
- * 엔진 trap 복구는 페이지를 다시 불러와 문서를 모두 다시 연다. 문서를 호스트가 쥐는 고정 문서와
- * 다른 페이지에 들어간 임베드는 다시 불러오면 호스트와의 연결을 잃으므로 예전처럼 사본만 받는다.
+ * 엔진 trap 복구는 페이지를 다시 불러와 문서를 모두 다시 연다. 문서를 호스트가 쥐는 고정 문서는
+ * 다시 불러오면 호스트와의 연결을 잃으므로 예전처럼 사본만 받는다.
  */
 function trapRecoveryAvailable(): boolean {
-  return !isPinnedDocumentEnabled() && window.parent === window;
+  return !isPinnedDocumentEnabled();
 }
 
 function sessionStorageOrNull(): Storage | null {
@@ -640,7 +629,7 @@ async function reopenUneditedDocumentAfterReload(): Promise<boolean> {
   try {
     const saved = storage?.getItem(UNEDITED_DOCUMENT_RELOAD_KEY);
     const navigation = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined;
-    if (!saved || navigation?.type !== 'reload' || shouldSkipInitialAutosaveRecovery()) return false;
+    if (!saved || navigation?.type !== 'reload' || isPinnedDocumentEnabled()) return false;
     const checkpoint = JSON.parse(saved);
     if (typeof checkpoint.documentId !== 'string' || !checkpoint.documentId
       || !Array.isArray(checkpoint.bytes) || checkpoint.bytes.length === 0) return false;
@@ -689,25 +678,6 @@ function saveTrappedDocumentCopy(): void {
   }
 }
 
-/**
- * 호스트 저장 완료 통지 (#2660).
- *
- * 호스트가 내보내기 바이트의 영속화(업로드/핸드오프)를 마친 뒤 호출한다.
- * 마지막 RPC export 이후 편집이 있으면 dirty 와 복구용 draft 를 남긴다.
- */
-const hostSaveFacade = createAttachableFacade<HostSaveTracker>(firstSession.hostSave);
-const hostSave = hostSaveFacade.facade;
-
-async function completeHostSave(fileName?: string): Promise<{ ok: true; wasDirty: boolean }> {
-  return hostSave.complete(fileName);
-}
-
-// 호스트 통합용 공개 API — 팝업/포크 등 SDK 없이 스튜디오 페이지 안에서 통합하는
-// 호스트를 위해 프로덕션 빌드에도 항상 노출한다 (iframe 호스트는 embed RPC 사용).
-(window as any).rhwpStudio = {
-  notifySaved: (fileName?: string) => completeHostSave(fileName),
-};
-
 // E2E 테스트용 전역 노출 (개발 모드 전용)
 if (import.meta.env.DEV) {
   (window as any).__wasm = wasm;
@@ -736,10 +706,7 @@ let rendererSession: RendererSession | null = null;
 let editMode: EditorEditMode = 'normal';
 let documentReadOnly = new URLSearchParams(window.location.search).get('templatePreview') === '1';
 let agentEditingLease: AgentEditingLease = { active: false, agent: 'codex' };
-let rendererRuntimeRequest: EmbedRendererRuntimeRequestV1 | null = null;
 let renderBackendFallbackReason: RenderBackendFallbackReason | null = null;
-let rendererInitializationError: string | null = null;
-let rendererInitialized = false;
 
 class DocumentOwnedElsewhereError extends Error {
   constructor() {
@@ -747,10 +714,6 @@ class DocumentOwnedElsewhereError extends Error {
     this.name = 'DocumentOwnedElsewhereError';
   }
 }
-
-let extensionViewerSettings: ExtensionViewerSettings = {
-  disableExternalWebFonts: false,
-};
 
 /** 제한 시간을 넘겨 늦게 도착한 웹폰트로 이미 그린 페이지를 다시 그린다. */
 function repaintAfterLateWebFonts(): void {
@@ -1514,7 +1477,7 @@ function prepareCanvasKitLocalFonts(fontNames: readonly string[] | undefined): v
 }
 
 async function initialize(): Promise<void> {
-  installWebAppShell();
+  void suppressDesktopServiceWorker();
   installDesktopWindowChrome();
   void installLicenseGate();
   installDesktopDocumentState({
@@ -1531,19 +1494,13 @@ async function initialize(): Promise<void> {
   editorStyleOverflow = new EditorStyleOverflow(document.getElementById('style-bar')!);
   const msg = sbMessage();
   try {
-    extensionViewerSettings = await loadExtensionViewerSettings();
-    if (extensionViewerSettings.disableExternalWebFonts) {
-      console.info('[main] 외부 웹폰트 사용 안 함 옵션이 켜져 있습니다.');
-    }
-    msg.textContent = extensionViewerSettings.disableExternalWebFonts
-      ? 'WASM 및 로컬 폰트 준비 중...'
-      : 'WASM 및 웹폰트 로딩 중...';
+    msg.textContent = 'WASM 및 웹폰트 로딩 중...';
     // 대체 CSS 별칭이 원본 설치 여부를 가리지 않도록 등록 전에 측정한다.
     installDeclaredFontAvailabilityProbe();
     // OS 폰트 감지·CSS 등록을 먼저 시작하고, 네트워크 로드와 WASM 컴파일은 겹친다.
     // 첫 문서 조판은 두 작업이 준비된 뒤에만 진행한다.
     await Promise.all([
-      loadWebFonts([], undefined, { ...extensionViewerSettings, onLateLoad: repaintAfterLateWebFonts }),
+      loadWebFonts([], undefined, { onLateLoad: repaintAfterLateWebFonts }),
       wasm.initialize(),
     ]);
     if (import.meta.env.DEV && import.meta.env.VITE_RHWP_DEV_FONT_PACK === '1') {
@@ -1567,16 +1524,6 @@ async function initialize(): Promise<void> {
     const canvaskitMode = canvaskitModeRequest.mode;
     const canvaskitSurfaceRequest = resolveCanvasKitSurfaceRequest(window.location.search);
     const renderProfile = resolveRenderProfile(window.location.search);
-    const diagnosticsBackendRequest: EmbedRendererRuntimeRequestV1['backend'] =
-      renderBackendRequest.backend === 'auto'
-        ? { ...renderBackendRequest, backend: 'canvas2d' }
-        : { ...renderBackendRequest, backend: renderBackendRequest.backend };
-    rendererRuntimeRequest = {
-      backend: diagnosticsBackendRequest,
-      canvaskitMode: canvaskitModeRequest,
-      canvaskitSurface: canvaskitSurfaceRequest,
-      renderProfile,
-    };
     if (renderBackendRequest.unsupportedReason) {
       console.warn(
         `[main] 지원하지 않는 renderer 값입니다: ${renderBackendRequest.requested}; Canvas2D를 사용합니다.`,
@@ -1602,10 +1549,7 @@ async function initialize(): Promise<void> {
       },
       {
         transformCanvasKitPreflight(report) {
-          const plan = resolveCanvasKitFontPlan(
-            report.requiredFontFamilies,
-            extensionViewerSettings,
-          );
+          const plan = resolveCanvasKitFontPlan(report.requiredFontFamilies);
           const blockers = plan.unavailableFonts.map(font => `fontUnavailable:${font}`);
           if (wasm.getShowControlCodes()) blockers.push('viewOption:showControlCodes');
           return withCanvasKitSurfaceBlockers(
@@ -1614,10 +1558,7 @@ async function initialize(): Promise<void> {
           );
         },
         async prepareCanvasKitDocument(renderer, report) {
-          const plan = resolveCanvasKitFontPlan(
-            report.requiredFontFamilies,
-            extensionViewerSettings,
-          );
+          const plan = resolveCanvasKitFontPlan(report.requiredFontFamilies);
           if (plan.unavailableFonts.length > 0) {
             throw new Error(`CanvasKit font family가 준비되지 않았습니다: ${plan.unavailableFonts.join(', ')}`);
           }
@@ -1812,7 +1753,7 @@ async function initialize(): Promise<void> {
       inputHandler?.performPlainTextPaste(text);
     });
     if (trapManifestToRecover) {
-      // 엔진 trap 복구로 다시 불러온 페이지다. URL 문서 대신 멈추기 전에 열려 있던 문서를 다시 연다.
+      // 엔진 trap 복구로 다시 불러온 페이지다. 멈추기 전에 열려 있던 문서를 다시 연다.
       void recoverDocumentsAfterTrap(trapRecoveryRun!);
     } else {
       void (async () => {
@@ -1822,27 +1763,12 @@ async function initialize(): Promise<void> {
           await restoreWindowAfterUpdate(restore);
           return;
         }
-        if (!await reopenUneditedDocumentAfterReload()) {
-          if (isPinnedDocumentEnabled()) void loadPinnedDocument();
-          else void loadFromUrlParam();
+        if (!await reopenUneditedDocumentAfterReload() && isPinnedDocumentEnabled()) {
+          void loadPinnedDocument();
         }
         void offerAutosaveRecoveryAtStartup();
       })();
     }
-    installPwaFileHandling(window as FileHandlingWindowLike, {
-      openDocumentBytes(payload) {
-        eventBus.emit('open-document-bytes', payload);
-      },
-      notifyUnsupportedFile(fileName) {
-        showLoadError(new Error(`지원하지 않는 파일 형식입니다: ${fileName}. HWP/HWPX/HML/RHWPX 파일만 지원합니다.`));
-      },
-      notifyError(error) {
-        showLoadError(error);
-      },
-      notifyMultipleFiles(count) {
-        console.warn(`[pwa-file-handling] 여러 파일(${count}개)이 전달되어 첫 번째 파일만 엽니다.`);
-      },
-    });
 
     // E2E 테스트용 전역 노출 (개발 모드 전용)
     if (import.meta.env.DEV) {
@@ -1851,7 +1777,6 @@ async function initialize(): Promise<void> {
       (window as any).__rendererSession = rendererSession;
       (window as any).__renderBackend = null;
       (window as any).__renderBackendRequest = renderBackendRequest;
-      (window as any).__rendererRuntimeRequest = rendererRuntimeRequest;
       (window as any).__renderBackendFallbackReason = renderBackendFallbackReason;
       (window as any).__canvaskitRenderMode = canvaskitMode;
       (window as any).__canvaskitSurfaceRequest = canvaskitSurfaceRequest;
@@ -1889,16 +1814,14 @@ async function initialize(): Promise<void> {
       console.error('[main] 에이전트 사이드바 초기화 실패 (기능 비활성화):', agentError);
     }
 
-    rendererInitialized = true;
     // 자동 수정이 고치고 다시 불러온 페이지라면 이번에는 떴다(초기화 실패·렌더러 비정상 종료).
     noteAutofixOutcome('init-failure', true);
     noteAutofixOutcome('renderer-crash', true);
   } catch (error) {
-    rendererInitializationError = error instanceof Error ? error.message : String(error);
     msg.textContent = `초기화 실패: ${error}`;
     console.error('[main] 초기화 실패:', error);
     noteAutofixOutcome('init-failure', false);
-    offerInitAutofix(msg, rendererInitializationError);
+    offerInitAutofix(msg, error instanceof Error ? error.message : String(error));
   }
 }
 
@@ -3550,7 +3473,6 @@ async function attachSessionNow(next: DocumentSession): Promise<void> {
   eventBus.retarget(next.bus);
   documentStateFacade.retarget(next.documentState);
   autosaveFacade.retarget(next.autosave);
-  hostSaveFacade.retarget(next.hostSave);
 
   // 3. 화면을 다음 문서로 다시 그린다. 문서를 다시 읽지 않는다.
   //    그리다 실패해도(엔진 trap 등) 편집 상태·에이전트·사이드바는 반드시 다음 세션에 붙인다.
@@ -5062,11 +4984,11 @@ async function initializeDocument(
     const desktopFonts = desktopPreviewOnly ? null : prepareDesktopFonts?.();
     if (docInfo.fontsUsed?.length) {
       // 쪽 글자는 엔진이 글꼴 윤곽선으로 그린다. CSS 웹 글꼴은 글꼴 목록 미리보기용이라 기다리지 않는다.
-      void loadWebFonts(docInfo.fontsUsed, () => {}, extensionViewerSettings)
+      void loadWebFonts(docInfo.fontsUsed, () => {})
         .catch(error => console.warn('[fonts] 웹 글꼴 미리보기 등록 실패:', error));
     }
     // PC 글꼴과 엔진의 윤곽선 준비를 겹치되, 첫 조판은 둘 다 끝난 뒤에 한다.
-    const engineFonts = wasm.viewer.prepareFonts(docInfo.fontsUsed ?? [], extensionViewerSettings);
+    const engineFonts = wasm.viewer.prepareFonts(docInfo.fontsUsed ?? [], {});
     void engineFonts.catch(() => {}); // 아래 await에서 오류를 전파한다.
     if (desktopFonts && !desktopPreviewOnly) {
       const budget = DESKTOP_FONT_LOAD_BUDGET_MS - (performance.now() - desktopFontsStartedAt);
@@ -5177,7 +5099,6 @@ async function promptLocalFontsIfNeeded(docInfo: DocumentInfo): Promise<void> {
     const offerFolder = !isDesktopFontsSupported() && isFontFolderSupported()
       && (folderState.status === 'none' || folderState.status === 'error' || reconnect);
     const choice = await showLocalFontsModalIfNeeded(report, {
-      disableExternalWebFonts: extensionViewerSettings.disableExternalWebFonts,
       folder: offerFolder
         ? { reconnect, connect: () => (reconnect ? reconnectFontFolder() : chooseFontFolder()) }
         : null,
@@ -5538,7 +5459,6 @@ async function loadBytesNow(
   await releaseReplacedNativeFileHandle(previousFileHandle, fileHandle)
     .catch((error) => console.warn('[desktop] 교체된 네이티브 파일 핸들 해제 실패:', error));
   prepareCanvasRendererDocument();
-  hostSave.reset();
   eventBus.emit('document-swapped');
   await updateLoadProgress(45, '자동 저장 준비 중...');
   forgetConvertedHmlSaveHandle(fileHandle);
@@ -5669,11 +5589,6 @@ async function renderRecentSubmenu(): Promise<void> {
   panel.closest('.md-sub')?.classList.toggle('disabled', recents.length === 0);
 }
 
-function shouldSkipInitialAutosaveRecovery(): boolean {
-  const params = new URLSearchParams(window.location.search);
-  return params.has('url') || isPinnedDocumentEnabled();
-}
-
 async function loadPinnedDocument(): Promise<void> {
   try {
     await startPinnedDocument({
@@ -5698,7 +5613,7 @@ async function loadPinnedDocument(): Promise<void> {
 
 /** skipDocumentIds: 업데이트로 다시 켠 다른 창이 다시 여는 문서. 그 복구본은 묻지도 지우지도 않는다. */
 async function offerAutosaveRecoveryAtStartup(skipDocumentIds: ReadonlySet<string> = new Set()): Promise<void> {
-  if (shouldSkipInitialAutosaveRecovery()) return;
+  if (isPinnedDocumentEnabled()) return;
   const listRecoverable = async () => (await listRecoverableAutosaveDrafts())
     .filter((draft) => !draft.documentId || !skipDocumentIds.has(draft.documentId));
 
@@ -6461,7 +6376,6 @@ async function createNewDocumentNow(template?: Uint8Array, restoredDocumentId?: 
     prepared = null;
     await commitDesktopDocument(reservationId, undefined, slotId);
     attachedSession.documentId = identity.documentId;
-    hostSave.reset();
     await releaseReplacedNativeFileHandle(previousFileHandle, wasm.currentFileHandle)
       .catch((error) => console.warn('[desktop] 새 문서 전환 핸들 해제 실패:', error));
     prepareCanvasRendererDocument();
@@ -6717,141 +6631,6 @@ eventBus.on('equation-edit-request', () => {
 });
 
 /**
- * URL 파라미터(?url=)로 전달된 HWP 파일을 자동 로드한다.
- * Chrome 확장 프로그램에서 뷰어 탭을 열 때 사용.
- */
-async function loadFromUrlParam(): Promise<void> {
-  const params = new URLSearchParams(window.location.search);
-  const fileUrl = params.get('url');
-  if (!fileUrl) return;
-
-  const fileName = params.get('filename') || fileUrl.split('/').pop()?.split('?')[0] || FALLBACK_DOCUMENT_FILE_NAME;
-  const msg = sbMessage();
-
-  try {
-    msg.textContent = '파일 로딩 중...';
-    console.log(`[loadFromUrlParam] ${fileUrl}`);
-
-    // file:// 은 확장 권한을 먼저 확인한다. 공개 URL 정책은 HTTP(S) 직접 fetch와
-    // SW 프록시 우회 방지에만 적용한다.
-    let validatedRemoteUrl: URL | null = null;
-    if (fileUrl.startsWith('file:')) {
-      if (typeof chrome === 'undefined') {
-        throw new RemoteDocumentUrlError('scheme-blocked', 'file: URL은 확장 프로그램에서만 열 수 있습니다.');
-      }
-      const allowed = await isFileSchemeAccessAllowed();
-      if (allowed === false) {
-        showFileUrlAccessGuidance();
-        return;
-      }
-    } else {
-      // Keep the parsed URL as the authority for both policy and fetch. URL()
-      // canonicalizes leading ASCII whitespace/control characters that a raw
-      // /^https?:/ check can miss.
-      validatedRemoteUrl = validateRemoteDocumentUrl(fileUrl);
-    }
-
-    const browserRuntime = (
-      globalThis as typeof globalThis & {
-        browser?: { runtime?: { sendMessage?: unknown } };
-      }
-    ).browser?.runtime;
-    const hasExtensionRuntime = (
-      typeof chrome !== 'undefined'
-      && typeof (chrome as { runtime?: { sendMessage?: unknown } }).runtime?.sendMessage === 'function'
-    ) || typeof browserRuntime?.sendMessage === 'function';
-    if (hasExtensionRuntime && validatedRemoteUrl) {
-      // Extension-origin fetch and its service worker both carry host
-      // permissions. Hostname validation cannot stop DNS rebinding, so remote
-      // URLs stay fail-closed until a native/server fetcher can resolve and pin
-      // every redirect hop while preserving Host/SNI.
-      throw new ExtensionRemoteProxyUnavailableError();
-    }
-
-    // file: remains an explicitly granted local read; ordinary web Studio
-    // fetches retain the browser's CORS/private-network enforcement.
-    const response = await fetch(validatedRemoteUrl?.href ?? fileUrl);
-
-    if (!response.ok) {
-      await cancelResponseBody(response, `HTTP ${response.status}`);
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    }
-    const contentType = response.headers.get('content-type');
-    const data = await readResponseBytesWithLimit(
-      response,
-      UNTRUSTED_DOCUMENT_MAX_BYTES,
-      '원격 문서',
-    );
-    assertRemoteDocumentBytes(data, contentType);
-    await loadBytes(data, fileName, null);
-  } catch (error) {
-    if (error instanceof DocumentOwnedElsewhereError) return;
-    if (
-      error instanceof RemoteDocumentUrlError
-      && error.reason === 'scheme-blocked'
-      && fileUrl.startsWith('file:')
-    ) {
-      // file:// 은 별도 안내 흐름(#1131)을 유지한다 — 공개 URL 정책과 무관.
-      if (typeof chrome !== 'undefined') {
-        const allowed = await isFileSchemeAccessAllowed();
-        if (allowed === false) {
-          showFileUrlAccessGuidance();
-          return;
-        }
-      }
-    }
-    showLoadError(error);
-  }
-}
-
-/**
- * 확장 프로그램의 "파일 URL에 대한 액세스 허용" 권한 상태를 조회한다 (#1131).
- *
- * 확장 페이지에서만 의미가 있다. API 부재(비-확장 환경 등) 시 판정 불가로
- * `null` 을 반환하여 호출부가 기존 동작(일반 에러)으로 폴백하도록 한다.
- *
- * @returns 허용=true, 미허용=false, 판정 불가=null
- */
-async function isFileSchemeAccessAllowed(): Promise<boolean | null> {
-  const ext = (typeof chrome !== 'undefined' ? chrome.extension : undefined) as
-    | { isAllowedFileSchemeAccess?: () => Promise<boolean> }
-    | undefined;
-  if (!ext?.isAllowedFileSchemeAccess) return null;
-  try {
-    return await ext.isAllowedFileSchemeAccess();
-  } catch {
-    return null;
-  }
-}
-
-/**
- * 로컬 file:// 문서를 열 때 "파일 URL 액세스 허용" 권한이 꺼져 있어 로드가
- * 실패한 경우, 일반 "Failed to fetch" 대신 원인과 해결 방법을 안내한다 (#1131).
- *
- * 설정 화면(chrome://extensions/?id=...)은 일반 링크로는 열리지 않으므로
- * 확장 컨텍스트의 chrome.tabs.create 로 연다.
- */
-function showFileUrlAccessGuidance(): void {
-  const errMsg = '로컬 파일을 열려면 확장 프로그램의 "파일 URL에 대한 액세스 허용"을 켜야 합니다.\n설정에서 권한을 허용한 뒤 파일을 다시 열어 주세요.';
-  const sb = sbMessage();
-  if (sb) sb.textContent = '파일 로드 실패: 파일 URL 액세스 권한이 필요합니다.';
-  console.error('[main] file:// 로드 실패 — 파일 URL 액세스 미허용 (#1131)');
-  showToast({
-    message: errMsg,
-    durationMs: 0, // 사용자가 읽고 직접 닫기
-    confirmLabel: '확인',
-    action: {
-      label: '설정 열기',
-      onClick: () => {
-        if (typeof chrome !== 'undefined' && chrome.tabs?.create && chrome.runtime?.id) {
-          chrome.tabs.create({ url: `chrome://extensions/?id=${chrome.runtime.id}` });
-        }
-      },
-    },
-  });
-}
-
-/**
  * 파일 로드 실패 시 사용자에게 에러를 명확히 알린다 (#265).
  *
  * 상태 표시줄은 22px 한 줄로 긴 에러 메시지가 ellipsis 로 잘리므로,
@@ -6905,74 +6684,3 @@ void initPromise.then(() => {
 void initPromise.then(() => {
   startAutofixIntro({ whenReady: afterBootScreen });
 }, () => {});
-
-installEmbedRuntime({
-  hostWindow: window,
-  parentWindow: window.parent,
-  handlers: {
-    async ready() {
-      await initPromise;
-      return true;
-    },
-    async loadFile(data, fileName, skipUnsavedGuard, suppressDialogs) {
-      await initPromise;
-      if (!await canReplaceCurrentDocument(skipUnsavedGuard)) {
-        throw new Error('문서 열기가 취소되었습니다.');
-      }
-      await loadBytes(data, fileName, null, undefined, { suppressDialogs });
-      return { pageCount: wasm.pageCount };
-    },
-    async pageCount() {
-      await initPromise;
-      return wasm.pageCount;
-    },
-    async getRendererDiagnostics(pageIndex) {
-      await initPromise;
-      const selection = canvasView?.getRendererSessionDiagnostics() ?? null;
-      return {
-        schemaVersion: 1 as const,
-        request: rendererRuntimeRequest,
-        initialized: rendererInitialized,
-        initializationError: rendererInitializationError,
-        effectiveBackend: selection?.effectiveBackend ?? null,
-        backendFallbackReason: selection?.fallbackReason ?? renderBackendFallbackReason,
-        selection,
-        page: {
-          index: pageIndex,
-          canvaskit: canvasView?.getCanvasKitRenderDiagnostics(pageIndex) ?? null,
-        },
-      };
-    },
-    async getPageSvg(page) {
-      await initPromise;
-      return wasm.renderPageSvg(page);
-    },
-    async exportHwp() {
-      await initPromise;
-      hostSave.recordExport();
-      return wasm.exportHwp();
-    },
-    async exportHwpx() {
-      await initPromise;
-      hostSave.recordExport();
-      return wasm.exportHwpx();
-    },
-    async exportHml() {
-      await initPromise;
-      hostSave.recordExport();
-      return wasm.exportHml();
-    },
-    async getHmlSaveState() {
-      await initPromise;
-      return wasm.getHmlSaveState();
-    },
-    async exportHwpVerify() {
-      await initPromise;
-      return JSON.parse(wasm.exportHwpVerify());
-    },
-    async notifySaved(fileName) {
-      await initPromise;
-      return completeHostSave(fileName);
-    },
-  },
-});
