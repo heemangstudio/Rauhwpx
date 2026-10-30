@@ -107,6 +107,28 @@ test('node.cmd starts a host under a non-ASCII path from cmd.exe', async (t) => 
   assert.equal(result.stdout, '42');
 });
 
+// cmd.exe 는 실행 중인 배치 파일을 줄마다 다시 읽는다. 허브와 자동 수정이 부팅마다 node-host 를 확인하므로,
+// 같은 내용을 다시 쓰면 그 순간 에이전트 셸에서 돌던 `node` 가 끊길 수 있다.
+test('an unchanged node-host is not rewritten, and a new host path still updates node.cmd', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-node-host-same-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const writes = [];
+  const writeFile = async (file, body) => {
+    writes.push(path.basename(file));
+    await fs.writeFile(file, body);
+  };
+  const first = path.join(root, 'HamaEditor.exe');
+  const shim = await writeNodeHostShim(root, first, { platform: 'win32', writeFile });
+  assert.deepEqual(writes.sort(), ['node.cmd', 'rhwp-hide-console.cjs']);
+  writes.length = 0;
+  await writeNodeHostShim(root, first, { platform: 'win32', writeFile });
+  assert.deepEqual(writes, []);
+  const moved = path.join(root, 'moved', 'HamaEditor.exe');
+  await writeNodeHostShim(root, moved, { platform: 'win32', writeFile });
+  assert.deepEqual(writes, ['node.cmd']);
+  assert.match(await fs.readFile(shim, 'utf8'), /moved\\HamaEditor\.exe|moved\/HamaEditor\.exe/);
+});
+
 test('a real Node host on Unix does not need a PATH shim', () => {
   assert.equal(nodeHostNeedsShim('darwin', '/usr/bin/node'), false);
   assert.equal(nodeHostNeedsShim('darwin', '/Applications/HamaEditor.app/Contents/MacOS/HamaEditor'), true);
@@ -115,22 +137,25 @@ test('a real Node host on Unix does not need a PATH shim', () => {
 test('a failed node-host write is retried on the next ensure', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-node-host-retry-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
-  let attempts = 0;
+  let preloadAttempts = 0;
   const ensure = createNodeHost({
     rootDir: root,
     nodeCommand: path.join(root, 'HamaEditor.exe'),
     platform: 'win32',
     writeFile: async (file, body) => {
-      attempts += 1;
-      if (attempts === 1) {
+      if (path.basename(file) === 'rhwp-hide-console.cjs' && ++preloadAttempts === 1) {
         throw Object.assign(new Error('EBUSY'), { code: 'EBUSY' });
       }
       await fs.writeFile(file, body);
     },
   });
+  const nodeHost = path.join(root, 'node-host');
   await assert.rejects(ensure(), { code: 'EBUSY' });
-  assert.equal(await ensure(), path.join(root, 'node-host'));
-  assert.equal(attempts, 2);
+  // 콘솔 숨김 프리로드를 쓰지 못했으면 그 프리로드를 읽을 node.cmd 도 아직 없다.
+  await assert.rejects(fs.access(path.join(nodeHost, 'node.cmd')), { code: 'ENOENT' });
+  assert.equal(await ensure(), nodeHost);
+  await fs.access(path.join(nodeHost, 'node.cmd'));
+  await fs.access(path.join(nodeHost, 'rhwp-hide-console.cjs'));
 });
 
 test('Windows process cleanup never retargets a reusable PID after its first tree command', async () => {
