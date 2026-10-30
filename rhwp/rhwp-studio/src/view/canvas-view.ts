@@ -15,7 +15,6 @@ import type { CanvasKitRenderDiagnostics } from './canvaskit-renderer';
 import { clampRenderScale, type RenderBackend } from './render-backend';
 import {
   RendererSession,
-  type RendererSessionDiagnostics,
   type RendererSessionSelection,
 } from './renderer-session';
 import { applyGridOverlayBox, createGridClipCornerOverlay, createGridOverlay } from './grid-overlay';
@@ -1508,14 +1507,6 @@ export class CanvasView {
 
   getRenderBackend(): RenderBackend {
     return this.pageRenderer.getBackend();
-  }
-
-  getRendererSessionDiagnostics(): RendererSessionDiagnostics | null {
-    return this.rendererSession.diagnostics();
-  }
-
-  getCanvasKitRenderDiagnostics(pageIndex: number): CanvasKitRenderDiagnostics | null {
-    return this.pageRenderer.getCanvasKitRenderDiagnostics(pageIndex);
   }
 
   getCurrentCanvasKitRenderDiagnostics(): CanvasKitRenderDiagnostics | null {

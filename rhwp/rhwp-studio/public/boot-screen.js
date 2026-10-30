@@ -1,7 +1,7 @@
 // 부트 화면 — 첫 실행은 하마 애니메이션, 그 뒤로는 정지 로고를 편집기가 준비될 때까지 보인다.
 //
 // 첫 페인트 전에 정해야 하므로 theme-init.js 와 같은 이유로 인라인이 아니라 외부 동기 스크립트다
-// (확장 CSP, #1444). 결정은 window.__rhwpBoot 에 남기고, 닫기는 src/ui/boot-screen.ts 가 맡는다.
+// (앱 CSP, #1444). 결정은 window.__rhwpBoot 에 남기고, 닫기는 src/ui/boot-screen.ts 가 맡는다.
 // 파일과 함께 처음 켜지면 문서를 가리지 않도록 정지 로고만 보이고 설정은 미룬다.
 (() => {
   const screen = document.getElementById('boot-screen');
@@ -76,7 +76,7 @@
     : Promise.resolve(false);
 
   state.decided = pendingDesktopFiles.then((desktopFile) => {
-    state.launchedWithFile = !forced && (desktopFile || params.has('url'));
+    state.launchedWithFile = !forced && desktopFile;
     show(!state.launchedWithFile && !reducedMotion);
   });
 

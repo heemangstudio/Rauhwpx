@@ -17,7 +17,7 @@ import {
 } from '../credential-mirror.mjs';
 import { applyManagedCliLaunch, resolveCommandOnPath, resolveNpmCliLaunch } from '../npm-cli-launch.mjs';
 import { TOOL_TRACE_ENABLED, traceNow, writeToolTrace } from '../tool-trace.mjs';
-import { recordingClaudeSdkSpawner, tapProviderProcess, withSdkStderrTail } from '../provider-transcript.mjs';
+import { ownedClaudeSdkSpawner, recordingClaudeSdkSpawner, tapProviderProcess, withSdkStderrTail } from '../provider-transcript.mjs';
 import {
   createLineReader,
   chatPermissionGrantsFor,
@@ -53,6 +53,7 @@ import {
   PROCESS_TREE_CLEANUP_OUTCOME,
   processTreeCleanupOutcome,
   processTreeSpawnOptions,
+  terminateAndWaitForProcessTreeExitOutcome,
   terminateProcessTree,
   waitForProcessTreeExit,
 } from '../process-tree.mjs';
@@ -73,6 +74,11 @@ const STDERR_TAIL_LIMIT = 16_000;
  * 관찰상 wake 는 result 직후 즉시 시작된다 — 유예는 순수 안전 마진이다.
  */
 const TASK_SETTLE_GRACE_MS = 1_500;
+/**
+ * Windows 에서 허브가 띄운 SDK CLI 를 트리째 끝내기 전 유예의 상한. Agent SDK(0.3.x)는 close() 2초 뒤,
+ * 다시 5초 뒤 claude.exe 리더를 끝낸다. 리더가 먼저 죽으면 taskkill /T 가 자손을 찾지 못하므로 그 전에 끝낸다.
+ */
+const OWNED_SDK_TREE_GRACE_MAX_MS = 5_000;
 
 function createClaudeInputQueue() {
   const values = [];
@@ -530,6 +536,7 @@ export function createClaudeSession(opts, {
   terminateProcess = terminateProcessTree,
   waitForExit = waitForProcessTreeExit,
   queryAgent = queryClaude,
+  spawnSdkProcess,
   closeGraceMs = 2_000,
   flushCredentialMirrors = flushClaudeCredentialMirrors,
   platform = process.platform,
@@ -1531,6 +1538,8 @@ export function createClaudeSession(opts, {
       settling: false,
       /** Set when the recording spawner runs the CLI: the SDK then has no stderr tail. */
       stderrTail: null,
+      /** The CLI process when the hub spawned it for the SDK (Windows, or while recording). */
+      process: null,
     };
     sdkOwner = owner;
     let query;
@@ -1559,9 +1568,17 @@ export function createClaudeSession(opts, {
       }
       // RHWP_PROVIDER_TRANSCRIPT_DIR 가 켜졌을 때만 SDK 스폰을 기록용으로 바꾼다.
       const recordingSpawn = recordingClaudeSdkSpawner({ secrets: [opts.token], cli: opts.providerCliVersion, platform });
-      if (recordingSpawn && !options.spawnClaudeCodeProcess) {
-        options.spawnClaudeCodeProcess = recordingSpawn;
-        owner.stderrTail = recordingSpawn.stderrTail;
+      // Windows 에서 SDK 의 close() 는 stdin 을 닫고 몇 초 뒤 claude.exe 리더만 끝낸다. Bash 도구가 띄운
+      // bash → ping 같은 자손은 libuv 작업 개체 밖이라 남는다. 허브가 같은 옵션으로 직접 띄워 트리째 정리한다.
+      const sdkSpawn = recordingSpawn
+        ?? (platform === 'win32' ? ownedClaudeSdkSpawner({ spawnProcess: spawnSdkProcess }) : undefined);
+      if (sdkSpawn && !options.spawnClaudeCodeProcess) {
+        options.spawnClaudeCodeProcess = (sdkOptions) => {
+          const proc = sdkSpawn(sdkOptions);
+          owner.process = proc;
+          return proc;
+        };
+        owner.stderrTail = sdkSpawn.stderrTail;
       }
       query = queryAgent({
         prompt: owner.queue,
@@ -1687,8 +1704,44 @@ export function createClaudeSession(opts, {
       if (!cleaned) uncertainSdkCleanup = true;
       return cleaned;
     });
-    sdkShutdownReady = owner.shutdown;
+    // 프로세스 트리 정리는 턴 끝 알림을 막지 않는다. 다음 턴, 설정 변경, dispose 는 sdkShutdownReady 로
+    // 트리 정리까지 기다린다 — 허브가 내려가기 전에 남은 셸 도구 프로세스를 끝낸다.
+    const treeStopped = stopOwnedSdkProcess(owner).then((stopped) => {
+      if (!stopped) uncertainSdkCleanup = true;
+      return stopped;
+    });
+    sdkShutdownReady = Promise.all([owner.shutdown, treeStopped]).then(([closed, stopped]) => closed && stopped);
     return owner.shutdown;
+  }
+
+  /**
+   * Windows: SDK close() 는 stdin 을 닫은 뒤 claude.exe 리더만 TerminateProcess 한다. 허브가 띄운 CLI 가
+   * SDK 와 같은 유예(closeGraceMs, 최대 OWNED_SDK_TREE_GRACE_MAX_MS) 안에 스스로 끝나지 않으면, 리더가 살아 있을 때 트리째(taskkill /T)
+   * 끝낸다 — 레거시 경로(stopChildProcess)와 같은 정리다. 다른 플랫폼과 SDK 가 직접 띄운 프로세스는 그대로 둔다.
+   */
+  function stopOwnedSdkProcess(owner) {
+    const proc = owner.process;
+    if (platform !== 'win32' || !proc) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      if (proc.exitCode != null || proc.signalCode != null) {
+        resolve(true);
+        return;
+      }
+      const timer = setTimeout(() => {
+        proc.off?.('exit', onExit);
+        resolve(false);
+      }, Math.min(closeGraceMs, OWNED_SDK_TREE_GRACE_MAX_MS));
+      function onExit() {
+        clearTimeout(timer);
+        resolve(true);
+      }
+      proc.once?.('exit', onExit);
+    }).then((exited) => (exited
+      ? true
+      : terminateAndWaitForProcessTreeExitOutcome(proc, { terminateProcess }).then(
+        (outcome) => outcome === PROCESS_TREE_CLEANUP_OUTCOME.PROVEN,
+        () => false,
+      )));
   }
 
   function spawnChild() {
@@ -2143,8 +2196,12 @@ export function createClaudeSession(opts, {
       suppressChildOutput();
       // 죽어가는 자식의 stdout 을 아예 파싱하지 않는다.
       try { child?.stdout?.removeAllListeners('data'); } catch {}
-      const exited = Promise.all([stopChildProcess(child, true), closeSdkQuery()])
-        .then(([childExited, sdkExited]) => {
+      const sdkClosed = closeSdkQuery();
+      // closeSdkQuery 가 방금 갱신한 sdkShutdownReady 는 Windows 프로세스 트리 정리까지 포함한다.
+      const sdkTreeStopped = sdkShutdownReady;
+      const exited = Promise.all([stopChildProcess(child, true), sdkClosed, sdkTreeStopped])
+        .then(([childExited, sdkClosedCleanly, sdkTreeExited]) => {
+          const sdkExited = sdkClosedCleanly && sdkTreeExited;
           // A surviving descendant can still write the isolated credential.
           // Leave its journal/root marker intact for dead-owner recovery.
           const cleaned = childExited && sdkExited

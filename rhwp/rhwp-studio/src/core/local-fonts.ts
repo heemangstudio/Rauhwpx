@@ -64,11 +64,7 @@ export interface LocalFontSnapshot {
   checkedFamilies?: string[];
 }
 
-export type LocalFontStorageKind =
-  | 'chrome-storage-local'
-  | 'browser-storage-local'
-  | 'local-storage'
-  | 'none';
+export type LocalFontStorageKind = 'local-storage' | 'none';
 
 export interface LocalFontState {
   supported: boolean;
@@ -104,28 +100,6 @@ type LocalFontGlobal = typeof globalThis & {
     createElement?: (tagName: string) => unknown;
   };
 };
-
-interface ChromeRuntimeLike {
-  lastError?: { message?: string };
-}
-
-interface ChromeStorageAreaLike {
-  get(
-    keys: string | string[] | Record<string, unknown> | null,
-    callback?: (items: Record<string, unknown>) => void,
-  ): void | Promise<Record<string, unknown>>;
-  set(items: Record<string, unknown>, callback?: () => void): void | Promise<void>;
-  remove(keys: string | string[], callback?: () => void): void | Promise<void>;
-}
-
-interface ChromeLike {
-  runtime?: ChromeRuntimeLike;
-  storage?: {
-    local?: ChromeStorageAreaLike;
-  };
-}
-
-type BrowserLike = ChromeLike;
 
 const STORAGE_KEY = 'rhwp-local-fonts';
 const PROBE_FONT_SIZE = 72;
@@ -1396,33 +1370,7 @@ function probeCandidateFamilies(candidateFamilies: readonly string[]): string[] 
 
 const GENERIC_FONTS = new Set(['serif', 'sans-serif', 'monospace']);
 
-function getChromeApi(): ChromeLike | null {
-  return (globalThis as typeof globalThis & { chrome?: ChromeLike }).chrome ?? null;
-}
-
-function getChromeStorageLocal(): ChromeStorageAreaLike | null {
-  return getChromeApi()?.storage?.local ?? null;
-}
-
-function getBrowserApi(): BrowserLike | null {
-  return (globalThis as typeof globalThis & { browser?: BrowserLike }).browser ?? null;
-}
-
-function getBrowserStorageLocal(): ChromeStorageAreaLike | null {
-  return getBrowserApi()?.storage?.local ?? null;
-}
-
-function getExtensionStorageLocal(): { kind: 'chrome-storage-local' | 'browser-storage-local'; storage: ChromeStorageAreaLike } | null {
-  const chromeStorage = getChromeStorageLocal();
-  if (chromeStorage) return { kind: 'chrome-storage-local', storage: chromeStorage };
-  const browserStorage = getBrowserStorageLocal();
-  if (browserStorage) return { kind: 'browser-storage-local', storage: browserStorage };
-  return null;
-}
-
 function getStorageKind(): LocalFontStorageKind {
-  const extensionStorage = getExtensionStorageLocal();
-  if (extensionStorage) return extensionStorage.kind;
   try {
     if ((globalThis as typeof globalThis & { localStorage?: Storage }).localStorage) {
       return 'local-storage';
@@ -1431,101 +1379,6 @@ function getStorageKind(): LocalFontStorageKind {
     return 'none';
   }
   return 'none';
-}
-
-function chromeLastErrorMessage(): string | null {
-  return getChromeApi()?.runtime?.lastError?.message ?? null;
-}
-
-function isThenable<T>(value: unknown): value is Promise<T> {
-  return !!value && typeof (value as { then?: unknown }).then === 'function';
-}
-
-function chromeGet(storage: ChromeStorageAreaLike, key: string): Promise<Record<string, unknown>> {
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const settle = (fn: () => void) => {
-      if (settled) return;
-      settled = true;
-      fn();
-    };
-    try {
-      const result = storage.get(key, (items) => {
-        const err = chromeLastErrorMessage();
-        if (err) {
-          settle(() => reject(new Error(err)));
-        } else {
-          settle(() => resolve(items ?? {}));
-        }
-      });
-      if (isThenable<Record<string, unknown>>(result)) {
-        result.then(
-          (items) => settle(() => resolve(items ?? {})),
-          (error) => settle(() => reject(error)),
-        );
-      }
-    } catch (error) {
-      settle(() => reject(error));
-    }
-  });
-}
-
-function chromeSet(storage: ChromeStorageAreaLike, items: Record<string, unknown>): Promise<void> {
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const settle = (fn: () => void) => {
-      if (settled) return;
-      settled = true;
-      fn();
-    };
-    try {
-      const result = storage.set(items, () => {
-        const err = chromeLastErrorMessage();
-        if (err) {
-          settle(() => reject(new Error(err)));
-        } else {
-          settle(() => resolve());
-        }
-      });
-      if (isThenable<void>(result)) {
-        result.then(
-          () => settle(() => resolve()),
-          (error) => settle(() => reject(error)),
-        );
-      }
-    } catch (error) {
-      settle(() => reject(error));
-    }
-  });
-}
-
-function chromeRemove(storage: ChromeStorageAreaLike, key: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const settle = (fn: () => void) => {
-      if (settled) return;
-      settled = true;
-      fn();
-    };
-    try {
-      const result = storage.remove(key, () => {
-        const err = chromeLastErrorMessage();
-        if (err) {
-          settle(() => reject(new Error(err)));
-        } else {
-          settle(() => resolve());
-        }
-      });
-      if (isThenable<void>(result)) {
-        result.then(
-          () => settle(() => resolve()),
-          (error) => settle(() => reject(error)),
-        );
-      }
-    } catch (error) {
-      settle(() => reject(error));
-    }
-  });
 }
 
 function localStorageRef(): Storage | null {
@@ -1538,17 +1391,6 @@ function localStorageRef(): Storage | null {
 
 async function readStoredSnapshot(): Promise<LocalFontSnapshot | null> {
   lastStorageError = null;
-  const extensionStorage = getExtensionStorageLocal();
-  if (extensionStorage) {
-    try {
-      const data = await chromeGet(extensionStorage.storage, STORAGE_KEY);
-      return normalizeSnapshot(data[STORAGE_KEY]);
-    } catch (error) {
-      lastStorageError = error instanceof Error ? error.message : String(error);
-      return null;
-    }
-  }
-
   const storage = localStorageRef();
   if (!storage) return null;
   try {
@@ -1562,16 +1404,6 @@ async function readStoredSnapshot(): Promise<LocalFontSnapshot | null> {
 
 async function writeStoredSnapshot(snapshot: LocalFontSnapshot): Promise<void> {
   lastStorageError = null;
-  const extensionStorage = getExtensionStorageLocal();
-  if (extensionStorage) {
-    try {
-      await chromeSet(extensionStorage.storage, { [STORAGE_KEY]: snapshot });
-    } catch (error) {
-      lastStorageError = error instanceof Error ? error.message : String(error);
-    }
-    return;
-  }
-
   const storage = localStorageRef();
   if (!storage) return;
   try {
@@ -1583,16 +1415,6 @@ async function writeStoredSnapshot(snapshot: LocalFontSnapshot): Promise<void> {
 
 async function removeStoredSnapshot(): Promise<void> {
   lastStorageError = null;
-  const extensionStorage = getExtensionStorageLocal();
-  if (extensionStorage) {
-    try {
-      await chromeRemove(extensionStorage.storage, STORAGE_KEY);
-    } catch (error) {
-      lastStorageError = error instanceof Error ? error.message : String(error);
-    }
-    return;
-  }
-
   const storage = localStorageRef();
   if (!storage) return;
   try {
