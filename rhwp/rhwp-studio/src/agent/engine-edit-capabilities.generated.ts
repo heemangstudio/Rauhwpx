@@ -160,6 +160,15 @@ export const ENGINE_EDIT_CAPABILITIES = [
     "signature": "applyHfTemplate(sec: number, isHeader: boolean, applyTo: number, templateId: number)"
   },
   {
+    "method": "applyNoteShapeToDocument",
+    "kind": "document",
+    "parameters": [
+      "kind",
+      "changes"
+    ],
+    "signature": "applyNoteShapeToDocument(kind: 'footnote' | 'endnote', changes: Partial<NoteShapeSettings>)"
+  },
+  {
     "method": "applyParaFormat",
     "kind": "document",
     "parameters": [
