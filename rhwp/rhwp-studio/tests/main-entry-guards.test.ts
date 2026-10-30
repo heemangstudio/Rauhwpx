@@ -24,7 +24,7 @@ function assertBefore(contents: string, first: string, second: string): void {
   assert.ok(firstIndex < secondIndex, `${first} must run before ${second}`);
 }
 
-test('untrusted drops, dropped images, save identity reads and remote URLs stay bounded', () => {
+test('untrusted drops, dropped images and save identity reads stay bounded', () => {
   const droppedImage = between('  if (isImage) {', '  // HWP/HWPX/HML/RHWPX');
   assertBefore(droppedImage, "readBlobBytesWithLimit(file, INSERTED_IMAGE_MAX_BYTES, '그림')", 'new Image()');
   assertBefore(droppedImage, 'assertEncodedImageDecodeDimensions(data', 'new Image()');
@@ -35,9 +35,6 @@ test('untrusted drops, dropped images, save identity reads and remote URLs stay 
     /options\.fileHandle && !options\.untrustedSource[\s\S]*?readFileFromHandle\(options\.fileHandle\)[\s\S]*?readBlobBytesWithLimit\(file, UNTRUSTED_DOCUMENT_MAX_BYTES/,
   );
   assert.match(main, /const targetBytes = await readBlobBytesWithLimit\([\s\S]*?EXACT_LOCAL_DOCUMENT_MAX_BYTES/);
-  assert.match(main, /validatedRemoteUrl = validateRemoteDocumentUrl\(fileUrl\)/);
-  assert.match(main, /hasExtensionRuntime && validatedRemoteUrl[\s\S]*?throw new ExtensionRemoteProxyUnavailableError\(\)/);
-  assert.match(main, /fetch\(validatedRemoteUrl\?\.href \?\? fileUrl\)/);
 });
 
 test('template preview URLs open the document read-only', () => {
@@ -46,15 +43,6 @@ test('template preview URLs open the document read-only', () => {
   assert.match(main, /function sessionReadOnly\([^)]*\): boolean \{\s*return documentReadOnly \|\|/);
   assert.match(main, /isEditable: !sessionReadOnly\(\)/);
   assert.match(main, /inputHandler\??\.setReadOnly\(sessionReadOnly\(/);
-});
-
-test('host saves and embed exports share one HostSaveTracker (#2660)', () => {
-  assert.match(main, /async function completeHostSave\(fileName\?: string\)[\s\S]*?hostSave\.complete\(fileName\)/);
-  for (const method of ['exportHwp', 'exportHwpx', 'exportHml']) {
-    assert.match(main, new RegExp(`async ${method}\\(\\) \\{[\\s\\S]*?hostSave\\.recordExport\\(\\);[\\s\\S]*?return wasm\\.${method}\\(\\)`));
-  }
-  assert.match(main, /\.rhwpStudio = \{\s*\n?\s*notifySaved:/);
-  assert.match(main, /async notifySaved\(fileName\)[\s\S]*?completeHostSave\(fileName\)/);
 });
 
 test('document replacement waits for version work and republishes context on failure', () => {

@@ -1,1 +1,0 @@
-../../rhwp-shared/sw/download-interceptor-common.js

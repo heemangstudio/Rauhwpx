@@ -101,8 +101,6 @@ headless Chrome; feature checks run by name. See the
 | `rhwp/rhwp-agent/` | Local WS hub |
 | `desktop/` | Electron shell |
 | `site-api/` | Website beta form and desktop install counter |
-| `rhwp/rhwp-{chrome,firefox,safari,vscode}/` | Viewer extensions |
-| `rhwp/npm/editor/` | Embeddable editor package |
 
 ## License
 
