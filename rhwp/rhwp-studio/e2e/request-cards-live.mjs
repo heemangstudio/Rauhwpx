@@ -294,7 +294,7 @@ try {
     NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import ${preload}`.trim(),
   } });
   process.env.VITE_RHWP_AGENT_URL = `ws://127.0.0.1:${hubPort}`; process.env.RHWP_AGENT_TOKEN = token; process.env.RHWP_AGENT_PORT = String(hubPort);
-  vite = await createServer({ root: studioRoot, configFile: path.join(studioRoot, 'vite.config.ts'), cacheDir: path.join(fixtureRoot, 'vite-cache'), server: { host: '127.0.0.1', port: vitePort, strictPort: true, open: false, fs: { allow: [studioRoot, path.join(root, 'rhwp/pkg'), path.join(root, 'rhwp/samples'), path.join(root, 'rhwp/npm/editor')] } }, logLevel: 'warn' });
+  vite = await createServer({ root: studioRoot, configFile: path.join(studioRoot, 'vite.config.ts'), cacheDir: path.join(fixtureRoot, 'vite-cache'), server: { host: '127.0.0.1', port: vitePort, strictPort: true, open: false, fs: { allow: [studioRoot, path.join(root, 'rhwp/pkg'), path.join(root, 'rhwp/samples')] } }, logLevel: 'warn' });
   await vite.listen(); process.env.VITE_URL = results.runtime;
   const { launchBrowser, createPage, loadApp, waitForState } = await import('./helpers.mjs');
   browser = await launchBrowser(); page = await createPage(browser, 1440, 1000);

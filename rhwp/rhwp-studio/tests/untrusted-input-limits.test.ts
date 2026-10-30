@@ -228,27 +228,3 @@ test('문서 속 그림은 선언 픽셀이 한도를 넘으면 DOM 이미지로
   new DataView(safe.buffer).setUint32(20, 240, false);
   assert.equal(isDomDisplayableFlowImage({ mime: 'image/png', base64: Buffer.from(safe).toString('base64') }), true);
 });
-
-for (const browser of ['chrome', 'firefox']) {
-  test(`${browser} 확장 썸네일은 64 MiB 를 넘는 응답 본문을 읽지 않고 취소한다`, async () => {
-    const { extractThumbnailFromUrl } = await import(`../../rhwp-${browser}/sw/thumbnail-extractor.js`);
-    const previousFetch = globalThis.fetch;
-    let pulled = 0;
-    let cancelled = false;
-    globalThis.fetch = async () => new Response(new ReadableStream<Uint8Array>({
-      pull(controller) {
-        pulled += 1;
-        controller.enqueue(new Uint8Array(1024));
-        if (pulled === 4) controller.close();
-      },
-      cancel() { cancelled = true; },
-    }), { headers: { 'content-length': String(64 * 1024 * 1024 + 1) } });
-    try {
-      assert.equal(await extractThumbnailFromUrl(`https://example.com/${browser}-huge.hwp`), null);
-    } finally {
-      globalThis.fetch = previousFetch;
-    }
-    assert.equal(cancelled, true, '선언 크기만 보고 본문을 버려야 한다');
-    assert.ok(pulled <= 1, `본문을 읽으면 안 된다: ${pulled}`);
-  });
-}

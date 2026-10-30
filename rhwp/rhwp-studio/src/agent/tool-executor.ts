@@ -6291,8 +6291,7 @@ export class AgentToolExecutor {
 
   /** apply_char_format 의 서식 인자 → 엔진 글자 속성. 서식 키가 하나도 없으면 INVALID_ARGS. */
   private charFormatProps(args: Record<string, unknown>): CharFormatProps {
-    // props_json 키 인코딩은 hwpctl/actions/format.ts charShapeSetToJson 및
-    // core/types.ts CharProperties와 동일: fontSize = pt*100, textColor = '#RRGGBB'.
+    // props_json 키 인코딩은 core/types.ts CharProperties와 동일: fontSize = pt*100, textColor = '#RRGGBB'.
     const format: CharFormatProps = {};
     for (const key of ['bold', 'italic', 'underline', 'strikethrough'] as const) {
       const v = args[key];

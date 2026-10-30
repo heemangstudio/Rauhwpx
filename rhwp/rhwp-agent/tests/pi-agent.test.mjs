@@ -605,6 +605,19 @@ test('the child env is built from scratch without ambient provider keys', () => 
   );
 });
 
+// Pi 하위 에이전트(pi.cmd → "node")와 셸 도구의 `node` 는 PATH 의 node-host\node.cmd 를 지난다. 배치 파일에
+// 적힌 호스트 경로는 한글 설치 폴더에서 깨지므로, 허브가 알린 호스트와 프리로드를 Pi 에도 넘긴다.
+test('the child env keeps the Windows node-host executable and preload the hub published', () => {
+  const sourceEnv = {
+    PATH: 'C:\\Users\\홍길동\\AppData\\Roaming\\rhwp\\pi\\node-host;C:\\Windows\\System32',
+    RHWP_NODE_HOST: 'D:\\하마에디터\\HamaEditor.exe',
+    RHWP_NODE_PRELOAD: 'C:\\Users\\홍길동\\AppData\\Roaming\\rhwp\\pi\\node-host\\rhwp-hide-console.cjs',
+  };
+  const env = buildPiEnv({ ...baseOpts }, sourceEnv);
+  assert.equal(env.RHWP_NODE_HOST, sourceEnv.RHWP_NODE_HOST);
+  assert.equal(env.RHWP_NODE_PRELOAD, sourceEnv.RHWP_NODE_PRELOAD);
+});
+
 test('the selected vault key is passed only when the Pi session explicitly provides it', () => {
   const env = buildPiEnv({ ...baseOpts, openRouterApiKey: 'sk-or-v1-vault' }, { PATH: '/usr/bin' });
   assert.equal(env.OPENROUTER_API_KEY, 'sk-or-v1-vault');

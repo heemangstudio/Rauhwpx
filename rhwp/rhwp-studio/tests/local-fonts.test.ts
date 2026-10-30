@@ -38,8 +38,6 @@ import { setHftWasmApi, takeHftOutlineChange } from '../src/core/hft-glyphs.ts';
 const STORAGE_KEY = 'rhwp-local-fonts';
 
 type TestGlobals = typeof globalThis & {
-  browser?: unknown;
-  chrome?: unknown;
   document?: unknown;
   localStorage?: Storage;
   queryLocalFonts?: unknown;
@@ -74,23 +72,11 @@ function sortedKo(values: string[]): string[] {
 }
 
 function restoreGlobals(originals: {
-  browser: unknown;
-  chrome: unknown;
   document: unknown;
   localStorage: Storage | undefined;
   queryLocalFonts: unknown;
 }): void {
   const g = globalThis as TestGlobals;
-  if (originals.browser === undefined) {
-    delete g.browser;
-  } else {
-    g.browser = originals.browser;
-  }
-  if (originals.chrome === undefined) {
-    delete g.chrome;
-  } else {
-    g.chrome = originals.chrome;
-  }
   if (originals.document === undefined) {
     delete g.document;
   } else {
@@ -475,8 +461,6 @@ test('데스크톱 수식 서체는 동기 측정에 필요한 바이트만 보�
 test('저장된 localStorage snapshot 로드는 queryLocalFonts를 호출하지 않는다', async () => {
   const g = globalThis as TestGlobals;
   const originals = {
-    browser: g.browser,
-    chrome: g.chrome,
     document: g.document,
     localStorage: g.localStorage,
     queryLocalFonts: g.queryLocalFonts,
@@ -490,8 +474,6 @@ test('저장된 localStorage snapshot 로드는 queryLocalFonts를 호출하지 
   let queryCount = 0;
 
   resetLocalFontsForTests();
-  g.browser = undefined;
-  g.chrome = undefined;
   g.localStorage = createStorage({ [STORAGE_KEY]: JSON.stringify(snapshot) });
   g.queryLocalFonts = async () => {
     queryCount++;
@@ -527,8 +509,6 @@ test('저장된 localStorage snapshot 로드는 queryLocalFonts를 호출하지 
 test('저장된 v2 snapshot의 반복 별칭 해석은 전체 face를 다시 정규화하지 않는다', async () => {
   const g = globalThis as TestGlobals;
   const originals = {
-    browser: g.browser,
-    chrome: g.chrome,
     document: g.document,
     localStorage: g.localStorage,
     queryLocalFonts: g.queryLocalFonts,
@@ -552,8 +532,6 @@ test('저장된 v2 snapshot의 반복 별칭 해석은 전체 face를 다시 정
   let normalizeCalls = 0;
 
   resetLocalFontsForTests();
-  g.browser = undefined;
-  g.chrome = undefined;
   g.localStorage = createStorage({ [STORAGE_KEY]: JSON.stringify(snapshot) });
   g.queryLocalFonts = undefined;
 
@@ -577,150 +555,17 @@ test('저장된 v2 snapshot의 반복 별칭 해석은 전체 face를 다시 정
   }
 });
 
-test('Chrome 확장 컨텍스트에서는 chrome.storage.local snapshot을 우선 사용한다', async () => {
-  const g = globalThis as TestGlobals;
-  const originals = {
-    browser: g.browser,
-    chrome: g.chrome,
-    document: g.document,
-    localStorage: g.localStorage,
-    queryLocalFonts: g.queryLocalFonts,
-  };
-  const snapshot: LocalFontSnapshot = {
-    version: 1,
-    detectedAt: '2026-06-21T01:00:00.000Z',
-    families: ['확장로컬'],
-    source: 'local-font-access',
-  };
-  let localStorageRead = 0;
-
-  resetLocalFontsForTests();
-  g.browser = undefined;
-  g.chrome = {
-    storage: {
-      local: {
-        get: (_key: string, callback: (items: Record<string, unknown>) => void) => {
-          callback({ [STORAGE_KEY]: snapshot });
-        },
-        set: (_items: Record<string, unknown>, callback: () => void) => {
-          callback();
-        },
-        remove: (_key: string, callback: () => void) => {
-          callback();
-        },
-      },
-    },
-  };
-  g.localStorage = {
-    get length() {
-      return 0;
-    },
-    clear() {},
-    getItem() {
-      localStorageRead++;
-      throw new Error('localStorage should not be read');
-    },
-    key() {
-      return null;
-    },
-    removeItem() {},
-    setItem() {},
-  } as Storage;
-  g.queryLocalFonts = async () => {
-    throw new Error('queryLocalFonts should not be called');
-  };
-
-  try {
-    const loaded = await loadStoredLocalFonts();
-    assert.deepEqual(loaded?.families, ['확장로컬']);
-    assert.equal(localStorageRead, 0);
-    assert.equal(getLocalFontState().storage, 'chrome-storage-local');
-  } finally {
-    await clearStoredLocalFonts();
-    resetLocalFontsForTests();
-    restoreGlobals(originals);
-  }
-});
-
-test('Firefox 확장 컨텍스트에서는 browser.storage.local snapshot을 사용한다', async () => {
-  const g = globalThis as TestGlobals;
-  const originals = {
-    browser: g.browser,
-    chrome: g.chrome,
-    document: g.document,
-    localStorage: g.localStorage,
-    queryLocalFonts: g.queryLocalFonts,
-  };
-  const snapshot: LocalFontSnapshot = {
-    version: 1,
-    detectedAt: '2026-06-21T01:30:00.000Z',
-    families: ['파이어폭스로컬'],
-    source: 'font-presence-probe',
-    checkedFamilies: ['파이어폭스로컬', '없는글꼴'],
-  };
-
-  resetLocalFontsForTests();
-  g.chrome = undefined;
-  g.browser = {
-    storage: {
-      local: {
-        get: async () => ({ [STORAGE_KEY]: snapshot }),
-        set: async () => {},
-        remove: async () => {},
-      },
-    },
-  };
-  g.localStorage = createStorage();
-  g.queryLocalFonts = undefined;
-  g.document = createProbeDocument([]);
-
-  try {
-    const loaded = await loadStoredLocalFonts();
-    const state = getLocalFontState();
-    assert.deepEqual(loaded?.families, ['파이어폭스로컬']);
-    assert.deepEqual(loaded?.checkedFamilies, sortedKo(['파이어폭스로컬', '없는글꼴']));
-    assert.equal(state.storage, 'browser-storage-local');
-    assert.equal(state.source, 'font-presence-probe');
-    assert.equal(state.complete, false);
-  } finally {
-    await clearStoredLocalFonts();
-    resetLocalFontsForTests();
-    restoreGlobals(originals);
-  }
-});
-
 test('detectLocalFonts는 전체 snapshot을 저장하고 기본 반환은 웹 등록 글꼴을 제외한다', async () => {
   const g = globalThis as TestGlobals;
   const originals = {
-    browser: g.browser,
-    chrome: g.chrome,
     document: g.document,
     localStorage: g.localStorage,
     queryLocalFonts: g.queryLocalFonts,
   };
-  let storedSnapshot: LocalFontSnapshot | null = null;
   let queryCount = 0;
 
   resetLocalFontsForTests();
-  g.browser = undefined;
-  g.localStorage = undefined;
-  g.chrome = {
-    storage: {
-      local: {
-        get: (_key: string, callback: (items: Record<string, unknown>) => void) => {
-          callback({});
-        },
-        set: (items: Record<string, unknown>, callback: () => void) => {
-          storedSnapshot = items[STORAGE_KEY] as LocalFontSnapshot;
-          callback();
-        },
-        remove: (_key: string, callback: () => void) => {
-          storedSnapshot = null;
-          callback();
-        },
-      },
-    },
-  };
+  g.localStorage = createStorage();
   g.queryLocalFonts = async () => {
     queryCount++;
     return [
@@ -735,6 +580,7 @@ test('detectLocalFonts는 전체 snapshot을 저장하고 기본 반환은 웹 �
     assert.equal(queryCount, 1);
     assert.deepEqual(filtered, ['내 로컬']);
     assert.deepEqual(getDetectedLocalFonts(), sortedKo(['내 로컬', '함초롬바탕']));
+    const storedSnapshot = JSON.parse(g.localStorage?.getItem(STORAGE_KEY) ?? 'null') as LocalFontSnapshot | null;
     assert.deepEqual(storedSnapshot?.families, sortedKo(['내 로컬', '함초롬바탕']));
     assert.equal(storedSnapshot?.source, 'local-font-access');
     assert.equal(storedSnapshot?.checkedFamilies, undefined);
@@ -748,8 +594,6 @@ test('detectLocalFonts는 전체 snapshot을 저장하고 기본 반환은 웹 �
 test('SFNT 지역화 이름을 보존해 HWP 한글 full name을 영문 family로 해석한다', async () => {
   const g = globalThis as TestGlobals;
   const originals = {
-    browser: g.browser,
-    chrome: g.chrome,
     document: g.document,
     localStorage: g.localStorage,
     queryLocalFonts: g.queryLocalFonts,
@@ -757,8 +601,6 @@ test('SFNT 지역화 이름을 보존해 HWP 한글 full name을 영문 family�
   const storage = createStorage();
 
   resetLocalFontsForTests();
-  g.browser = undefined;
-  g.chrome = undefined;
   g.localStorage = storage;
   g.queryLocalFonts = async () => [{
     family: '08SeoulHangang',
@@ -803,8 +645,6 @@ test('SFNT 지역화 이름을 보존해 HWP 한글 full name을 영문 family�
 test('SFNT metadata discovery rejects an oversized font before reading any table bytes', async () => {
   const g = globalThis as TestGlobals;
   const originals = {
-    browser: g.browser,
-    chrome: g.chrome,
     document: g.document,
     localStorage: g.localStorage,
     queryLocalFonts: g.queryLocalFonts,
@@ -813,8 +653,6 @@ test('SFNT metadata discovery rejects an oversized font before reading any table
   let sliceReads = 0;
 
   resetLocalFontsForTests();
-  g.browser = undefined;
-  g.chrome = undefined;
   g.localStorage = storage;
   g.queryLocalFonts = async () => [{
     family: 'Oversized Font',
@@ -846,16 +684,12 @@ test('SFNT metadata discovery rejects an oversized font before reading any table
 test('legacy Macintosh name record는 표시 이름에 섞지 않는다', async () => {
   const g = globalThis as TestGlobals;
   const originals = {
-    browser: g.browser,
-    chrome: g.chrome,
     document: g.document,
     localStorage: g.localStorage,
     queryLocalFonts: g.queryLocalFonts,
   };
   const storage = createStorage();
   resetLocalFontsForTests();
-  g.browser = undefined;
-  g.chrome = undefined;
   g.localStorage = storage;
   g.queryLocalFonts = async () => [{
     family: 'Browser Font',
@@ -880,8 +714,6 @@ test('legacy Macintosh name record는 표시 이름에 섞지 않는다', async 
 test('저장된 깨진 표시 이름은 브라우저 family 이름으로 복구한다', async () => {
   const g = globalThis as TestGlobals;
   const originals = {
-    browser: g.browser,
-    chrome: g.chrome,
     document: g.document,
     localStorage: g.localStorage,
     queryLocalFonts: g.queryLocalFonts,
@@ -902,8 +734,6 @@ test('저장된 깨진 표시 이름은 브라우저 family 이름으로 복구�
   };
   const storage = createStorage({ [STORAGE_KEY]: JSON.stringify(snapshot) });
   resetLocalFontsForTests();
-  g.browser = undefined;
-  g.chrome = undefined;
   g.localStorage = storage;
   g.queryLocalFonts = undefined;
 
@@ -920,8 +750,6 @@ test('저장된 깨진 표시 이름은 브라우저 family 이름으로 복구�
 test('CanvasKit용 SFNT 바이트는 여러 PostScript face를 일괄 조회하고 동시 요청만 공유한다', async () => {
   const g = globalThis as TestGlobals;
   const originals = {
-    browser: g.browser,
-    chrome: g.chrome,
     document: g.document,
     localStorage: g.localStorage,
     queryLocalFonts: g.queryLocalFonts,
@@ -948,8 +776,6 @@ test('CanvasKit용 SFNT 바이트는 여러 PostScript face를 일괄 조회하�
   const queryCalls: Array<string[] | undefined> = [];
 
   resetLocalFontsForTests();
-  g.browser = undefined;
-  g.chrome = undefined;
   g.localStorage = storage;
   g.queryLocalFonts = async (options?: { postscriptNames?: string[] }) => {
     queryCalls.push(options?.postscriptNames);
@@ -997,8 +823,6 @@ test('CanvasKit용 SFNT 바이트는 여러 PostScript face를 일괄 조회하�
 test('CanvasKit local font byte reads use bounded worker concurrency', async () => {
   const g = globalThis as TestGlobals;
   const originals = {
-    browser: g.browser,
-    chrome: g.chrome,
     document: g.document,
     localStorage: g.localStorage,
     queryLocalFonts: g.queryLocalFonts,
@@ -1024,8 +848,6 @@ test('CanvasKit local font byte reads use bounded worker concurrency', async () 
   let completedReads = 0;
 
   resetLocalFontsForTests();
-  g.browser = undefined;
-  g.chrome = undefined;
   g.localStorage = storage;
   g.queryLocalFonts = async () => records.map((record, index) => ({
     ...record,
@@ -1059,8 +881,6 @@ test('CanvasKit local font byte reads use bounded worker concurrency', async () 
 test('CanvasKit local font byte reads cap face count and reject oversized blobs before allocation', async () => {
   const g = globalThis as TestGlobals;
   const originals = {
-    browser: g.browser,
-    chrome: g.chrome,
     document: g.document,
     localStorage: g.localStorage,
     queryLocalFonts: g.queryLocalFonts,
@@ -1085,8 +905,6 @@ test('CanvasKit local font byte reads cap face count and reject oversized blobs 
   let arrayBufferReads = 0;
 
   resetLocalFontsForTests();
-  g.browser = undefined;
-  g.chrome = undefined;
   g.localStorage = storage;
   g.queryLocalFonts = async (options?: { postscriptNames?: string[] }) => {
     requestedPostscriptNames = options?.postscriptNames ?? [];
@@ -1118,16 +936,12 @@ test('CanvasKit local font byte reads cap face count and reject oversized blobs 
 test('저장소 읽기 실패는 빈 상태로 처리하고 오류 상태만 기록한다', async () => {
   const g = globalThis as TestGlobals;
   const originals = {
-    browser: g.browser,
-    chrome: g.chrome,
     document: g.document,
     localStorage: g.localStorage,
     queryLocalFonts: g.queryLocalFonts,
   };
 
   resetLocalFontsForTests();
-  g.browser = undefined;
-  g.chrome = undefined;
   g.localStorage = {
     get length() {
       return 0;
@@ -1167,8 +981,6 @@ test('저장소 읽기 실패는 빈 상태로 처리하고 오류 상태만 기
 test('clearStoredLocalFonts는 저장된 snapshot과 런타임 상태를 초기화한다', async () => {
   const g = globalThis as TestGlobals;
   const originals = {
-    browser: g.browser,
-    chrome: g.chrome,
     document: g.document,
     localStorage: g.localStorage,
     queryLocalFonts: g.queryLocalFonts,
@@ -1182,8 +994,6 @@ test('clearStoredLocalFonts는 저장된 snapshot과 런타임 상태를 초기�
   const storage = createStorage({ [STORAGE_KEY]: JSON.stringify(snapshot) });
 
   resetLocalFontsForTests();
-  g.browser = undefined;
-  g.chrome = undefined;
   g.localStorage = storage;
   g.queryLocalFonts = async () => {
     throw new Error('queryLocalFonts should not be called');
@@ -1213,8 +1023,6 @@ test('clearStoredLocalFonts는 저장된 snapshot과 런타임 상태를 초기�
 test('Local Font Access API가 없으면 문서 후보 글꼴만 probe snapshot으로 저장한다', async () => {
   const g = globalThis as TestGlobals;
   const originals = {
-    browser: g.browser,
-    chrome: g.chrome,
     document: g.document,
     localStorage: g.localStorage,
     queryLocalFonts: g.queryLocalFonts,
@@ -1222,8 +1030,6 @@ test('Local Font Access API가 없으면 문서 후보 글꼴만 probe snapshot�
   let storedSnapshot: LocalFontSnapshot | null = null;
 
   resetLocalFontsForTests();
-  g.browser = undefined;
-  g.chrome = undefined;
   g.localStorage = {
     get length() {
       return storedSnapshot ? 1 : 0;
@@ -1396,7 +1202,7 @@ test('SFNT metadata bounds, versioned oblique and collection offsets preserve fa
 
 test('SFNT detection reads bounded metadata slices without whole font allocation', async () => {
   const g = globalThis as TestGlobals;
-  const originals = {browser: g.browser, chrome: g.chrome, document: g.document, localStorage: g.localStorage, queryLocalFonts: g.queryLocalFonts};
+  const originals = {document: g.document, localStorage: g.localStorage, queryLocalFonts: g.queryLocalFonts};
   const metadata = localizedStyleFont('Corsivo', 400, 1);
   const blob = new Blob([metadata, new Uint8Array(1024 * 1024)]);
   const slices: Array<[number, number]> = [];
@@ -1446,7 +1252,7 @@ test('SFNT regular family lookup selects unique nearest 400 and preserves ties',
 
 test('installed font detection reads names from the name-table source without copying the font', async () => {
   const g = globalThis as TestGlobals;
-  const originals = {browser: g.browser, chrome: g.chrome, document: g.document, localStorage: g.localStorage, queryLocalFonts: g.queryLocalFonts};
+  const originals = {document: g.document, localStorage: g.localStorage, queryLocalFonts: g.queryLocalFonts};
   const indexed = localizedStyleFont('Corsivo', 400, 1);
   const other = createSfntWithNameRecords([{nameId: 1, value: '08서울한강체'}, {nameId: 4, value: '08서울한강체 M'}]);
   const tableOf = (bytes: ArrayBuffer, tag: string, limit: number): Uint8Array | null => {

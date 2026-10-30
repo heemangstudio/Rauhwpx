@@ -39,11 +39,6 @@ test.before(async () => {
       fs: { allow: [studioRoot, wasmPackageRoot, resolve(rhwpRoot, 'samples')] },
     },
     plugins: [{
-      // 브리지가 들여오는 데스크톱 연동은 PWA 플러그인의 가상 모듈을 부른다 — 테스트에서는 빈 모듈이다.
-      name: 'pwa-register-stub',
-      resolveId: (id) => (id === 'virtual:pwa-register' ? '\0virtual:pwa-register' : null),
-      load: (id) => (id === '\0virtual:pwa-register' ? 'export function registerSW() {}' : null),
-    }, {
       name: 'version-agent-commit-sample',
       configureServer(vite) {
         vite.middlewares.use('/samples', (request, response, next) => {

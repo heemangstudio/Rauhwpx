@@ -54,18 +54,12 @@
     "test:sidebar:audit": "node sidebar-preview/audit.check.mjs"
   },
   "devDependencies": {
-    "@types/chrome": "^0.2.2",
     "@types/d3-force": "^3.0.10",
     "pixelmatch": "^7.1.0",
     "pngjs": "^7.0.0",
     "puppeteer-core": "^25.3.0",
     "typescript": "^7.0.2",
-    "vite": "^8.1.5",
-    "vite-plugin-pwa": "^1.3.0",
-    "workbox-window": "^7.4.1"
-  },
-  "overrides": {
-    "serialize-javascript": "7.0.5"
+    "vite": "^8.1.5"
   },
   "dependencies": {
     "@noble/hashes": "^2.2.0",

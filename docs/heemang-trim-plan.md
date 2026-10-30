@@ -31,7 +31,6 @@ Keep `view/canvaskit/image-header.ts`, which is a generic image-header parser. I
 Partly dead:
 - `view/render-backend.ts` (180). Delete `resolveRenderBackend*`, `resolveCanvasKitRenderMode*`, `resolveCanvasKitSurfaceRequest`, `persistCanvasKitRenderMode`, `persistRenderProfile` and the CanvasKit types. Keep `clampRenderScale` and the `MAX_*` limits (`canvas-view.ts:609, 834`).
 - `view/canvas-view.ts` (1527, about 300 lines go). Remove the `rendererSession` field and calls (227, 375, 414), `applyRendererSelection` (426), the CanvasKit readiness gate and fallback (869-930) and the diagnostics getters (1512-1521). Keep `MutationRefreshQueue`, which the heemang `changedPages` path uses (`canvas-view.ts:173`).
-- `embed/rpc-router.ts:8, 39-48` exposes `canvaskitMode`, `canvaskitSurface` and `effectiveBackend` over the embed RPC. This is an external contract, so pin the fields to `canvas2d` or `null` instead of dropping them silently.
 - `main.ts:1901-1907` exposes `__rendererSession` and `__canvaskitRenderMode` as dev hooks. This file is owned by core.
 
 ### 1b. Legacy canvas2d layered render path (about 1.6k lines)
@@ -63,15 +62,9 @@ Partly dead:
 These 9 of 429 `WasmBridge` members have no reference anywhere outside `wasm-bridge.ts` (searched across src, tests, e2e, bench, scripts and npm), and no internal `this.` use:
 `getSubsecondProbeValue` (:506), `getFontMetricsPolicy` (:708), `getCanvasKitReplayPlan` (:1265), `debugDumpStableIds` (:1613), `getTextBoxControlIndex` (:1621), `findNextEditableControl` (:1627), `getHeaderFooterList` (:3960), `getFieldValue` (:3995), `getFormValue` (:4178). This is relevant only if core keeps any of the class.
 
-### 1f. hwpctl compatibility layer (about 2.2k lines)
+### 1f. hwpctl compatibility layer
 
-- `src/hwpctl/` (index, action, action-registry, parameter-set, parameter-array, `actions/*`) wraps a raw rhwp `HwpDocument` (`hwpctl/index.ts:27-40`, and `:418` imports `@wasm/rhwp.js`). Nothing in the app imports it.
-- Remaining references:
-  - `hwpctl-test.html` (847), which loads `../pkg/rhwp.js`;
-  - `tests/hwpctl-{cell-text,page-setup,save-as}.test.ts`;
-  - the `hwpctl-load` message branch in `embed/runtime.ts:99`;
-  - a comment in `agent/tool-executor.ts:6282`.
-- `.gitignore:7` ignores `public/samples/hwpctl_Action_Table__v1.1.hwp`.
+Removed with the app-only trim, together with `hwpctl-test.html`, its tests and the embed runtime.
 
 ### 1g. Legacy input stack `src/engine/` (about 26k lines, dead after cutover except where the agent depends on it)
 
@@ -104,7 +97,6 @@ These bodies call `WasmBridge` methods the adapter does not have. Keep the regis
 | `merge/merge.worker.ts:3-4` | rhwp module |
 | `agent/document-preflight.worker.ts:7` | `HwpDocument` (studio-agent) |
 | `agent/foreign-documents.ts:530` | dynamic import (studio-agent) |
-| `hwpctl/index.ts:418` | see 1f |
 | `compare/diff-engine.ts`, `versioning/*` | rhwp document queries through the bridge (`buildSnapshotFromWasm`) |
 
 Versioning is disabled under heemang today (`main.ts:2377`, `commands/file.ts:545`).
@@ -118,7 +110,6 @@ Versioning is disabled under heemang today (`main.ts:2377`, `commands/file.ts:54
   - `static-svg-path-layers`, `render-backend` and `renderer-session` tests.
 - Delete with batches 1 to 4:
   - `hft-font`, `sfnt-subset`, `sfnt-run-metrics`, `equation-skia-font`, `subsecond-runtime`, `pagination-batch`, `flow-image-clip`, `layer-image-prefetch`, `page-image-prefetch.browser` and `page-layer-churn.browser` tests;
-  - `hwpctl-*` x3.
 - Rewrite rather than delete. They use `RendererSession` or `engine-trap` but test live behavior:
   - `canvas-view-initial-load-race`, `canvas-view-page-lifecycle`, `canvas-prefetch-budget`;
   - `engine-trap`, `autosave-manager`, `save-document-format`, `agent-turn-interruption`, `trap-chat-notice`.
@@ -169,7 +160,6 @@ Phase 1 (done on this branch, no engine dependency):
 Phase 2 batches run after the core cutover lands. Each batch must pass `npm --prefix rhwp/rhwp-studio run build` and `npm --prefix rhwp/rhwp-studio test`. Batches 2 and 3 also need a live Studio check of page rendering, zoom and scrolling at `http://127.0.0.1:7700`.
 
 1. **Dev and compat leftovers.** Delete:
-   - `src/hwpctl/`, `hwpctl-test.html`, the 3 hwpctl tests, the `embed/runtime.ts` `hwpctl-load` branch and the `.gitignore` line;
    - `core/subsecond-runtime.ts`, the subsecond scripts and the subsecond `vite.config.ts` bits;
    - `core/rhwp-dev.ts`.
 
@@ -196,5 +186,4 @@ Phase 2 batches run after the core cutover lands. Each batch must pass `npm --pr
 - The workers and the agent still load `@wasm/rhwp.js` outside the bridge (1i). Removing `build:wasm` or the alias early breaks thumbnails, merge and agent preflight.
 - The Proxy in `createStudioEngine` hides gaps: a missing method throws only when it is called. Add a check of every `wasm.X` call in `command/`, `ui/` and `agent/` against the adapter surface before deleting the rhwp class.
 - `engine-trap` is shared state (mutation epoch, trap flag) read across save, versioning and the agent. Delete only the rhwp prototype guard.
-- The embed RPC (`rpc-router.ts`) reports renderer fields to external hosts.
 - Removing `src/engine/` drops table and picture hit-testing, resize and drag, which heemang has no equivalent for yet. That is a feature regression, not cleanup.

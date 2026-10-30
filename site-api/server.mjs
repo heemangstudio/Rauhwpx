@@ -10,8 +10,13 @@ import {
   resolveFeedbackProofKey,
   resolveGiftConfig,
   resolveGiftsDbPath,
+  resolveHamaConfig,
+  resolveHamaDbPath,
+  resolveHamaUsageDir,
   resolveLicenseConfig,
   resolveLicensesDbPath,
+  resolveRauConfig,
+  resolveRauDbPath,
   resolveUniqueInstallPingKey,
   resolveUniqueInstallsDbPath,
   resolveWaitlistDbPath,
@@ -26,11 +31,14 @@ import {
 } from './feedback.mjs';
 import { GIFT_PROXY_PREFIX, createGiftsService, emptyGiftsState, parseGiftAmount } from './gifts.mjs';
 import { verifyGrobleWebhook } from './groble-webhook.mjs';
+import { HAMA_ANTHROPIC_PREFIX, HAMA_OPENAI_PREFIX, createHamaService, emptyHamaState } from './hama.mjs';
+import { createHamaProxy } from './hama-proxy.mjs';
 import { createHeldAlerter } from './held-alert.mjs';
 import { createEmailProvider, resendProviderFromEnv } from './license-email.mjs';
 import { parseSigningPrivateKey, publicKeyFromPrivate, rawPublicKeyBase64 } from './license-lease.mjs';
 import { createLicensesService, emptyLicensesState, licenseError } from './licenses.mjs';
 import { renderUniqueInstallsPage } from './pages.mjs';
+import { MAX_RAU_BODY_BYTES, createRauService, emptyRauState, rauRateLimited } from './rau.mjs';
 import { createRateLimiter } from './rate-limit.mjs';
 import { createFileStore } from './store.mjs';
 import { createTelegramSender } from './telegram.mjs';
@@ -156,6 +164,17 @@ function discardUpload(req, maxBytes) {
   req.resume();
 }
 
+/** Reads up to `maxBytes`; past it the rest is drained and the answer is null, so the client still reads the reply. */
+async function readOrNull(req, maxBytes) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size <= maxBytes) chunks.push(chunk);
+  }
+  return size > maxBytes ? null : Buffer.concat(chunks);
+}
+
 function errorStatus(error) {
   if ((error?.licenseError || error?.expose) && Number.isInteger(error.status)) return error.status;
   if (error?.code === 'RATE_LIMITED') return 429;
@@ -187,6 +206,8 @@ export function siteRequestListener({
   downloads,
   licenses,
   gifts,
+  hama,
+  rau,
   feedback,
   licenseConfig = {},
   webhookLog = createWebhookLog(),
@@ -258,6 +279,7 @@ export function siteRequestListener({
         if (!licenses) throw siteError('NOT_FOUND', 'not found');
       }
       if (pathname.startsWith('/v1/gift/') && !gifts) throw siteError('NOT_FOUND', 'not found');
+      if ((pathname.startsWith('/v1/rau/') || pathname === '/v1/admin/rau') && !rau) throw siteError('NOT_FOUND', 'not found');
       if (pathname.startsWith(`${GIFT_PROXY_PREFIX}/`)) {
         // Streams its own response (SSE), so it never goes through send().
         allow('gift-proxy', 600, MINUTE);
@@ -269,6 +291,53 @@ export function siteRequestListener({
           else send(500, { error: { code: 500, message: 'server_error' } });
         }
         return;
+      }
+      if (pathname.startsWith('/v1/hama/') || pathname === '/v1/admin/hama' || pathname.startsWith('/v1/admin/hama/')) {
+        // Hama plan (hama.mjs). Every route is 404 while HAMA_ENABLED is off.
+        if (!hama) throw siteError('NOT_FOUND', 'not found');
+        if (pathname.startsWith(`${HAMA_ANTHROPIC_PREFIX}/`) || pathname.startsWith(`${HAMA_OPENAI_PREFIX}/`)) {
+          // Streams its own response (SSE), so it never goes through send().
+          allow('hama-proxy', 600, MINUTE);
+          try {
+            await hama.proxy.handle(req, res, pathname);
+          } catch (error) {
+            log(`[site-api] hama proxy failed: ${error?.message ?? error}`);
+            if (res.headersSent) res.destroy();
+            else send(500, { error: { code: 500, message: 'server_error' } });
+          }
+          return;
+        }
+        switch (route) {
+          case 'GET /v1/hama/status':
+            allow('hama-status', 120, MINUTE);
+            req.resume?.();
+            send(200, await hama.status(bearerToken(req) || String(req.headers['x-api-key'] ?? '').trim()));
+            return;
+          case 'GET /v1/admin/hama':
+            allow('admin', 120, TEN_MINUTES);
+            send(200, await hama.admin.list(bearerToken(req), Object.fromEntries(searchParams)));
+            return;
+          case 'GET /v1/admin/hama/usage':
+            allow('admin', 120, TEN_MINUTES);
+            send(200, await hama.admin.usage(bearerToken(req), Object.fromEntries(searchParams)));
+            return;
+          case 'POST /v1/admin/hama/enroll': {
+            allow('admin', 120, TEN_MINUTES);
+            const token = bearerToken(req);
+            const body = await readJson(req);
+            // Only an existing license can be enrolled; the lookup also checks the token.
+            const keyId = typeof body?.keyId === 'string' ? body.keyId.trim() : '';
+            if (!keyId || !(await licenses.admin.lookup(token, { keyId })).licenses[0]) throw licenseError('invalid_key', 404);
+            send(200, await hama.admin.enroll(token, { ...body, keyId }));
+            return;
+          }
+          case 'POST /v1/admin/hama/disable':
+            allow('admin', 120, TEN_MINUTES);
+            send(200, await hama.admin.disable(bearerToken(req), await readJson(req)));
+            return;
+          default:
+            throw siteError('NOT_FOUND', 'not found');
+        }
       }
       switch (route) {
         case 'GET /v1/groble/webhook':
@@ -386,6 +455,26 @@ export function siteRequestListener({
           allow('gift-claim', 20, TEN_MINUTES);
           await readJson(req);
           send(200, await gifts.claim(bearerToken(req)));
+          return;
+        // Hosted Rau-0.1. Per-license limits live in rau.mjs; these per-IP ones only stop floods.
+        case 'GET /v1/rau/status':
+          if (!limiter.check(`rau-status:${ip}`, 120, MINUTE)) throw rauRateLimited(60);
+          send(200, await rau.status(bearerToken(req)));
+          return;
+        case 'POST /v1/rau/learn': {
+          if (Number(req.headers['content-length']) > 4 * MAX_RAU_BODY_BYTES) {
+            discardUpload(req, 4 * MAX_RAU_BODY_BYTES);
+            send(400, { ok: false, error: 'invalid', field: 'prompt' }, { Connection: 'close' });
+            return;
+          }
+          if (!limiter.check(`rau-learn:${ip}`, 120, MINUTE)) { req.resume?.(); throw rauRateLimited(60); }
+          const raw = await readOrNull(req, MAX_RAU_BODY_BYTES);
+          send(200, await rau.learn(bearerToken(req), raw));
+          return;
+        }
+        case 'GET /v1/admin/rau':
+          allow('admin', 120, TEN_MINUTES);
+          send(200, await rau.admin.list(bearerToken(req)));
           return;
         case 'GET /v1/admin/gifts':
           allow('admin', 120, TEN_MINUTES);
@@ -610,7 +699,8 @@ export function siteRequestListener({
           ...(error.tier ? { tier: error.tier } : {}),
           ...(error.licenseExpiresAt ? { licenseExpiresAt: error.licenseExpiresAt } : {}),
           ...(error.paymentFixUrl ? { paymentFixUrl: error.paymentFixUrl } : {}),
-        });
+          ...(error.extra ?? {}),
+        }, error.headers ?? {});
         return;
       }
       if (status >= 500) log(`[site-api] ${req.method} ${req.url}: ${error?.stack ?? error}`);
@@ -667,8 +757,10 @@ export function createSiteServer(env = process.env, options = {}) {
     onetimeProductIds: licenseConfig.onetimeProductIds,
     subscriptionProductIds: licenseConfig.subscriptionProductIds,
     signatureProductIds: licenseConfig.signatureProductIds,
+    proProducts: licenseConfig.proProducts,
     products: licenseConfig.products,
     paymentGraceMs: licenseConfig.paymentGraceMs,
+    paymentGraceMaxMs: licenseConfig.paymentGraceMaxMs,
     paymentFixUrl: licenseConfig.paymentFixUrl,
     expectedPrice: licenseConfig.expectedPrice,
     minAmount: licenseConfig.minAmount,
@@ -691,6 +783,31 @@ export function createSiteServer(env = process.env, options = {}) {
     now: options.now,
     log,
   });
+  const hamaConfig = resolveHamaConfig(env);
+  const hamaService = hamaConfig.enabled ? createHamaService({
+    store: createFileStore(resolveHamaDbPath(env), { emptyState: emptyHamaState }),
+    authenticate: (lease) => licenses.authenticateLease(lease),
+    config: hamaConfig,
+    adminToken: licenseConfig.adminToken,
+    now: options.now,
+    log,
+    usageLogDir: resolveHamaUsageDir(env),
+  }) : null;
+  const hama = hamaService && {
+    ...hamaService,
+    proxy: createHamaProxy({ hama: hamaService, config: hamaConfig, fetchImpl: options.fetchImpl, now: options.now, log }),
+  };
+  const rau = createRauService({
+    store: createFileStore(resolveRauDbPath(env), { emptyState: emptyRauState }),
+    // A revoked or expired key still authenticates here, so it hears rau_requires_pro instead of 401.
+    authenticate: (lease) => licenses.authenticateLease(lease, { allowInactive: true }),
+    config: resolveRauConfig(env),
+    upgradeUrl: licenseConfig.proUpgradeUrl,
+    adminToken: licenseConfig.adminToken,
+    fetchImpl: options.fetchImpl,
+    now: options.now,
+    log,
+  });
   const feedback = createFeedbackService({
     dir: resolveFeedbackDir(env),
     proofKey: resolveFeedbackProofKey(env) || DEFAULT_FEEDBACK_PROOF_KEY,
@@ -705,7 +822,7 @@ export function createSiteServer(env = process.env, options = {}) {
       log,
     }),
   });
-  const listener = siteRequestListener({ uniqueInstalls, waitlist, downloads, licenses, gifts, feedback, licenseConfig, webhookLog, webhookAlerts, heldAlerts, log });
+  const listener = siteRequestListener({ uniqueInstalls, waitlist, downloads, licenses, gifts, hama, rau, feedback, licenseConfig, webhookLog, webhookAlerts, heldAlerts, log });
   setImmediate(() => { void feedback.prune().catch((error) => log(`[site-api] feedback prune failed: ${error?.message ?? error}`)); });
   // Retry any key email that was queued before a restart.
   setImmediate(() => { void licenses.deliverPendingEmails().catch(() => {}); });

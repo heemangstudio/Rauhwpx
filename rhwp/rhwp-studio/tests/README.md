@@ -1,6 +1,6 @@
 # Studio tests
 
-Run `npm test` for the Node suite and editor transport tests. It does not launch
+Run `npm test` for the Node suite. It does not launch
 Chrome or the agent hub. Several tests run the real engine, so run
 `npm run build:wasm` from the repository root first; without `rhwp/pkg` those
 tests fail with that instruction. A few tests use Vite's module loader with

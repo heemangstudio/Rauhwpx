@@ -3,7 +3,6 @@ import { defineConfig, type Plugin } from 'vite';
 import { resolve, extname, join } from 'path';
 import { readFileSync, readFile } from 'fs';
 import { execSync } from 'node:child_process';
-import { VitePWA } from 'vite-plugin-pwa';
 import { rhwpAgentHubPlugin } from './vite-plugin-agent-hub.mjs';
 import { rhwpPinnedDocumentPlugin } from './vite-plugin-pinned-document.mjs';
 import { rhwpDevFontPackPlugin } from './vite-plugin-dev-font-pack.mjs';
@@ -142,7 +141,7 @@ export default defineConfig({
       },
     } : undefined,
     fs: {
-      // Allow the editor and fixture assets used by linked-image development checks.
+      // Allow the engine package and fixture assets used by linked-image development checks.
       allow: [
         __dirname,
         resolve(__dirname, '..', 'pkg'),
@@ -151,7 +150,6 @@ export default defineConfig({
         resolve(__dirname, '..', 'THIRD_PARTY_LICENSES.md'),
         subsecondWasmDir,
         resolve(__dirname, '..', 'samples'),
-        resolve(__dirname, '..', 'npm', 'editor'),
       ],
     },
     watch: {
@@ -220,59 +218,5 @@ export default defineConfig({
         });
       },
     },
-    VitePWA({
-      registerType: 'autoUpdate',
-      injectRegister: false,
-      includeAssets: ['favicon.ico', 'icons/*.png'],
-      manifest: {
-        name: 'HamaEditor',
-        short_name: 'HamaEditor',
-        description: 'HamaEditor HWP/HWPX/HML 문서 편집기',
-        lang: 'ko',
-        theme_color: '#2b6cb0',
-        background_color: '#ffffff',
-        display: 'standalone',
-        start_url: '/rhwp/',
-        scope: '/rhwp/',
-        file_handlers: [
-          {
-            action: '/rhwp/',
-            accept: {
-              'application/x-hwp': ['.hwp'],
-              'application/hwp+zip': ['.hwpx'],
-              'application/xml': ['.hml'],
-              'text/xml': ['.hml'],
-              'application/vnd.rauhwpx.history': ['.rhwpx'],
-            },
-          },
-        ],
-        icons: [
-          { src: 'icons/icon-128.png', sizes: '128x128', type: 'image/png' },
-          { src: 'icons/icon-192.png', sizes: '192x192', type: 'image/png' },
-          { src: 'icons/icon-256.png', sizes: '256x256', type: 'image/png' },
-          { src: 'icons/icon-512.png', sizes: '512x512', type: 'image/png' },
-          { src: 'icons/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any maskable' },
-        ],
-      },
-      workbox: {
-        // WASM (~12 MB) is kept out of precache to avoid blocking SW installation;
-        // CacheFirst at runtime still gives offline access after the first load.
-        globPatterns: ['**/*.{js,css,html,png,gif,svg,ico,woff,woff2,ttf,otf}'],
-        maximumFileSizeToCacheInBytes: 20 * 1024 * 1024,
-        runtimeCaching: [
-          {
-            urlPattern: /\.wasm$/,
-            handler: 'CacheFirst',
-            options: {
-              cacheName: 'wasm-cache',
-              expiration: { maxEntries: 5, maxAgeSeconds: 30 * 24 * 60 * 60 },
-            },
-          },
-        ],
-      },
-      devOptions: {
-        enabled: false,
-      },
-    }),
   ],
 });
