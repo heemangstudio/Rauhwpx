@@ -1,5 +1,4 @@
-// 호스팅 Rau-0.1(Pro): 자동 경로에서 먼저 쓰고, Pro 가 아니면 안내 한 번과 함께 내 계정 경로로,
-// 한도에 닿으면 초기화 때까지 건너뛴다. 라이선스가 없거나 데스크톱이 아니면 묻지 않는다. 허브에는 키가 오지 않는다.
+// 호스팅 Rau-0.1: 성공·자격 거절·한도·오류에서 사용자 계정 경로로 넘어가지 않는다.
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -62,19 +61,18 @@ function harness(t, { source, settings = { enabled: true }, clock = { t: Date.pa
     resolveKey: ({ documentId }) => store.resolveKey({ documentId }),
     emit: (frame) => frames.push(frame),
     debounceMs: 30,
-    providerTimeoutMs: 5_000,
-    overallTimeoutMs: 10_000,
   });
   t.after(() => learner.close());
   let turn = 0;
   const run = async () => {
     turn += 1;
     const before = calls.length + source.prompts.length;
+    const usable = hosted.usable();
     await learner.turnEnded({ threadId: 'th1', turnId: `t${turn}`, documentId: 'doc-1', userText: `한다체로 써 줘 ${turn}. 앞으로도.`, learn: true });
-    await until(() => calls.length + source.prompts.length > before, `run ${turn}`);
+    if (usable) await until(() => calls.length + source.prompts.length > before, `run ${turn}`);
     await settle();
   };
-  return { calls, frames, run, clock };
+  return { calls, frames, run, clock, store, learner };
 }
 
 test('with a license the hosted route runs first and its text is learned like any route', async (t) => {
@@ -87,18 +85,18 @@ test('with a license the hosted route runs first and its text is learned like an
   assert.equal(h.frames[0].type, 'taste-learned');
 });
 
-test('a Pro refusal falls back to own accounts, prompts once, and is remembered until the license changes', async (t) => {
+test('a Pro refusal skips learning, prompts once, and is remembered until the license changes', async (t) => {
   const source = fakeSource(refusal('rau_requires_pro', { upgradeUrl: 'https://heemangstudios.com/pricing.html' }));
   const h = harness(t, { source });
   await h.run();
-  assert.deepEqual(h.calls.map((call) => call.provider), ['claude']);
+  assert.equal(h.calls.length, 0);
   const upgrades = h.frames.filter((frame) => frame.type === 'rau-upgrade');
   assert.equal(upgrades.length, 1);
   assert.deepEqual([upgrades[0].reason, upgrades[0].upgradeUrl, upgrades[0].documentId], ['rau_requires_pro', 'https://heemangstudios.com/pricing.html', 'doc-1']);
 
   await h.run();
   assert.equal(source.prompts.length, 1, 'the refusal is remembered');
-  assert.equal(h.calls.length, 2);
+  assert.equal(h.calls.length, 0);
 
   h.clock.t += RAU_REFUSAL_MS;
   await h.run();
@@ -118,33 +116,33 @@ test('a reached cap skips hosted Rau until it resets, without prompting', async 
   await h.run();
   await h.run();
   assert.equal(source.prompts.length, 1);
-  assert.equal(h.calls.length, 2);
+  assert.equal(h.calls.length, 0);
   h.clock.t = resetsAt;
   await h.run();
   assert.equal(source.prompts.length, 2);
   assert.equal(h.frames.some((frame) => frame.type === 'rau-upgrade'), false);
 });
 
-test('without a license or outside the desktop app, own accounts run and nothing prompts', async (t) => {
+test('without a license or outside the desktop app, no local route runs and nothing prompts', async (t) => {
   const noLicense = fakeSource(refusal('no_license'));
   const h = harness(t, { source: noLicense });
   await h.run();
-  assert.deepEqual(h.calls.map((call) => call.provider), ['claude']);
+  assert.equal(h.calls.length, 0);
   assert.equal(h.frames.some((frame) => frame.type === 'rau-upgrade'), false);
 
   const browser = fakeSource(() => ({ text: learned }), { available: false });
   const web = harness(t, { source: browser });
   await web.run();
   assert.equal(browser.prompts.length, 0);
-  assert.equal(web.calls.length, 1);
+  assert.equal(web.calls.length, 0);
 });
 
-test('a chosen provider never goes through hosted Rau', async (t) => {
+test('a legacy provider selection cannot bypass hosted Rau', async (t) => {
   const source = fakeSource(() => ({ text: learned }));
   const h = harness(t, { source, settings: { enabled: true, provider: 'claude', model: null, effort: null } });
   await h.run();
-  assert.equal(source.prompts.length, 0);
-  assert.equal(h.calls.length, 1);
+  assert.equal(source.prompts.length, 1);
+  assert.equal(h.calls.length, 0);
 });
 
 test('the IPC source sends only the prompt and maps the desktop error back', async () => {
@@ -175,4 +173,36 @@ test('the IPC source sends only the prompt and maps the desktop error back', asy
   const unavailable = createIpcRauSource({ processRef: plain });
   assert.equal(unavailable.available, false);
   await assert.rejects(unavailable.learn('x'), (error) => error.code === 'RAU_SOURCE_UNAVAILABLE');
+});
+
+
+test('hosting errors and invalid output never fall back to configured user accounts', async (t) => {
+  for (const answer of [refusal('network'), refusal('server'), () => ({ text: 'invalid JSON' })]) {
+    const source = fakeSource(answer);
+    const h = harness(t, { source, settings: { enabled: true, provider: 'pi', model: 'user/model', effort: 'max' } });
+    await h.run();
+    assert.equal(source.prompts.length, 1);
+    assert.equal(h.calls.length, 0);
+    assert.equal(h.frames.filter((frame) => frame.type === 'taste-learned').length, 0);
+  }
+});
+
+
+test('an unavailable hosted learn preserves existing preferences and manual history never uses local accounts', async (t) => {
+  let fail = false;
+  const source = fakeSource(() => {
+    if (fail) throw Object.assign(new Error('offline'), { code: 'network' });
+    return { text: learned, model: 'rau-0.1' };
+  });
+  const h = harness(t, { source });
+  await h.run();
+  const key = await h.store.resolveKey({ documentId: 'doc-1' });
+  const before = await h.store.read(key);
+  assert.equal(before.entries.length, 1);
+  fail = true;
+  await h.run();
+  await h.learner.learnHistory({ documentId: 'doc-1', signals: [{ kind: 'history', at: '2026-10-30T00:00:00Z', userText: '앞으로도 한다체로 써 줘', after: '한다' }] });
+  assert.equal(source.prompts.length, 3);
+  assert.equal(h.calls.length, 0);
+  assert.deepEqual(await h.store.read(key), before);
 });

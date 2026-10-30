@@ -446,8 +446,8 @@ export interface TasteUndoResult {
   error?: { code: string; message: string };
 }
 
-/** 학습기 공급자 — auto 는 허브의 기본 차례, pi 는 사용자의 OpenRouter 키. */
-export type TasteProvider = 'auto' | 'claude' | 'codex' | 'pi';
+/** 학습기 공급자 — auto 는 허브의 기본 차례. BYOK(Pi)로는 돌지 않는다. */
+export type TasteProvider = 'auto' | 'claude' | 'codex';
 
 export interface TasteSettings {
   enabled: boolean;
