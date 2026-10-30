@@ -38,7 +38,6 @@ export const CONNECTABLE_PROVIDERS = PROVIDER_ORDER.filter((agent) => agent !== 
 export const MASK_ICON_AGENTS: readonly AgentName[] = [
   'codex',
   'pi',
-  // 자리 표시 — Hama 마크가 들어오면 바꾼다. 지금은 Pi 글리프를 빌려 쓴다.
   'hama',
 ];
 

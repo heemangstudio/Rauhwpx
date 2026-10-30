@@ -1,12 +1,12 @@
 /**
  * Hama 플랜 상태의 미리보기 대역 (허브 `hama-status` 프레임). 서버나 데스크톱 없이 상태를 보여 준다.
- * `?hama=active|cap5h|capweek|capmonth|notenrolled|off` (기본 off = unavailable). cap* 는 그 한도에 막힌
- * 상태이고, 그 상태에서 Hama 로 보내면 한도 실패 알림이 뜬다(mock-bridge). notenrolled 는 Hama 플랜이 아닌 라이선스다.
+ * `?hama=active|near5h|cap5h|capweek|capmonth|notenrolled|off` (기본 off = unavailable). near5h 는 5시간 한도가
+ * 86% 찬(막히지는 않은) 상태, cap* 는 그 한도에 막힌 상태이고, 그 상태에서 Hama 로 보내면 한도 실패 알림이 뜬다(mock-bridge). notenrolled 는 Hama 플랜이 아닌 라이선스다.
  */
 import { inactiveHamaStatus } from '../agent/hama-status.ts';
 import type { HamaCap, HamaStatus, PiModelConfig } from '../agent/types.ts';
 
-export const mockHamaModes = ['active', 'cap5h', 'capweek', 'capmonth', 'notenrolled', 'off'] as const;
+export const mockHamaModes = ['active', 'near5h', 'cap5h', 'capweek', 'capmonth', 'notenrolled', 'off'] as const;
 export type MockHamaMode = (typeof mockHamaModes)[number];
 
 const HOUR = 3_600_000;
@@ -52,7 +52,9 @@ export function mockHamaStatus(mode: MockHamaMode, now = Date.now()): HamaStatus
     availability: 'active',
     plan: { status: 'active', allowanceUsd: 15, periodStart, periodEnd },
     caps: {
-      cap_5h: { usedUsd: used(3, cap === 'cap_5h', 0.13), limitUsd: 3, resetsAt: cap === 'cap_5h' ? resetFor('cap_5h', now) : null },
+      cap_5h: mode === 'near5h'
+        ? { usedUsd: 2.58, limitUsd: 3, resetsAt: now + HOUR + 40 * 60_000 }
+        : { usedUsd: used(3, cap === 'cap_5h', 0.13), limitUsd: 3, resetsAt: cap === 'cap_5h' ? resetFor('cap_5h', now) : null },
       cap_week: { usedUsd: used(7.5, cap === 'cap_week', 0.16), limitUsd: 7.5, resetsAt: cap === 'cap_week' ? resetFor('cap_week', now) : null },
       cap_month: { usedUsd: used(15, cap === 'cap_month', 0.13), limitUsd: 15, resetsAt: periodEnd },
     },

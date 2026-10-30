@@ -10,6 +10,7 @@ import { createServer } from 'vite';
 import puppeteer from 'puppeteer-core';
 import { checkChipAlignment } from './chip-alignment.check.mjs';
 import { checkPiModels } from './pi-models.check.mjs';
+import { checkHamaHarness } from './hama-harness.check.mjs';
 import { checkSelectMenu } from './select-menu.check.mjs';
 import { checkMarkdownEditor } from './markdown-editor.check.mjs';
 import { checkSetupTerminal } from './setup-terminal.check.mjs';
@@ -134,6 +135,7 @@ const focusedChecks = {
   resume: (h) => checkChatResume(h.page, h.origin, h.screenshot),
   chip: (h) => checkChipAlignment(h.page, h.origin),
   'pi-models': (h) => checkPiModels(h.page, h.origin),
+  'hama-harness': (h) => checkHamaHarness(h),
   'select-menu': (h) => checkSelectMenu(h.page, h.origin),
   'markdown-editor': (h) => checkMarkdownEditor(h.page, h.origin, h.artifacts),
   'setup-terminal': (h) => checkSetupTerminal(h.page, h.origin),

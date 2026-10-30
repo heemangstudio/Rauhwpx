@@ -464,10 +464,10 @@
   mask-image: url('/icons/provider-pi.svg');
 }
 
-/* 자리 표시 글리프 — Hama 마크가 들어오면 바꾼다. */
+/* Hama 마크 — 앱 하마의 하품하는 자세. */
 .rhwp-setup-card-logo .ag-provider-icon-mask[data-agent='hama'] {
-  -webkit-mask-image: url('/icons/provider-pi.svg');
-  mask-image: url('/icons/provider-pi.svg');
+  -webkit-mask-image: url('/icons/provider-hama.svg');
+  mask-image: url('/icons/provider-hama.svg');
 }
 
 .rhwp-setup-card-logo .ag-provider-icon-mask[data-agent='grok'] {

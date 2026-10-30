@@ -3438,6 +3438,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     usageViews.setLimitsRefreshing(true);
     usageFeedback.textContent = '';
     usageFeedback.hidden = true;
+    void bridge.requestHamaStatus?.(refresh).catch(() => null);
     try {
       const result = await bridge.requestUsage(refresh);
       if (disposed) return;

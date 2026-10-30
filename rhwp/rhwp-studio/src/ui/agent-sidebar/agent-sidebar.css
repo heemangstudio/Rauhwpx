@@ -2160,8 +2160,7 @@ button.ag-skill-copy {
 }
 
 /* 단색 글리프는 같은 마스크 계약을 탄다. */
-.ag-provider-icon-mask[data-agent='pi'],
-.ag-provider-icon-mask[data-agent='hama'] {
+.ag-provider-icon-mask[data-agent='pi'] {
   -webkit-mask-image: url('/icons/provider-pi.svg');
   mask-image: url('/icons/provider-pi.svg');
 }
