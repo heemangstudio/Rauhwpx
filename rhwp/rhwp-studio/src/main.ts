@@ -1,10 +1,4 @@
-import {
-  installLicenseGate,
-  mountLicenseRegisterButton,
-  showLicenseLockedPrompt,
-  showLicenseRequiredPrompt,
-} from './ui/license-gate';
-import { isLicenseViewerMode, onLicenseViewerModeChange } from './ui/license-viewer-mode';
+import { installLicenseGate, mountLicenseRegisterButton } from './ui/license-gate';
 import { WasmBridge, installDeclaredFontAvailabilityProbe, type PreparedWasmDocument } from '@/core/wasm-bridge';
 import { installDocumentTitle } from '@/ui/document-title';
 import { worktreeIdentity } from '@/ui/worktree-chip';
@@ -56,7 +50,6 @@ import {
   whenSavesIdle,
   isSaveInProgress,
   saveCurrentDocument,
-  saveToCurrentFileQuietly,
 } from '@/command/commands/file';
 import { editCommands, openClassicDocumentHistory } from '@/command/commands/edit';
 import { waitForDocumentIoIdle } from '@/core/document-io-idle';
@@ -459,7 +452,7 @@ function isManagedWorktree(session = attachedSession): boolean {
 }
 
 function sessionReadOnly(session = attachedSession): boolean {
-  return documentReadOnly || licenseReadOnly || mutatingWorktreeSessions.has(session) || Boolean(session.worktree && !session.worktreeWritable);
+  return documentReadOnly || mutatingWorktreeSessions.has(session) || Boolean(session.worktree && !session.worktreeWritable);
 }
 
 async function withWorktreeMutation<T>(session: DocumentSession, run: () => Promise<T>): Promise<T> {
@@ -528,7 +521,7 @@ const trapRecoveryPage = new TrapRecoveryPage({
   attached: () => attachedSession,
   saveCopy: saveTrappedDocumentCopy,
   run: () => trapRecoveryRun,
-  readOnly: () => licenseReadOnly || documentReadOnly,
+  readOnly: () => documentReadOnly,
   deliveredLaunchHandleIds,
   deliveredGeneratedDocumentIds,
   storage: sessionStorageOrNull,
@@ -711,7 +704,6 @@ let editorStyleOverflow: EditorStyleOverflow | null = null;
 let ruler: Ruler | null = null;
 let rendererSession: RendererSession | null = null;
 let editMode: EditorEditMode = 'normal';
-let licenseReadOnly = false;
 let documentReadOnly = new URLSearchParams(window.location.search).get('templatePreview') === '1';
 let agentEditingLease: AgentEditingLease = { active: false, agent: 'codex' };
 let renderBackendFallbackReason: RenderBackendFallbackReason | null = null;
@@ -945,24 +937,6 @@ const commandServices: CommandServices = {
   },
 };
 
-/**
- * 라이선스 읽기 전용에서는 저장할 수 없으니 닫을 때 저장을 묻지 않는다. 바뀐 문서를 복구본으로 남긴 뒤 닫고,
- * 다음 실행에서 복구로 연다. 복구본을 남기지 못한 문서가 있을 때만 닫을지 묻는다.
- */
-async function closeLicenseViewer(): Promise<boolean> {
-  const dirty = liveSessions.filter((session) => session.wasm.hasLoadedDocument() && session.documentState.isDirty());
-  const kept = await Promise.all(dirty.map((session) => session.autosave.flushAndWait('license-read-only-close')
-    .catch(() => false)));
-  const lost = dirty.filter((_session, index) => !kept[index]);
-  if (lost.length > 0) {
-    const names = lost.map((session) => `"${session.wasm.fileName}"`).join(', ');
-    if (!await showConfirm('복구본을 남기지 못했어요', `${names}\n닫으면 저장하지 않은 변경이 사라져요.`)) return false;
-  }
-  await flushWorktreesBeforeClose();
-  for (const session of liveSessions) session.documentState.permitNextUnload();
-  return true;
-}
-
 /** 창을 닫기 전에 미뤄 둔 작업 공간 기록을 적는다. 다시 열면 파일 대신 이 작업 공간을 연다. */
 async function flushWorktreesBeforeClose(): Promise<void> {
   await Promise.all(liveSessions.filter((session) => session.worktreeWritable)
@@ -970,7 +944,6 @@ async function flushWorktreesBeforeClose(): Promise<void> {
 }
 
 installDesktopCloseHandling(async () => {
-  if (licenseReadOnly) return closeLicenseViewer();
   if (!await confirmCloseWithBackgroundSessions()) return false;
   if (!await confirmSaveBackgroundDocuments()) return false;
   // 저장 안 함을 고른 문서는 닫기가 정해진 뒤 복구본을 지운다. 남겨 두면 다음 실행이 버린 변경을 복구하자고 묻는다.
@@ -1503,54 +1476,10 @@ function prepareCanvasKitLocalFonts(fontNames: readonly string[] | undefined): v
   });
 }
 
-/**
- * 체험이 끝나 편집을 잠그기 전에 바뀐 문서를 모두 남긴다. 대화상자는 띄우지 않는다.
- * 먼저 복구본으로 남기고, 파일이 있는 문서는 그 파일에 덮어 저장한다. 새 문서처럼 파일이 없거나,
- * 검토를 기다리는 에이전트 편집이 있거나, 작업 사본인 문서는 복구본까지만 남긴다.
- */
-async function saveOpenDocumentsBeforeLicenseLock(prepareWrite: () => Promise<void>): Promise<{ failed: number }> {
-  await whenSavesIdle().catch(() => {});
-  let failed = 0;
-  for (const session of [...liveSessions]) {
-    if (!session.documentState.isDirty()) continue;
-    if (session === attachedSession) {
-      try { inputHandler?.flushDeferredPaginationIfNeeded('license-lock'); } catch { /* 복구본과 파일 저장은 그대로 시도한다 */ }
-    }
-    const kept = await session.autosave.flushAndWait('license-lock');
-    if (session.writer || isManagedWorktree(session)) {
-      if (!kept) failed += 1;
-      continue;
-    }
-    if (session.wasm.currentFileHandle && !session.wasm.isNewDocument) await prepareWrite();
-    const result = await saveToCurrentFileQuietly(
-      { wasm: session.wasm, documentState: session.documentState, eventBus: session.bus },
-      async (handle) => {
-        if (session.documentId) {
-          bindNativeFileHandleIdentity(handle, {
-            documentId: session.documentId,
-            sourceDigest: session.wasm.documentDigest,
-            useSourceDigest: false,
-          });
-        }
-      },
-    );
-    if (result === 'failed' || (result === 'skipped' && !kept)) failed += 1;
-    // 저장 뒤 버전 작업 공간이 저장 기준을 다 맞출 때까지 기다린다. 그래야 다시 열 때 바뀐 문서로 보이지 않는다.
-    if (result === 'saved') await session.versions?.whenIdle().catch(() => {});
-  }
-  return { failed };
-}
-
 async function initialize(): Promise<void> {
   void suppressDesktopServiceWorker();
   installDesktopWindowChrome();
-  await installLicenseGate(value => {
-    licenseReadOnly = value;
-    setDocumentReadOnly(documentReadOnly);
-  }, {
-    hasUnsavedWork: () => liveSessions.some((session) => session.documentState.isDirty()),
-    saveBeforeLock: saveOpenDocumentsBeforeLicenseLock,
-  });
+  void installLicenseGate();
   installDesktopDocumentState({
     subscribe: (update) => {
       desktopDocumentStateUpdate = update;
@@ -1936,7 +1865,7 @@ function installDocumentVersions(session: DocumentSession): DocumentVersionContr
     },
     worktreeHost: {
       ensureOwnership: (worktree) => ensureWorktreeOwnership(session, worktree),
-      canMutate: () => !licenseReadOnly && !documentReadOnly && !loadingWorktreeSessions.has(session)
+      canMutate: () => !documentReadOnly && !loadingWorktreeSessions.has(session)
         && (!session.worktree || session.worktreeWritable),
       // 라이선스 읽기 전용은 편집만 막는다. 파일에 저장된 내용을 기준으로 적는 일은 문서를 바꾸지 않는다.
       canRecordSaved: () => !documentReadOnly && !loadingWorktreeSessions.has(session)
@@ -3222,11 +3151,6 @@ function installDocumentHome(): void {
       if (!bridge) return Promise.reject(new Error('에이전트 허브에 연결되어 있지 않습니다.'));
       return bridge.fetchTemplateContent(template);
     },
-    canAddTemplate: () => {
-      if (!isLicenseViewerMode()) return true;
-      showLicenseRequiredPrompt('템플릿은 라이선스를 활성화한 뒤에 추가할 수 있어요.');
-      return false;
-    },
     addTemplate: async (file) => {
       const bridge = templateBridge();
       if (!bridge) throw new Error('에이전트 허브에 연결되어 있지 않습니다.');
@@ -3249,11 +3173,6 @@ function installDocumentHome(): void {
       save: (document) => { void unsavedDocumentStore.run(document, 'save'); },
     },
     createBlank: () => {
-      // 잠긴 동안 새 문서는 편집할 수 없으므로 만들지 않고 체험 끝 카드를 띄운다.
-      if (isLicenseViewerMode()) {
-        showLicenseRequiredPrompt('새 문서는 라이선스를 활성화한 뒤에 만들 수 있어요.');
-        return;
-      }
       dispatcher.dispatch('file:new-doc');
     },
     createFromTemplate: async (template) => {
@@ -3332,10 +3251,7 @@ function installDocumentHome(): void {
       eventBus.emit('settings:open', {
         fullscreen: true,
         from: 'home',
-        onOpen: () => {
-          documentHome?.hide();
-          if (isLicenseViewerMode()) showLockedSettings();
-        },
+        onOpen: () => documentHome?.hide(),
       });
     },
     newChat: () => { void startNoDocumentChat(); },
@@ -3351,10 +3267,6 @@ function installDocumentHome(): void {
  * 지금 채팅이 일하는 중이면 멈추지 않고 채팅을 하나 더 연다.
  */
 async function startNoDocumentChat(): Promise<void> {
-  if (isLicenseViewerMode()) {
-    showLicenseRequiredPrompt('채팅은 라이선스를 활성화한 뒤에 쓸 수 있어요.');
-    return;
-  }
   if (refuseWhileNavigating()) return;
   if (attachedSession.wasm.hasLoadedDocument()) {
     const moved = await runNavigation(async () => {
@@ -3385,10 +3297,6 @@ function installEmptyDocumentView(): void {
   const run = (kind: 'new' | 'pick'): void => {
     if (attachedSession.activeChat?.sidebar.isUnlinkedChat()) {
       void linkVisibleChatDocument({ kind });
-      return;
-    }
-    if (kind === 'new' && isLicenseViewerMode()) {
-      showLicenseRequiredPrompt('새 문서는 라이선스를 활성화한 뒤에 만들 수 있어요.');
       return;
     }
     dispatcher.dispatch(kind === 'new' ? 'file:new-doc' : 'file:open');
@@ -3425,39 +3333,9 @@ function installAppHomeButton(): void {
   }
 }
 
-/** 잠긴 설정 카드가 떠 있는지. 그때 홈은 페이드 없이 덮어, 뒤에서 설정을 거두는 모습이 비치지 않는다. */
-let lockedSettingsShown = false;
-
 /** 문서 홈을 창 전체에 연다. 편집기·사이드바(에이전트 전체 화면 포함)는 닫힐 때 그대로 돌아온다. */
 function openDocumentHome(options: { instant?: boolean } = {}): void {
-  documentHome?.show({ instant: options.instant === true || lockedSettingsShown });
-}
-
-/**
- * 라이선스가 잠긴 채 홈에서 설정을 열었다. 설정 화면은 흐리게 뒤에 깔리고, 그 위에 닫을 수 없는
- * 카드가 선다. 카드의 '홈으로'나 제목 막대의 홈 단추로 홈에 돌아가면 카드와 설정을 함께 내린다.
- * 활성화되면 게이트가 카드를 내리고 설정은 그대로 쓸 수 있다.
- */
-function showLockedSettings(): void {
-  const home = documentHome?.element;
-  const prompt = showLicenseLockedPrompt(() => openDocumentHome());
-  if (!prompt) return;
-  lockedSettingsShown = true;
-  const stop = (): void => {
-    lockedSettingsShown = false;
-    observer.disconnect();
-    unsubscribe();
-  };
-  const observer = new MutationObserver(() => {
-    if (!home || home.hidden) return;
-    stop();
-    prompt.dismiss();
-    eventBus.emit('settings:close-locked-backdrop');
-    // 홈은 설정을 거두기 전에 떴으므로, 거둔 뒤 돌아가기 대상을 다시 그린다.
-    documentHome?.show();
-  });
-  if (home) observer.observe(home, { attributes: true, attributeFilter: ['hidden'] });
-  const unsubscribe = onLicenseViewerModeChange((locked) => { if (!locked) stop(); });
+  documentHome?.show({ instant: options.instant === true });
 }
 
 /** 화면에 붙은 문서의 이름을 바꾼다 (제목 막대). 못 바꾸면 알리고 null. */
@@ -3893,10 +3771,6 @@ const documentSwitcherHost: DocumentSwitcherHost = {
       openDocumentHome();
       return;
     }
-    if (action === 'new' && isLicenseViewerMode()) {
-      showLicenseRequiredPrompt('새 문서는 라이선스를 활성화한 뒤에 만들 수 있어요.');
-      return;
-    }
     dispatcher.dispatch(action === 'new' ? 'file:new-doc' : 'file:open');
   },
   subscribe: (listener) => {
@@ -4097,7 +3971,6 @@ async function createDocumentForLink(
   target: Extract<ChatDocumentLinkTarget, { kind: 'new' }>,
   origin: ChatDocumentLinkRequest['origin'],
 ): Promise<void> {
-  if (isLicenseViewerMode()) throw linkError('LICENSE_READ_ONLY');
   if (origin === 'agent' && target.name) {
     const made = await createNamedNativeDocument({
       name: target.name,
@@ -4215,10 +4088,6 @@ const USER_LINK_FAILURES: Partial<Record<string, string>> = {
 
 /** 사용자 진입점의 연결. 실패는 짧게 알리고 null. */
 async function linkChatDocumentForUser(chat: ChatSession, target: ChatDocumentLinkTarget): Promise<ChatDocumentLinked | null> {
-  if (target.kind === 'new' && isLicenseViewerMode()) {
-    showLicenseRequiredPrompt('새 문서는 라이선스를 활성화한 뒤에 만들 수 있어요.');
-    return null;
-  }
   try {
     return await linkChatDocument(chat, { target, origin: 'user' });
   } catch (error) {
@@ -6562,8 +6431,6 @@ function shouldOpenInNewSession(): boolean {
     tabs: canOpenDocumentTab(),
     busy: isDocumentSessionBusy(attachedSession),
     managedWorktree: isManagedWorktree(),
-    // 라이선스 읽기 전용에서는 바뀐 문서를 저장할 수 없다. 묻거나 버리지 않고 뒤에 두어 복구본을 지킨다.
-    readOnlyDirty: licenseReadOnly && attachedSession.documentState.isDirty(),
   });
 }
 
@@ -6815,5 +6682,5 @@ void initPromise.then(() => {
 }, () => {});
 // 자동 버그 수정 소개(데스크톱만). 처음 설정을 마치고 아직 답하지 않은 사람에게 한 번 묻는다.
 void initPromise.then(() => {
-  startAutofixIntro({ whenReady: afterBootScreen, isBlocked: () => licenseReadOnly || isLicenseViewerMode() });
+  startAutofixIntro({ whenReady: afterBootScreen });
 }, () => {});

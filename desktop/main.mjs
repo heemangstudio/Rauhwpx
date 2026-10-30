@@ -131,7 +131,7 @@ import {
 import { reportUniqueInstall, uniqueInstallStatePath } from './unique-install.mjs';
 import { createLicenseClient, DEFAULT_LICENSE_API_BASE } from './license-client.mjs';
 import { PRODUCTION_LICENSE_PUBLIC_KEYS } from './license-lease.mjs';
-import { createLicenseManager, licenseStatePath, TRIAL_DURATION_MS } from './license-manager.mjs';
+import { createLicenseManager, licenseStatePath } from './license-manager.mjs';
 import { installLicenseHost } from './license-host.mjs';
 import { createGiftClient } from './gift-client.mjs';
 import { createGiftManager } from './gift-manager.mjs';
@@ -1114,8 +1114,7 @@ function configureAutoUpdater({ restartManifest }) {
 }
 
 function installMenu() {
-  appMenu = installAppMenu({
-    agentEnabled: () => licenseAllowsAgent,
+  installAppMenu({
     checkForUpdates: () => {
       if (!app.isPackaged && !fakeUpdateVersion) {
         void shell.openExternal(RELEASES_URL);
@@ -1511,27 +1510,14 @@ ipcMain.handle('desktop:finish-rebrand-import', (event, token, outcome) => {
   return rebrandImport.finish(token, outcome);
 });
 
-// ── 체험·라이선스 ─────────────────────────────────────────────────────────
-// 출시 빌드만 막는다. 소스에서 실행하면 HAMA_LICENSE_GATE=on 일 때만 막고, 그때만
+// ── 라이선스 ───────────────────────────────────────────────────────────
+// 출시 빌드만 키 서버에 묻는다. 소스에서 실행하면 HAMA_LICENSE_GATE=on 일 때만 묻고, 그때만
 // HAMA_LICENSE_API_BASE·HAMA_LICENSE_DEV_PUBLIC_KEY(kid:base64)로 시험용 키 서버를 쓸 수 있다.
 function licensePublicKeys() {
   const dev = !app.isPackaged ? String(process.env.HAMA_LICENSE_DEV_PUBLIC_KEY ?? '') : '';
   const split = dev.indexOf(':');
   if (split <= 0) return PRODUCTION_LICENSE_PUBLIC_KEYS;
   return { ...PRODUCTION_LICENSE_PUBLIC_KEYS, [dev.slice(0, split)]: dev.slice(split + 1) };
-}
-// 라이선스가 읽기 전용이면 앱은 문서 보기 전용이다. 메뉴의 에이전트 항목도 끈다.
-let licenseAllowsAgent = true;
-let appMenu = null;
-function noteLicenseStatus(status) {
-  licenseAllowsAgent = status?.canEdit !== false;
-  appMenu?.refresh();
-}
-/** 소스 실행에서만 HAMA_LICENSE_DEV_TRIAL_MS 로 체험 길이를 줄여 시험한다. 출시 빌드는 늘 3일이다. */
-function licenseTrialDurationMs() {
-  if (app.isPackaged) return TRIAL_DURATION_MS;
-  const value = Number(process.env.HAMA_LICENSE_DEV_TRIAL_MS);
-  return Number.isSafeInteger(value) && value > 0 ? value : TRIAL_DURATION_MS;
 }
 const licenseApiBase = (!app.isPackaged && process.env.HAMA_LICENSE_API_BASE) || DEFAULT_LICENSE_API_BASE;
 const isTrustedStudioEvent = (event) => {
@@ -1556,7 +1542,6 @@ const giftManager = createGiftManager({
 const giftHost = installGiftHost({ ipcMain, manager: giftManager, isTrustedStudioEvent, studioWebContents });
 const licenseManager = createLicenseManager({
   statePath: licenseStatePath(app.getPath('userData')),
-  trialDurationMs: licenseTrialDurationMs(),
   client: createLicenseClient({ baseUrl: licenseApiBase }),
   publicKeys: licensePublicKeys(),
   existingInstallId: async () => {
@@ -1568,7 +1553,6 @@ const licenseManager = createLicenseManager({
   platform: process.platform,
   enforce: app.isPackaged || process.env.HAMA_LICENSE_GATE === 'on',
   onChange: (status) => {
-    noteLicenseStatus(status);
     licenseHost.broadcast(status);
     void giftManager.licenseChanged().catch((error) => console.warn('[hamaeditor] gift refresh failed:', error));
   },
@@ -1932,12 +1916,6 @@ ipcMain.handle('desktop:open-native-document-at-path', async (event, filePath) =
 });
 ipcMain.handle('desktop:create-named-native-document', async (event, payload = {}) => {
   const session = sessionForEvent(event);
-  try {
-    await licenseHost.guardSave();
-  } catch (error) {
-    if (error?.code === 'LICENSE_READ_ONLY') return { ok: false, code: 'LICENSE_READ_ONLY' };
-    throw error;
-  }
   const result = await createAgentDocument(session.sessionId, {
     name: payload?.name,
     folder: payload?.folder,
@@ -1953,8 +1931,6 @@ ipcMain.handle('desktop:create-named-native-document', async (event, payload = {
 });
 ipcMain.handle('desktop:pick-native-save-file', async (event, options = {}) => {
   const session = sessionForEvent(event);
-  // 체험이 끝났으면 저장 위치를 고르기 전에 막고 활성화 창을 띄운다.
-  await licenseHost.guardSave();
   const window = BrowserWindow.fromWebContents(event.sender);
   if (!window) throw new Error('Save picker sender window is unavailable');
   const extension = String(options.extension ?? '').toLowerCase();
@@ -2060,11 +2036,7 @@ ipcMain.handle('desktop:native-file-validate-save', (event, handleId, identity) 
 });
 ipcMain.handle('desktop:native-file-write', async (event, handleId, bytes, identity) => {
   const session = sessionForEvent(event);
-  // 읽기 전용(체험 끝·해지·오프라인 7일 초과)이면 쓰지 않는다. 문서 열기와 보기는 막지 않는다.
-  const written = await licenseHost.save(
-    () => nativeFiles.write(session.sessionId, handleId, bytes, identity, documentLeases),
-    { sender: event.sender },
-  );
+  const written = await nativeFiles.write(session.sessionId, handleId, bytes, identity, documentLeases);
   noteRecentDocument(session.sessionId, handleId);
   // 저장한 내용 표시(크기·sha256)를 북마크에 남겨 옮겨진 파일을 다음 실행에도 알아본다.
   void persistNativeBookmarks().catch(() => {});
@@ -2514,11 +2486,10 @@ if (!hasSingleInstanceLock) {
       root: devUrl ? null : studioDist(),
       systemFonts: { fonts: systemFonts, key: systemFontKey, allowOrigin: devOrigin },
     });
-    // 첫 창보다 먼저 체험 시작 시각을 남긴다(로컬 파일만 읽으므로 빠르다). 서버 확인은 기다리지 않는다.
+    // 라이선스 상태 파일은 로컬만 읽으므로 빠르다. 서버 확인은 기다리지 않는다.
     await licenseManager.load().catch((error) => {
       console.warn('[hamaeditor] license state failed to load:', error);
     });
-    await licenseManager.status().then(noteLicenseStatus, () => {});
     licenseManager.start();
     desktopReady = true;
     let failedLaunches = 0;
@@ -2545,9 +2516,6 @@ if (!hasSingleInstanceLock) {
       });
     }
     initialLaunchesOpened = true;
-    void licenseHost.showIfReadOnly().catch((error) => {
-      console.warn('[hamaeditor] license status failed:', error);
-    });
     if (failedLaunches > 0 && sessions.windows().length === 0) {
       app.quit();
       return;

@@ -101,7 +101,7 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
   logDiagnostics: (entries) => {
     if (Array.isArray(entries) && entries.length > 0) ipcRenderer.send('desktop:diagnostic-log', entries);
   },
-  // 체험·라이선스. 활성화와 비활성화는 메인이 키 서버와 주고받고, 렌더러는 상태만 받는다.
+  // 라이선스. 활성화와 비활성화는 메인이 키 서버와 주고받고, 렌더러는 상태만 받는다.
   license: {
     getStatus: () => ipcRenderer.invoke('license:status'),
     checkNow: () => ipcRenderer.invoke('license:check'),
@@ -112,8 +112,6 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
     openPaymentFix: () => ipcRenderer.invoke('license:open-payment-fix'),
     openSupport: () => ipcRenderer.invoke('license:open-support'),
     copyKey: () => ipcRenderer.invoke('license:copy-key'),
-    // 체험이 끝날 때 열린 문서를 자동 저장하려고 한 번 유예를 받는다.
-    beginExpirySave: () => ipcRenderer.invoke('license:begin-expiry-save'),
     onChange: (callback) => {
       const listener = (_event, status) => callback(status);
       ipcRenderer.on('license:changed', listener);

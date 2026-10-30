@@ -165,8 +165,7 @@ export type NativeAgentDocumentOpenFailure =
 export type NativeAgentDocumentCreateFailure =
   | 'INVALID_NAME'
   | 'INVALID_FOLDER'
-  | 'WRITE_FAILED'
-  | 'LICENSE_READ_ONLY';
+  | 'WRITE_FAILED';
 
 type NativeAgentDocumentIpcResult<Code extends string> =
   | (NativeFileHandleDescriptor & { ok: true; path: string; bytes?: Uint8Array })
@@ -1227,7 +1226,7 @@ const AGENT_OPEN_FAILURES: ReadonlySet<unknown> = new Set<NativeAgentDocumentOpe
   'DOC_OPEN_ELSEWHERE', 'NOT_FOUND', 'UNREADABLE', 'TOO_LARGE', 'INVALID_PATH',
 ]);
 const AGENT_CREATE_FAILURES: ReadonlySet<unknown> = new Set<NativeAgentDocumentCreateFailure>([
-  'INVALID_NAME', 'INVALID_FOLDER', 'WRITE_FAILED', 'LICENSE_READ_ONLY',
+  'INVALID_NAME', 'INVALID_FOLDER', 'WRITE_FAILED',
 ]);
 
 function nativeAgentDocumentResult<Code extends string>(

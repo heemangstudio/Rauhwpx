@@ -361,12 +361,6 @@ import { desktopGiftApi, type DesktopGiftApi } from '../special-event/gift.ts';
 import type { DesktopLicenseApi } from './settings-license.ts';
 import { agentModeFor, agentModeTarget, planTodoTitle, type AgentMode } from '../../agent/types.ts';
 import { formatThreadTranscript } from '../issue-report/transcript.ts';
-import {
-  isLicenseViewerMode,
-  noteAgentOpenBeforeLock,
-  onLicenseViewerModeChange,
-  takeAgentOpenBeforeLock,
-} from '../license-viewer-mode.ts';
 import './sidebar-button-modern.css';
 
 export interface AgentSidebarDeps {
@@ -497,7 +491,6 @@ export interface AgentSidebarDeps {
   reportIssue?: () => void;
 }
 
-const LICENSE_VIEWER_REASON = '라이선스를 활성화하면 에이전트를 쓸 수 있어요.';
 
 /** 떼기 시작한 채팅 — 저장소의 id 와 뗄 문서. draft 면 저장하지 않은 초안이다. */
 /** 채팅을 다른 사이드바로 옮길 때 넘기는 입력기 상태 — 쓰던 글·첨부·멘션과 초점이 있던 자리. */
@@ -1335,11 +1328,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   let settingsExitsFullscreenOnHome = false;
   /** 설정은 집중 화면에만 있다 — 좁은 사이드바에서 열며 집중 화면으로 넓혔으면, 닫을 때 사이드바로 돌아간다. */
   let settingsExitsFullscreen = false;
-  /**
-   * 라이선스가 잠긴 채 홈에서 설정을 누르면, 설정 화면을 잠긴 카드 뒤에 흐리게 깔아 둔다.
-   * 이 동안만 접기·집중 화면 잠금을 비켜 가고, 사이드바는 inert 로 두어 조작은 닿지 않는다.
-   */
-  let lockedSettingsBackdrop = false;
   let versionsPanelOpen = false;
   let deferredVersionsOpenTimer: number | null = null;
   /** 에이전트 집중 모드 — 스레드 레일과 대화 무대로 문서를 덮는다. */
@@ -1765,11 +1753,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
 
   function setCollapsed(collapsed: boolean, opts?: { recenter?: boolean }): void {
-    // 라이선스가 읽기 전용이면 문서 보기 전용이다. 어느 길로 와도 펼치지 않는다.
-    if (isLicenseViewerMode() && !lockedSettingsBackdrop) collapsed = true;
     // 접힌 사이드바 안의 시트는 보이지 않으므로 취소로 닫고, 포커스·키가 닿지 않게 한다.
     if (collapsed && active) dismissOpenSheets();
-    root.inert = collapsed || lockedSettingsBackdrop;
+    root.inert = collapsed;
     root.classList.toggle('ag-collapsed', collapsed);
     syncWorkbenchVisibility();
     setPageClass('ag-sidebar-open', !collapsed);
@@ -6103,7 +6089,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   /** `then` 은 새 배치가 DOM 에 반영된 뒤에 부른다 — 교차 페이드는
       다음 프레임에 배치를 바꾸므로, 바뀐 배치에 기대는 후속 동작은 여기로 넘긴다. */
   function setFullscreen(on: boolean, opts?: { then?: () => void; instant?: boolean }): void {
-    if (on && isLicenseViewerMode() && !lockedSettingsBackdrop) return;
     if (fullscreen === on) {
       opts?.then?.();
       return;
@@ -7646,32 +7631,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
   setCollapsed(false, { recenter: false });
 
-  /* 라이선스 읽기 전용: 에이전트 단추를 끄고, 펼쳐 있던 사이드바·집중 화면을 접는다.
-     대화는 그대로 둔다. 펼쳐 있었는지는 창 단위로 적어 두어, 잠긴 동안 문서를 바꿨어도
-     다시 편집할 수 있게 되면 그때 화면에 붙은 사이드바가 펼친다. */
-  function syncLicenseLockedTab(locked: boolean): void {
-    collapseTab.disabled = locked;
-    collapseTab.setAttribute('aria-disabled', locked ? 'true' : 'false');
-  }
-  function applyLicenseViewerMode(locked: boolean): void {
-    syncLicenseLockedTab(locked);
-    // 잠긴 카드 뒤에 깔아 둔 설정은 활성화되면 그대로 쓸 수 있는 설정이 된다.
-    if (!locked && lockedSettingsBackdrop) {
-      lockedSettingsBackdrop = false;
-      root.inert = false;
-      return;
-    }
-    if (!active) return;
-    if (locked) {
-      noteAgentOpenBeforeLock(fullscreen || !root.classList.contains('ag-collapsed'));
-      if (fullscreen) setFullscreen(false, { then: () => setCollapsed(true) });
-      else setCollapsed(true);
-      return;
-    }
-    if (takeAgentOpenBeforeLock()) setCollapsed(false);
-  }
-  syncLicenseLockedTab(isLicenseViewerMode());
-  const unsubLicenseViewerMode = onLicenseViewerModeChange(applyLicenseViewerMode);
 
   // ── 배치: #editor-area ↔ #status-bar 사이에 맞춘다 ────
   function updateComposerCompactLayout(): void {
@@ -13714,18 +13673,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
           setCollapsed(false);
           openConfiguredVersionControl();
         }),
-        eventBus.on('settings:close-locked-backdrop', () => {
-          if (!lockedSettingsBackdrop) return;
-          closeSettingsPage();
-          chatPage.setAttribute('aria-hidden', 'false');
-          setFullscreen(false, {
-            instant: true,
-            then: () => {
-              lockedSettingsBackdrop = false;
-              setCollapsed(true);
-            },
-          });
-        }),
         eventBus.on('settings:open', (payload) => {
           const request = payload as {
             destination?: unknown;
@@ -13735,11 +13682,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
           } | undefined;
           const requested = request?.destination;
           const destination = isSettingsDestination(requested) ? requested : undefined;
-          // 잠긴 동안에는 홈에서 연 설정만 잠긴 카드의 배경으로 띄운다.
-          if (isLicenseViewerMode()) {
-            if (request?.from !== 'home') return;
-            lockedSettingsBackdrop = true;
-          }
           setCollapsed(false);
           const wasFullscreen = fullscreen;
           const open = (): void => {
@@ -13858,7 +13800,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   /** 선택 의견은 로컬에 남기고 입력기에 첨부한다. 실제 전송은 일반 보내기에서만 한다. */
   async function sendInlinePrompt(submission: InlinePromptSubmission): Promise<Awaited<InlinePromptSendResponse>> {
-    if (isLicenseViewerMode()) return { ok: false, reason: LICENSE_VIEWER_REASON };
     const prompt = submission.prompt.trim();
     if (!prompt) return { ok: false, reason: '의견 입력 필요' };
     if (submission.signal?.aborted) return { ok: false, reason: '선택 자료 저장이 취소되었습니다.' };
@@ -13880,7 +13821,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
 
   function queueCaptureDraft(draft: DocumentCaptureDraft): Awaited<InlinePromptSendResponse> {
-    if (isLicenseViewerMode()) return { ok: false, reason: LICENSE_VIEWER_REASON };
     if (!captureInbox.queue(draft)) return { ok: false, reason: '저장한 자료는 해당 문서의 입력기에서 확인할 수 있습니다.' };
     setCollapsed(false);
     if (threadsPanelOpen) setThreadsPanelOpen(false);
@@ -13921,7 +13861,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       environmentPanelOpen = layout.environmentPanelOpen;
       desktopEnvironmentPanelOpen = layout.desktopEnvironmentPanelOpen;
     }
-    const nextFullscreen = !isLicenseViewerMode() && (layout?.fullscreen ?? fullscreen);
+    const nextFullscreen = layout?.fullscreen ?? fullscreen;
     const fullscreenChanged = nextFullscreen !== fullscreen || fullscreenLayoutOn !== nextFullscreen;
     if (fullscreenChanged) {
       fullscreen = nextFullscreen;
@@ -14244,7 +14184,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       window.removeEventListener('focus', scheduleSeenCheck);
       document.removeEventListener('visibilitychange', scheduleSeenCheck);
       unsubChatModeLock();
-      unsubLicenseViewerMode();
       unsubTurnRestore();
       unsubBridge();
       unsubThreads();
