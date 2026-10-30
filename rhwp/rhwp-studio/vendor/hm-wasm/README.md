@@ -1,6 +1,6 @@
 # hm-wasm
 
-Generated browser bindings and WASM from HeemangEngine `feat/notes-parity` at `25310d0` (2026-10-31): `rc/combined-20261028`
+Generated browser bindings and WASM from HeemangEngine `feat/notes-parity` at `ab0b54a` (2026-10-31): `rc/combined-20261028`
 at `8d80eb0` plus footnote and endnote parity with Hancom Office 2022 (note insertion, numbering, note shapes, clipboard,
 page-local numbers, HWP/HWPX/HML round trips, and note layout and painting). `8d80eb0` changes only tests and documents
 over `1a54900`, which over the
@@ -16,7 +16,7 @@ SHA-256 of the four files:
 
 | File | Bytes | SHA-256 |
 | --- | ---: | --- |
-| `hm_wasm_bg.wasm` | 7,767,290 | `a2e3355e64469eb2ec9138d5a012ec11c918f9f58e8d4e760fcf72316c76a1de` |
+| `hm_wasm_bg.wasm` | 7,774,230 | `fc5393fc4b17e3ead7571b6f54f2014384cb33461a82feac526d79be2fb8958f` |
 | `hm_wasm.js` | 73,254 | `2c860bee0d93549badb95a81433bcb8a42a8afb95e9688da018f91e3776c8110` |
 | `hm_wasm.d.ts` | 56,890 | `02a5818885f599191f88d810731085496eff3aee0bb312dbd632e4b03f2391a4` |
 | `hm_wasm_bg.wasm.d.ts` | 9,178 | `4dd860b1e9ac983d76fdad7265f36a420b0f2d07a65bebc0a16c12a6f2c77bd4` |
