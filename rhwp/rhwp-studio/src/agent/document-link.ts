@@ -56,7 +56,6 @@ export type ChatDocumentLinkCode =
   | 'UNREADABLE'
   | 'TOO_LARGE'
   | 'WRITE_FAILED'
-  | 'LICENSE_READ_ONLY'
   | 'DESKTOP_ONLY'
   | 'CANCELLED'
   | 'LINK_UNAVAILABLE'
@@ -86,7 +85,6 @@ const LINK_ERROR_MESSAGES: Readonly<Record<ChatDocumentLinkCode, string>> = {
   UNREADABLE: 'The file could not be read as a document.',
   TOO_LARGE: 'The file is too large to open.',
   WRITE_FAILED: 'The new document file could not be written.',
-  LICENSE_READ_ONLY: 'Documents cannot be created or opened for editing while the app is read-only.',
   DESKTOP_ONLY: 'Opening by path is available in the desktop app only.',
   CANCELLED: 'Linking was cancelled.',
   LINK_UNAVAILABLE: 'The chat is not available to link a document right now.',

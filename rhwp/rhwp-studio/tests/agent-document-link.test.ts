@@ -363,7 +363,7 @@ function chat(state: { unlinked: boolean; active: boolean; busy: boolean; thread
   };
 }
 
-const idle = { linking: false, tabs: true, busy: false, managedWorktree: false, readOnlyDirty: false };
+const idle = { linking: false, tabs: true, busy: false, managedWorktree: false };
 
 test('home and File opens leave a working document-less chat in its own session', () => {
   const empty = (chats: RoutingChat[]) => ({ wasm: { hasLoadedDocument: () => false }, chats });
@@ -380,7 +380,6 @@ test('home and File opens leave a working document-less chat in its own session'
   assert.equal(opensInNewSession(loaded, noTabs), false, 'without room for a tab an idle document is replaced in place');
   assert.equal(opensInNewSession(loaded, { ...noTabs, busy: true }), true, 'a working document still stays');
   assert.equal(opensInNewSession(loaded, { ...noTabs, managedWorktree: true }), true, 'a managed worktree still stays');
-  assert.equal(opensInNewSession(loaded, { ...noTabs, readOnlyDirty: true }), true, 'an unsavable change still stays');
 });
 
 test('an old document-less chat continues without looking for a document to move to', () => {

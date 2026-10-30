@@ -41,7 +41,7 @@ export const HIPPO_LINES = {
   missing: '한컴 글꼴이 안 보여요. 한컴오피스를 설치하면 알아서 찾아요.',
   missingWithFolder: '한컴 글꼴이 안 보여요. 한컴오피스를 설치하거나 글꼴 폴더를 알려 주세요.',
   done: '설정이 완료되었어요!',
-  license: '체험이 끝나도 계속 쓰려면 라이선스 키가 필요해요.',
+  license: '편집은 무료예요. Pro 키가 있으면 여기에 넣어 주세요.',
   licenseChecking: '키를 확인하는 중이에요…',
   licensed: '라이선스가 활성화됐어요!',
 } as const;

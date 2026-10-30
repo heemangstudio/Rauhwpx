@@ -10,7 +10,7 @@ import { createServer } from 'vite';
 import { fileURLToPath } from 'node:url';
 import { browserExecutable, browserLaunchArgs } from './browser-support.ts';
 
-test('the trial pill leaves room for the centered document title', { timeout: 30_000 }, async () => {
+test('the license pill leaves room for the centered document title', { timeout: 30_000 }, async () => {
   const server = await createServer({
     root: fileURLToPath(new URL('../', import.meta.url)),
     configFile: false,
@@ -47,23 +47,24 @@ test('the trial pill leaves room for the centered document title', { timeout: 30
       (window as any).rhwpDesktop = {
         license: {
           getStatus: async () => ({
-            state: 'trial',
-            canEdit: true,
-            readOnly: false,
-            deviceId: '00000000-0000-4000-8000-000000000000',
-            trial: { startedAt: now - 60_000, endsAt: now + 60 * 60 * 1000, active: true },
-            license: null,
-            offline: false,
-            pricingUrl: 'https://example.test/pricing',
+            state: 'lease_expired',
+            paid: false,
+            license: {
+              maskedKey: 'HAMA-…AB12',
+              tier: 'paid',
+              leaseExpiresAt: now - 60_000,
+              lastCheckAt: now - 8 * 24 * 60 * 60 * 1000,
+              lastError: null,
+            },
+            offline: true,
           }),
           onChange: () => () => {},
           openActivation: () => {},
           openPricing: () => {},
-          beginExpirySave: async () => {},
         },
       };
       const { installLicenseGate } = await import('../src/ui/license-gate.ts');
-      await installLicenseGate(() => {});
+      await installLicenseGate();
     });
     await page.waitForSelector('#menu-bar .license-pill');
     // ResizeObserver 는 다음 프레임에 돈다. 알약 폭이 자리를 잡은 뒤에 잰다.

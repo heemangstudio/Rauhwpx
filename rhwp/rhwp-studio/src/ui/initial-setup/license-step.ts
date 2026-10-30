@@ -1,25 +1,17 @@
 /**
- * 처음 설정의 마지막 장: 라이선스 구매와 키 넣기.
+ * 처음 설정의 마지막 장: Pro 구매와 키 넣기. 편집기는 무료라 '나중에'로 넘어갈 수 있다.
  *
  * 데스크톱(macOS·Windows)에서 아직 키를 넣지 않았을 때만 뜬다. 키는 이 장에서 바로 활성화한다
  * (메인의 license:activate). 구매 단추는 구매 페이지를 열고, 돌아와 키를 붙여 넣으면 곧바로 확인한다.
  * 설명은 하마가 하고, 화면에는 구매 칸과 키 칸만 둔다.
  */
 import type { DesktopLicenseApi, LicenseStatus } from '../agent-sidebar/settings-license.ts';
-import { licenseTermText, looksLikeFullKey, trialTimeLeft } from '../agent-sidebar/settings-license.ts';
+import { licenseTermText, looksLikeFullKey } from '../agent-sidebar/settings-license.ts';
 import { createIcon } from '../agent-sidebar/icons.ts';
 
 /** 키를 넣지 않은 새 사용자만. 이미 키가 있거나 라이선스를 보지 않는 빌드면 장을 넣지 않는다. */
 export function needsLicenseStep(status: LicenseStatus | null): boolean {
-  return status?.state === 'trial' || status?.state === 'trial_expired' || status?.state === 'needs_activation';
-}
-
-/** 하마가 이 장에서 하는 말. */
-export function licenseLine(status: LicenseStatus | null, now = Date.now()): string {
-  if (status?.state === 'trial' && status.trial.endsAt > now) {
-    return `체험이 ${trialTimeLeft(status.trial.endsAt, now)} 남았어요. 키를 넣으면 계속 쓸 수 있어요.`;
-  }
-  return '라이선스 키를 넣으면 바로 편집할 수 있어요.';
+  return status?.state === 'free' || status?.state === 'needs_activation';
 }
 
 /* ── 픽셀 열쇠 ─────────────────────────────────────────
@@ -108,8 +100,8 @@ export function createLicenseStep(deps: LicenseStepDeps): LicenseStepUi {
   const art = el('span', 'rhwp-setup-key');
   art.append(pixelKey());
   const copy = el('span', 'rhwp-setup-license-copy');
-  const title = el('span', 'rhwp-setup-license-title', '라이선스 구매');
-  const detail = el('span', 'rhwp-setup-license-detail', '연 ₩9,900');
+  const title = el('span', 'rhwp-setup-license-title', 'Pro 구매');
+  const detail = el('span', 'rhwp-setup-license-detail', '월 ₩3,900 · 연 ₩39,000');
   copy.append(title, detail);
   const go = el('span', 'rhwp-setup-license-go');
   go.append(createIcon('external'));
@@ -138,8 +130,8 @@ export function createLicenseStep(deps: LicenseStepDeps): LicenseStepUi {
   function render(): void {
     panel.dataset.state = licensed ? 'licensed' : busy ? 'checking' : 'idle';
     buy.disabled = licensed;
-    buy.setAttribute('aria-label', licensed ? '정품 라이선스 활성화됨' : '라이선스 구매, 연 9,900원');
-    title.textContent = licensed ? '정품 라이선스' : '라이선스 구매';
+    buy.setAttribute('aria-label', licensed ? 'Pro 활성화됨' : 'Pro 구매, 월 3,900원, 연 39,000원');
+    title.textContent = licensed ? 'Pro' : 'Pro 구매';
     form.hidden = licensed;
     input.disabled = busy;
     redeem.disabled = busy || !input.value.trim();

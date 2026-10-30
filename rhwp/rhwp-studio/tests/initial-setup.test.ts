@@ -165,7 +165,7 @@ test('자동 버그 수정 단계는 데스크톱에서만 맨 끝에 넣는다'
 
 test('라이선스 장은 키를 넣지 않은 데스크톱 사용자에게만 자동 버그 수정 앞에 뜬다', () => {
   const status = (state: LicenseStatus['state']) => ({ state } as LicenseStatus);
-  for (const state of ['trial', 'trial_expired', 'needs_activation'] as const) assert.equal(needsLicenseStep(status(state)), true);
+  for (const state of ['free', 'needs_activation'] as const) assert.equal(needsLicenseStep(status(state)), true);
   for (const state of ['licensed', 'unenforced', 'lease_expired', 'revoked', 'expired'] as const) assert.equal(needsLicenseStep(status(state)), false);
   // 웹 빌드처럼 라이선스 API 가 없으면 장이 없다.
   assert.equal(needsLicenseStep(null), false);

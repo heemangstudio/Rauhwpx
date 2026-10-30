@@ -10,6 +10,9 @@
 // 문서 기억은 Rau-0.1 만 쓴다 (에이전트는 읽기만, 사용자는 문서 기억 시트에서). 한 턴의 학습 결과는
 // taste-learned 프레임 하나로 채팅의 "Rau-0.1 N가지 배움" 표시가 된다. 표시는 store 의 changes 를 품어 허브가 다시 떠도 되돌린다.
 // 여러 문서에서 같은 주제의 사용자 취향 후보가 생기면 AGENTS.md 한 줄을 제안한다(확인 카드).
+//
+// 공급자를 고르지 않았고(자동) 데스크톱 라이선스가 있으면 호스팅 Rau(Pro, routeInfo.hosted)를 먼저 쓴다.
+// Pro 가 아니라는 답(rau_requires_pro)이면 rau-upgrade 프레임을 한 번 보내고 내 계정 경로로 넘어간다.
 import crypto from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -591,7 +594,8 @@ export function createTasteLearner({
     let chosen = {};
     try { chosen = settings() ?? {}; } catch {}
     const candidates = tasteCandidates(routeInfo, chosen);
-    if (!candidates.some((candidate) => candidate.ready)) {
+    const hosted = (!chosen.provider || chosen.provider === 'auto') && routeInfo.hosted?.usable?.() === true ? routeInfo.hosted : null;
+    if (!hosted && !candidates.some((candidate) => candidate.ready)) {
       log(`${RAU_TASTE_NAME}: skipped ${input.kind} run, no ${chosen.provider && chosen.provider !== 'auto' ? `${chosen.provider} ` : ''}learner route is ready`);
       return empty;
     }
@@ -622,9 +626,10 @@ export function createTasteLearner({
     const controller = new AbortController();
     controllers.add(controller);
     const started = now();
-    let result;
+    let result = null;
     try {
-      result = await runOneShot({
+      if (hosted) result = await learnHosted(hosted, prompt, input);
+      if (!result && candidates.some((candidate) => candidate.ready)) result = await runOneShot({
         prompt,
         candidates,
         parse: parseTasteOutput,
@@ -663,6 +668,33 @@ export function createTasteLearner({
     const applied = await applyOps(input.key, ops, source);
     if (applied.changes.length > 0) changed(input.documentId, input.key, applied.revision);
     return { changes: applied.changes, provider: result.provider, model: result.model };
+  }
+
+  /** 호스팅 Rau 에 묻는다. 쓸 수 없거나 출력이 틀리면 null(내 계정 경로로 넘어간다). */
+  async function learnHosted(hosted, prompt, input) {
+    let answer;
+    try { answer = await hosted.learn(prompt); } catch (error) { answer = { ok: false, code: error?.code ?? 'server' }; }
+    if (answer?.upgrade) {
+      const frame = {
+        v: 1,
+        type: 'rau-upgrade',
+        threadId: input.threadId ?? null,
+        documentId: input.documentId,
+        reason: answer.upgrade.reason,
+        upgradeUrl: answer.upgrade.upgradeUrl ?? null,
+      };
+      try { emit(frame); } catch (error) { log(`${RAU_TASTE_NAME}: emit failed: ${error?.message ?? error}`); }
+    }
+    if (!answer?.ok) {
+      log(`${RAU_TASTE_NAME}: hosted run skipped (${answer?.code ?? 'server'})`);
+      return null;
+    }
+    const value = parseTasteOutput(answer.text);
+    if (value === null) {
+      log(`${RAU_TASTE_NAME}: hosted run returned no valid JSON`);
+      return null;
+    }
+    return { value, provider: 'rau', model: answer.model };
   }
 
   /** 한 번에 적용하고, 실패하면(가득 참·충돌) 하나씩 적용해 되는 것만 남긴다. */
