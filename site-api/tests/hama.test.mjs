@@ -174,7 +174,7 @@ test('service: status shape, idempotent recording across a restart, usage log an
     models: {
       default: 'anthropic/claude-haiku-5.5',
       claude: ['anthropic/claude-haiku-5.5'],
-      cheap: ['deepseek/deepseek-v4.1-flash', 'qwen/qwen3.8-flash'],
+      cheap: ['deepseek/deepseek-v4.1-flash'],
       maxOutputTokens: 16000,
     },
     endpoints: { anthropic: '/v1/hama/anthropic', openai: '/v1/hama/openrouter' },

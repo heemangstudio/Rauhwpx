@@ -6,7 +6,7 @@ import type { HamaAvailability, HamaCap, HamaCapWindow, HamaStatus, PiModelConfi
 
 export const HAMA_CLAUDE_MODEL = 'anthropic/claude-haiku-5.5';
 export const HAMA_CAPS: readonly HamaCap[] = ['cap_5h', 'cap_week', 'cap_month'];
-const EFFORTS = new Set(['low', 'medium', 'high']);
+const EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
 
 function time(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null;
@@ -38,7 +38,7 @@ function model(value: unknown): PiModelConfig | null {
   if (id.startsWith('anthropic/') && id !== HAMA_CLAUDE_MODEL) return null;
   const reasoning = src['reasoning'] === true;
   const efforts = reasoning && Array.isArray(src['efforts'])
-    ? src['efforts'].filter((effort): effort is string => typeof effort === 'string' && EFFORTS.has(effort))
+    ? src['efforts'].filter((effort): effort is string => typeof effort === 'string' && EFFORTS.has(effort) && !(id === HAMA_CLAUDE_MODEL && effort === 'max'))
     : [];
   const pricing = (src['pricing'] ?? {}) as Record<string, unknown>;
   return {

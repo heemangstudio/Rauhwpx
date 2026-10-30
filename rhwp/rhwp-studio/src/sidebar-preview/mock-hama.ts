@@ -21,16 +21,15 @@ const model = (id: string, name: string, reasoning: boolean, completion: number)
   name,
   reasoning,
   supportsImages: reasoning,
-  efforts: reasoning ? ['low', 'medium', 'high'] : [],
-  defaultEffort: reasoning ? 'medium' : '',
+  efforts: id.startsWith('anthropic/') ? ['low', 'medium', 'high', 'xhigh'] : ['low', 'high', 'max'],
+  defaultEffort: id.startsWith('anthropic/') ? 'medium' : 'high',
   contextLength: reasoning ? 200_000 : 128_000,
   pricing: { prompt: completion / 5, completion },
 });
 
 export const MOCK_HAMA_MODELS: readonly PiModelConfig[] = [
-  model('anthropic/claude-haiku-5.5', 'Claude Haiku 5.5', true, 0.0000005),
-  model('deepseek/deepseek-v4.1-flash', 'DeepSeek V4.1 Flash', false, 0.0000004),
-  model('qwen/qwen3.8-flash', 'Qwen3.8 Flash', false, 0.0000003),
+  model('anthropic/claude-haiku-5.5', 'Haiku 5.5', true, 0.0000005),
+  model('deepseek/deepseek-v4.1-flash', 'DeepSeek V4.1 Flash', true, 0.0000004),
 ];
 
 const CAP_OF: Partial<Record<MockHamaMode, HamaCap>> = { cap5h: 'cap_5h', capweek: 'cap_week', capmonth: 'cap_month' };

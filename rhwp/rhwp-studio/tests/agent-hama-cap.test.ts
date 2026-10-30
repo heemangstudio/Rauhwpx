@@ -64,7 +64,7 @@ test('Hama is connected only for an active plan; not enrolled (Pro included) and
     caps: { cap_5h: { usedUsd: 1, limitUsd: 3, resetsAt: null } },
     blocked: null,
     models: [
-      { id: 'anthropic/claude-haiku-5.5', name: 'Claude Haiku 5.5', reasoning: true, efforts: ['low', 'medium', 'high'] },
+      { id: 'anthropic/claude-haiku-5.5', name: 'Haiku 5.5', reasoning: true, efforts: ['low', 'medium', 'high'] },
       { id: 'anthropic/claude-sonnet-5.5', name: 'Claude Sonnet 5.5', reasoning: true },
       { id: CHEAP.id, name: CHEAP.name },
     ],

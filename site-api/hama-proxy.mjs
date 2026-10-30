@@ -250,7 +250,7 @@ export function createHamaProxy({
     openrouterKey = '',
     openrouterBase = 'https://openrouter.ai/api/v1',
     cheapModels = [],
-    cheapReasoningEffort = 'low',
+    cheapReasoningEffort = 'high',
     maxOutputTokens = 16000,
   } = config;
   const prices = { ...HAIKU_PRICES, ...(config.prices ?? {}) };
@@ -478,6 +478,11 @@ export function createHamaProxy({
       return fail(400, 'tool_not_allowed', 'Server tools are not available on the Hama plan.');
     }
     if (payload.mcp_servers !== undefined) return fail(400, 'tool_not_allowed', 'MCP servers are not available on the Hama plan.');
+    const efforts = ['low', 'medium', 'high', 'xhigh'];
+    const requestedEfforts = [payload.output_config?.effort, ...(Array.isArray(payload.messages) ? payload.messages.map((message) => message?.output_config?.effort) : [])];
+    if (requestedEfforts.some((effort) => effort !== undefined && !efforts.includes(effort))) {
+      return fail(400, 'invalid_request', 'Haiku supports low, medium, high and xhigh effort on Hama.');
+    }
     capTokens(payload, ['max_tokens']);
     const stream = payload.stream === true;
     const firstUser = Array.isArray(payload.messages) ? payload.messages.find((m) => m?.role === 'user')?.content : null;
@@ -590,8 +595,12 @@ export function createHamaProxy({
     }
     if (!openrouterKey) return fail(503, 'not_configured', 'The Hama plan has no upstream configured.');
     capTokens(payload, ['max_tokens', 'max_completion_tokens']);
+    const effort = payload.reasoning?.effort ?? payload.reasoning_effort ?? cheapReasoningEffort;
+    if (!['low', 'high', 'max'].includes(effort)) {
+      return fail(400, 'invalid_request', 'DeepSeek supports low, high and max effort on Hama.');
+    }
     delete payload.reasoning_effort;
-    payload.reasoning = { effort: cheapReasoningEffort };
+    payload.reasoning = { effort };
     payload.usage = { include: true };
     const stream = payload.stream === true;
     if (stream) payload.stream_options = { ...(payload.stream_options ?? {}), include_usage: true };

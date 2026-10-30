@@ -22,7 +22,7 @@ const MODEL_ID = /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._:-]*$/i;
  * 실제 차감은 서버가 한다.
  */
 const HAIKU_ENTRY = Object.freeze({
-  name: 'Claude Haiku 5.5',
+  name: 'Haiku 5.5',
   reasoning: true,
   input: ['text', 'image'],
   contextWindow: 200_000,
@@ -155,6 +155,8 @@ export function hamaModelsJson({ apiBase, status, catalog = null }) {
     api: 'anthropic-messages',
     baseUrl: `${apiBase}${HAMA_ANTHROPIC_PATH}`,
     reasoning: HAIKU_ENTRY.reasoning,
+    compat: { forceAdaptiveThinking: true },
+    thinkingLevelMap: { low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh' },
     input: [...HAIKU_ENTRY.input],
     contextWindow: HAIKU_ENTRY.contextWindow,
     maxTokens,
@@ -167,8 +169,8 @@ export function hamaModelsJson({ apiBase, status, catalog = null }) {
     return {
       id,
       name: cheapModelName(id, entry?.name),
-      // 추론 강도는 서버가 붙인다. Pi 가 따로 보내지 않게 추론 모델로 두지 않는다.
-      reasoning: false,
+      reasoning: true,
+      thinkingLevelMap: { low: 'low', high: 'high', max: 'max' },
       input: entry?.supportsImages === true ? ['text', 'image'] : ['text'],
       contextWindow: Number.isSafeInteger(context) && context > 0 ? context : CHEAP_DEFAULT_CONTEXT,
       maxTokens,
@@ -212,8 +214,8 @@ export function hamaModelConfigs(modelsJson) {
     name: entry.name,
     reasoning: entry.reasoning,
     supportsImages: entry.input.includes('image'),
-    efforts: entry.reasoning ? ['low', 'medium', 'high'] : [],
-    defaultEffort: entry.reasoning ? 'medium' : null,
+    efforts: Object.keys(entry.thinkingLevelMap ?? {}),
+    defaultEffort: entry.id === HAMA_CLAUDE_MODEL ? 'medium' : 'high',
     contextLength: entry.contextWindow,
     maxOutputTokens: entry.maxTokens,
     pricing: {

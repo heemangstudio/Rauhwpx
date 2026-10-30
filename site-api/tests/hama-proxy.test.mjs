@@ -227,7 +227,7 @@ test('only Haiku 5.5 is hosted: Sonnet and Opus ids are refused on both routes, 
   assert.equal(s.fakeAnthropic.calls.length + s.fakeOpenRouter.calls.length, 0);
 
   const models = await (await fetch(`${s.origin}/v1/hama/openrouter/models`, { headers: { Authorization: `Bearer ${m.lease}` } })).json();
-  assert.deepEqual(models.data.map((x) => x.id), [DEEPSEEK, 'qwen/qwen3.8-flash']);
+  assert.deepEqual(models.data.map((x) => x.id), [DEEPSEEK]);
 });
 
 test('caps: Claude gets the 429 quota shape at cap_5h while a cheap model still runs, until cap_month', async (t) => {
@@ -266,16 +266,16 @@ test('caps: Claude gets the 429 quota shape at cap_5h while a cheap model still 
   assert.match(monthBody.error.message, /quota exceeded \(cap_month\).*\[hama-cap:cap_month:/);
 });
 
-test('cheap route forces low reasoning, clamps output, asks for usage, and pins the serving provider per session', async (t) => {
+test('cheap route preserves selected reasoning, clamps output, asks for usage, and pins the serving provider per session', async (t) => {
   const s = await setup(t);
   const m = await s.member();
-  const first = await s.cheap(m.lease, chat('cheap task', { max_completion_tokens: 99999, reasoning_effort: 'high', reasoning: { effort: 'xhigh' } }));
+  const first = await s.cheap(m.lease, chat('cheap task', { max_completion_tokens: 99999, reasoning_effort: 'high', reasoning: { effort: 'max' } }));
   assert.equal(first.status, 200);
   await first.text();
   const [call] = s.fakeOpenRouter.calls;
   assert.equal(call.path, '/api/v1/chat/completions');
   assert.equal(call.headers.authorization, `Bearer ${OPENROUTER_KEY}`);
-  assert.deepEqual(call.body.reasoning, { effort: 'low' });
+  assert.deepEqual(call.body.reasoning, { effort: 'max' });
   assert.equal(call.body.reasoning_effort, undefined);
   assert.equal(call.body.max_completion_tokens, 16000);
   assert.deepEqual(call.body.usage, { include: true });
@@ -325,4 +325,31 @@ test('Hama eligibility is enrollment only: an active lease that is not enrolled,
   assert.equal(bad.status, 401);
   assert.equal((await bad.json()).error.type, 'unauthorized');
   assert.equal(s.fakeAnthropic.calls.length + s.fakeOpenRouter.calls.length, 0);
+});
+
+
+test('Hama forwards native effort levels and refuses unsupported effort before upstream', async (t) => {
+  const s = await setup(t);
+  const m = await s.member();
+  for (const effort of ['low', 'medium', 'high', 'xhigh']) {
+    const response = await s.claude(m.lease, ask(`Haiku ${effort}`, {
+      thinking: { type: 'adaptive' }, output_config: { effort },
+    }));
+    assert.equal(response.status, 200);
+    await response.text();
+    assert.equal(s.fakeAnthropic.calls.at(-1).body.output_config.effort, effort);
+    assert.equal(s.fakeAnthropic.calls.at(-1).body.thinking.type, 'adaptive');
+  }
+  const before = s.fakeAnthropic.calls.length;
+  assert.equal((await s.claude(m.lease, ask('no max', { output_config: { effort: 'max' } }))).status, 400);
+  assert.equal(s.fakeAnthropic.calls.length, before);
+  for (const effort of ['low', 'high', 'max']) {
+    const response = await s.cheap(m.lease, chat(`DeepSeek ${effort}`, { reasoning: { effort } }));
+    assert.equal(response.status, 200);
+    await response.text();
+    assert.equal(s.fakeOpenRouter.calls.at(-1).body.reasoning.effort, effort);
+  }
+  const cheapBefore = s.fakeOpenRouter.calls.length;
+  assert.equal((await s.cheap(m.lease, chat('unsupported', { reasoning: { effort: 'medium' } }))).status, 400);
+  assert.equal(s.fakeOpenRouter.calls.length, cheapBefore);
 });

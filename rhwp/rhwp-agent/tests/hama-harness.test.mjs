@@ -18,7 +18,7 @@ const LEASE = [
   Buffer.from(JSON.stringify({ v: 1, kid: 'test-1', keyId: 'lic-1', deviceId: 'dev-1', expiresAt: 9e12 })).toString('base64url'),
   randomBytes(64).toString('base64url'),
 ].join('.');
-const CHEAP = ['deepseek/deepseek-v4.1-flash', 'qwen/qwen3.8-flash'];
+const CHEAP = ['deepseek/deepseek-v4.1-flash'];
 const RESETS_AT = '2026-10-30T15:00:00.000Z';
 
 function serverStatus(overrides = {}) {
@@ -70,7 +70,11 @@ test('the Hama home routes Haiku through Anthropic Messages and cheap models thr
   assert.equal(haiku.api, 'anthropic-messages');
   assert.equal(haiku.baseUrl, `${SITE}/v1/hama/anthropic`);
   assert.equal(deepseek.api, undefined);
-  assert.equal(deepseek.reasoning, false);
+  assert.equal(deepseek.reasoning, true);
+  assert.deepEqual(snapshot.models[0].efforts, ['low', 'medium', 'high', 'xhigh']);
+  assert.deepEqual(snapshot.models[1].efforts, ['low', 'high', 'max']);
+  assert.equal(haiku.compat.forceAdaptiveThinking, true);
+  assert.equal(haiku.thinkingLevelMap.xhigh, 'xhigh');
   assert.ok(provider.models.every((model) => model.maxTokens === 16000));
 
   assert.equal(snapshot.availability, 'active');

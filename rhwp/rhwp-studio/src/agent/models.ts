@@ -53,8 +53,8 @@ const CODEX_EFFORTS = [
   { id: 'max', label: 'Max' }, { id: 'xhigh', label: 'Extra high' },
   { id: 'high', label: 'High' }, { id: 'medium', label: 'Medium' }, { id: 'low', label: 'Low' },
 ] as const;
-const PI_EFFORT_IDS = ['high', 'medium', 'low'] as const;
-const PI_EFFORT_LABELS: Record<string, string> = { low: 'Low', medium: 'Medium', high: 'High' };
+const PI_EFFORT_IDS = ['max', 'xhigh', 'high', 'medium', 'low'] as const;
+const PI_EFFORT_LABELS: Record<string, string> = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max' };
 export const DEFAULT_AGENT_MODEL: Record<CatalogAgent, string> = { claude: 'sonnet', codex: 'sol' };
 export const DEFAULT_AGENT_EFFORT: Record<CatalogAgent, string> = { claude: 'high', codex: 'medium' };
 

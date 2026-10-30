@@ -5,7 +5,7 @@
 import { randomUUID } from 'node:crypto';
 
 export const HAMA_CLAUDE_MODEL = 'anthropic/claude-haiku-5.5';
-export const HAMA_CHEAP_MODELS = Object.freeze(['deepseek/deepseek-v4.1-flash', 'qwen/qwen3.8-flash']);
+export const HAMA_CHEAP_MODELS = Object.freeze(['deepseek/deepseek-v4.1-flash']);
 const CLAUDE_IDS = new Set([HAMA_CLAUDE_MODEL, 'claude-haiku-5-5']);
 const HOUR = 3_600_000;
 const REPLY = ['Hama ', '모의 ', '응답입니다.'];

@@ -298,8 +298,8 @@ export function resolveHamaUsageDir(env = process.env) {
 }
 
 export const DEFAULT_ANTHROPIC_API_BASE = 'https://api.anthropic.com';
-export const DEFAULT_HAMA_CHEAP_MODELS = 'deepseek/deepseek-v4.1-flash,qwen/qwen3.8-flash';
-const HAMA_REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'];
+export const DEFAULT_HAMA_CHEAP_MODELS = 'deepseek/deepseek-v4.1-flash';
+const HAMA_REASONING_EFFORTS = ['low', 'high', 'max'];
 const HAMA_PRICE_FIELDS = [
   'inputPerMTok', 'outputPerMTok', 'cacheReadPerMTok', 'cacheWrite5mPerMTok', 'cacheWrite1hPerMTok',
   'longContextTokens', 'longContextMultiplier',
@@ -333,7 +333,7 @@ export function resolveHamaConfig(env = process.env) {
   for (const model of cheapModels) {
     if (/^anthropic\//i.test(model) || /claude/i.test(model)) throw new Error(`HAMA_CHEAP_MODELS must not name a Claude model: ${model}`);
   }
-  const cheapReasoningEffort = trimmed(env.HAMA_CHEAP_REASONING_EFFORT).toLowerCase() || 'low';
+  const cheapReasoningEffort = trimmed(env.HAMA_CHEAP_REASONING_EFFORT).toLowerCase() || 'high';
   if (!HAMA_REASONING_EFFORTS.includes(cheapReasoningEffort)) {
     throw new Error(`HAMA_CHEAP_REASONING_EFFORT must be one of ${HAMA_REASONING_EFFORTS.join(', ')}: ${cheapReasoningEffort}`);
   }
