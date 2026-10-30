@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { createPlanStore, desktopPlanApi, planLocksAgent, planShowsUpgrade, showsHamaHomeEntry } from '../src/ui/plan/plan-store.ts';
+import { createPlanStore, desktopPlanApi, planLocksAgent, showsHamaHomeEntry } from '../src/ui/plan/plan-store.ts';
 import type { DesktopPlanApi, PlanStatus, PlanTier } from '../src/ui/plan/plan-types.ts';
 
 function status(tier: PlanTier, agentUnlocked = tier !== 'free'): PlanStatus {
@@ -20,26 +20,21 @@ function status(tier: PlanTier, agentUnlocked = tier !== 'free'): PlanStatus {
   };
 }
 
-test('without a desktop plan API nothing is locked and no upgrade button shows', () => {
+test('without a desktop plan API nothing is locked', () => {
   assert.equal(desktopPlanApi({}), null);
   assert.equal(desktopPlanApi({ rhwpDesktop: {} }), null);
   const store = createPlanStore(null);
   assert.equal(store.api, null);
   assert.equal(store.status(), null);
   assert.equal(planLocksAgent(store.status()), false);
-  assert.equal(planShowsUpgrade(store.status()), false);
 });
 
-test('the lock, the composer arrow and the home Hama entry follow the tier', () => {
+test('the lock and the home Hama entry follow the tier', () => {
   assert.equal(planLocksAgent(status('free')), true);
   // 라이선스를 강제하지 않는 개발 빌드는 무료여도 열린다.
   assert.equal(planLocksAgent(status('free', true)), false);
   for (const tier of ['pro', 'legacy', 'hama'] as const) assert.equal(planLocksAgent(status(tier)), false, tier);
-  assert.deepEqual(
-    (['free', 'pro', 'legacy', 'hama'] as const).map((tier) => planShowsUpgrade(status(tier))),
-    [true, false, false, false],
-  );
-  // 유료 사용자는 입력기 대신 문서 홈에서 Hama 로 올라간다.
+  // 유료 사용자는 문서 홈에서 Hama 로 올라간다.
   assert.deepEqual(
     (['free', 'pro', 'legacy', 'hama'] as const).map((tier) => showsHamaHomeEntry(status(tier))),
     [false, true, true, false],

@@ -360,7 +360,7 @@ import type { TurnRestoreControl } from '../../agent/turn-checkpoints.ts';
 import { desktopGiftApi, type DesktopGiftApi } from '../special-event/gift.ts';
 import { createRauUpgradeChip, desktopRauApi, type DesktopRauApi } from './rau-upgrade.ts';
 import type { DesktopLicenseApi } from './settings-license.ts';
-import { createPlanStore, desktopPlanApi, planLocksAgent, planShowsUpgrade } from '../plan/plan-store.ts';
+import { createPlanStore, desktopPlanApi, planLocksAgent } from '../plan/plan-store.ts';
 import type { DesktopPlanApi } from '../plan/plan-types.ts';
 import { listenForPlanCardEvents, openPlanCard, type PlanCardFocus } from '../plan/upgrade-card.ts';
 import '../plan/plan-lock.css';
@@ -2124,18 +2124,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   });
 
   rebuildLlmMenu();
-  // 모델 이름 바로 옆의 요금제 단추. 무료에만 보인다(Pro·기존 라이선스는 문서 홈의 Hama 입구).
-  const planUpgrade = el('button', 'ag-pricing-upgrade');
-  planUpgrade.type = 'button';
-  planUpgrade.setAttribute('aria-label', '요금제 보기');
-  planUpgrade.title = '요금제 보기';
-  planUpgrade.append(createIcon('upgrade'));
-  planUpgrade.hidden = true;
-  planUpgrade.addEventListener('click', (e) => {
-    e.stopPropagation();
-    openPlans();
-  });
-  llmWrap.append(llmTrigger, planUpgrade);
+  llmWrap.append(llmTrigger);
 
   // ── Effort 피커 (프로바이더/모델이 지원하는 수준) ────
   const effortWrap = el('div', 'ag-model ag-effort');
@@ -7688,7 +7677,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   function syncPlan(): void {
     const status = planStore.status();
     const locked = planLocksAgent(status);
-    planUpgrade.hidden = !planShowsUpgrade(status);
     if (status) root.dataset.tier = status.tier;
     else delete root.dataset.tier;
     root.classList.toggle('ag-pricing-locked', locked);

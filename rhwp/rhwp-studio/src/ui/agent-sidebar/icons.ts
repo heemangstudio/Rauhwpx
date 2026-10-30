@@ -27,7 +27,6 @@ const STROKE_PATHS = {
   check: 'M2.5 6.4 5 8.9l4.5-5.4',
   close: 'M3.2 3.2l5.6 5.6M8.8 3.2l-5.6 5.6',
   send: 'M6 9.5v-7M2.9 5.6 6 2.5l3.1 3.1',
-  upgrade: 'M6 9.4V3.2M3.6 5.4 6 3l2.4 2.4',
   insert: 'M6 2.6v6.8M2.6 6h6.8',
   delete: 'M2.6 6h6.8',
   replace: 'M2.5 4.3h6.2L6.9 2.6M9.5 7.7H3.3l1.8 1.7',

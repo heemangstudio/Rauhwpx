@@ -340,8 +340,10 @@ export function openPlanCard(options: PlanCardOptions): PlanCardHandle | null {
   }
 
   function focusColumn(target: PlanCardFocus | undefined): void {
-    focused = target;
-    if (view === 'plans') render();
+    if (target !== focused) {
+      focused = target;
+      if (view === 'plans') render();
+    }
     if (target) sheet.querySelector(`.ag-pricing-col[data-plan="${target}"]`)?.scrollIntoView({ block: 'nearest' });
   }
 

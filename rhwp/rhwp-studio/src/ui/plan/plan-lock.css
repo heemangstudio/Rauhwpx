@@ -1,46 +1,6 @@
 /* ─── 사이드바의 요금제 표시 ──────────────────────────
-   모델 이름 옆 ↑ 단추, 무료 요금제의 잠긴 보내기, 접기 탭의 작은 자물쇠.
+   무료 요금제의 잠긴 보내기, 접기 탭의 작은 자물쇠.
    잠금은 조용히 보인다: 보내기는 가라앉은 채움 위 자물쇠, 입력칸은 그대로 받는다. */
-
-.ag-llm {
-  align-items: center;
-}
-
-.ag-pricing-upgrade {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  margin-left: -2px;
-  padding: 0;
-  border: 0;
-  border-radius: var(--ag-r-chip);
-  background: transparent;
-  color: var(--ag-text-tertiary);
-  cursor: default;
-  transition: var(--ag-transition-color);
-}
-
-.ag-pricing-upgrade[hidden] {
-  display: none;
-}
-
-.ag-pricing-upgrade:hover {
-  background: var(--ag-hover);
-  color: var(--ag-text);
-}
-
-.ag-pricing-upgrade:focus-visible {
-  outline: var(--ag-focus-ring);
-  outline-offset: var(--ag-focus-offset);
-}
-
-.ag-pricing-upgrade .ag-icon {
-  width: 12px;
-  height: 12px;
-}
 
 .ag-root.ag-pricing-locked .ag-send:not(.ag-stop),
 .ag-root.ag-pricing-locked .ag-send.ag-send-idle:not(.ag-stop) {

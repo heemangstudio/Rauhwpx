@@ -20,11 +20,6 @@ export function planLocksAgent(status: PlanStatus | null): boolean {
   return status !== null && status.tier === 'free' && !status.agentUnlocked;
 }
 
-/** 모델 이름 옆 ↑ 단추. 무료에만 둔다 — Pro·기존 라이선스는 문서 홈의 Hama 입구로 올라간다. */
-export function planShowsUpgrade(status: PlanStatus | null): boolean {
-  return status?.tier === 'free';
-}
-
 /** 문서 홈의 Hama 입구. Hama 로 올라갈 수 있는 유료 등급(Pro·기존 라이선스)에만. */
 export function showsHamaHomeEntry(status: PlanStatus | null): boolean {
   return status?.tier === 'pro' || status?.tier === 'legacy';
