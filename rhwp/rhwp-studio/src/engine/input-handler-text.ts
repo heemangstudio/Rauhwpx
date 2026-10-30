@@ -693,6 +693,8 @@ export function onCompositionEnd(this: any, event?: CompositionEvent): void {
     processPendingNav.call(this, nav);
   }
   } finally {
+    // 확정 없이 끝난 주석 선택 조합도 선택을 지운 이력의 다시 하기 상태를 지금 문서로 맞춘다.
+    if (this.footnoteSelectionComposition) this.finishFootnoteSelectionComposition();
     const cancelledSelection = !!this.selectionComposition;
     finishSelectionComposition.call(this, false);
     if (cancelledSelection) this.afterEdit();

@@ -359,6 +359,7 @@ function deleteFootnoteUnit(this: any, content: NoteContentInfo, para: number, o
     .then((ok: boolean) => {
       if (ok && this.cursor.isEditingNote(note)) this.replaceFootnoteSelection('', { operationType: 'deleteNoteNumber', range });
     })
+    .catch((error: unknown) => console.warn('[InputHandler] 주석 번호 지우기 실패:', error))
     .finally(() => {
       this.noteDeletePending = false;
       this.textarea?.focus();

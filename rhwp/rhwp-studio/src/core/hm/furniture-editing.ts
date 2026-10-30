@@ -521,12 +521,17 @@ export function hitTestInFootnote(core: HmCore, page: number, x: number, y: numb
   const located = core.locate(page, x, y);
   const note = located ? noteAtAddress(core, located.position) : null;
   if (!located || !note) return { hit: false as const };
-  const key = refKey(note.ref);
-  return {
-    hit: true as const, footnoteIndex: notesOnPage(core, page).findIndex(item => item.key === key), fnParaIndex: located.position.para,
+  const hit = {
+    hit: true as const, footnoteIndex: 0, fnParaIndex: located.position.para,
     charOffset: wireToLogical(mapIn(core, note.list, located.position.para), located.position.offset), cursorRect: cursor(located.caret),
     ...note.ref, kind: note.kind, number: note.number,
   };
+  return withPageIndex(core, hit, page, refKey(note.ref));
+}
+
+/** 쪽 안 순번(하위 호환)은 물을 때만 센다. 클릭마다 쪽의 주석을 다 세지 않는다. */
+function withPageIndex<T extends { footnoteIndex: number }>(core: HmCore, hit: T, page: number, key: string): T {
+  return Object.defineProperty(hit, 'footnoteIndex', { enumerable: true, get: () => notesOnPage(core, page).findIndex(item => item.key === key) });
 }
 export function hitTestFootnote(core: HmCore, page: number, x: number, y: number) {
   const hit = hitTestInFootnote(core, page, x, y);
@@ -546,12 +551,11 @@ export function hitTestBodyFootnoteMarker(core: HmCore, page: number, x: number,
     if (x < left || x > right || y < px(caret.y) || y > px(caret.y + caret.height)) continue;
     const ref = refOf({ section: list.section, steps: list.steps, para: located.position.para, control: control.index });
     const notePage = core.caret(toAddress({ section: list.section, steps: [...list.steps, { para: located.position.para, control: control.index, index: 0 }] }, 0, 0))?.page ?? page;
-    const key = refKey(ref);
-    return {
+    return withPageIndex(core, {
       hit: true, sectionIndex: ref.sectionIdx, paragraphIndex: ref.paraIdx, controlIndex: control.index, cellPath: ref.cellPath, kind: control.kind,
-      footnoteNumber: control.number, footnoteIndex: notesOnPage(core, notePage).findIndex(item => item.key === key), pageNum: notePage,
+      footnoteNumber: control.number, footnoteIndex: 0, pageNum: notePage,
       bbox: { x: left, y: px(caret.y), w: right - left, h: px(caret.height) }, cursorRect: cursor(caret), charOffset: wireToLogical(map, control.offset),
-    };
+    }, notePage, refKey(ref));
   }
   return { hit: false };
 }

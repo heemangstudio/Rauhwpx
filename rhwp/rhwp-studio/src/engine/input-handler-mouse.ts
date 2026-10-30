@@ -1167,9 +1167,7 @@ export function onClick(this: any, e: MouseEvent): void {
   // 각주 편집 모드에서 클릭 처리: 같은 주석이면 캐럿만 옮기고, 다른 주석 영역이면 그 주석으로 바꾼다.
   if (this.cursor.isInFootnote()) {
     try {
-      const inFnHit = this.wasm.pageHasFootnoteFootholds(pageIdx)
-        ? this.wasm.hitTestInFootnote(pageIdx, pageX, pageY)
-        : { hit: false };
+      const inFnHit = this.wasm.hitTestInFootnote(pageIdx, pageX, pageY);
       if (!inFnHit.hit) {
         // 본문 영역 클릭 → 각주 편집 모드 탈출 후 본문 hitTest로 계속 진행
         this.cursor.exitFootnoteMode();
@@ -1209,9 +1207,7 @@ export function onClick(this: any, e: MouseEvent): void {
   // 각주 영역 클릭 → 누른 자리로 각주 편집 모드 진입(표 셀·글상자 안 주석도 같다).
   if (!this.cursor.isInFootnote()) {
     try {
-      const inFnHit = this.wasm.pageHasFootnoteFootholds(pageIdx)
-        ? this.wasm.hitTestInFootnote(pageIdx, pageX, pageY)
-        : { hit: false };
+      const inFnHit = this.wasm.hitTestInFootnote(pageIdx, pageX, pageY);
       if (inFnHit.hit && enterClickedNote.call(this, inFnHit, e)) {
         this.textarea.focus();
         return;
