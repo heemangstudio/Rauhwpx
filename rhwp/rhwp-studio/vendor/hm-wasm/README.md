@@ -1,6 +1,6 @@
 # hm-wasm
 
-Generated browser bindings and WASM from HeemangEngine `feat/notes-parity` at `ab0b54a` (2026-10-31): `rc/combined-20261028`
+Generated browser bindings and WASM from HeemangEngine `feat/notes-parity` at `845ba85` (2026-10-31): `rc/combined-20261028`
 at `8d80eb0` plus footnote and endnote parity with Hancom Office 2022 (note insertion, numbering, note shapes, clipboard,
 page-local numbers, HWP/HWPX/HML round trips, and note layout and painting). `8d80eb0` changes only tests and documents
 over `1a54900`, which over the
