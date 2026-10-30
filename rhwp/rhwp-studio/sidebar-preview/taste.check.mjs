@@ -97,45 +97,10 @@ export async function checkTaste({ page, open, screenshot }) {
   await page.waitForFunction((input) => !input.disabled && !input.checked, {}, tasteToggle);
   const tasteSettings = () => page.evaluate(() => window.sidebarPreview.bridge.requestTasteSettings());
   assert.deepEqual(await tasteSettings(), { enabled: false, provider: 'auto', model: null, effort: null });
-  const field = (name) => `.ag-taste-settings [data-taste-field="${name}"]`;
-  assert.equal(await page.$eval(`${field('provider')} select`, (node) => node.disabled), true, 'the provider is locked while learning is off');
+  assert.equal(await page.$$eval('.ag-taste-settings select, .ag-taste-auth-row', (nodes) => nodes.length), 0);
   await tasteToggle.evaluate((input) => input.click());
-  await page.waitForFunction((selector) => document.querySelector(selector)?.disabled === false, {}, `${field('provider')} select`);
-  assert.equal(await page.$eval(field('model'), (node) => node.hidden), true, 'auto has no model choice');
-
-  // OpenRouter 는 Pi 의 OpenRouter 자격으로만 돈다. 없으면 Pi 설정과 같은 연결 줄(브라우저로 로그인 / 또는 / 키)이 보인다.
-  const authRow = '.ag-taste-settings .ag-taste-auth-row';
-  await page.evaluate(() => window.sidebarPreview.setPiOwnKey(false));
-  await page.select(`${field('provider')} select`, 'pi');
-  await page.waitForSelector(`${authRow}:not([hidden])`);
-  await page.waitForFunction((selector) => document.querySelector(selector)?.value === 'deepseek/deepseek-v4.1-flash', {}, `${field('model')} select`);
-  assert.deepEqual(await tasteSettings(), { enabled: true, provider: 'pi', model: null, effort: null });
-  assert.equal(await page.$eval(`${field('effort')} select`, (node) => node.value), 'max');
-  if (screenshot) await screenshot('taste-settings-openrouter-auth');
-  // 브라우저로 로그인은 Pi 설정의 로그인 창·흐름을 그대로 쓰고, 끝나면 Pi 모델 고르기 대신 이 자리로 돌아온다.
-  await page.click(`${authRow} .ag-pi-oauth`);
-  await page.waitForFunction(() => document.querySelector('.ag-agent-setup-overlay')?.getAttribute('aria-hidden') === 'false');
-  await page.waitForSelector(authRow, { hidden: true });
-  // 창이 닫히며 사라질 때까지 (사라지는 동안의 창은 클릭을 받는다).
-  await page.waitForFunction(() => !document.querySelector('.ag-agent-setup-overlay'));
-  assert.deepEqual(await page.evaluate(() => window.sidebarPreview.agentAuthCalls.map((call) => ({ ...call }))).then((calls) => calls.at(-1)), { provider: 'pi', method: 'oauth' });
-  assert.equal(await page.$eval('.ag-taste-settings', (node) => node.checkVisibility()), true, 'back at Rau-0.1');
-  // Pi 설정에서 자격이 사라지거나 생겨도 따라간다. 키 줄은 Pi 설정과 같은 저장 경로다.
-  await page.evaluate(() => window.sidebarPreview.setPiOwnKey(false));
-  await page.waitForSelector(`${authRow}:not([hidden]) input:not(:disabled)`);
-  await page.type(`${authRow} input`, 'sk-or-v1-preview');
-  await page.keyboard.press('Enter');
-  await page.waitForSelector(authRow, { hidden: true });
-  assert.equal((await page.evaluate(() => window.sidebarPreview.bridge.requestPiStatus())).keyConfigured, true);
-  await page.select(`${field('model')} select`, 'openai/gpt-5.2');
-  await page.waitForFunction(() => window.sidebarPreview.bridge.requestTasteSettings().then((value) => value.model === 'openai/gpt-5.2'));
-  // 공급자를 바꾸면 모델·추론은 그 공급자의 기본값으로 돌아간다.
-  await page.select(`${field('provider')} select`, 'claude');
-  await page.waitForFunction((selector) => document.querySelector(selector)?.disabled === false, {}, `${field('provider')} select`);
-  assert.deepEqual(await tasteSettings(), { enabled: true, provider: 'claude', model: null, effort: null });
-  assert.equal(await page.$eval(authRow, (node) => node.hidden), true);
-  await page.select(`${field('provider')} select`, 'auto');
-  await page.waitForFunction((selector) => document.querySelector(selector)?.hidden === true, {}, field('model'));
+  await page.waitForFunction((input) => !input.disabled && input.checked, {}, tasteToggle);
+  assert.deepEqual(await tasteSettings(), { enabled: true, provider: 'auto', model: null, effort: null });
   await page.click('.ag-settings-instructions-proposal .ag-settings-primary');
   await page.waitForSelector('.ag-settings-instructions-proposal', { hidden: true });
   assert.equal(await page.$eval('.ag-taste-action + .ag-taste-action', (node) => node.hidden), true);

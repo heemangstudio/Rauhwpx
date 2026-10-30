@@ -16,7 +16,6 @@ import type {
   AgentName,
   AgentSetupStatusMap,
   SidebarEvent,
-  TasteProvider,
   TasteSettings,
 } from '../../agent/types.ts';
 import { RAU_TASTE_NAME } from '../../agent/taste.ts';
@@ -33,7 +32,7 @@ import {
 import { createHippo } from './hippo.ts';
 import { autofixApi, autofixSettings, onAutofixSettings, updateAutofixSettings } from '../autofix/autofix.ts';
 import type { DesktopLicenseApi, LicenseStatus } from '../agent-sidebar/settings-license.ts';
-import { createLicenseStep, licenseLine, needsLicenseStep } from './license-step.ts';
+import { createLicenseStep, needsLicenseStep } from './license-step.ts';
 import { holdInitialSetup, markLicensedHere, releaseInitialSetup } from './active.ts';
 import {
   completeInitialSetup,
@@ -163,7 +162,6 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   const licenseApi = deps.license === undefined
     ? (window as Window & { rhwpDesktop?: { license?: DesktopLicenseApi } }).rhwpDesktop?.license ?? null
     : deps.license;
-  let licenseStatus: LicenseStatus | null = null;
   let licenseStep = false;
   const fontStepReady = (deps.detectFontStep ?? detectFontStep)()
     .catch(() => null)
@@ -176,7 +174,6 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   // 라이선스 장은 처음 본 상태로 정한다. 이 창에서 활성화해도 장은 그대로 남는다.
   const licenseStepReady = (licenseApi ? licenseApi.getStatus().catch(() => null) : Promise.resolve(null))
     .then((status) => {
-      licenseStatus = status;
       licenseStep = needsLicenseStep(status);
       steps = planSteps(fontStep, { autofix: withAutofix, license: licenseStep, taste: withTaste });
       renderStep();
@@ -259,7 +256,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   }
   modelsPanel.append(grid);
 
-  // ── Rau-0.1: 기본은 켜짐, 자동 공급자. 고르는 순간 허브에 저장한다. 켰을 때만 공급자를 고른다. ──
+  // ── Rau-0.1: 호스팅 학습을 켜거나 끄면 바로 저장한다. ──
   const tastePanel = el('div', 'rhwp-setup-panel rhwp-setup-taste');
   tastePanel.dataset.step = 'taste';
   const tasteGroup = el('div', 'rhwp-setup-font-actions');
@@ -277,29 +274,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     tasteGroup.append(root);
     return { enabled, root };
   });
-  const tasteProviders = el('div', 'rhwp-setup-grid rhwp-setup-taste-providers');
-  tasteProviders.setAttribute('role', 'radiogroup');
-  tasteProviders.setAttribute('aria-label', `${RAU_TASTE_NAME} 공급자`);
-  const TASTE_PROVIDER_CHOICES: ReadonlyArray<{ id: TasteProvider; label: string }> = [
-    { id: 'auto', label: '자동' },
-    { id: 'claude', label: AGENT_LABEL.claude },
-    { id: 'codex', label: AGENT_LABEL.codex },
-    { id: 'pi', label: 'OpenRouter' },
-  ];
-  const tasteProviderChoices = TASTE_PROVIDER_CHOICES.map(({ id, label }) => {
-    const root = button('rhwp-setup-card-action');
-    root.setAttribute('role', 'radio');
-    root.setAttribute('aria-label', label);
-    const logo = el('span', 'rhwp-setup-card-logo');
-    logo.appendChild(id === 'auto' ? createIcon('refresh') : createProviderIcon(id));
-    const check = el('span', 'rhwp-setup-check');
-    check.appendChild(createIcon('check'));
-    root.append(logo, el('span', 'rhwp-setup-card-name', label), check);
-    root.addEventListener('click', () => void saveTaste({ provider: id, model: null, effort: null }));
-    tasteProviders.append(root);
-    return { id, root };
-  });
-  tastePanel.append(tasteGroup, tasteProviders);
+  tastePanel.append(tasteGroup);
   /** 허브가 답하기 전에는 기본값을 보인다. */
   let taste: Pick<TasteSettings, 'enabled' | 'provider'> = { enabled: true, provider: 'auto' };
   let tasteRequest = 0;
@@ -519,10 +494,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
       choice.root.setAttribute('aria-checked', picked ? 'true' : 'false');
       choice.root.dataset.done = picked ? 'true' : 'false';
     }
-    tasteProviders.hidden = !taste.enabled;
-    for (const choice of tasteProviderChoices) {
-      choice.root.setAttribute('aria-checked', choice.id === taste.provider ? 'true' : 'false');
-    }
+
   }
 
   function renderFonts(): void {
@@ -547,7 +519,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     }
     if (step === 'taste') return HIPPO_LINES.taste;
     if (step === 'autofix') return HIPPO_LINES.autofix;
-    if (step === 'license') return licensePanel?.licensed() ? HIPPO_LINES.licensed : licenseLine(licenseStatus);
+    if (step === 'license') return licensePanel?.licensed() ? HIPPO_LINES.licensed : HIPPO_LINES.license;
     if (fontSearch === 'found') return HIPPO_LINES.found;
     if (fontSearch === 'missing') return offerFolder() ? HIPPO_LINES.missingWithFolder : HIPPO_LINES.missing;
     return HIPPO_LINES.discover;
@@ -566,7 +538,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
       return dot;
     }));
     const last = stepIndex >= steps.length - 1;
-    // 키 없이 넘어가면 체험으로 쓴다.
+    // 키 없이 넘어가면 무료로 쓴다.
     const later = step === 'license' && !licensePanel?.licensed();
     primary.textContent = later ? '나중에' : last ? '완료' : '다음';
     // 키가 없을 때는 구매 칸이 눈에 먼저 띄도록 다음 단추를 낮춘다.

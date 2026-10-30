@@ -1,0 +1,77 @@
+/* ─── 문서 홈의 Hama 입구 ─────────────────────────────
+   위 막대 오른쪽의 한 줄. 앱 하마의 파랑을 마크와 머리카락 선에만 쓰고 면은 아주 옅게 둔다. */
+
+.plan-hama-entry {
+  --plan-hama: #3d9bd1;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 28px;
+  margin-right: 4px;
+  padding: 0 10px 0 9px;
+  border: 0;
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--plan-hama) 6%, transparent);
+  color: var(--dh-text, var(--n-ink));
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1;
+  letter-spacing: -0.005em;
+  white-space: nowrap;
+  cursor: default;
+  transition:
+    background-color var(--ag-dur-fast, 120ms) var(--ag-ease-out, ease-out);
+}
+
+:root[data-theme-effective='dark'] .plan-hama-entry {
+  --plan-hama: #62b3e2;
+}
+
+.plan-hama-entry[hidden] {
+  display: none;
+}
+
+.plan-hama-entry:hover {
+  background: color-mix(in oklab, var(--plan-hama) 11%, transparent);
+}
+
+.plan-hama-entry:active {
+  background: color-mix(in oklab, var(--plan-hama) 16%, transparent);
+}
+
+.plan-hama-entry:focus-visible {
+  outline: 2px solid var(--focus-ring, var(--plan-hama));
+  outline-offset: 2px;
+}
+
+.plan-hama-mark {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  color: var(--plan-hama);
+}
+
+.plan-hama-name {
+  font-weight: 600;
+}
+
+.plan-hama-line {
+  color: var(--dh-text-secondary, var(--n-ink-secondary));
+}
+
+.plan-hama-soon {
+  margin-left: 3px;
+  color: color-mix(in oklab, var(--plan-hama) 82%, var(--dh-text, var(--n-ink)));
+  font-size: 11.5px;
+  font-weight: 500;
+}
+
+.plan-hama-soon[hidden] {
+  display: none;
+}
+
+@media (max-width: 720px) {
+  .plan-hama-line {
+    display: none;
+  }
+}
