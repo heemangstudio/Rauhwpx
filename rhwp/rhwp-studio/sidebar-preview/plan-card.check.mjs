@@ -57,7 +57,7 @@ export async function checkPlanCard({ page, open, screenshot }) {
   await cardOpen(page);
   assert.equal(await visible(page, '#ag-settings-pane-ai'), false, 'a direct open stays out of AI');
   await closeCard(page);
-  await page.click('.ag-settings-close');
+  await page.$eval('.ag-settings-close', (close) => close.click());
 
   // 결제: 월간을 누르면 확인 중으로 바뀌고, 끝나면 성공을 잠깐 보인 뒤 닫히며 잠금이 풀린다.
   await page.click('.ag-send');
