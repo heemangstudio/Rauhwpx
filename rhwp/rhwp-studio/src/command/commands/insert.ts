@@ -275,6 +275,7 @@ export const insertCommands: CommandDef[] = [
     id: 'insert:footnote',
     label: '각주',
     icon: 'icon-footnote',
+    shortcutLabel: 'Ctrl+M,N',
     canExecute: (ctx) => ctx.hasDocument,
     execute(services) {
       insertNote(services, 'footnote');
@@ -284,6 +285,7 @@ export const insertCommands: CommandDef[] = [
     id: 'insert:endnote',
     label: '미주',
     icon: 'icon-endnote',
+    shortcutLabel: 'Ctrl+M,E',
     canExecute: (ctx) => ctx.hasDocument,
     execute(services) {
       insertNote(services, 'endnote');
