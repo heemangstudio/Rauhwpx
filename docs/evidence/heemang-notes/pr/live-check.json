@@ -1,0 +1,346 @@
+{
+ "date": "2026-10-31",
+ "runtime": "Studio dev (hub + Vite on free ports via e2e/agent-bench-harness.mjs), headless Chrome 1440x1300; candidate feat/heemang-notes-parity a0444906 (vendor/hm-wasm HeemangEngine 25310d0); baseline Rauhwpx main e13e2155",
+ "fixtures": "Hancom Office 2022 inputs and captures (heemang-cleanroom/parity/notes/hancom-note-captures)",
+ "comparisonMethod": "Studio saves through WasmBridge.exportHwpx/exportHwp/exportHml (the save paths). HWPX: footNotePr/endNotePr per section plus every footNote/endNote control (attributes without instId, paragraph paraPr/style, run charPr, autoNum + autoNumFormat, text) compared with the Hancom HWPX for the same steps. HWP and HML: reopened in a fresh Studio context, re-exported as HWPX, compared the same way. HML also compared element-wise (FOOTNOTESHAPE/ENDNOTESHAPE/FOOTNOTE/ENDNOTE) with Hancom s-saved.hml. Rendering: Studio page count and page screenshots vs Hancom PDFs (pdftoppm), side by side.",
+ "items": {
+  "1 S1 note-editing checks": {
+   "passed": 39,
+   "total": 39,
+   "failed": []
+  },
+  "2 insert via menu/ribbon/Ctrl+M,N|E at start/middle/end/cell, numbering, c01 file parity": {
+   "passed": 48,
+   "total": 48,
+   "failed": []
+  },
+  "3 in-note editing (endnote + footnote), prompts, exits": {
+   "passed": 64,
+   "total": 64,
+   "failed": []
+  },
+  "4 body copy/cut/paste with a mark (c08a/c08b parity)": {
+   "passed": 11,
+   "total": 11,
+   "failed": []
+  },
+  "5 note-shape dialog vs Hancom c06* (tab, values, one undo)": {
+   "passed": 135,
+   "total": 136,
+   "failed": [
+    {
+     "check": "dialog en-place1 sec2 (구역의 끝, menu 미주 모양 from section 2 body): saved footNotePr/endNotePr + note controls == Hancom c06f-sections/v-sec2-only-place1.hwpx",
+     "detail": {
+      "diffs": [
+       ".sections[0].endNotePr.kids[4].attrs.place: \"END_OF_DOCUMENT\" != \"END_OF_SECTION\""
+      ],
+      "studioUnmodifiedVsHancomInput": []
+     }
+    }
+   ]
+  },
+  "6 save HWPX/HWP/HML and reopen vs Hancom": {
+   "passed": 53,
+   "total": 54,
+   "failed": [
+    {
+     "check": "base-notes: Studio HML FOOTNOTESHAPE/ENDNOTESHAPE/FOOTNOTE/ENDNOTE == Hancom s-saved.hml",
+     "detail": {
+      "equal": false,
+      "counts": {
+       "FOOTNOTESHAPE": 1,
+       "ENDNOTESHAPE": 1,
+       "FOOTNOTE": 1,
+       "ENDNOTE": 1
+      },
+      "diffs": [
+       {
+        "tag": "FOOTNOTE",
+        "studio": [
+         [
+          "FOOTNOTE",
+          {},
+          [
+           [
+            "PARALIST",
+            {
+             "LineWrap": "Break",
+             "TextDirection": "0",
+             "VertAlign": "Top"
+            },
+            [
+             [
+              "P",
+              {
+               "ColumnBreak": "0",
+               "Merged": "0",
+               "PageBreak": "0",
+               "ParaShape": "10",
+               "Style": "14"
+              },
+              [
+               [
+                "TEXT",
+                {
+                 "CharShape": "3"
+                },
+                [
+                 [
+                  "AUTONUM",
+                  {
+                   "Number": "1",
+                   "NumberType": "Footnote"
+                  },
+                  [
+                   [
+                    "AUTONUMFORMAT",
+                    {
+                     "SuffixChar": ")",
+                     "Superscript": "false",
+                     "Type": "Digit"
+                    }
+                   ]
+                  ]
+                 ],
+                 [
+                  "CHAR",
+                  {},
+                  " orig note"
+                 ]
+                ]
+               ]
+              ]
+             ]
+            ]
+           ]
+          ]
+         ]
+        ],
+        "hancom": [
+         [
+          "FOOTNOTE",
+          {},
+          [
+           [
+            "PARALIST",
+            {
+             "LineWrap": "Break",
+             "LinkListID": "0",
+             "LinkListIDNext": "0",
+             "TextDirection": "0",
+             "VertAlign": "Top"
+            },
+            [
+             [
+              "P",
+              {
+               "ParaShape": "10",
+               "Style": "14"
+              },
+              [
+               [
+                "TEXT",
+                {
+                 "CharShape": "3"
+                },
+                [
+                 [
+                  "AUTONUM",
+                  {
+                   "Number": "1",
+                   "NumberType": "Footnote"
+                  },
+                  [
+                   [
+                    "AUTONUMFORMAT",
+                    {
+                     "SuffixChar": ")",
+                     "Superscript": "false",
+                     "Type": "Digit"
+                    }
+                   ]
+                  ]
+                 ],
+                 [
+                  "CHAR",
+                  {},
+                  " orig note"
+                 ]
+                ]
+               ]
+              ]
+             ]
+            ]
+           ]
+          ]
+         ]
+        ]
+       },
+       {
+        "tag": "ENDNOTE",
+        "studio": [
+         [
+          "ENDNOTE",
+          {},
+          [
+           [
+            "PARALIST",
+            {
+             "LineWrap": "Break",
+             "TextDirection": "0",
+             "VertAlign": "Top"
+            },
+            [
+             [
+              "P",
+              {
+               "ColumnBreak": "0",
+               "Merged": "0",
+               "PageBreak": "0",
+               "ParaShape": "10",
+               "Style": "15"
+              },
+              [
+               [
+                "TEXT",
+                {
+                 "CharShape": "3"
+                },
+                [
+                 [
+                  "AUTONUM",
+                  {
+                   "Number": "1",
+                   "NumberType": "Endnote"
+                  },
+                  [
+                   [
+                    "AUTONUMFORMAT",
+                    {
+                     "SuffixChar": ")",
+                     "Superscript": "false",
+                     "Type": "Digit"
+                    }
+                   ]
+                  ]
+                 ],
+                 [
+                  "CHAR",
+                  {},
+                  " end note"
+                 ]
+                ]
+               ]
+              ]
+             ]
+            ]
+           ]
+          ]
+         ]
+        ],
+        "hancom": [
+         [
+          "ENDNOTE",
+          {},
+          [
+           [
+            "PARALIST",
+            {
+             "LineWrap": "Break",
+             "LinkListID": "0",
+             "LinkListIDNext": "0",
+             "TextDirection": "0",
+             "VertAlign": "Top"
+            },
+            [
+             [
+              "P",
+              {
+               "ParaShape": "10",
+               "Style": "15"
+              },
+              [
+               [
+                "TEXT",
+                {
+                 "CharShape": "3"
+                },
+                [
+                 [
+                  "AUTONUM",
+                  {
+                   "Number": "1",
+                   "NumberType": "Endnote"
+                  },
+                  [
+                   [
+                    "AUTONUMFORMAT",
+                    {
+                     "SuffixChar": ")",
+                     "Superscript": "false",
+                     "Type": "Digit"
+                    }
+                   ]
+                  ]
+                 ],
+                 [
+                  "CHAR",
+                  {},
+                  " end note"
+                 ]
+                ]
+               ]
+              ]
+             ]
+            ]
+           ]
+          ]
+         ]
+        ]
+       }
+      ]
+     }
+    }
+   ]
+  },
+  "7 rendering vs Hancom PDFs": {
+   "passed": 16,
+   "total": 17,
+   "failed": [
+    {
+     "check": "render Studio dialog 구역의 끝 from section 2: page count Studio 3 == Hancom 4",
+     "detail": {
+      "montage": "/private/tmp/notes-live/c7/studio-dialog-from-section-2.png"
+     }
+    }
+   ]
+  }
+ },
+ "pageErrors": 0,
+ "screenshots": {
+  "1-new-footnote": "base.hwpx, caret at end of P0, insert footnote: before 1)| (no space), after 1) | (number + space, caret after)",
+  "2-note-shape-dialog": "base-3fn.hwpx from the body: before 미주-only dialog (insert:endnote-shape), after 각주/미주 모양 with 각주 tab (insert:note-shape, also reachable through 명령 검색)",
+  "3-cell-footnote": "base.hwpx, caret at end of cell A1, insert footnote + type \"cell note\": before the mark lands in P0 (Th1)e), after a1 1) with the note",
+  "4-pasted-mark": "base-notes.hwpx, copy \"quick[mark] brown\", paste at end of P3: before the copy has no mark/note, after quick2) with its own note 2) orig note",
+  "5-mark-delete-prompt": "base-notes.hwpx, Backspace right after the footnote mark: before 각주 삭제 / 각주를 삭제하시겠습니까?, after 지우기 / [각주] 를 지울까요? 취소(N) 지움(Y)"
+ },
+ "findings": [
+  {
+   "item": "5/7",
+   "summary": "Endnote placement 구역의 끝 applies to the caret section only",
+   "repro": "Open twosec-notes.hwpx, put the caret in section 2, 입력 > 미주 모양, choose 구역의 끝, 확인, save HWPX",
+   "expected (Hancom c06f v-sec2-only-place1)": "endNotePr place END_OF_SECTION in both sections; 4 pages",
+   "observed": "section 1 keeps END_OF_DOCUMENT, section 2 END_OF_SECTION; 3 pages"
+  },
+  {
+   "item": "6",
+   "summary": "Studio HML note paragraphs differ from Hancom in default attributes only",
+   "detail": "Studio writes P PageBreak/ColumnBreak/Merged=\"0\" and omits PARALIST LinkListID/LinkListIDNext=\"0\"; same for every paragraph and list in the file (generic HML writer). Reopening the Studio HML gives notes and shapes equal to Hancom r-from-hml.hwpx."
+  },
+  {
+   "item": "5",
+   "summary": "From the body the 각주 tab is reachable only through 명령 검색 (각주/미주 모양); the 입력 menu offers 미주 모양 and the ribbon button shows only in note mode",
+   "severity": "observation"
+  }
+ ]
+}
