@@ -17,9 +17,19 @@ const paraOf = (t: string): FakePara => ({ chars: [...t] });
 
 function makeHarness(initial: string[]) {
   let body: FakePara[] = initial.map(paraOf);
-  interface FakeNote { kind: string; number: number; text: string }
-  // 문단별 controls: 각주만 흉내 (controlIdx = 배열 인덱스)
-  const notes = new Map<string, FakeNote>(); // "para/ctrl" → note
+  // 주석 문단 하나를 논리 칸으로 흉내 낸다: 번호 칸(U+FFFC) + 공백 + 글. 캐럿 0 은 번호 앞이다.
+  interface FakeNote { kind: string; number: number; units: string[]; cellPath?: unknown[] }
+  const NUM = '\u{FFFC}';
+  const notes = new Map<string, FakeNote>(); // "para/ctrl[/cellPath]" → note
+  const noteKey = (p: number, ctrl: number, path?: string) => path ? `${p}/${ctrl}/${path}` : `${p}/${ctrl}`;
+  const noteText = (n: FakeNote) => n.units.slice(n.units[1] === ' ' ? 2 : 1).join('');
+  const noteInfo = (n: FakeNote) => ({
+    ok: true, kind: n.kind, paraCount: 1, number: n.number,
+    texts: [n.units.filter((u) => u !== NUM).join('')], lengths: [n.units.length], units: [n.units.join('')],
+    numbers: [{ fnParaIndex: 0, charOffset: 0 }], noteText: noteText(n),
+    textStart: { fnParaIndex: 0, charOffset: n.units[1] === ' ' ? 2 : 1 },
+  });
+  const replaceCalls: Array<{ from: number; to: number; text: string; path?: string }> = [];
   let nextCtrl = 0;
   const bookmarks: Array<{ name: string; sec: number; para: number; ctrlIdx: number; charPos: number }> = [];
   let nextBookmarkCtrl = 100;
@@ -36,7 +46,7 @@ function makeHarness(initial: string[]) {
   // approve 의 "미리보기 스냅샷 채택" 경로가 재현된다.
   const takeSnapshot = (): Snapshot => ({
     body: clone(body),
-    notes: new Map([...notes].map(([k, v]) => [k, { ...v }])),
+    notes: new Map([...notes].map(([k, v]) => [k, { ...v, units: [...v.units] }])),
     bookmarks: bookmarks.map((b) => ({ ...b })),
   });
   const okJson = (extra: Record<string, unknown> = {}) => JSON.stringify({ ok: true, ...extra });
@@ -72,7 +82,7 @@ function makeHarness(initial: string[]) {
       const s = snapshots.get(id)!;
       body = clone(s.body);
       notes.clear();
-      for (const [k, v] of s.notes) notes.set(k, { ...v });
+      for (const [k, v] of s.notes) notes.set(k, { ...v, units: [...v.units] });
       bookmarks.length = 0;
       bookmarks.push(...s.bookmarks.map((b) => ({ ...b })));
     },
@@ -81,41 +91,46 @@ function makeHarness(initial: string[]) {
     get documentDigest() { return 'blake3:advanced-tools-test'; },
     getSelectionRects: () => [],
     pageCount: 0,
-    // ── 각주 ──
+    // ── 각주 ── 새 주석은 [번호][공백] 이고 영수증 캐럿은 공백 뒤다.
     insertFootnote: (_s: number, p: number, _off: number) => {
       const ctrl = nextCtrl++;
-      notes.set(`${p}/${ctrl}`, { kind: 'footnote', number: notes.size + 1, text: '' });
-      return { ok: true, paraIdx: p, controlIdx: ctrl, footnoteNumber: notes.size };
+      notes.set(noteKey(p, ctrl), { kind: 'footnote', number: notes.size + 1, units: [NUM, ' '] });
+      return { ok: true, paraIdx: p, controlIdx: ctrl, footnoteNumber: notes.size, fnParaIndex: 0, charOffset: 2 };
     },
     insertEndnote: (_s: number, p: number, _off: number) => {
       const ctrl = nextCtrl++;
-      notes.set(`${p}/${ctrl}`, { kind: 'endnote', number: notes.size + 1, text: '' });
-      return { ok: true, paraIdx: p, controlIdx: ctrl, endnoteNumber: notes.size };
+      notes.set(noteKey(p, ctrl), { kind: 'endnote', number: notes.size + 1, units: [NUM, ' '] });
+      return { ok: true, paraIdx: p, controlIdx: ctrl, endnoteNumber: notes.size, fnParaIndex: 0, charOffset: 2 };
     },
-    insertTextInFootnote: (_s: number, p: number, ctrl: number, _fp: number, off: number, t: string) => {
-      const n = notes.get(`${p}/${ctrl}`);
+    insertTextInFootnote: (_s: number, p: number, ctrl: number, _fp: number, off: number, t: string, path?: string) => {
+      const n = notes.get(noteKey(p, ctrl, path));
       if (!n) return { ok: false };
-      n.text = n.text.slice(0, off) + t + n.text.slice(off);
+      n.units.splice(off, 0, ...t);
       return { ok: true, charOffset: off + [...t].length };
     },
-    deleteTextInFootnote: (_s: number, p: number, ctrl: number, _fp: number, off: number, cnt: number) => {
-      const n = notes.get(`${p}/${ctrl}`);
-      if (!n) return { ok: false };
-      const chars = [...n.text];
-      const deleted = chars.splice(off, cnt).join('');
-      n.text = chars.join('');
-      return { ok: true, charOffset: off, deletedText: deleted };
+    replaceRangeInFootnote: (_s: number, p: number, ctrl: number, _sp: number, from: number, _ep: number, to: number, t: string, path?: string) => {
+      const n = notes.get(noteKey(p, ctrl, path));
+      if (!n) throw new Error('각주·미주가 없습니다');
+      replaceCalls.push({ from, to, text: t, path });
+      n.units.splice(from, to - from, ...t);
+      return { ok: true, fnParaIndex: 0, charOffset: from + [...t].length };
     },
-    getFootnoteInfo: (_s: number, p: number, ctrl: number) => {
-      const n = notes.get(`${p}/${ctrl}`);
-      if (!n) return { ok: false };
-      return { ok: true, paraCount: 1, totalTextLen: [...n.text].length, number: n.number, texts: [n.text] };
+    getFootnoteInfo: (_s: number, p: number, ctrl: number, path?: string) => {
+      const n = notes.get(noteKey(p, ctrl, path));
+      if (!n) throw new Error('각주·미주가 없습니다');
+      return noteInfo(n);
     },
     deleteFootnote: (_s: number, p: number, ctrl: number) => {
-      if (!notes.delete(`${p}/${ctrl}`)) return { ok: false };
+      if (!notes.delete(noteKey(p, ctrl))) return { ok: false };
       return { ok: true };
     },
-    getPageFootnoteInfo: () => null,
+    listNotes: () => [...notes].map(([key, n]) => {
+      const [p, ctrl] = key.split('/').map(Number);
+      return {
+        sectionIdx: 0, paraIdx: p, controlIdx: ctrl, ...(n.cellPath ? { cellPath: n.cellPath } : {}),
+        kind: n.kind, number: n.number, sourceType: n.cellPath ? 'table' : 'body', paraCount: 1, noteText: noteText(n),
+      };
+    }),
     // ── 책갈피 ──
     getBookmarks: () => bookmarks.map((b) => ({ ...b })),
     addBookmark: (sec: number, para: number, off: number, name: string) => {
@@ -172,7 +187,12 @@ function makeHarness(initial: string[]) {
     revision: () => revision.revision,
     text: (p: number) => body[p].chars.join(''),
     paraCount: () => body.length,
-    notes, bookmarks,
+    notes, bookmarks, replaceCalls,
+    note: (p: number, ctrl: number, path?: string) => notes.get(noteKey(p, ctrl, path)),
+    /** 표 셀 안 미주 하나를 둔다 (본문 문단 p 의 표, 셀 문단의 컨트롤 ctrl) */
+    addCellNote: (p: number, ctrl: number, cellPath: unknown[], text: string) => {
+      notes.set(noteKey(p, ctrl, JSON.stringify(cellPath)), { kind: 'endnote', number: notes.size + 1, units: [NUM, ' ', ...text], cellPath });
+    },
   };
 }
 
@@ -222,13 +242,13 @@ test('replace_all: 빈 replacement 는 전부 삭제한다', async () => {
 
 // ─── 각주 ─────────────────────────────────────────────────
 
-test('insert_footnote: 적용 즉시 각주가 생기고 reject 로 사라진다', async () => {
+test('insert_footnote: 글은 영수증 캐럿(번호와 공백 뒤)에 들어가고 reject 로 사라진다', async () => {
   const h = makeHarness(['본문 문단입니다']);
   const r = await run(h, 'insert_footnote', {
     sectionIdx: 0, paraIdx: 0, charOffset: 2, text: '각주 내용',
   }) as { changeSetId: string; anchor: { paraIdx: number; controlIdx: number }; number: number };
   assert.equal(h.notes.size, 1);
-  assert.equal(h.notes.get(`${r.anchor.paraIdx}/${r.anchor.controlIdx}`)?.text, '각주 내용');
+  assert.equal(h.note(r.anchor.paraIdx, r.anchor.controlIdx)?.units.join(''), '\u{FFFC} 각주 내용');
   h.pending.reject(r.changeSetId);
   assert.equal(h.notes.size, 0);
 });
@@ -238,24 +258,47 @@ test('insert_footnote: kind=endnote 는 미주로 삽입된다', async () => {
   const r = await run(h, 'insert_footnote', {
     sectionIdx: 0, paraIdx: 0, charOffset: 0, text: '미주 내용', kind: 'endnote',
   }) as { anchor: { paraIdx: number; controlIdx: number } };
-  assert.equal(h.notes.get(`${r.anchor.paraIdx}/${r.anchor.controlIdx}`)?.kind, 'endnote');
+  assert.equal(h.note(r.anchor.paraIdx, r.anchor.controlIdx)?.kind, 'endnote');
 });
 
-test('edit_footnote: 내용을 교체하고 reject 로 원래 내용이 복원된다', async () => {
+test('edit_footnote: 다른 가운데만 바꾸고 reject 로 원래 글이 돌아온다 — 번호는 그대로', async () => {
   const h = makeHarness(['본문']);
   const ins = await run(h, 'insert_footnote', {
-    sectionIdx: 0, paraIdx: 0, charOffset: 0, text: '원래 각주',
+    sectionIdx: 0, paraIdx: 0, charOffset: 0, text: '원래 각주 끝',
   }) as { changeSetId: string; anchor: { paraIdx: number; controlIdx: number } };
   h.pending.approve(ins.changeSetId);
-  const key = `${ins.anchor.paraIdx}/${ins.anchor.controlIdx}`;
-  assert.equal(h.notes.get(key)?.text, '원래 각주');
+  const note = () => h.note(ins.anchor.paraIdx, ins.anchor.controlIdx)?.units.join('');
 
   const ed = await run(h, 'edit_footnote', {
-    sectionIdx: 0, paraIdx: ins.anchor.paraIdx, controlIdx: ins.anchor.controlIdx, text: '고친 각주',
-  }) as { changeSetId: string };
-  assert.equal(h.notes.get(key)?.text, '고친 각주');
+    sectionIdx: 0, paraIdx: ins.anchor.paraIdx, controlIdx: ins.anchor.controlIdx, text: '원래 미주 끝',
+  }) as { changeSetId: string; kind: string };
+  assert.equal(note(), '\u{FFFC} 원래 미주 끝');
+  assert.equal(ed.kind, 'footnote');
+  // "원래 " 뒤 "각" 한 글자(캐럿 5..6)만 바꾼다 — 같은 앞뒤 글자의 서식이 남는다.
+  assert.deepEqual(h.replaceCalls.at(-1), { from: 5, to: 6, text: '미', path: undefined });
   h.pending.reject(ed.changeSetId);
-  assert.equal(h.notes.get(key)?.text, '원래 각주');
+  assert.equal(note(), '\u{FFFC} 원래 각주 끝');
+});
+
+test('list_footnotes: 문서 순서로 종류와 표 셀 주석의 cellPath 를 주고, 그 주소로 edit_footnote 가 된다', async () => {
+  const h = makeHarness(['본문', '표 문단']);
+  await run(h, 'insert_footnote', { sectionIdx: 0, paraIdx: 0, charOffset: 0, text: '본문 각주' });
+  const cellPath = [{ controlIndex: 0, cellIndex: 2, cellParaIndex: 0 }];
+  h.addCellNote(1, 0, cellPath, '셀 미주');
+  const list = await run(h, 'list_footnotes', {}) as { notes: Array<Record<string, unknown>> };
+  assert.deepEqual(list.notes.map(({ kind, sourceType, text, cellPath: path }) => ({ kind, sourceType, text, path })), [
+    { kind: 'footnote', sourceType: 'body', text: '본문 각주', path: undefined },
+    { kind: 'endnote', sourceType: 'table', text: '셀 미주', path: cellPath },
+  ]);
+  const cell = list.notes[1];
+  await run(h, 'edit_footnote', {
+    sectionIdx: cell.sectionIdx, paraIdx: cell.paraIdx, controlIdx: cell.controlIdx, cellPath: cell.cellPath, text: '셀 미주 고침',
+  });
+  assert.equal(h.note(1, 0, JSON.stringify(cellPath))?.units.join(''), '\u{FFFC} 셀 미주 고침');
+  await assert.rejects(
+    run(h, 'edit_footnote', { sectionIdx: 0, paraIdx: 1, controlIdx: 0, text: '주소 없음' }),
+    (e: unknown) => e instanceof AgentToolError && e.code === 'NOTE_NOT_FOUND',
+  );
 });
 
 test('insert_footnote: 줄바꿈이 든 텍스트는 INVALID_ARGS', async () => {

@@ -1,7 +1,7 @@
 import type { WasmBridge } from '../core/wasm-bridge.ts';
 import { agentTextToLogicalOffset } from './engine-coordinates.ts';
 import type { EventBus } from '../core/event-bus.ts';
-import type { DocumentPosition, CharProperties, CharShapeRun, SelectionRect } from '../core/types.ts';
+import type { CellPathEntry, DocumentPosition, CharProperties, CharShapeRun, NoteContentInfo, SelectionRect } from '../core/types.ts';
 import { replacementCharShapes } from './replacement-format.ts';
 import { PreparedSnapshotCommand } from '../engine/prepared-snapshot-command.ts';
 import type {
@@ -286,6 +286,43 @@ function sameCharShapes(a: readonly CharShapeRun[], b: readonly CharShapeRun[]):
 /** 머리말/꼬리말 텍스트의 {n}/{total} 플레이스홀더를 엔진 필드 문자로 치환한다 */
 function hfFieldMarkers(s: string): string {
   return s.replaceAll('{n}', '\u{0015}').replaceAll('{total}', '\u{0016}');
+}
+
+/** 주석 브리지의 notePath — 표 셀·글상자 주석의 셀 경로 JSON, 본문 주석은 undefined */
+function notePathOf(cellPath: readonly CellPathEntry[] | undefined): string | undefined {
+  return cellPath?.length ? JSON.stringify(cellPath) : undefined;
+}
+
+/** NoteContentInfo.units 에서 번호·개체 칸 */
+const NOTE_OBJECT_UNIT = '\u{FFFC}';
+
+/**
+ * 한 문단 주석의 글(번호와 공백 뒤, noteText)을 next 로 바꾸는 한 범위. 앞뒤로 같은 글자는 두고
+ * 다른 가운데만 바꿔 남은 글자의 서식을 지킨다. noteText 는 개체 칸을 빼고 세므로 units 로
+ * 글자마다 캐럿 위치를 찾는다 — 둘이 맞지 않으면 주석 글 전체를 바꾼다. 같으면 null.
+ */
+function noteTextReplacement(info: NoteContentInfo, next: string): { para: number; from: number; to: number; text: string } | null {
+  if (info.noteText === next) return null;
+  const { fnParaIndex: para, charOffset: start } = info.textStart;
+  const units = [...(info.units[para] ?? '')];
+  const textPos: number[] = [];
+  for (let i = start; i < units.length; i++) if (units[i] !== NOTE_OBJECT_UNIT) textPos.push(i);
+  const prev = [...info.noteText];
+  if (textPos.length !== prev.length || textPos.some((pos, k) => units[pos] !== prev[k])) {
+    return { para, from: start, to: info.lengths[para] ?? units.length, text: next };
+  }
+  const want = [...next];
+  let head = 0;
+  while (head < prev.length && head < want.length && prev[head] === want[head]) head++;
+  let tail = 0;
+  while (tail < prev.length - head && tail < want.length - head
+    && prev[prev.length - 1 - tail] === want[want.length - 1 - tail]) tail++;
+  const text = want.slice(head, want.length - tail).join('');
+  const lastDeleted = prev.length - tail - 1;
+  // 지울 글자가 있으면 첫 글자부터 마지막 글자 뒤까지, 넣기만 하면 같은 앞부분 바로 뒤에.
+  if (lastDeleted >= head) return { para, from: textPos[head], to: textPos[lastDeleted] + 1, text };
+  const at = head === 0 ? start : textPos[head - 1] + 1;
+  return { para, from: at, to: at, text };
 }
 
 type TableTargetOp = Extract<ObjectOp, { tableParaIdx: number }>;
@@ -2471,8 +2508,17 @@ export class PendingEditManager {
           : (res as { footnoteNumber?: number }).footnoteNumber;
         this.shiftControlIdxRefs(obj.sectionIdx, res.paraIdx, res.controlIdx, 1, obj);
         if (obj.text.length > 0) {
-          const t = wasm.insertTextInFootnote(obj.sectionIdx, res.paraIdx, res.controlIdx, 0, 0, obj.text);
-          if (t?.ok !== true) {
+          // 글은 엔진 영수증 캐럿(새 주석의 번호와 공백 뒤)에 넣는다. 캐럿 0 은 번호 앞이다.
+          let ok = false;
+          try {
+            const caret = res.fnParaIndex !== undefined && res.charOffset !== undefined
+              ? { fnParaIndex: res.fnParaIndex, charOffset: res.charOffset }
+              : wasm.getFootnoteInfo(obj.sectionIdx, res.paraIdx, res.controlIdx).textStart;
+            ok = wasm.insertTextInFootnote(
+              obj.sectionIdx, res.paraIdx, res.controlIdx, caret.fnParaIndex, caret.charOffset, obj.text,
+            )?.ok === true;
+          } catch { /* 아래에서 되돌린다 */ }
+          if (!ok) {
             // 내용 삽입 실패 시 마커를 남기지 않는다 — 통째로 되돌리고 실패 보고
             try { wasm.deleteFootnote(obj.sectionIdx, res.paraIdx, res.controlIdx); } catch { /* best effort */ }
             this.shiftControlIdxRefs(obj.sectionIdx, res.paraIdx, res.controlIdx, -1, obj);
@@ -2480,31 +2526,22 @@ export class PendingEditManager {
             throw new AgentToolError('RPC_ERROR', 'insertTextInFootnote failed');
           }
         }
-        // 엔진이 기본 내용(공백 등)을 덧붙일 수 있다 — 검증 기준을 실제 적용 결과로 잡는다
-        try {
-          const info = wasm.getFootnoteInfo(obj.sectionIdx, res.paraIdx, res.controlIdx);
-          if (info?.ok === true) obj.appliedText = info.texts[0] ?? obj.text;
-        } catch { /* 검증은 appliedText ?? text 폴백 */ }
+        // 번호 뒤 공백 처리로 요청 글과 다를 수 있다 — 검증 기준을 실제 적용 결과로 잡는다
+        obj.appliedText = this.noteInfo(obj.sectionIdx, res.paraIdx, res.controlIdx)?.noteText ?? obj.text;
         return;
       }
       case 'setNoteText': {
-        const info = wasm.getFootnoteInfo(obj.sectionIdx, obj.paraIdx, obj.controlIdx);
-        if (info?.ok !== true) throw new AgentToolError('NOTE_NOT_FOUND', 'footnote/endnote not found at that address — list_footnotes for valid addresses');
+        const info = this.noteInfo(obj.sectionIdx, obj.paraIdx, obj.controlIdx, obj.cellPath);
+        if (!info) throw new AgentToolError('NOTE_NOT_FOUND', 'footnote/endnote not found at that address — list_footnotes for valid addresses');
         if (info.paraCount !== 1) {
           throw new AgentToolError('NOTE_MULTIPARA',
             `this note has ${info.paraCount} paragraphs — edit_footnote only supports single-paragraph notes`);
         }
+        obj.noteKind = info.kind;
         // replay(approve 재적용) 시 이전 내용을 다시 캡처하지 않는다 — 최초 적용 값이 원본이다.
-        if (obj.prevText === undefined) obj.prevText = info.texts[0] ?? '';
-        const prevLen = [...(info.texts[0] ?? '')].length;
-        if (prevLen > 0) {
-          const d = wasm.deleteTextInFootnote(obj.sectionIdx, obj.paraIdx, obj.controlIdx, 0, 0, prevLen);
-          if (d?.ok !== true) throw new AgentToolError('RPC_ERROR', 'deleteTextInFootnote failed');
-        }
-        if (obj.text.length > 0) {
-          const t = wasm.insertTextInFootnote(obj.sectionIdx, obj.paraIdx, obj.controlIdx, 0, 0, obj.text);
-          if (t?.ok !== true) throw new AgentToolError('RPC_ERROR', 'insertTextInFootnote failed');
-        }
+        if (obj.prevText === undefined) obj.prevText = info.noteText;
+        if (!this.writeNoteText(obj, info, obj.text)) throw new AgentToolError('RPC_ERROR', 'replaceRangeInFootnote failed');
+        obj.appliedText = this.noteInfo(obj.sectionIdx, obj.paraIdx, obj.controlIdx, obj.cellPath)?.noteText ?? obj.text;
         return;
       }
       case 'bookmark': {
@@ -2544,6 +2581,25 @@ export class PendingEditManager {
       case 'engineBatch':
         throw new AgentToolError('INVALID_ARGS', 'engine batches are staged through addEngineBatch');
     }
+  }
+
+  /** 주석 내용 — 그 주소에 주석이 없으면 null (엔진은 던진다) */
+  private noteInfo(sectionIdx: number, paraIdx: number, controlIdx: number, cellPath?: CellPathEntry[]): NoteContentInfo | null {
+    try {
+      const info = this.deps.wasm.getFootnoteInfo(sectionIdx, paraIdx, controlIdx, notePathOf(cellPath));
+      return info?.ok === true ? info : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** 주석 글을 next 로 — 다른 가운데만 한 엔진 트랜잭션으로 바꾼다. 성공 여부 반환. */
+  private writeNoteText(obj: Extract<ObjectOp, { type: 'setNoteText' }>, info: NoteContentInfo, next: string): boolean {
+    const edit = noteTextReplacement(info, next);
+    if (!edit) return true;
+    return this.deps.wasm.replaceRangeInFootnote(
+      obj.sectionIdx, obj.paraIdx, obj.controlIdx, edit.para, edit.from, edit.para, edit.to, edit.text, notePathOf(obj.cellPath),
+    )?.ok === true;
   }
 
   /** 객체 연산의 역연산 (보관본/스냅샷을 쓸 수 없을 때의 폴백). 성공 여부 반환. */
@@ -2657,16 +2713,9 @@ export class PendingEditManager {
         }
         case 'setNoteText': {
           if (obj.prevText === undefined) return false;
-          const info = wasm.getFootnoteInfo(obj.sectionIdx, obj.paraIdx, obj.controlIdx);
-          if (info?.ok !== true || info.paraCount !== 1) return false;
-          const curLen = [...(info.texts[0] ?? '')].length;
-          if (curLen > 0) {
-            if (wasm.deleteTextInFootnote(obj.sectionIdx, obj.paraIdx, obj.controlIdx, 0, 0, curLen)?.ok !== true) return false;
-          }
-          if (obj.prevText.length > 0) {
-            if (wasm.insertTextInFootnote(obj.sectionIdx, obj.paraIdx, obj.controlIdx, 0, 0, obj.prevText)?.ok !== true) return false;
-          }
-          return true;
+          const info = this.noteInfo(obj.sectionIdx, obj.paraIdx, obj.controlIdx, obj.cellPath);
+          if (!info || info.paraCount !== 1) return false;
+          return this.writeNoteText(obj, info, obj.prevText);
         }
         case 'bookmark': {
           if (obj.op === 'add') {
@@ -3196,16 +3245,16 @@ export class PendingEditManager {
         }
         case 'insertNote': {
           if (!obj.anchor) return 'object-changed';
-          const info = wasm.getFootnoteInfo(obj.sectionIdx, obj.anchor.paraIdx, obj.anchor.controlIdx);
-          if (info?.ok !== true) return 'object-changed';
-          // 내용 지문 — 사용자가 각주 내용을 손댔으면 드리프트로 남긴다.
-          // 기준은 적용 직후 실제 텍스트(appliedText) — 엔진 기본 내용이 붙을 수 있다.
-          return (info.texts[0] ?? '') === (obj.appliedText ?? obj.text) ? null : 'text-changed';
+          const info = this.noteInfo(obj.sectionIdx, obj.anchor.paraIdx, obj.anchor.controlIdx);
+          if (!info) return 'object-changed';
+          // 내용 지문 — 사용자가 주석 글을 손댔으면 드리프트로 남긴다.
+          // 기준은 적용 직후 실제 주석 글(appliedText) — 번호 뒤 공백 처리로 요청 글과 다를 수 있다.
+          return info.noteText === (obj.appliedText ?? obj.text) ? null : 'text-changed';
         }
         case 'setNoteText': {
-          const info = wasm.getFootnoteInfo(obj.sectionIdx, obj.paraIdx, obj.controlIdx);
-          if (info?.ok !== true || info.paraCount !== 1) return 'object-changed';
-          return (info.texts[0] ?? '') === obj.text ? null : 'text-changed';
+          const info = this.noteInfo(obj.sectionIdx, obj.paraIdx, obj.controlIdx, obj.cellPath);
+          if (!info || info.paraCount !== 1) return 'object-changed';
+          return info.noteText === (obj.appliedText ?? obj.text) ? null : 'text-changed';
         }
         case 'engineBatch':
           // 스냅샷 되돌림의 사용자 편집·확정 가드가 대신 판정한다
@@ -3315,7 +3364,11 @@ export class PendingEditManager {
             && o.sectionIdx === sectionIdx && o.anchor
             && o.anchor.paraIdx === paraIdx && hit(o.anchor.controlIdx, op)) {
             o.anchor = { ...o.anchor, controlIdx: o.anchor.controlIdx + delta };
-          } else if (o.type === 'setNoteText'
+          } else if (o.type === 'setNoteText' && o.cellPath?.length
+            && o.sectionIdx === sectionIdx && o.paraIdx === paraIdx && hit(o.cellPath[0].controlIndex, op)) {
+            // 표 셀·글상자 주석은 본문 문단의 그 표·글상자 번호가 밀린다
+            o.cellPath = o.cellPath.map((entry, i) => i === 0 ? { ...entry, controlIndex: entry.controlIndex + delta } : entry);
+          } else if (o.type === 'setNoteText' && !o.cellPath?.length
             && o.sectionIdx === sectionIdx && o.paraIdx === paraIdx && hit(o.controlIdx, op)) {
             o.controlIdx += delta;
           } else if (o.type === 'bookmark'
@@ -4414,7 +4467,16 @@ export class PendingEditManager {
             cellRef(() => o.cell, (cell) => { o.cell = cell; });
             break;
           case 'setNoteText':
-            if (inRange(o.paraIdx)) {
+            if (inRange(o.paraIdx) && o.cellPath?.length) {
+              // 표 셀·글상자 주석은 그 표·글상자 컨트롤을 따라간다
+              refs.push({
+                paraIdx: o.paraIdx, controlIdx: o.cellPath[0].controlIndex,
+                set: (paraIdx, controlIdx) => {
+                  o.paraIdx = paraIdx;
+                  o.cellPath = o.cellPath?.map((entry, i) => i === 0 ? { ...entry, controlIndex: controlIdx } : entry);
+                },
+              });
+            } else if (inRange(o.paraIdx)) {
               refs.push({
                 paraIdx: o.paraIdx, controlIdx: o.controlIdx,
                 set: (paraIdx, controlIdx) => { o.paraIdx = paraIdx; o.controlIdx = controlIdx; },
