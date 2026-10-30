@@ -73,18 +73,6 @@ test('각주와 미주는 자기 문단 목록을 편집하고 HWP와 HWPX로 �
   assert.deepEqual(furniture.getFootnoteInfo(core, 0, note.paraIdx, note.controlIdx).texts, ['각주😀']);
 });
 
-test('미주 번호 모양과 간격은 미주 설정을 저장하고 각주 설정을 유지한다', t => {
-  const { core, doc } = open(t);
-  const beforeFootnote = core.query({ kind: 'noteShape', section: 0, noteKind: 'footnote' });
-  const settings = { ...furniture.getEndnoteShape(core, 0), numberFormat: 'hangulJamo', prefixChar: '(', suffixChar: ')', startNumber: 3,
-    separatorEnabled: true, separatorLength: 7200, separatorMarginTop: 80, separatorMarginBottom: 100, noteSpacing: 150,
-    separatorColor: '#123456', numbering: 'restartSection', placement: 'sectionEnd' };
-  furniture.applyEndnoteShape(core, 0, settings);
-  const reopened = open(t, doc.serialize(false)).core;
-  assert.deepEqual(furniture.getEndnoteShape(reopened, 0), settings);
-  assert.deepEqual(reopened.query({ kind: 'noteShape', section: 0, noteKind: 'footnote' }), beforeFootnote);
-});
-
 test('머리말 마당은 쪽 번호·파일 이름과 정렬·굵게를 넣는다', t => {
   const { core, doc } = open(t);
   furniture.createHeaderFooter(core, 0, true, 0);

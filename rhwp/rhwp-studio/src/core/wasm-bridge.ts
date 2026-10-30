@@ -15,7 +15,7 @@ import { createDeclaredFontAvailabilityProbe, createRawFontAvailabilityProbe } f
 import { getWebFontSubstituteFamilies } from './font-loader';
 import { isUntitledNewDocumentName } from './document-names';
 import type {
-  DocumentInfo, PageInfo, PageDef, SectionDef, PageBorderFillSettings, EndnoteShapeSettings, NoteEditInfo, CursorRect,
+  DocumentInfo, PageInfo, PageDef, SectionDef, PageBorderFillSettings, NoteShapeSettings, NoteEditInfo, CursorRect,
   HitTestResult, BodyFootnoteMarkerHit, FootnoteAtCursorResult, DeleteFootnoteResult, LineInfo, TableDimensions, CellInfo,
   TableCellTarget, CellBbox, CellProperties, TableProperties, DocumentPosition, MoveVerticalResult, SelectionRect,
   CharProperties, ParaProperties, CellPathEntry, CellPathLike, NavContextEntry, FieldInfoResult, BookmarkInfo,
@@ -1019,12 +1019,22 @@ export class WasmBridge {
     return api.insertEndnote(this.core, sec, para, charOffset);
   }
 
-  getEndnoteShape(sec: number): EndnoteShapeSettings {
+  /** 미주 모양. 바뀐 것이 없으면 편집하지 않고 changed:false 를 돌려준다. */
+  getEndnoteShape(sec: number): NoteShapeSettings {
     return api.getEndnoteShape(this.core, sec);
   }
 
-  applyEndnoteShape(sec: number, settings: EndnoteShapeSettings): { ok: boolean } {
+  applyEndnoteShape(sec: number, settings: NoteShapeSettings): { ok: boolean; changed?: boolean } {
     return api.applyEndnoteShape(this.core, sec, settings);
+  }
+
+  /** 각주 모양. 바뀐 것이 없으면 편집하지 않고 changed:false 를 돌려준다. */
+  getFootnoteShape(sec: number): NoteShapeSettings {
+    return api.getFootnoteShape(this.core, sec);
+  }
+
+  applyFootnoteShape(sec: number, settings: NoteShapeSettings): { ok: boolean; changed?: boolean } {
+    return api.applyFootnoteShape(this.core, sec, settings);
   }
 
   getFootnoteInfo(sec: number, para: number, controlIdx: number): { ok: boolean; paraCount: number; totalTextLen: number; number: number; texts: string[] } {
