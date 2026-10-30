@@ -62,6 +62,15 @@ function mapIn(core: HmCore, list: FurnitureList, para: number) {
 }
 
 const at = (core: HmCore, list: FurnitureList, para: number, offset: number): Address => toAddress(list, para, logicalToWire(mapIn(core, list, para), offset));
+/** 선택 범위의 wire 주소. 시작은 첫 선택 단위 자리라서 앞 글자 뒤에 숨은 필드 끝 같은 컨트롤은 범위 밖에 남는다. */
+function rangeIn(core: HmCore, list: FurnitureList, startPara: number, startOffset: number, endPara: number, endOffset: number): [Address, Address] {
+  if (startPara === endPara) {
+    const [a, b] = logicalRangeToWire(mapIn(core, list, startPara), startOffset, endOffset);
+    return [toAddress(list, startPara, a), toAddress(list, endPara, b)];
+  }
+  const first = mapIn(core, list, startPara);
+  return [toAddress(list, startPara, startOffset < first.stops.length ? first.stops[startOffset] : first.end), at(core, list, endPara, endOffset)];
+}
 const cursor = (caret: { page: number; x: number; y: number; height: number }): CursorRect => ({ pageIndex: caret.page, x: px(caret.x), y: px(caret.y), height: px(caret.height) });
 
 function insert(core: HmCore, list: FurnitureList, para: number, offset: number, text: string): number {
@@ -379,9 +388,9 @@ export function replaceRangeInFootnote(core: HmCore, sec: number, para: number, 
   const list = noteList(core, sec, para, control, path), from = at(core, list, startPara, startOffset);
   const ops: EditOp[] = [];
   if (startPara !== endPara || startOffset !== endOffset) {
-    const [a, b] = startPara === endPara ? logicalRangeToWire(mapIn(core, list, startPara), startOffset, endOffset) : [from.offset, at(core, list, endPara, endOffset).offset];
-    ops.push({ op: 'delete', from: toAddress(list, startPara, a), to: toAddress(list, endPara, b) });
-    if (replacement) ops.push({ op: 'insertText', at: toAddress(list, startPara, a), text: lineBreakText(replacement) });
+    const [a, b] = rangeIn(core, list, startPara, startOffset, endPara, endOffset);
+    ops.push({ op: 'delete', from: a, to: b });
+    if (replacement) ops.push({ op: 'insertText', at: a, text: lineBreakText(replacement) });
   } else if (replacement) {
     ops.push({ op: 'insertText', at: from, text: lineBreakText(replacement) });
   }
@@ -392,7 +401,7 @@ export function replaceRangeInFootnote(core: HmCore, sec: number, para: number, 
 /** 범위가 비면 캐럿에, 아니면 범위 위에 붙여 넣는다(한 번의 엔진 붙여넣기). text 가 null 이면 엔진이 복사해 둔 조각이다. 주석 안에 들어온 주석 표시는 버린다. */
 export function pasteInFootnote(core: HmCore, sec: number, para: number, control: number, startPara: number, startOffset: number, endPara: number, endOffset: number, text: string | null, path?: string) {
   const list = noteList(core, sec, para, control, path);
-  const from = at(core, list, startPara, startOffset), to = at(core, list, endPara, endOffset);
+  const [from, to] = rangeIn(core, list, startPara, startOffset, endPara, endOffset);
   const request: Record<string, unknown> = startPara === endPara && startOffset === endOffset ? { at: from } : { replace: { from, to } };
   if (text !== null) request.text = text.replace(/\r\n?/g, '\n');
   const receipt = core.mutate(doc => doc.paste(JSON.stringify(request)));
@@ -413,12 +422,7 @@ export function pasteInFootnote(core: HmCore, sec: number, para: number, control
 /** 주석 안 선택을 엔진 클립보드에 담는다. 번호 칸을 고르면 번호도 함께 담긴다. */
 export function copySelectionInFootnote(core: HmCore, sec: number, para: number, control: number, startPara: number, startOffset: number, endPara: number, endOffset: number, path?: string) {
   const list = noteList(core, sec, para, control, path);
-  let from = at(core, list, startPara, startOffset), to = at(core, list, endPara, endOffset);
-  if (startPara === endPara) {
-    const [a, b] = logicalRangeToWire(mapIn(core, list, startPara), startOffset, endOffset);
-    from = toAddress(list, startPara, a);
-    to = toAddress(list, endPara, b);
-  }
+  const [from, to] = rangeIn(core, list, startPara, startOffset, endPara, endOffset);
   const copied = copyRange(core, from, to);
   return { ok: true, text: copied.text, html: copied.html };
 }

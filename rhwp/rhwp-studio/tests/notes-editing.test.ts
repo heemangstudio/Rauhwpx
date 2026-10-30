@@ -186,6 +186,30 @@ test('주석 안 복사·오려 두기는 주석 선택을 담고, 붙여넣기�
   assert.equal(undoSteps(f.host), 2, '오려 두기와 붙여넣기가 한 칸씩이다');
 });
 
+test('주석 안 선택을 바꾸거나 지워도 선택 바로 앞의 필드 끝은 남는다', () => {
+  const f = noteFixture('abcd');
+  const core = (f.wasm as any).core;
+  const list = { section: 0, steps: [{ para: f.ref.paraIdx, control: f.ref.controlIdx, index: 0 }] };
+  const head = core.paragraph(list, 0);
+  core.transact([{ op: 'insertField', at: { section: 0, steps: list.steps, para: 0, offset: head.offsets[head.text.indexOf('b') + 1] }, kind: 'fileName', command: '$F', text: 'FN' }]);
+  // 글자가 아닌 칸(번호, 필드 시작·끝)의 wire 길이
+  const hidden = (para = 0) => { const info = core.paragraph(list, para); return info.offsets.at(-1) - info.text.length; };
+  const before = hidden();
+  const c = () => [...f.info().units[0]].indexOf('c');
+  f.select(c(), c() + 1);
+  quiet(() => keyboard.onPaste.call(f.host, clipboardEvent({ 'text/plain': 'Q' })));
+  assert.equal(hidden(), before, '한 문단 붙여넣기');
+
+  quiet(() => f.host.cursor.setFnCursorPosition(0, f.info().lengths[0]));
+  press(f.host, 'Enter');
+  type(f.host, 'xyz');
+  const q = [...f.info().units[0]].indexOf('Q');
+  quiet(() => { f.host.cursor.clearSelection(); f.host.cursor.setFnCursorPosition(0, q); f.host.cursor.setFnAnchor(); f.host.cursor.setFnCursorPosition(1, 1); });
+  press(f.host, 'Delete');
+  assert.equal(f.info().paraCount, 1);
+  assert.equal(hidden(), before, '문단을 넘는 지우기');
+});
+
 test('주석 표시가 든 본문 조각을 주석에 붙이면 표시는 버리고 글만 들어간다', () => {
   const f = noteFixture('');
   const ref = f.ref;
