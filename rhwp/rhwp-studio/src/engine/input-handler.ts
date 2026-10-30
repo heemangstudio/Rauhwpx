@@ -8,8 +8,8 @@ import { resolveGlyphStartRect, isCompositionBoxRepresentable } from './line-sta
 import { FieldMarkerRenderer } from './field-marker-renderer';
 import { SelectionRenderer } from './selection-renderer';
 import { CommandHistory } from './history';
-import { DeleteSelectionCommand, ApplyCharFormatCommand, ApplyParaFormatCommand, SnapshotCommand, SubmodeSelectionSnapshotCommand, SetFormValueCommand, TextMutationEffectAccumulator, IMMEDIATE_TEXT_MUTATION_EFFECTS, applyCharFormatToTarget, caretRangeToTextRange, caretTextOffset } from './command';
-import type { OperationDescriptor, ParaFormatTarget, RefreshPolicy, TextMutationEffects, EditCommand, EditContext, HeaderFooterSelectionSnapshot, FormValueTarget } from './command';
+import { DeleteSelectionCommand, ApplyCharFormatCommand, ApplyParaFormatCommand, SnapshotCommand, SubmodeSelectionSnapshotCommand, NoteSelectionReplaceCommand, SetFormValueCommand, TextMutationEffectAccumulator, IMMEDIATE_TEXT_MUTATION_EFFECTS, applyCharFormatToTarget, caretRangeToTextRange, caretTextOffset, notePathOf } from './command';
+import type { OperationDescriptor, ParaFormatTarget, RefreshPolicy, TextMutationEffects, EditCommand, EditContext, HeaderFooterSelectionSnapshot, FormValueTarget, FootnoteEditTarget, FootnoteSelectionSnapshot } from './command';
 import { CapturedSnapshotCommand } from './captured-snapshot-command.ts';
 import type { CapturedSnapshotCallbacks } from './captured-snapshot-command.ts';
 import { VirtualScroll } from '@/view/virtual-scroll';
@@ -568,6 +568,10 @@ export class InputHandler {
   private textareaConsumed = 0;
   /** HF 선택 위 IME는 선택 삭제와 최종 조합 문자열을 하나의 snapshot으로 기록한다. */
   private headerFooterSelectionComposition = false;
+  /** 주석 선택 위 IME도 선택 삭제와 조합 글자를 한 snapshot 으로 기록한다. */
+  private footnoteSelectionComposition = false;
+  /** 주석·번호 지우기 물음이 열려 있다. 답하기 전 키는 다시 묻지 않는다. */
+  private noteDeletePending = false;
   /** 선택 위 IME는 조합 확정 때만 삭제·삽입을 한 이력으로 기록한다. */
   private selectionComposition: { beforeId: number; cursorBefore: DocumentPosition } | null = null;
   private _pendingNavAfterIME: NavigationKeyInput | null = null;
@@ -1623,13 +1627,7 @@ export class InputHandler {
   /** 화면 좌표에서 각주/미주 내부 hitTest 결과를 반환한다. */
   private footnoteHitTestFromClientPoint(clientX: number, clientY: number): {
     pageIdx: number;
-    hit: {
-      hit: boolean;
-      fnParaIndex?: number;
-      charOffset?: number;
-      footnoteIndex?: number;
-      cursorRect?: { pageIndex: number; x: number; y: number; height: number };
-    };
+    hit: ReturnType<WasmBridge['hitTestInFootnote']>;
   } | null {
     const zoom = this.viewportManager.getZoom();
     const scrollContent = this.container.querySelector('#scroll-content');
@@ -1725,7 +1723,7 @@ export class InputHandler {
       const fnHit = this.footnoteHitTestFromClientPoint(this.dragLastClientX, this.dragLastClientY);
       if (
         fnHit?.hit.hit &&
-        fnHit.hit.footnoteIndex === this.cursor.fnFootnoteIndex &&
+        this.cursor.isEditingNote(fnHit.hit) &&
         fnHit.hit.fnParaIndex !== undefined &&
         fnHit.hit.charOffset !== undefined
       ) {
@@ -2125,8 +2123,6 @@ export class InputHandler {
       this.applyCharFormatInHeaderFooterSelection(props);
       return;
     }
-    // 각주는 아직 전용 범위 API가 없어 예약 자체를 차단한다.
-    if (this.cursor.isInFootnote()) return;
     if (!this.hasNonCollapsedTextSelection()) {
       this.mergePendingCharFormat(props);
       this.emitCursorFormatState();
@@ -2244,6 +2240,7 @@ export class InputHandler {
         startOffset,
         endOffset,
         json,
+        this.cursor.fnNotePath,
       );
       return;
     }
@@ -2325,6 +2322,7 @@ export class InputHandler {
         this.cursor.fnControlIdx,
         innerParaIdx,
         offset,
+        this.cursor.fnNotePath,
       ));
     }
     const sel = this.cursor.getSelectionOrdered();
@@ -2419,6 +2417,7 @@ export class InputHandler {
           sectionIndex: this.cursor.fnSectionIdx,
           hostParagraphIndex: this.cursor.fnParaIdx,
           controlIndex: this.cursor.fnControlIdx,
+          ...(this.cursor.fnCellPath ? { cellPath: this.cursor.fnCellPath } : {}),
           paragraphIndex,
           footnoteIndex: this.cursor.fnFootnoteIndex,
           pageNum: this.cursor.fnPageNum,
@@ -2492,6 +2491,8 @@ export class InputHandler {
         sectionIdx: this.cursor.fnSectionIdx,
         paraIdx: this.cursor.fnParaIdx,
         controlIdx: this.cursor.fnControlIdx,
+        ...(this.cursor.fnCellPath ? { cellPath: this.cursor.fnCellPath } : {}),
+        ...(this.cursor.fnExitAfterMark ? { exitAfterMark: true } : {}),
         footnoteIndex: this.cursor.fnFootnoteIndex,
         pageNum: this.cursor.fnPageNum,
         innerParaIdx: this.cursor.fnInnerParaIdx,
@@ -2535,8 +2536,9 @@ export class InputHandler {
           target.sectionIndex,
           target.hostParagraphIndex,
           target.controlIndex,
+          notePathOf(target),
         );
-        return Array.from(info.texts[target.paragraphIndex] ?? '').length;
+        return info.lengths?.[target.paragraphIndex] ?? Array.from(info.texts[target.paragraphIndex] ?? '').length;
       }
     }
   }
@@ -2576,6 +2578,7 @@ export class InputHandler {
           sectionIndex: this.cursor.fnSectionIdx,
           hostParagraphIndex: this.cursor.fnParaIdx,
           controlIndex: this.cursor.fnControlIdx,
+          ...(this.cursor.fnCellPath ? { cellPath: this.cursor.fnCellPath } : {}),
           paragraphIndex,
           footnoteIndex: this.cursor.fnFootnoteIndex,
           pageNum: this.cursor.fnPageNum,
@@ -2770,6 +2773,7 @@ export class InputHandler {
             this.cursor.fnParaIdx,
             this.cursor.fnControlIdx,
             this.cursor.fnInnerParaIdx,
+            this.cursor.fnNotePath,
           )
         : inCell
         ? this.wasm.getCellParaPropertiesAt(
@@ -2969,43 +2973,130 @@ export class InputHandler {
     return true;
   }
 
-  /**
-   * 각주 안 선택을 지운다. 문단에 걸친 선택은 시작 문단 끝·끝 문단 앞·사이 문단 글자를 지우고 문단을 붙인다.
-   * 한 스냅샷 이력으로 남기고, 되돌리면 지우기 전 각주 캐럿으로 돌아간다. 선택이 비었으면 false.
-   */
-  private deleteFootnoteSelection(): boolean {
+  /** 편집 중인 주석의 명령 대상. 쪽·쪽 안 순번이 아니라 주석 주소로 주석을 찾는다. */
+  footnoteEditTarget(): FootnoteEditTarget {
+    return {
+      sectionIdx: this.cursor.fnSectionIdx,
+      paraIdx: this.cursor.fnParaIdx,
+      controlIdx: this.cursor.fnControlIdx,
+      ...(this.cursor.fnCellPath ? { cellPath: this.cursor.fnCellPath } : {}),
+      ...(this.cursor.fnExitAfterMark ? { exitAfterMark: true } : {}),
+      footnoteIndex: this.cursor.fnFootnoteIndex,
+      pageNum: this.cursor.fnPageNum,
+    };
+  }
+
+  /** 주석 안의 펼친 선택. 없거나 접혀 있으면 null. */
+  getNonEmptyFootnoteSelection(): { start: { fnParaIdx: number; charOffset: number }; end: { fnParaIdx: number; charOffset: number } } | null {
+    if (!this.cursor.isInFootnote()) return null;
     const selection = this.cursor.getFootnoteSelectionOrdered();
-    if (!selection) return false;
+    if (!selection) return null;
     const { start, end } = selection;
-    if (start.fnParaIdx === end.fnParaIdx && start.charOffset === end.charOffset) return false;
-    const before = this.getCurrentEditContext() as Extract<EditContext, { mode: 'footnote' }>;
-    const { sectionIdx: sec, paraIdx: para, controlIdx: control } = before;
+    if (start.fnParaIdx === end.fnParaIdx && start.charOffset === end.charOffset) return null;
+    return { start, end };
+  }
+
+  /**
+   * 주석 안 선택(없으면 캐럿)을 한 스냅샷 이력으로 바꾼다. 입력·IME·Enter·붙여넣기·지우기가 모두 이 길을 탄다
+   * (한컴 c09d·c09e: 선택 위 입력과 붙여넣기는 되돌리기 한 번). 되돌리면 같은 주석의 원래 캐럿으로 돌아간다.
+   */
+  private replaceFootnoteSelection(
+    replacement: string | null,
+    options: {
+      operationType: string;
+      restoreSelectionOnUndo?: boolean;
+      allowCollapsed?: boolean;
+      /** 엔진 붙여넣기(replacement 가 null 이면 엔진 클립보드 조각). */
+      paste?: boolean;
+      /** 바꾼 뒤 문단을 나눈다(선택 위 Enter). */
+      split?: boolean;
+      /** 이어 친 글자를 같은 이력에 담는다. */
+      typing?: boolean;
+      charFormat?: Partial<CharProperties>;
+      /** 지울 범위를 직접 준다(번호 칸 하나 지우기 등). */
+      range?: { start: { fnParaIdx: number; charOffset: number }; end: { fnParaIdx: number; charOffset: number } };
+    },
+  ): boolean {
+    if (!this.cursor.isInFootnote()) return false;
+    const ordered = options.range ?? this.getNonEmptyFootnoteSelection();
+    if (!ordered && options.allowCollapsed !== true) return false;
+    const target = this.footnoteEditTarget();
+    const path = notePathOf(target);
+    const caret = { fnParaIdx: this.cursor.fnInnerParaIdx, charOffset: this.cursor.fnCharOffset };
+    const start = ordered?.start ?? caret;
+    const end = ordered?.end ?? caret;
+    const contextBefore = this.getCurrentEditContext() as Extract<EditContext, { mode: 'footnote' }>;
+    const selectionBefore: FootnoteSelectionSnapshot | null = ordered && options.restoreSelectionOnUndo && !options.range
+      ? { mode: 'footnote', start: { ...start }, end: { ...end } }
+      : null;
     const bodyPosition = this.cursor.getPosition();
+    let result: { fnParaIndex: number; charOffset: number } | null = null;
+    const charFormat = options.charFormat && Object.keys(options.charFormat).length ? options.charFormat : undefined;
+    const operation = (wasm: WasmBridge): DocumentPosition => {
+      const changed = options.paste
+        ? wasm.pasteInFootnote(target.sectionIdx, target.paraIdx, target.controlIdx, start.fnParaIdx, start.charOffset, end.fnParaIdx, end.charOffset, replacement, path)
+        : wasm.replaceRangeInFootnote(target.sectionIdx, target.paraIdx, target.controlIdx, start.fnParaIdx, start.charOffset, end.fnParaIdx, end.charOffset, replacement ?? '', path);
+      if (!changed.ok) throw new Error('주석 범위 바꾸기를 엔진이 거부했습니다');
+      let after = { fnParaIndex: changed.fnParaIndex, charOffset: changed.charOffset };
+      if (charFormat && replacement && after.fnParaIndex === start.fnParaIdx && after.charOffset > start.charOffset) {
+        wasm.applyCharFormatInFootnote(target.sectionIdx, target.paraIdx, target.controlIdx, start.fnParaIdx, start.charOffset, after.charOffset, JSON.stringify(charFormat), path);
+      }
+      if (options.split) {
+        const split = wasm.splitParagraphInFootnote(target.sectionIdx, target.paraIdx, target.controlIdx, after.fnParaIndex, after.charOffset, undefined, path);
+        after = { fnParaIndex: split.fnParaIndex, charOffset: 0 };
+      }
+      result = after;
+      return { ...bodyPosition };
+    };
+    const contextAfter = (): EditContext => {
+      if (!result) throw new Error('주석 범위 바꾸기 결과가 없습니다');
+      return { ...contextBefore, innerParaIdx: result.fnParaIndex, charOffset: result.charOffset };
+    };
     this.cursor.clearSelection();
-    this.executeOperation({
-      kind: 'snapshot',
-      operationType: 'deleteSelectionInFootnote',
-      editContext: before,
-      editContextAfter: { ...before, innerParaIdx: start.fnParaIdx, charOffset: start.charOffset },
-      operation: (wasm) => {
-        const lengths = wasm.getFootnoteInfo(sec, para, control).texts.map(text => Array.from(text).length);
-        if (start.fnParaIdx === end.fnParaIdx) {
-          wasm.deleteTextInFootnote(sec, para, control, start.fnParaIdx, start.charOffset, end.charOffset - start.charOffset);
-        } else {
-          wasm.deleteTextInFootnote(sec, para, control, end.fnParaIdx, 0, end.charOffset);
-          for (let inner = end.fnParaIdx - 1; inner > start.fnParaIdx; inner--) {
-            if (lengths[inner] > 0) wasm.deleteTextInFootnote(sec, para, control, inner, 0, lengths[inner]);
-          }
-          const tail = lengths[start.fnParaIdx] - start.charOffset;
-          if (tail > 0) wasm.deleteTextInFootnote(sec, para, control, start.fnParaIdx, start.charOffset, tail);
-          for (let merged = start.fnParaIdx; merged < end.fnParaIdx; merged++) {
-            wasm.mergeParagraphInFootnote(sec, para, control, start.fnParaIdx + 1);
-          }
-        }
-        return { ...bodyPosition };
-      },
-    });
-    this.cursor.setFnCursorPosition(start.fnParaIdx, start.charOffset);
+    try {
+      this.executeOperation({
+        kind: 'snapshot',
+        operationType: options.operationType,
+        editContext: contextBefore,
+        editContextAfter: contextAfter,
+        selectionBefore,
+        ...(options.typing && !charFormat ? { noteTyping: target } : {}),
+        operation,
+      });
+      return result !== null;
+    } catch (err) {
+      if (ordered && !options.range) this.cursor.selectFootnoteRange(ordered.start, ordered.end);
+      console.warn('[InputHandler] 주석 범위 바꾸기 실패:', err);
+      return false;
+    }
+  }
+
+  /** 주석 안 선택을 지운다. 되돌리면 지우기 전 선택이 돌아온다. 선택이 비었으면 false. */
+  private deleteFootnoteSelection(operationType = 'deleteSelectionInFootnote'): boolean {
+    if (!this.getNonEmptyFootnoteSelection()) return false;
+    return this.replaceFootnoteSelection('', { operationType, restoreSelectionOnUndo: true });
+  }
+
+  /** IME 조합 시작 전 주석 선택 삭제를 조합 글자와 같은 snapshot 에 묶는다. */
+  private beginFootnoteSelectionComposition(): boolean {
+    const started = this.replaceFootnoteSelection('', { operationType: 'replaceSelectionInFootnote', typing: true });
+    this.footnoteSelectionComposition = started;
+    return started;
+  }
+
+  /** 조합이 끝나면 snapshot 의 redo 상태와 문맥을 조합 글자 뒤로 맞춘다. 이어 친 글자는 그 뒤에 붙는다. */
+  private finishFootnoteSelectionComposition(): boolean {
+    if (!this.footnoteSelectionComposition) return false;
+    this.footnoteSelectionComposition = false;
+    const cmd = this.history.peekUndoTop();
+    if (!(cmd instanceof SubmodeSelectionSnapshotCommand)) return true;
+    cmd.captureAfter(this.wasm, this.cursor.getPosition());
+    this.history.invalidateCurrentSnapshot();
+    const context = this.getCurrentEditContext();
+    if (context) cmd.updateContextAfter(context);
+    if (cmd instanceof NoteSelectionReplaceCommand && context?.mode === 'footnote') {
+      cmd.continueTypingAt(context.innerParaIdx, context.charOffset);
+    }
     return true;
   }
 
@@ -3128,13 +3219,13 @@ export class InputHandler {
         this.cursor.exitHeaderFooterMode();
         emitHeaderFooterModeChanged(this.eventBus, this.cursor);
       }
-      const sameTarget = this.cursor.isInFootnote()
-        && this.cursor.fnSectionIdx === ctx.sectionIdx
-        && this.cursor.fnParaIdx === ctx.paraIdx
-        && this.cursor.fnControlIdx === ctx.controlIdx;
-      if (!sameTarget) {
-        if (this.cursor.isInFootnote()) this.cursor.exitFootnoteMode();
-        this.cursor.enterFootnoteMode(ctx.sectionIdx, ctx.paraIdx, ctx.controlIdx, ctx.footnoteIndex, ctx.pageNum);
+      const ref = {
+        sectionIdx: ctx.sectionIdx, paraIdx: ctx.paraIdx, controlIdx: ctx.controlIdx,
+        ...(ctx.cellPath?.length ? { cellPath: ctx.cellPath.map(entry => ({ ...entry })) } : {}),
+      };
+      if (!this.cursor.isEditingNote(ref)) {
+        // 주석 주소로 다시 들어간다. 쪽·쪽 안 순번은 그사이 바뀌었을 수 있다.
+        this.cursor.enterNoteMode(ref, { exitAfterMark: ctx.exitAfterMark === true });
         this.eventBus.emit('footnoteModeChanged', true);
       }
       this.cursor.setFnCursorPosition(ctx.innerParaIdx, ctx.charOffset);
@@ -3195,6 +3286,8 @@ export class InputHandler {
     if ('mode' in range) {
       if (range.mode === 'headerFooter') {
         this.cursor.selectHeaderFooterRange(range.start, range.end, range.previewPage);
+      } else if (range.mode === 'footnote' && this.cursor.isInFootnote()) {
+        this.cursor.selectFootnoteRange(range.start, range.end);
       }
       return;
     }
@@ -3276,14 +3369,26 @@ export class InputHandler {
         const cursorBefore = this.cursor.getPosition();
         // 일반 snapshot은 구조 편집의 본문 복귀 의미를 유지한다. HF/FN 안에서만
         // 문맥을 보존하는 전용 명령을 써서 undo/redo의 대상 범위를 호출부가 드러낸다.
-        const cmd = desc.editContext
+        // editContext 없이 editContextAfter 만 있으면 본문에서 시작해 HF/FN 으로 들어가는 편집이다(주석 넣기).
+        const contextAfter = desc.editContextAfter ?? desc.editContext;
+        const cmd = desc.noteTyping && desc.editContext && typeof desc.editContextAfter === 'function'
+          ? new NoteSelectionReplaceCommand(
+              desc.operationType,
+              cursorBefore,
+              desc.operation,
+              desc.editContext,
+              desc.editContextAfter,
+              desc.selectionBefore ?? null,
+              desc.noteTyping,
+            )
+          : contextAfter
           ? new SubmodeSelectionSnapshotCommand(
               desc.operationType,
               cursorBefore,
               cursorBefore,
               desc.operation,
-              desc.editContext,
-              desc.editContextAfter ?? desc.editContext,
+              desc.editContext ?? null,
+              contextAfter,
               desc.selectionBefore ?? null,
               desc.selectionAfter ?? null,
             )
@@ -3908,9 +4013,9 @@ export class InputHandler {
           this.cursor.hfParaIdx, anchor.charOffset, this.cursor.hfPreviewPage,
         );
       } else if (this.cursor.isInFootnote()) {
-        startRect = this.wasm.getCursorRectInFootnote(
-          this.cursor.fnPageNum, this.cursor.fnFootnoteIndex,
-          this.cursor.fnInnerParaIdx, anchor.charOffset,
+        startRect = this.wasm.getCursorRectInNote(
+          this.cursor.fnSectionIdx, this.cursor.fnParaIdx, this.cursor.fnControlIdx,
+          this.cursor.fnInnerParaIdx, anchor.charOffset, this.cursor.fnNotePath,
         );
       } else if ((anchor.cellPath?.length ?? 0) > 1 && anchor.parentParaIndex !== undefined) {
         startRect = this.wasm.getCursorRectByPath(
@@ -4220,16 +4325,19 @@ export class InputHandler {
 
     const fnSel = this.cursor.getFootnoteSelectionOrdered();
     if (fnSel) {
-      const { start, end, pageNum, footnoteIndex } = fnSel;
+      const { start, end } = fnSel;
       const zoom = this.viewportManager.getZoom();
       try {
-        const rects = this.wasm.getSelectionRectsInFootnote(
-          pageNum,
-          footnoteIndex,
+        // 주석 주소로 칠한다. 쪽을 넘어 이어지는 주석의 선택도 모든 쪽에 그린다.
+        const rects = this.wasm.getSelectionRectsInNote(
+          this.cursor.fnSectionIdx,
+          this.cursor.fnParaIdx,
+          this.cursor.fnControlIdx,
           start.fnParaIdx,
           start.charOffset,
           end.fnParaIdx,
           end.charOffset,
+          this.cursor.fnNotePath,
         );
         this.selectionRenderer.render(rects, zoom);
       } catch (e) {
@@ -4748,6 +4856,7 @@ export class InputHandler {
     this._iosPrevText = '';
     this._iosRequiresFullRefresh = false;
     this.headerFooterSelectionComposition = false;
+    this.footnoteSelectionComposition = false;
     this.resetTextareaBuffer();
   }
 
@@ -5810,6 +5919,16 @@ export class InputHandler {
   }
 
   /** 커서가 누름틀 필드 내부인가? */
+  /** 각주·미주를 편집 중인가. */
+  isInFootnoteMode(): boolean {
+    return this.cursor.isInFootnote();
+  }
+
+  /** 머리말·꼬리말을 편집 중인가. */
+  isInHeaderFooterMode(): boolean {
+    return this.cursor.isInHeaderFooter();
+  }
+
   isInField(): boolean {
     try {
       const fi = this.wasm.getFieldInfoAt(this.cursor.getPosition());
@@ -6472,6 +6591,7 @@ export class InputHandler {
         this.cursor.fnParaIdx,
         this.cursor.fnControlIdx,
         this.cursor.fnInnerParaIdx,
+        this.cursor.fnNotePath,
       );
     }
     const pos = this.cursor.getPosition();
@@ -6529,14 +6649,14 @@ export class InputHandler {
     const footnote = this.cursor.getFootnoteSelectionOrdered();
     if (footnote && (footnote.start.fnParaIdx !== footnote.end.fnParaIdx
       || footnote.start.charOffset !== footnote.end.charOffset)) {
-      const info = this.wasm.getFootnoteInfo(this.cursor.fnSectionIdx, this.cursor.fnParaIdx, this.cursor.fnControlIdx);
+      const info = this.wasm.getFootnoteInfo(this.cursor.fnSectionIdx, this.cursor.fnParaIdx, this.cursor.fnControlIdx, this.cursor.fnNotePath);
       const parts: string[] = [];
       for (let paragraph = footnote.start.fnParaIdx; paragraph <= footnote.end.fnParaIdx; paragraph++) {
-        const chars = Array.from(info.texts[paragraph] ?? '');
+        // 논리 칸으로 자른다. 번호·개체 칸은 글자가 아니다.
+        const units = Array.from(info.units?.[paragraph] ?? info.texts[paragraph] ?? '');
         const from = paragraph === footnote.start.fnParaIdx ? footnote.start.charOffset : 0;
-        // The note number keeps a placeholder space at the start of the first paragraph.
-        parts.push(chars.slice(paragraph === 0 ? Math.max(from, 1) : from,
-          paragraph === footnote.end.fnParaIdx ? footnote.end.charOffset : chars.length).join(''));
+        const to = paragraph === footnote.end.fnParaIdx ? footnote.end.charOffset : units.length;
+        parts.push(units.slice(from, to).filter(unit => unit !== '\uFFFC').join(''));
       }
       return parts.join('\n');
     }
@@ -6557,6 +6677,20 @@ export class InputHandler {
       this.cursor.getPosition(),
       this.getCurrentEditContext(),
     );
+    this.executeOperation({ kind: 'command', command: cmd });
+  }
+
+  /** 주석 안 펼친 선택의 글자 범위. 주석 편집이 아니거나 선택이 없으면 null (글자 모양 대화상자용). */
+  getNoteCharFormatRanges(): EditableTextRange[] | null {
+    if (!this.cursor.isInFootnote() || !this.hasNonCollapsedTextSelection()) return null;
+    const ranges = this.getCharFormatRangesAtCursor();
+    return ranges.length ? ranges.map(range => ({ ...range, target: { ...range.target } })) : null;
+  }
+
+  /** 미리 받아 둔 글자 범위에 글자 서식을 적용한다. 주석 범위면 되돌릴 때 그 주석으로 돌아간다. */
+  applyCharPropsToRanges(ranges: EditableTextRange[], props: Partial<CharProperties>): void {
+    if (!ranges.length) return;
+    const cmd = new ApplyCharFormatCommand(ranges, props, this.cursor.getPosition(), this.getCurrentEditContext());
     this.executeOperation({ kind: 'command', command: cmd });
   }
 

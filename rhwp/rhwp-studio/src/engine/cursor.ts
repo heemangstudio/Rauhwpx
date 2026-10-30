@@ -1,4 +1,4 @@
-import type { DocumentPosition, CursorRect, LineInfo, CellPathEntry, NavContextEntry, CellBbox, ObjectRef } from '@/core/types';
+import type { DocumentPosition, CursorRect, LineInfo, CellPathEntry, NavContextEntry, CellBbox, ObjectRef, NoteCaret, NoteContentInfo, NoteRef } from '@/core/types';
 import type { WasmBridge } from '@/core/wasm-bridge';
 import { sameAddressedObject } from '@/core/object-address';
 // [#2756] 셀 좌표 축 헬퍼는 command.ts 와 단일 정의를 공유한다(축 유도 복제 금지).
@@ -63,6 +63,12 @@ export class CursorState {
   private _fnFootnoteIndex = 0;
   /** 각주 구역 인덱스 */
   private _fnSectionIdx = 0;
+  /** 표 셀·글상자 안 주석의 셀 경로. _fnParaIdx 는 그때 맨 바깥 본문 문단이다. */
+  private _fnCellPath: CellPathEntry[] | undefined;
+  /** 나갈 때 표시 뒤로 갈지(새로 넣은 주석). */
+  private _fnExitAfterMark = false;
+  /** 주석 안 위·아래 이동이 유지하는 x(px). */
+  private fnPreferredX: number | null = null;
 
   // ─── F5 셀 블록 선택 ──────────────────────────────────────
   private _cellSelectionMode = false;
@@ -1217,20 +1223,16 @@ export class CursorState {
 
       // 각주 편집 모드
       if (this._footnoteMode) {
-        const noteRect = this.wasm.getCursorRectInNote?.(
+        // 주석 주소로 찾는다. 쪽·쪽 안 순번은 편집하면서 바뀐다.
+        const noteRect = this.wasm.getCursorRectInNote(
           this._fnSectionIdx,
           this._fnParaIdx,
           this._fnControlIdx,
           this._fnInnerParaIdx,
           this._fnCharOffset,
+          this.fnNotePath,
         );
-        if (noteRect) {
-          this.rect = noteRect;
-          return;
-        }
-        this.rect = this.wasm.getCursorRectInFootnote(
-          this._fnPageNum, this._fnFootnoteIndex, this._fnInnerParaIdx, this._fnCharOffset,
-        );
+        if (noteRect) this.rect = noteRect;
         return;
       }
 
@@ -2149,41 +2151,81 @@ export class CursorState {
   get fnSectionIdx(): number { return this._fnSectionIdx; }
   get fnParaIdx(): number { return this._fnParaIdx; }
   get fnControlIdx(): number { return this._fnControlIdx; }
+  /** 표 셀·글상자 안 주석이면 안쪽 문단까지의 경로. 본문 주석은 undefined. */
+  get fnCellPath(): CellPathEntry[] | undefined { return this._fnCellPath?.map(entry => ({ ...entry })); }
+  /** 주석 브리지 메서드의 마지막 인자(셀 경로 JSON). 본문 주석은 undefined. */
+  get fnNotePath(): string | undefined { return this._fnCellPath?.length ? JSON.stringify(this._fnCellPath) : undefined; }
   get fnInnerParaIdx(): number { return this._fnInnerParaIdx; }
   get fnCharOffset(): number { return this._fnCharOffset; }
+  /** 하위 호환용. 편집 경로는 주석 주소(fnNoteRef)로만 주석을 찾는다. */
   get fnFootnoteIndex(): number { return this._fnFootnoteIndex; }
-  get fnPageNum(): number { return this._fnPageNum; }
+  get fnPageNum(): number { return this.rect?.pageIndex ?? this._fnPageNum; }
 
-  /** 각주 편집 모드에 진입한다.
+  /** 편집 중인 주석의 주소. */
+  fnNoteRef(): NoteRef {
+    return {
+      sectionIdx: this._fnSectionIdx, paraIdx: this._fnParaIdx, controlIdx: this._fnControlIdx,
+      ...(this._fnCellPath?.length ? { cellPath: this.fnCellPath } : {}),
+    };
+  }
+
+  /** 편집 중인 주석이 ref 와 같은가. */
+  isEditingNote(ref: Partial<NoteRef>): boolean {
+    return this._footnoteMode && ref.sectionIdx === this._fnSectionIdx && ref.paraIdx === this._fnParaIdx
+      && ref.controlIdx === this._fnControlIdx && sameCellPath(ref.cellPath, this._fnCellPath);
+  }
+
+  /** 각주 편집 모드에 진입한다. 캐럿은 주석 처음(자신의 번호 앞)에 둔다. 호출부가 setFnCursorPosition 으로 옮긴다.
    *
-   * [Task #1058 reopen Round 5] 신규/기존 각주 inner_para 의 한컴 contract 는
-   * 두 placeholder space + AutoNumber 8 cu 차지 (text="  ", char_offsets=[0, 8]).
-   * caret 초기 위치를 char_offset=2 로 설정하여 사용자 입력이 placeholder 뒤
-   * (실제 본문 작성 영역) 부터 시작하도록 한다. char_offset=0/1 위치는 placeholder
-   * 자리이므로 사용자 입력 시 AutoNumber jump 8 byte contract 깨짐 (한컴 거부).
+   * exitAfterMark: 새로 넣은 주석이면 나갈 때 표시 바로 뒤로, 있던 주석에 들어왔으면 표시 바로 앞으로 돌아간다(한컴 c01, c03f).
    */
   enterFootnoteMode(
     sectionIdx: number, paraIdx: number, controlIdx: number,
-    footnoteIndex: number, pageNum: number,
+    footnoteIndex = 0, pageNum = 0,
+    options: { cellPath?: CellPathEntry[]; exitAfterMark?: boolean } = {},
   ): void {
-    this._savedBodyPosition = { ...this.position };
+    if (!this._footnoteMode) this._savedBodyPosition = { ...this.position };
     this._footnoteMode = true;
     this._fnSectionIdx = sectionIdx;
     this._fnParaIdx = paraIdx;
     this._fnControlIdx = controlIdx;
+    this._fnCellPath = options.cellPath?.length ? options.cellPath.map(entry => ({ ...entry })) : undefined;
+    this._fnExitAfterMark = options.exitAfterMark === true;
     this._fnFootnoteIndex = footnoteIndex;
     this._fnInnerParaIdx = 0;
-    this._fnCharOffset = 2;
+    this._fnCharOffset = 0;
     this._fnPageNum = pageNum;
+    this.fnPreferredX = null;
     this.clearSelection();
     this.updateRect();
   }
 
-  /** 각주 편집 모드에서 탈출한다. */
+  /** 주석 주소로 편집 모드에 들어간다. 이미 다른 주석을 편집 중이면 그 주석으로 바꾼다. */
+  enterNoteMode(ref: NoteRef, options: { exitAfterMark?: boolean; caret?: NoteCaret } = {}): void {
+    this.enterFootnoteMode(ref.sectionIdx, ref.paraIdx, ref.controlIdx, 0, this.rect?.pageIndex ?? 0, {
+      cellPath: ref.cellPath, exitAfterMark: options.exitAfterMark,
+    });
+    if (options.caret) this.setFnCursorPosition(options.caret.fnParaIndex, options.caret.charOffset);
+  }
+
+  /** 나갈 때 표시 뒤로 돌아갈지. 되돌리기로 다시 들어온 주석도 처음 들어온 방식을 따른다. */
+  get fnExitAfterMark(): boolean { return this._fnExitAfterMark; }
+
+  /** 각주 편집 모드에서 탈출한다. 캐럿은 주석 표시 앞(있던 주석)이나 뒤(새 주석)로 간다. */
   exitFootnoteMode(): void {
     if (!this._footnoteMode) return;
+    let anchor: DocumentPosition | null = null;
+    try {
+      anchor = this.wasm.getNoteAnchor(this._fnSectionIdx, this._fnParaIdx, this._fnControlIdx, this.fnNotePath);
+    } catch {
+      anchor = null;
+    }
     this._footnoteMode = false;
-    if (this._savedBodyPosition) {
+    this._fnCellPath = undefined;
+    if (anchor) {
+      this.position = this._fnExitAfterMark ? { ...anchor, charOffset: anchor.charOffset + 1 } : anchor;
+      this._savedBodyPosition = null;
+    } else if (this._savedBodyPosition) {
       if (this._savedBodyPosition.paragraphIndex >= 0xFFFFFF00) {
         this._savedBodyPosition.paragraphIndex = 0;
         this._savedBodyPosition.charOffset = 0;
@@ -2191,8 +2233,28 @@ export class CursorState {
       this.position = { ...this._savedBodyPosition };
       this._savedBodyPosition = null;
     }
+    this._fnExitAfterMark = false;
     this.clearSelection();
     this.updateRect();
+  }
+
+  /** 주석 첫 줄에서 위로: 주석 영역 바로 위 본문 줄의 같은 x 로 나간다(한컴 c03c). 나갈 곳이 없으면 false. */
+  exitFootnoteUpward(): boolean {
+    if (!this._footnoteMode || !this.rect) return false;
+    let target: DocumentPosition | null = null;
+    try {
+      target = this.wasm.getBodyPositionAboveNote(
+        this._fnSectionIdx, this._fnParaIdx, this._fnControlIdx, this.fnPreferredX ?? this.rect.x, this.fnNotePath,
+      );
+    } catch {
+      target = null;
+    }
+    if (!target) return false;
+    this.exitFootnoteMode();
+    this.position = target;
+    this.preferredX = null;
+    this.updateRect();
+    return true;
   }
 
   /** 각주 내 커서 위치를 설정한다. */
@@ -2202,54 +2264,53 @@ export class CursorState {
     this.updateRect();
   }
 
-  /** 각주 내 수평 이동 */
-  moveHorizontalInFn(delta: number): void {
-    if (!this._footnoteMode) return;
-
+  /** 편집 중인 주석 내용. 읽지 못하면 null. */
+  footnoteContent(): NoteContentInfo | null {
+    if (!this._footnoteMode) return null;
     try {
-      const info = this.wasm.getFootnoteInfo(this._fnSectionIdx, this._fnParaIdx, this._fnControlIdx);
-      const paraCount = info.paraCount;
-      // 현재 문단의 텍스트 길이
-      const currentText = info.texts[this._fnInnerParaIdx] ?? '';
-      const charCount = Array.from(currentText).length;
-
-      const newOffset = this._fnCharOffset + delta;
-
-      if (newOffset >= 0 && newOffset <= charCount) {
-        this._fnCharOffset = newOffset;
-      } else if (delta > 0 && this._fnInnerParaIdx + 1 < paraCount) {
-        this._fnInnerParaIdx++;
-        this._fnCharOffset = 0;
-      } else if (delta < 0 && this._fnInnerParaIdx > 0) {
-        this._fnInnerParaIdx--;
-        const prevText = info.texts[this._fnInnerParaIdx] ?? '';
-        this._fnCharOffset = Array.from(prevText).length;
-      }
-    } catch {
-      // WASM 호출 실패 시 무시
-    }
-
-    this.updateRect();
-  }
-
-  /** 각주 문단의 글자들. 읽지 못하면 null. */
-  private footnoteTexts(): string[] | null {
-    try {
-      return this.wasm.getFootnoteInfo(this._fnSectionIdx, this._fnParaIdx, this._fnControlIdx).texts;
+      return this.wasm.getFootnoteInfo(this._fnSectionIdx, this._fnParaIdx, this._fnControlIdx, this.fnNotePath);
     } catch {
       return null;
     }
   }
 
+  /** 주석 문단의 논리 길이(번호·개체 칸 포함). */
+  private fnParagraphLength(content: NoteContentInfo, para: number): number {
+    return content.lengths?.[para] ?? Array.from(content.texts[para] ?? '').length;
+  }
+
+  /** 각주 내 수평 이동. 첫 문단 처음(번호 앞)과 마지막 문단 끝에서는 멈춘다(한컴 c02b, c02c). */
+  moveHorizontalInFn(delta: number): void {
+    if (!this._footnoteMode) return;
+    this.fnPreferredX = null;
+    const content = this.footnoteContent();
+    if (content) {
+      const length = this.fnParagraphLength(content, this._fnInnerParaIdx);
+      const newOffset = this._fnCharOffset + delta;
+      if (newOffset >= 0 && newOffset <= length) {
+        this._fnCharOffset = newOffset;
+      } else if (delta > 0 && this._fnInnerParaIdx + 1 < content.paraCount) {
+        this._fnInnerParaIdx++;
+        this._fnCharOffset = 0;
+      } else if (delta < 0 && this._fnInnerParaIdx > 0) {
+        this._fnInnerParaIdx--;
+        this._fnCharOffset = this.fnParagraphLength(content, this._fnInnerParaIdx);
+      }
+    }
+    this.updateRect();
+  }
+
   /** 각주 안 단어 경계로 이동한다 (Option/Ctrl+←/→). 문단 끝에서는 이웃 문단으로 넘어간다. */
   moveToWordBoundaryInFn(direction: -1 | 1): void {
     if (!this._footnoteMode) return;
-    const chars = Array.from(this.footnoteTexts()?.[this._fnInnerParaIdx] ?? '');
+    const content = this.footnoteContent();
+    const chars = Array.from(content?.units?.[this._fnInnerParaIdx] ?? content?.texts[this._fnInnerParaIdx] ?? '');
     const offset = this._fnCharOffset;
     if (direction > 0 ? offset >= chars.length : offset <= 0) {
       this.moveHorizontalInFn(direction);
       return;
     }
+    this.fnPreferredX = null;
     if (direction > 0) {
       const rest = chars.slice(offset, offset + 50).join('');
       this._fnCharOffset = Math.min(chars.length, offset + findWordBoundaryForward(rest));
@@ -2263,72 +2324,108 @@ export class CursorState {
   /** 각주의 이전/다음 문단 경계로 이동한다 (Ctrl+↑/↓). 본문과 같이 문단 중간이면 먼저 그 문단 처음으로 간다. */
   moveToParagraphBoundaryInFn(direction: -1 | 1): void {
     if (!this._footnoteMode) return;
-    const texts = this.footnoteTexts();
-    if (!texts) return;
+    const content = this.footnoteContent();
+    if (!content) return;
+    this.fnPreferredX = null;
     if (direction < 0) {
       if (this._fnCharOffset > 0) this._fnCharOffset = 0;
       else if (this._fnInnerParaIdx > 0) this._fnInnerParaIdx--;
-    } else if (this._fnInnerParaIdx + 1 < texts.length) {
+    } else if (this._fnInnerParaIdx + 1 < content.paraCount) {
       this._fnInnerParaIdx++;
       this._fnCharOffset = 0;
     } else {
-      this._fnCharOffset = Array.from(texts[this._fnInnerParaIdx] ?? '').length;
+      this._fnCharOffset = this.fnParagraphLength(content, this._fnInnerParaIdx);
     }
     this.updateRect();
   }
 
-  /** 각주 전체의 처음/끝으로 이동한다 (Cmd+↑/↓, Ctrl+Home/End). */
+  /** 각주 전체의 처음/끝으로 이동한다 (Cmd+↑/↓, Ctrl+Home/End). 처음은 번호 앞이다. */
   moveToFootnoteBoundary(edge: -1 | 1): void {
     if (!this._footnoteMode) return;
-    const texts = this.footnoteTexts();
-    if (!texts) return;
+    const content = this.footnoteContent();
+    if (!content) return;
+    this.fnPreferredX = null;
     if (edge < 0) {
       this._fnInnerParaIdx = 0;
       this._fnCharOffset = 0;
     } else {
-      this._fnInnerParaIdx = Math.max(0, texts.length - 1);
-      this._fnCharOffset = Array.from(texts[this._fnInnerParaIdx] ?? '').length;
+      this._fnInnerParaIdx = Math.max(0, content.paraCount - 1);
+      this._fnCharOffset = this.fnParagraphLength(content, this._fnInnerParaIdx);
     }
     this.updateRect();
   }
 
-  /** 각주에서 캐럿이 있는 시각 줄의 처음(-1)이나 끝(1)으로 간다 (Home/End). */
+  /** 주석 목록 전체를 고른다(한컴 c02f: 주석 안 Ctrl+A 는 그 주석만). */
+  selectAllInFootnote(): boolean {
+    const content = this.footnoteContent();
+    if (!content || content.paraCount <= 0) return false;
+    const last = content.paraCount - 1;
+    this.fnAnchor = { fnParaIdx: 0, charOffset: 0 };
+    this._fnInnerParaIdx = last;
+    this._fnCharOffset = this.fnParagraphLength(content, last);
+    this.fnPreferredX = null;
+    this.updateRect();
+    return true;
+  }
+
+  /** 되돌리기가 보관한 주석 안 선택을 되살린다. 범위가 지금 주석에 없으면 false. */
+  selectFootnoteRange(start: { fnParaIdx: number; charOffset: number }, end: { fnParaIdx: number; charOffset: number }): boolean {
+    const content = this.footnoteContent();
+    if (!content) return false;
+    const valid = (pos: { fnParaIdx: number; charOffset: number }) => Number.isInteger(pos.fnParaIdx) && pos.fnParaIdx >= 0
+      && pos.fnParaIdx < content.paraCount && pos.charOffset >= 0 && pos.charOffset <= this.fnParagraphLength(content, pos.fnParaIdx);
+    if (!valid(start) || !valid(end)) return false;
+    this.fnAnchor = { ...start };
+    this._fnInnerParaIdx = end.fnParaIdx;
+    this._fnCharOffset = end.charOffset;
+    this.updateRect();
+    return true;
+  }
+
+  /** 각주에서 캐럿이 있는 시각 줄의 처음(-1)이나 끝(1)으로 간다 (Home/End). 첫 줄 처음은 번호 앞이다(한컴 c02a). */
   moveToLineEdgeInFn(edge: -1 | 1): void {
-    if (!this._footnoteMode || !this.rect) return;
-    const hit = this.hitInFn(edge < 0 ? 0 : LINE_EDGE_FAR_X, this.rect.y + this.rect.height / 2);
-    if (!hit || hit.fnParaIndex !== this._fnInnerParaIdx) return;
-    this._fnCharOffset = hit.charOffset;
+    if (!this._footnoteMode) return;
+    this.fnPreferredX = null;
+    const moved = this.navigateInFn(edge < 0 ? 'lineStart' : 'lineEnd');
+    if (moved) {
+      this._fnInnerParaIdx = moved.fnParaIndex;
+      this._fnCharOffset = moved.charOffset;
+    }
     this.updateRect();
   }
 
-  /** 각주에서 현재 X를 유지해 위·아래 시각 줄로 이동한다. 다른 각주로는 넘어가지 않는다. */
-  moveVerticalInFn(delta: -1 | 1): void {
-    if (!this._footnoteMode || !this.rect) return;
-    const { x, y, height } = this.rect;
-    const step = Math.max(12, height * 1.25);
-    for (const multiplier of [1, 2, 4]) {
-      const hit = this.hitInFn(x, y + height / 2 + delta * step * multiplier);
-      if (!hit) continue;
-      if (hit.fnParaIndex === this._fnInnerParaIdx && hit.charOffset === this._fnCharOffset) continue;
-      this._fnInnerParaIdx = hit.fnParaIndex;
-      this._fnCharOffset = hit.charOffset;
-      this.updateRect();
-      return;
-    }
+  /**
+   * 각주에서 현재 X를 유지해 위·아래 시각 줄로 이동한다. 다른 각주로는 넘어가지 않는다.
+   * 첫 줄에서 위, 마지막 줄에서 아래로는 움직이지 않고 false 를 돌려준다.
+   */
+  moveVerticalInFn(delta: -1 | 1): boolean {
+    if (!this._footnoteMode || !this.rect) return false;
+    this.fnPreferredX ??= this.rect.x;
+    const moved = this.navigateInFn(delta < 0 ? 'up' : 'down', this.fnPreferredX);
+    if (!moved || (moved.fnParaIndex === this._fnInnerParaIdx && moved.charOffset === this._fnCharOffset)) return false;
+    this._fnInnerParaIdx = moved.fnParaIndex;
+    this._fnCharOffset = moved.charOffset;
+    this.updateRect();
+    return true;
   }
 
-  /** 편집 중인 각주 안에서 (x, y) 의 위치. 다른 각주이거나 각주 밖이면 null. */
-  private hitInFn(x: number, y: number): { fnParaIndex: number; charOffset: number } | null {
-    if (!this.rect) return null;
+  private navigateInFn(motion: 'lineStart' | 'lineEnd' | 'up' | 'down', preferredX?: number) {
     try {
-      const hit = this.wasm.hitTestInFootnote(this.rect.pageIndex, x, y);
-      if (!hit.hit || hit.footnoteIndex !== this._fnFootnoteIndex
-        || hit.fnParaIndex === undefined || hit.charOffset === undefined) return null;
-      return { fnParaIndex: hit.fnParaIndex, charOffset: hit.charOffset };
+      return this.wasm.navigateInNote(
+        this._fnSectionIdx, this._fnParaIdx, this._fnControlIdx, this._fnInnerParaIdx, this._fnCharOffset,
+        motion, preferredX, this.fnNotePath,
+      );
     } catch {
       return null;
     }
   }
+}
+
+/** 두 주석 셀 경로가 같은가(둘 다 없으면 본문 주석). */
+function sameCellPath(a: readonly CellPathEntry[] | undefined, b: readonly CellPathEntry[] | undefined): boolean {
+  const left = a ?? [], right = b ?? [];
+  return left.length === right.length && left.every((entry, i) => entry.controlIndex === right[i].controlIndex
+    && entry.cellIndex === right[i].cellIndex && entry.cellParaIndex === right[i].cellParaIndex);
 }
 
 /** 줄 끝을 찾을 때 쓰는 쪽 오른쪽 바깥 x(px). 어느 쪽 너비보다도 크다. */

@@ -774,6 +774,8 @@ function getContext(): EditorContext {
     canGroupSelectedObjects: canGroupTopLevelBodyObjects(selectedObjects),
     canUngroupSelectedObject: canUngroupTopLevelBodyObject(selectedObject),
     inField: inputHandler?.isInField() ?? false,
+    inNote: inputHandler?.isInFootnoteMode() ?? false,
+    inHeaderFooter: inputHandler?.isInHeaderFooterMode() ?? false,
     isEditable: !sessionReadOnly() && !agentEditingLease.active && (!isFormMode || canEditFormField),
     readOnly: sessionReadOnly(),
     // 라이선스 읽기 전용은 문서 보기 전용이다. 템플릿 미리보기 창은 다른 문서를 열지 않는다.

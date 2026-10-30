@@ -90,6 +90,11 @@ export type EditContext =
       readonly sectionIdx: number;
       readonly paraIdx: number;
       readonly controlIdx: number;
+      /** 표 셀·글상자 안 주석의 셀 경로(paraIdx 는 맨 바깥 본문 문단). */
+      readonly cellPath?: readonly CellPathEntry[];
+      /** 나갈 때 표시 뒤로 갈지(새로 넣은 주석). */
+      readonly exitAfterMark?: boolean;
+      /** 하위 호환. 다시 들어갈 때는 주석 주소만 쓴다. */
       readonly footnoteIndex: number;
       readonly pageNum: number;
       readonly innerParaIdx: number;
@@ -110,7 +115,14 @@ export type HeaderFooterSelectionSnapshot = {
   readonly previewPage: number;
 };
 
-export type EditSelectionSnapshot = BodySelectionSnapshot | HeaderFooterSelectionSnapshot;
+/** 주석 안 선택. 같은 주석에 다시 들어간 뒤에만 되살린다. */
+export type FootnoteSelectionSnapshot = {
+  readonly mode: 'footnote';
+  readonly start: { readonly fnParaIdx: number; readonly charOffset: number };
+  readonly end: { readonly fnParaIdx: number; readonly charOffset: number };
+};
+
+export type EditSelectionSnapshot = BodySelectionSnapshot | HeaderFooterSelectionSnapshot | FootnoteSelectionSnapshot;
 
 /** text mutation의 document pagination/flow 경계와 immediate 완료를 함께 전달한다. */
 export interface TextMutationEffects {
@@ -229,6 +241,8 @@ export type OperationDescriptor =
       selectionBefore?: EditSelectionSnapshot | null;
       /** 최초 실행/redo 뒤 복원할 선택. */
       selectionAfter?: EditSelectionSnapshot | null;
+      /** 주석 선택 위 입력: 이어 친 글자를 같은 이력에 담는다(NoteSelectionReplaceCommand). */
+      noteTyping?: FootnoteEditTarget;
       meta?: OperationMetadata;
     }
   | { kind: 'record'; command: EditCommand; meta?: OperationMetadata };
@@ -1213,6 +1227,7 @@ function getCharPropertiesAtTarget(
         target.controlIndex,
         target.paragraphIndex,
         offset,
+        notePathOf(target),
       );
     default: {
       const exhaustive: never = target;
@@ -1270,6 +1285,7 @@ export function applyCharFormatToTarget(wasm: WasmBridge, range: EditableTextRan
         startOffset,
         endOffset,
         propsJson,
+        notePathOf(target),
       );
       break;
     default: {
@@ -1332,6 +1348,7 @@ function setCharShapeIdAtTarget(
         startOffset,
         endOffset,
         charShapeId,
+        notePathOf(target),
       );
       break;
     default: {
@@ -1372,6 +1389,7 @@ function getParaPropertiesAtTarget(wasm: WasmBridge, target: EditableParagraphTa
         target.hostParagraphIndex,
         target.controlIndex,
         target.paragraphIndex,
+        notePathOf(target),
       );
   }
 }
@@ -1420,6 +1438,7 @@ function applyParaFormatAtTarget(
         target.controlIndex,
         target.paragraphIndex,
         propsJson,
+        notePathOf(target),
       );
       break;
   }
@@ -1469,6 +1488,7 @@ function setParaShapeIdAtTarget(
         target.controlIndex,
         target.paragraphIndex,
         paraShapeId,
+        notePathOf(target),
       );
       break;
   }
@@ -1492,6 +1512,7 @@ function editContextForTarget(target: EditableParagraphTarget | undefined): Edit
       sectionIdx: target.sectionIndex,
       paraIdx: target.hostParagraphIndex,
       controlIdx: target.controlIndex,
+      ...(target.cellPath?.length ? { cellPath: target.cellPath } : {}),
       footnoteIndex: target.footnoteIndex,
       pageNum: target.pageNum,
       innerParaIdx: target.paragraphIndex,
@@ -1635,12 +1656,29 @@ export interface HeaderFooterEditTarget {
 
 export interface FootnoteEditTarget {
   readonly sectionIdx: number;
-  /** 각주 컨트롤을 담은 본문 문단 인덱스 */
+  /** 각주 컨트롤을 담은 본문 문단 인덱스(표 셀·글상자 안이면 맨 바깥 본문 문단) */
   readonly paraIdx: number;
   readonly controlIdx: number;
-  /** 모드 재진입용 (enterFootnoteMode 인자) */
+  /** 표 셀·글상자 안 주석의 셀 경로 */
+  readonly cellPath?: readonly CellPathEntry[];
+  /** 하위 호환. 다시 들어갈 때는 주석 주소만 쓴다. */
   readonly footnoteIndex: number;
   readonly pageNum: number;
+  readonly exitAfterMark?: boolean;
+}
+
+/** 주석 브리지 메서드의 마지막 인자(셀 경로 JSON). 본문 주석은 undefined. */
+export function notePathOf(target: { cellPath?: readonly CellPathEntry[] }): string | undefined {
+  return target.cellPath?.length ? JSON.stringify(target.cellPath) : undefined;
+}
+
+/** 두 주석 대상이 같은 주석인가. */
+export function sameNoteTarget(
+  a: { sectionIdx: number; paraIdx: number; controlIdx: number; cellPath?: readonly CellPathEntry[] },
+  b: { sectionIdx: number; paraIdx: number; controlIdx: number; cellPath?: readonly CellPathEntry[] },
+): boolean {
+  return a.sectionIdx === b.sectionIdx && a.paraIdx === b.paraIdx && a.controlIdx === b.controlIdx
+    && notePathOf(a) === notePathOf(b);
 }
 
 function hfEditContext(t: HeaderFooterEditTarget, paraIdx: number, charOffset: number): EditContext {
@@ -1653,6 +1691,7 @@ function hfEditContext(t: HeaderFooterEditTarget, paraIdx: number, charOffset: n
 function fnEditContext(t: FootnoteEditTarget, innerParaIdx: number, charOffset: number): EditContext {
   return {
     mode: 'footnote', sectionIdx: t.sectionIdx, paraIdx: t.paraIdx, controlIdx: t.controlIdx,
+    ...(t.cellPath?.length ? { cellPath: t.cellPath } : {}), ...(t.exitAfterMark ? { exitAfterMark: true } : {}),
     footnoteIndex: t.footnoteIndex, pageNum: t.pageNum, innerParaIdx, charOffset,
   };
 }
@@ -1912,7 +1951,7 @@ export class InsertTextInFootnoteCommand implements EditCommand {
   }
 
   execute(wasm: WasmBridge): DocumentPosition {
-    wasm.insertTextInFootnote(this.target.sectionIdx, this.target.paraIdx, this.target.controlIdx, this.innerParaIdx, this.charOffset, this.text);
+    wasm.insertTextInFootnote(this.target.sectionIdx, this.target.paraIdx, this.target.controlIdx, this.innerParaIdx, this.charOffset, this.text, notePathOf(this.target));
     if (isNonEmptyCharFormat(this.charFormat) && this.text) {
       wasm.applyCharFormatInFootnote(
         this.target.sectionIdx,
@@ -1922,6 +1961,7 @@ export class InsertTextInFootnoteCommand implements EditCommand {
         this.charOffset,
         this.charOffset + charCount(this.text),
         JSON.stringify(this.charFormat),
+        notePathOf(this.target),
       );
     }
     this.lastContext = fnEditContext(this.target, this.innerParaIdx, this.charOffset + charCount(this.text));
@@ -1929,17 +1969,24 @@ export class InsertTextInFootnoteCommand implements EditCommand {
   }
 
   undo(wasm: WasmBridge): DocumentPosition {
-    wasm.deleteTextInFootnote(this.target.sectionIdx, this.target.paraIdx, this.target.controlIdx, this.innerParaIdx, this.charOffset, charCount(this.text));
+    wasm.deleteTextInFootnote(this.target.sectionIdx, this.target.paraIdx, this.target.controlIdx, this.innerParaIdx, this.charOffset, charCount(this.text), notePathOf(this.target));
     this.lastContext = fnEditContext(this.target, this.innerParaIdx, this.charOffset);
     return hfFnStubPosition(this.target.sectionIdx);
   }
 
   editContext(): EditContext { return this.lastContext; }
 
+  /** 이 입력이 target 의 (para, offset) 에서 이어 친 글자면 그 뒤 offset, 아니면 null. */
+  continuationOf(target: FootnoteEditTarget, innerParaIdx: number, charOffset: number): number | null {
+    if (!sameNoteTarget(target, this.target) || this.innerParaIdx !== innerParaIdx || this.charOffset !== charOffset) return null;
+    if (/[\n\t\u2028]/.test(this.text) || isNonEmptyCharFormat(this.charFormat)) return null;
+    return this.charOffset + charCount(this.text);
+  }
+
   mergeWith(other: EditCommand): EditCommand | null {
     if (!(other instanceof InsertTextInFootnoteCommand)) return null;
     const a = this.target, b = other.target;
-    if (a.sectionIdx !== b.sectionIdx || a.paraIdx !== b.paraIdx || a.controlIdx !== b.controlIdx) return null;
+    if (!sameNoteTarget(a, b)) return null;
     if (other.innerParaIdx !== this.innerParaIdx || other.charOffset !== this.charOffset + charCount(this.text)) return null;
     if (!continuesTyping(this.text, other.text, this.charFormat, other.charFormat)) return null;
     return new InsertTextInFootnoteCommand(this.target, this.innerParaIdx, this.charOffset, this.text + other.text, this.charFormat);
@@ -1964,7 +2011,7 @@ export class DeleteTextInFootnoteCommand implements EditCommand {
   }
 
   execute(wasm: WasmBridge): DocumentPosition {
-    const raw = wasm.deleteTextInFootnote(this.target.sectionIdx, this.target.paraIdx, this.target.controlIdx, this.innerParaIdx, this.charOffset, charCount(this.deletedText));
+    const raw = wasm.deleteTextInFootnote(this.target.sectionIdx, this.target.paraIdx, this.target.controlIdx, this.innerParaIdx, this.charOffset, charCount(this.deletedText), notePathOf(this.target));
     const result = typeof raw === 'string' ? JSON.parse(raw) : raw;
     const removal = parseTextRemoval(result);
     this.deletedContent = removal.removedContent ?? { text: this.deletedText, specialSpaceOrigins: [] };
@@ -1975,7 +2022,7 @@ export class DeleteTextInFootnoteCommand implements EditCommand {
   }
 
   undo(wasm: WasmBridge): DocumentPosition {
-    wasm.insertTextContentInFootnote(this.target.sectionIdx, this.target.paraIdx, this.target.controlIdx, this.innerParaIdx, this.charOffset, this.deletedContent);
+    wasm.insertTextContentInFootnote(this.target.sectionIdx, this.target.paraIdx, this.target.controlIdx, this.innerParaIdx, this.charOffset, this.deletedContent, notePathOf(this.target));
     this.lastContext = fnEditContext(this.target, this.innerParaIdx, this.cursorBeforeOffset);
     return hfFnStubPosition(this.target.sectionIdx);
   }
@@ -1986,7 +2033,7 @@ export class DeleteTextInFootnoteCommand implements EditCommand {
   mergeWith(other: EditCommand): EditCommand | null {
     if (!(other instanceof DeleteTextInFootnoteCommand)) return null;
     const a = this.target, b = other.target;
-    if (a.sectionIdx !== b.sectionIdx || a.paraIdx !== b.paraIdx || a.controlIdx !== b.controlIdx || other.innerParaIdx !== this.innerParaIdx) return null;
+    if (!sameNoteTarget(a, b) || other.innerParaIdx !== this.innerParaIdx) return null;
     if (!continuesBackspace(this.charOffset, this.deletedText, this.cursorBeforeOffset, other.charOffset, other.deletedText, other.cursorBeforeOffset)) return null;
     return new DeleteTextInFootnoteCommand(this.target, this.innerParaIdx, other.charOffset, other.deletedText + this.deletedText, this.cursorBeforeOffset);
   }
@@ -2007,13 +2054,13 @@ export class SplitParagraphInFootnoteCommand implements EditCommand {
   }
 
   execute(wasm: WasmBridge): DocumentPosition {
-    wasm.splitParagraphInFootnote(this.target.sectionIdx, this.target.paraIdx, this.target.controlIdx, this.innerParaIdx, this.charOffset);
+    wasm.splitParagraphInFootnote(this.target.sectionIdx, this.target.paraIdx, this.target.controlIdx, this.innerParaIdx, this.charOffset, undefined, notePathOf(this.target));
     this.lastContext = fnEditContext(this.target, this.newInnerParaIdx, 0);
     return hfFnStubPosition(this.target.sectionIdx);
   }
 
   undo(wasm: WasmBridge): DocumentPosition {
-    wasm.mergeParagraphInFootnote(this.target.sectionIdx, this.target.paraIdx, this.target.controlIdx, this.newInnerParaIdx);
+    wasm.mergeParagraphInFootnote(this.target.sectionIdx, this.target.paraIdx, this.target.controlIdx, this.newInnerParaIdx, notePathOf(this.target));
     this.lastContext = fnEditContext(this.target, this.innerParaIdx, this.charOffset);
     return hfFnStubPosition(this.target.sectionIdx);
   }
@@ -2042,13 +2089,13 @@ export class MergeParagraphInFootnoteCommand implements EditCommand {
   }
 
   execute(wasm: WasmBridge): DocumentPosition {
-    wasm.mergeParagraphInFootnote(this.target.sectionIdx, this.target.paraIdx, this.target.controlIdx, this.innerParaIdx);
+    wasm.mergeParagraphInFootnote(this.target.sectionIdx, this.target.paraIdx, this.target.controlIdx, this.innerParaIdx, notePathOf(this.target));
     this.lastContext = fnEditContext(this.target, this.prevInnerParaIdx, this.mergeOffset);
     return hfFnStubPosition(this.target.sectionIdx);
   }
 
   undo(wasm: WasmBridge): DocumentPosition {
-    wasm.splitParagraphInFootnote(this.target.sectionIdx, this.target.paraIdx, this.target.controlIdx, this.prevInnerParaIdx, this.mergeOffset, this.removedParaMeta);
+    wasm.splitParagraphInFootnote(this.target.sectionIdx, this.target.paraIdx, this.target.controlIdx, this.prevInnerParaIdx, this.mergeOffset, this.removedParaMeta, notePathOf(this.target));
     this.lastContext = fnEditContext(this.target, this.beforeInnerParaIdx, this.beforeOffset);
     return hfFnStubPosition(this.target.sectionIdx);
   }
@@ -2834,15 +2881,16 @@ export class ReplaceSelectionCommand extends SnapshotCommand {
  * 평가한다. redo는 저장된 after snapshot과 같은 확정 문맥을 재사용한다.
  */
 export class SubmodeSelectionSnapshotCommand extends SnapshotCommand {
-  private lastContext: EditContext;
+  private lastContext: EditContext | null;
   private resolvedContextAfter: EditContext | null = null;
 
+  /** contextBefore 가 null 이면 실행 전은 본문이다(본문에서 주석을 넣고 그 안으로 들어가는 경우). */
   constructor(
     operationType: string,
     cursorBefore: DocumentPosition,
     cursorAfter: DocumentPosition,
     operation: ((wasm: WasmBridge) => DocumentPosition) | null,
-    private readonly contextBefore: EditContext,
+    private readonly contextBefore: EditContext | null,
     private readonly contextAfter: EditContext | (() => EditContext),
     private readonly beforeSelection: EditSelectionSnapshot | null = null,
     private readonly afterSelection: EditSelectionSnapshot | null = null,
@@ -2868,7 +2916,7 @@ export class SubmodeSelectionSnapshotCommand extends SnapshotCommand {
     return result;
   }
 
-  editContext(): EditContext { return this.lastContext; }
+  editContext(): EditContext | null { return this.lastContext; }
   /** raw IME가 snapshot 최초 실행 뒤 최종 캐럿을 확정할 때 after 문맥을 갱신한다. */
   updateContextAfter(context: EditContext): void {
     this.resolvedContextAfter = context;
@@ -2876,4 +2924,54 @@ export class SubmodeSelectionSnapshotCommand extends SnapshotCommand {
   }
   selectionBefore(): EditSelectionSnapshot | null { return this.beforeSelection; }
   selectionAfter(): EditSelectionSnapshot | null { return this.afterSelection; }
+}
+
+/**
+ * 주석 안 선택 위 입력: 선택을 바꾼 스냅샷 하나에 이어 친 글자까지 담아 되돌리기 한 번이 된다
+ * (한컴 c09d: 선택 위 입력은 한 단계). 본문 ReplaceSelectionCommand 와 같은 규칙이다.
+ */
+export class NoteSelectionReplaceCommand extends SubmodeSelectionSnapshotCommand {
+  private continuations: InsertTextInFootnoteCommand[] = [];
+  private nextOffset: { innerParaIdx: number; charOffset: number } | null = null;
+
+  constructor(
+    operationType: string,
+    cursorBefore: DocumentPosition,
+    operation: (wasm: WasmBridge) => DocumentPosition,
+    contextBefore: EditContext,
+    contextAfter: () => EditContext,
+    selectionBefore: EditSelectionSnapshot | null,
+    private readonly typing: FootnoteEditTarget,
+  ) {
+    super(operationType, cursorBefore, cursorBefore, operation, contextBefore, contextAfter, selectionBefore, null);
+  }
+
+  execute(wasm: WasmBridge): DocumentPosition {
+    const position = super.execute(wasm);
+    const after = this.editContext();
+    if (after?.mode === 'footnote' && !this.nextOffset) this.nextOffset = { innerParaIdx: after.innerParaIdx, charOffset: after.charOffset };
+    for (const command of this.continuations) command.execute(wasm);
+    const last = this.continuations.at(-1);
+    if (last) this.updateContextAfter(last.editContext());
+    return position;
+  }
+
+  /** 이력 밖에서 들어간 글자(IME 조합) 뒤에서 이어 치기를 받는다. */
+  continueTypingAt(innerParaIdx: number, charOffset: number): void {
+    if (!this.continuations.length) this.nextOffset = { innerParaIdx, charOffset };
+  }
+
+  mergeWith(other: EditCommand): EditCommand | null {
+    if (!this.nextOffset || !(other instanceof InsertTextInFootnoteCommand)) return null;
+    const next = other.continuationOf(this.typing, this.nextOffset.innerParaIdx, this.nextOffset.charOffset);
+    if (next === null) return null;
+    this.continuations.push(other);
+    this.nextOffset = { ...this.nextOffset, charOffset: next };
+    this.updateContextAfter(other.editContext());
+    return this;
+  }
+
+  currentSnapshotId(): number | null {
+    return this.continuations.length ? null : super.currentSnapshotId();
+  }
 }
