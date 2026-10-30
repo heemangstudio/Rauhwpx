@@ -7,7 +7,7 @@ const chipVisible = (page) => page.$eval('.ag-rau-upgrade-chip', (node) => node.
 export async function checkRauUpgrade({ page, open, screenshot }) {
   await open('reset=1&rau=upgrade');
   await page.waitForSelector('.ag-rau-upgrade-chip', { visible: true });
-  assert.equal(await page.$eval('.ag-rau-upgrade-chip', (node) => node.textContent), 'Rau-0.1 호스팅은 Pro에서 써요월 ₩3,900');
+  assert.equal(await page.$eval('.ag-rau-upgrade-chip', (node) => node.textContent), 'Rau-0.1 호스팅은 Pro·Hama에서 써요월 ₩3,900');
   if (screenshot) await screenshot('rau-upgrade-chip');
   await page.click('.ag-rau-upgrade-chip .ag-calibration-chip-close');
   assert.equal(await chipVisible(page), false);

@@ -6,7 +6,7 @@ import { RauServerError, upgradeUrlFrom } from './rau-client.mjs';
 /** 키가 없거나 lease 가 지금 검증되지 않을 때. 서버에 묻지 않는다. */
 const NO_LICENSE = 'no_license';
 
-/** Studio 의 rau:status 답. 라이선스가 없으면 서버에 묻지 않고 Pro 전용이라고 답한다. */
+/** Studio 의 rau:status 답. 라이선스가 없으면 서버에 묻지 않고 자격이 없다고 답한다. */
 async function statusFor({ client, currentLease }) {
   const lease = await currentLease();
   if (!lease) return { ok: true, eligible: false, reason: NO_LICENSE, upgradeUrl: PRICING_URL };

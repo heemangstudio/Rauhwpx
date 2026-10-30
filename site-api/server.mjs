@@ -770,6 +770,8 @@ export function createSiteServer(env = process.env, options = {}) {
     grandfatherPlatforms: licenseConfig.grandfatherPlatforms,
     adminToken: licenseConfig.adminToken,
     downloadUrl: licenseConfig.downloadUrl,
+    // Bound late: the Hama service authenticates through this one. With HAMA_ENABLED off no plan is active.
+    hamaPlanActive: async (keyId) => hamaService?.planActive(keyId) ?? false,
     webhookLog,
     now: options.now,
     log,
@@ -800,7 +802,7 @@ export function createSiteServer(env = process.env, options = {}) {
   const rau = createRauService({
     store: createFileStore(resolveRauDbPath(env), { emptyState: emptyRauState }),
     // A revoked or expired key still authenticates here, so it hears rau_requires_pro instead of 401.
-    authenticate: (lease) => licenses.authenticateLease(lease, { allowInactive: true }),
+    authenticate: (lease) => licenses.authenticateLease(lease, { allowInactive: true, withRauPlan: true }),
     config: resolveRauConfig(env),
     upgradeUrl: licenseConfig.proUpgradeUrl,
     adminToken: licenseConfig.adminToken,

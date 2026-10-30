@@ -4,11 +4,11 @@ import { createRateLimiter } from './rate-limit.mjs';
 import { createMemoryStore } from './store.mjs';
 
 /**
- * Hosted Rau-0.1 (the taste learner) for active Pro keys. The app sends its license lease and a
- * prompt; the server calls the model on OpenRouter with a key of its own, so the app never holds
- * a provider key. Each Pro license gets one OpenRouter key, `hama-rau-<keyId>`, created with
- * `limit = monthlyCapUsd` and `limit_reset: 'monthly'` (UTC calendar month). The server also keeps
- * a per-month ledger from each response's cost and refuses before calling upstream once the
+ * Hosted Rau-0.1 (the taste learner) for active Pro keys and active Hama plans. The app sends its
+ * license lease and a prompt; the server calls the model on OpenRouter with a key of its own, so the
+ * app never holds a provider key. Each license gets one OpenRouter key, `hama-rau-<keyId>`, created
+ * with `limit` = its plan's cap and `limit_reset: 'monthly'` (UTC calendar month). A license with
+ * both plans gets the Hama cap. The server also keeps a per-month ledger from each response's cost and refuses before calling upstream once the
  * month's spend reaches the cap, using whichever of the ledger and OpenRouter's own count is higher.
  *
  * rau.json = { allowances: { [keyId]: { keyId, status: provisioning|active, name, openrouterHash,
@@ -105,11 +105,11 @@ export function createRauService({
     model = 'deepseek/deepseek-v4.1-flash',
     reasoningEffort = 'low',
     maxOutputTokens = 2000,
-    monthlyCapUsd = 1,
+    monthlyCapsUsd = { pro: 2, hama: 5 },
     apiBase = 'https://openrouter.ai/api/v1',
   } = config;
   const configured = Boolean(enabled && provisioningKey);
-  const capUsd = usd(monthlyCapUsd);
+  const caps = { pro: usd(monthlyCapsUsd.pro), hama: usd(monthlyCapsUsd.hama) };
   const openrouter = createOpenRouterClient({ apiBase, provisioningKey, fetchImpl });
 
   let mutation = Promise.resolve();
@@ -136,19 +136,20 @@ export function createRauService({
     return normalize(await store.load());
   }
 
-  function usageView(usedUsd, nowMs = now()) {
+  function usageView(usedUsd, capUsd, nowMs = now()) {
     const used = usd(Math.max(0, usedUsd));
     return { usedUsd: used, capUsd, remainingUsd: usd(Math.max(0, capUsd - used)), resetsAt: new Date(rauResetsAt(nowMs)).toISOString() };
   }
-  function capReached(usedUsd) {
-    const view = usageView(usedUsd);
+  function capReached(usedUsd, capUsd) {
+    const view = usageView(usedUsd, capUsd);
     return rauError('rau_cap_reached', 402, { capUsd: view.capUsd, usedUsd: view.usedUsd, resetsAt: view.resetsAt });
   }
 
   async function principal(lease) {
     if (typeof authenticate !== 'function') throw rauError('unauthorized', 401);
     const who = await authenticate(lease);
-    return { ...who, eligible: who.rauEligible === true };
+    // Not eligible: the cap an upgrade to Pro would buy.
+    return { ...who, eligible: Boolean(who.rauPlan), capUsd: caps[who.rauPlan ?? 'pro'] };
   }
 
   // ------------------------------------------------------------ allowance
@@ -171,16 +172,16 @@ export function createRauService({
 
   // One allowance change per license at a time, so parallel calls create one key and PATCH once.
   const preparing = new Map();
-  function ensureAllowance(keyId) {
+  function ensureAllowance(keyId, capUsd) {
     const previous = preparing.get(keyId);
-    const run = (previous ? previous.catch(() => {}) : Promise.resolve()).then(() => prepare(keyId));
+    const run = (previous ? previous.catch(() => {}) : Promise.resolve()).then(() => prepare(keyId, capUsd));
     preparing.set(keyId, run);
     const clear = () => { if (preparing.get(keyId) === run) preparing.delete(keyId); };
     run.then(clear, clear);
     return run;
   }
 
-  async function prepare(keyId) {
+  async function prepare(keyId, capUsd) {
     const name = `hama-rau-${keyId}`;
     const period = rauPeriod(now());
     const reserved = await mutate((state) => {
@@ -224,7 +225,7 @@ export function createRauService({
       });
     }
 
-    // A new month or a changed cap: set the key's limit once. This also re-asserts the monthly
+    // A new month or a changed cap (a new price, or the license gained or lost its Hama plan): set the key's limit once. This also re-asserts the monthly
     // reset in case OpenRouter dropped it. A failed PATCH is retried on the next call; the ledger
     // guard holds the cap meanwhile.
     const allowance = reserved.existing;
@@ -260,14 +261,14 @@ export function createRauService({
   async function status(lease) {
     const who = await principal(lease);
     if (!configured) throw rauError('rau_not_configured', 503);
-    const usage = usageView(0);
+    const usage = usageView(0, who.capUsd);
     if (!who.eligible) {
-      return { ok: true, eligible: false, reason: 'rau_requires_pro', upgradeUrl, capUsd, usedUsd: null, remainingUsd: null, resetsAt: usage.resetsAt };
+      return { ok: true, eligible: false, reason: 'rau_requires_pro', upgradeUrl, capUsd: who.capUsd, usedUsd: null, remainingUsd: null, resetsAt: usage.resetsAt };
     }
     const allowance = own((await read()).allowances, who.keyId);
     const used = allowance?.status === 'active' ? await periodUsed(allowance, rauPeriod(now())) : 0;
-    const view = usageView(used);
-    return { ok: true, eligible: true, reason: null, upgradeUrl, capUsd, usedUsd: view.usedUsd, remainingUsd: view.remainingUsd, resetsAt: view.resetsAt };
+    const view = usageView(used, who.capUsd);
+    return { ok: true, eligible: true, reason: null, upgradeUrl, capUsd: who.capUsd, usedUsd: view.usedUsd, remainingUsd: view.remainingUsd, resetsAt: view.resetsAt };
   }
 
   const perLicense = createRateLimiter({ now });
@@ -283,7 +284,7 @@ export function createRauService({
     if ((inFlight.get(who.keyId) ?? 0) >= RAU_CONCURRENCY_PER_LICENSE) throw rauRateLimited(5);
     inFlight.set(who.keyId, (inFlight.get(who.keyId) ?? 0) + 1);
     try {
-      return await run(who.keyId, prompt);
+      return await run(who.keyId, who.capUsd, prompt);
     } finally {
       const left = (inFlight.get(who.keyId) ?? 1) - 1;
       if (left > 0) inFlight.set(who.keyId, left);
@@ -291,11 +292,11 @@ export function createRauService({
     }
   }
 
-  async function run(keyId, prompt) {
-    const allowance = await ensureAllowance(keyId);
+  async function run(keyId, capUsd, prompt) {
+    const allowance = await ensureAllowance(keyId, capUsd);
     const period = rauPeriod(now());
     const used = await periodUsed(allowance, period);
-    if (used >= capUsd) throw capReached(used);
+    if (used >= capUsd) throw capReached(used, capUsd);
 
     let answer;
     try {
@@ -319,10 +320,13 @@ export function createRauService({
       balances.delete(keyId);
     }
     if (isKeyLimitReached(answer.status, answer.body)) {
+      // The key still has a lower old limit because its PATCH failed: the next call asks again, and
+      // filling the ledger now would hold the raised cap shut for the rest of the month.
+      if (allowance.capUsd < capUsd) throw rauError('upstream_unavailable', 502);
       // OpenRouter's own limit is spent: fill the ledger so the next call stops before upstream.
       const full = Math.max(used, capUsd);
       await recordSpend(keyId, period, { atLeast: full });
-      throw capReached(full);
+      throw capReached(full, capUsd);
     }
     const text = answer.body?.choices?.[0]?.message?.content;
     if (!answer.ok || typeof text !== 'string') {
@@ -335,7 +339,7 @@ export function createRauService({
       ok: true,
       text,
       model: typeof answer.body.model === 'string' ? answer.body.model : model,
-      usage: usageView(Math.max(used + cost, ledger)),
+      usage: usageView(Math.max(used + cost, ledger), capUsd),
     };
   }
 
@@ -349,7 +353,7 @@ export function createRauService({
       const allowances = await Promise.all(Object.values((await read()).allowances).map(async (a) => {
         const { openrouterKey: _secret, ...rest } = a;
         const usedUsd = a.status === 'active' ? usd(await periodUsed(a, period)) : null;
-        return { ...rest, usedUsd, remainingUsd: usedUsd === null ? null : usd(Math.max(0, capUsd - usedUsd)) };
+        return { ...rest, usedUsd, remainingUsd: usedUsd === null ? null : usd(Math.max(0, a.capUsd - usedUsd)) };
       }));
       allowances.sort((x, y) => String(y.lastUsedAt ?? y.createdAt).localeCompare(String(x.lastUsedAt ?? x.createdAt)));
       return {
@@ -358,7 +362,7 @@ export function createRauService({
         model,
         reasoningEffort,
         period,
-        capUsd,
+        capsUsd: caps,
         resetsAt: new Date(rauResetsAt(now())).toISOString(),
         count: allowances.length,
         allowances,

@@ -128,7 +128,7 @@ if (res.ok && listed.length && listed.every((l) => l.key)) {
   process.stdout.write(`\n${listed.map(expiryLine).join('\n')}\n`);
 }
 if (command === 'rau' && res.ok && parsed) {
-  const lines = [`${parsed.model} · ${parsed.period} · cap $${parsed.capUsd} · resets ${parsed.resetsAt}`];
+  const lines = [`${parsed.model} · ${parsed.period} · cap Pro $${parsed.capsUsd.pro}, Hama $${parsed.capsUsd.hama} · resets ${parsed.resetsAt}`];
   for (const a of parsed.allowances) lines.push(`${a.keyId} ${a.status} · $${a.usedUsd ?? '?'} / $${a.capUsd}`);
   process.stdout.write(`\n${lines.join('\n')}\n`);
 }
