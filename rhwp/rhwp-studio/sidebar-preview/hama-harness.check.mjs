@@ -38,7 +38,7 @@ export async function checkHamaHarness({ page, origin, open, screenshot }) {
   // Hama 가입자, 고른 적 없음 — 첫 빈 채팅이 Hama 로 열리고 게이지가 보인다.
   await open('reset=1&hama=active');
   await page.waitForFunction(() => document.querySelector('.ag-root').dataset.agent === 'hama');
-  assert.equal(await shown('.ag-provider .ag-hama-badge'), true);
+  assert.equal(await shown('.ag-provider .ag-provider-icon-mask[data-agent="hama"]'), true);
   await openPicker();
   const rowTops = await page.$$eval('.ag-provider-item:not([hidden])', (items) => new Set(items.map((item) => item.offsetTop)).size);
   assert.equal(rowTops, 1, 'Hama sits on the same row as the other providers');

@@ -71,26 +71,3 @@
   width: 11px;
   height: 11px;
 }
-
-/* 입력기 줄의 Hama 표 — Hama 를 고른 동안만. */
-.ag-hama-badge {
-  display: none;
-  align-items: center;
-  padding: 1px 5px;
-  border-radius: var(--ag-r-code);
-  background: var(--ag-hama-wash);
-  color: var(--ag-hama);
-  font-size: var(--ag-fs-meta);
-  font-weight: var(--ag-fw-medium);
-  line-height: var(--ag-lh-tight);
-  white-space: nowrap;
-}
-
-.ag-root[data-agent='hama'] .ag-provider .ag-hama-badge {
-  display: inline-flex;
-}
-
-/* 입력기 줄에서는 표가 마크를 대신한다 — 모델 이름에 자리를 남긴다. */
-.ag-root[data-agent='hama'] .ag-composer-meta .ag-provider .ag-provider-icon {
-  display: none;
-}

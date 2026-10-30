@@ -1928,9 +1928,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   providerTrigger.setAttribute('aria-expanded', 'false');
   providerTrigger.setAttribute('aria-controls', 'ag-config-panel');
   let providerIcon = createProviderIcon(selectedAgent);
-  // Hama 를 고른 동안만 보이는 작은 표(CSS 가 .ag-root[data-agent] 로 켠다). 사용량은 설정의 사용량 탭에 있다.
-  const hamaBadge = el('span', 'ag-hama-badge', AGENT_LABEL.hama);
-  providerTrigger.append(providerIcon, hamaBadge);
+  providerTrigger.append(providerIcon);
 
   const providerMenu = el('div', 'ag-model-menu ag-provider-menu');
   providerMenu.setAttribute('role', 'menu');
