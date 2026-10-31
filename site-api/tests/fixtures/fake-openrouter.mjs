@@ -7,9 +7,10 @@ import { ignorePortProbe } from './port-probe.mjs';
  * In-process stand-in for the parts of OpenRouter the gift service uses:
  * provisioning (/keys), key info (/key), /models and /chat/completions with SSE.
  * Streams pause between chunks until `release()` is called, so a test (or the live
- * check) can see each chunk arrive on its own.
+ * check) can see each chunk arrive on its own. `random(n)` draws the key hashes and keys (a seeded
+ * one makes two fakes hand out the same ones).
  */
-export function createFakeOpenRouter({ provisioningKey = 'pk-test', autoRelease = 0 } = {}) {
+export function createFakeOpenRouter({ provisioningKey = 'pk-test', autoRelease = 0, random = randomBytes } = {}) {
   const keys = new Map(); // hash → { name, key, limit, usage, byokUsage, includeByok, disabled }
   const calls = [];
   const chats = [];
@@ -55,8 +56,8 @@ export function createFakeOpenRouter({ provisioningKey = 'pk-test', autoRelease 
       if (!management) return json(res, 401, { error: { code: 401, message: 'no' } });
       const failure = createFailure;
       createFailure = null;
-      const hash = randomBytes(8).toString('hex');
-      const key = `sk-or-v1-${randomBytes(16).toString('hex')}`;
+      const hash = random(8).toString('hex');
+      const key = `sk-or-v1-${random(16).toString('hex')}`;
       if (!failure || failure.createAnyway) keys.set(hash, { name: body.name, key, limit: body.limit, limitReset: body.limit_reset ?? null, usage: 0, byokUsage: 0, includeByok: body.include_byok_in_limit === true, disabled: false });
       if (failure) return json(res, failure.status, { error: { code: failure.status, message: 'boom' } });
       return json(res, 201, { key, data: keyInfo(hash, keys.get(hash)) });

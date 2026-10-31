@@ -13,7 +13,8 @@ import { createMemoryStore } from './store.mjs';
  *
  * rau.json = { allowances: { [keyId]: { keyId, status: provisioning|active, name, openrouterHash,
  *   openrouterKey, capUsd, period: 'YYYY-MM', limitSetAt, ledger: { [period]: usd }, createdAt } } }
- * `openrouterKey` never leaves the server. Assumes ONE replica: all writes go through one lock.
+ * `openrouterKey` never leaves the server. Every write runs exclusively through `store.update`;
+ * OpenRouter calls happen between updates, never inside one.
  */
 
 export const MAX_RAU_PROMPT_BYTES = 48 * 1024;
@@ -112,28 +113,18 @@ export function createRauService({
   const caps = { basic: usd(monthlyCapsUsd.basic), hama: usd(monthlyCapsUsd.hama) };
   const openrouter = createOpenRouterClient({ apiBase, provisioningKey, fetchImpl });
 
-  let mutation = Promise.resolve();
-  function withLock(fn) {
-    const result = mutation.then(fn, fn);
-    mutation = result.then(() => undefined, () => undefined);
-    return result;
-  }
   function normalize(state) {
     const next = state && typeof state === 'object' && !Array.isArray(state) ? state : {};
     if (!next.allowances || typeof next.allowances !== 'object' || Array.isArray(next.allowances)) next.allowances = {};
     return next;
   }
+  /** `fn` runs alone on the store and returns `{ value, dirty }`; the state is saved unless `dirty` is false. */
   async function mutate(fn) {
-    return withLock(async () => {
-      const state = normalize(await store.load());
-      const result = await fn(state);
-      if (result?.dirty !== false) await store.save(state);
-      return result?.value ?? result;
-    });
+    const result = await store.update((state) => fn(normalize(state)));
+    return result?.value ?? result;
   }
   async function read() {
-    await mutation.catch(() => {});
-    return normalize(await store.load());
+    return normalize(await store.read());
   }
 
   function usageView(usedUsd, capUsd, nowMs = now()) {

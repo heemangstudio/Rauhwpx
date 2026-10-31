@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 
+import { createPostgresStore } from '../../pg-store.mjs';
+
 /**
  * Drives the same calls against two copies of a service, one on memory stores and one on
  * Postgres stores, and checks after every step that both answered the same and hold the same state.
@@ -17,6 +19,18 @@ export function seededRandom(seed) {
     }
     return out;
   };
+}
+
+/**
+ * Writes `state` (a legacy JSON file, say) through a Postgres store as one update, then loads it
+ * with a fresh store, as another process would.
+ */
+export async function storedAndReloaded(db, mapper, state) {
+  await createPostgresStore({ db, mapper }).update((current) => {
+    for (const key of Object.keys(current)) delete current[key];
+    Object.assign(current, structuredClone(state));
+  });
+  return createPostgresStore({ db, mapper }).read();
 }
 
 /** What a JSON file would hold: `undefined` dropped, `-0` → 0. The memory store keeps both. */
