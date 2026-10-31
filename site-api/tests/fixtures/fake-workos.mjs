@@ -7,7 +7,7 @@ import http from 'node:http';
  * the way a finished AuthKit page would; the authorize step answers like AuthKit with
  * `nextUser` (or the error set with `failAuthorize`). Shapes follow workos.com/docs/reference/user-management.
  */
-export function createFakeWorkOS({ apiKey, clientId }) {
+export function createFakeWorkOS({ apiKey, clientId, onCall = () => {} }) {
   const codes = new Map(); // code → { user, method }
   const calls = [];
   let nextUser = null;
@@ -37,6 +37,7 @@ export function createFakeWorkOS({ apiKey, clientId }) {
     const text = Buffer.concat(chunks).toString('utf8');
     const body = text ? JSON.parse(text) : null;
     calls.push({ method: req.method, path: url.pathname, query: Object.fromEntries(url.searchParams), auth: req.headers.authorization, body });
+    onCall(req.method, url.pathname);
 
     if (req.method === 'GET' && url.pathname === '/user_management/authorize') {
       const back = new URL(url.searchParams.get('redirect_uri'));
