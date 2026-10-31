@@ -1,15 +1,16 @@
-// 계정 페이지. 창의 제목 막대 아래를 모두 덮는 한 장이다(작은 시트가 아니다).
+// 계정 화면. 홈에서는 별도로 열고, 설정에서는 계정 탭 안에 붙인다.
 // 로그아웃이면 로그인 판만, 로그인했으면 한 단의 프로필 화면(사진·이름·이메일, 요금제, 사용량, 기기, 라이선스,
 // 로그아웃·계정 삭제)을 보인다. 동작마다 그 단추에 진행을 보이고 오류는 그 옆에 한 줄로 둔다.
 // 어디서든 window 의 'rhwp:open-account' 이벤트로 연다(detail.section 으로 갈 곳을 짚는다).
 import '../agent-sidebar/sheet.css';
 import './account-page.css';
+import loginNeurons from './login-neurons.txt?raw';
 import { createIcon } from '../agent-sidebar/icons.ts';
 import { createSheetFrame } from '../agent-sidebar/sheet.ts';
 import { createHamaMark } from '../plan/hama-mark.ts';
 import { createHamaScene } from '../plan/hama-scene.ts';
 import { PLAN_CYCLES, planPrice, planSkuAvailable, upgradeFamilies, won, type PlanFamily } from '../plan/plan-offers.ts';
-import type { PlanStore } from '../plan/plan-store.ts';
+import { sharedPlanStore, type PlanStore } from '../plan/plan-store.ts';
 import type { PlanSku } from '../plan/plan-types.ts';
 import {
   ACCOUNT_TIER_LABEL,
@@ -39,6 +40,7 @@ import {
 import type { AccountDevice, AccountLicense, AccountResult, AccountStatus } from './account-types.ts';
 import { prepareAvatar } from './avatar-image.ts';
 import { createSignInPanel, setBusy } from './sign-in-panel.ts';
+import { openPostLogin } from './post-login.ts';
 
 
 export interface AccountPageOptions {
@@ -48,6 +50,8 @@ export interface AccountPageOptions {
   section?: AccountSection;
   /** 이 페이지에서 로그인을 마치면 페이지를 닫고 부른다(요금제 카드로 돌아가기). */
   onSignedIn?: () => void;
+  /** 설정의 계정 탭 안에 붙인다. 별도 창·대화상자를 열지 않는다. */
+  container?: HTMLElement;
 }
 
 export interface AccountPageHandle {
@@ -125,18 +129,28 @@ function focusables(container: HTMLElement): HTMLElement[] {
 export function openAccountPage(options: AccountPageOptions = {}): AccountPageHandle | null {
   const store = options.store ?? accountStore();
   if (!store.api) return null;
-  if (openPage) {
+  if (openPage && !options.container) {
     openPage.reveal(options);
     return openPage.handle;
   }
   const api = store.api;
-  let plan = options.plan ?? null;
+  const embedded = !!options.container;
+  let plan = options.plan ?? sharedPlanStore();
   let onSignedIn = options.onSignedIn;
   const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
 
+  const layer = el('div', 'acct-layer');
   const page = el('div', 'acct-page');
-  page.setAttribute('role', 'dialog');
-  page.setAttribute('aria-modal', 'true');
+  if (embedded) {
+    layer.classList.add('acct-embedded-layer');
+    page.classList.add('acct-embedded');
+  }
+  // 제품 웹사이트의 한글 뉴런 그림을 로그인 배경으로 옅게 쓴다.
+  const art = el('pre', 'acct-login-art', loginNeurons);
+  art.setAttribute('aria-hidden', 'true');
+  layer.append(page);
+  page.setAttribute('role', embedded ? 'region' : 'dialog');
+  if (!embedded) page.setAttribute('aria-modal', 'true');
   page.setAttribute('aria-label', '계정');
   const bar = el('div', 'acct-bar');
   const back = button('acct-back');
@@ -147,7 +161,7 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
   const scroll = el('div', 'acct-scroll');
   const column = el('div', 'acct-column');
   scroll.append(column);
-  page.append(bar, scroll);
+  page.append(art, bar, scroll);
 
   const signIn = createSignInPanel(store, { variant: 'page' });
   const signed = el('div', 'acct-signed');
@@ -480,7 +494,7 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
     const fragment = document.createDocumentFragment();
     const tier = current.plan.tier;
     if (tier === 'hama') fragment.append(createHamaMark('acct-hama-mark'));
-    fragment.append(el('span', 'acct-plan-tier', ACCOUNT_TIER_LABEL[tier]));
+    fragment.append(el('span', 'acct-plan-current', '현재 요금제'), el('span', 'acct-plan-tier', ACCOUNT_TIER_LABEL[tier]));
     const cycle = planCycleLabel(current.plan);
     if (cycle) fragment.append(el('span', 'acct-plan-cycle', cycle));
     return fragment;
@@ -498,68 +512,24 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
     return [waiting, cancel];
   }
 
-  /** Hama 로 올라가는 자리: 픽셀 하마 그림과 월간·연간 결제. 연간은 열두 달 값과 견준다. */
-  function hamaOffer(): HTMLElement {
-    const planStatus = plan?.status() ?? null;
-    const { monthly, yearly } = PLAN_CYCLES.hama;
-    const block = el('div', 'acct-hama-offer');
-    block.dataset.plan = 'hama';
-    const art = el('span', 'acct-hama-offer-art');
-    art.append(createHamaScene('acct-hama-scene'));
-    const body = el('div', 'acct-hama-offer-body');
-    const name = el('p', 'acct-hama-offer-name', 'Hama');
-    const choices = el('div', 'acct-hama-choices');
-    const pending = planStatus?.pendingCheckout?.sku;
-    if (pending === monthly || pending === yearly) choices.append(...checkoutWait());
-    else {
-      const skus = [monthly, yearly].filter((sku) => planSkuAvailable(planStatus, sku));
-      if (skus.length === 0) {
-        const soon = button('acct-btn', '곧 출시');
-        soon.disabled = true;
-        choices.append(soon);
-      }
-      const monthlyPrice = planPrice(planStatus, monthly);
-      for (const sku of skus) {
-        const yearlyChoice = sku === yearly;
-        const price = planPrice(planStatus, sku);
-        const choice = button(`acct-hama-choice${yearlyChoice ? ' acct-hama-choice-yearly' : ''}`);
-        choice.dataset.sku = sku;
-        choice.append(el('span', 'acct-hama-choice-cycle', yearlyChoice ? '연간' : '월간'));
-        const amount = el('span', 'acct-hama-choice-price');
-        if (price !== null) amount.append(won(price));
-        // 연간은 열두 달 값을 그어 둔다. 아끼는 만큼이 숫자로 보인다.
-        const twelve = monthlyPrice === null ? null : monthlyPrice * 12;
-        if (yearlyChoice && price !== null && twelve !== null && price < twelve) {
-          amount.append(' ', el('s', 'acct-hama-choice-was', won(twelve)));
-        }
-        choice.append(amount);
-        choice.setAttribute('aria-label', `Hama ${yearlyChoice ? '연간' : '월간'}${price === null ? '' : ` ${won(price)}`}`);
-        choice.disabled = checkoutBusy !== null || (pending !== undefined && pending !== null);
-        if (checkoutBusy === sku) setBusy(choice, true);
-        choice.addEventListener('click', () => { void checkout(sku); });
-        choices.append(choice);
-      }
-    }
-    body.append(name, choices);
-    block.append(art, body);
-    return block;
-  }
-
-  /** Pro 는 한 줄, Hama 는 따로 꾸민 자리. */
+  /** 두 요금제를 같은 크기로 비교하고 Pro 를 먼저 둔다. */
   function offerRow(family: PlanFamily): HTMLElement {
-    if (family === 'hama') return hamaOffer();
     const planStatus = plan?.status() ?? null;
     const { monthly, yearly } = PLAN_CYCLES[family];
-    const row = el('div', 'acct-offer');
+    const row = el('div', `acct-offer${family === 'hama' ? ' acct-hama-offer' : ''}`);
     row.dataset.plan = family;
-    const name = el('span', 'acct-offer-name', 'Pro');
+    const head = el('div', 'acct-offer-head');
+    head.append(el('h3', 'acct-offer-name', family === 'pro' ? 'Pro' : 'Hama'));
+    if (family === 'hama') head.append(createHamaScene('acct-hama-scene'));
+    const copy = el('p', 'acct-offer-description', family === 'pro'
+      ? '내 Codex·Claude를 연결해 문서 작업을 함께해요.'
+      : '별도 AI 연결 없이 Hama와 바로 시작해요.');
     const monthlyPrice = planPrice(planStatus, monthly);
     const yearlyPrice = planPrice(planStatus, yearly);
-    const price = el('span', 'acct-offer-price', [
-      monthlyPrice === null ? '' : `월 ${won(monthlyPrice)}`,
-      yearlyPrice === null ? '' : `연 ${won(yearlyPrice)}`,
-    ].filter(Boolean).join(' · '));
-    const actions = el('span', 'acct-offer-actions');
+    const price = el('p', 'acct-offer-price');
+    if (monthlyPrice !== null) price.append(el('strong', '', won(monthlyPrice)), el('span', '', ' / 월'));
+    const annual = el('p', 'acct-offer-annual', yearlyPrice === null ? '' : `연간 ${won(yearlyPrice)}`);
+    const actions = el('div', 'acct-offer-actions');
     const pending = planStatus?.pendingCheckout?.sku;
     if (pending === monthly || pending === yearly) actions.append(...checkoutWait());
     else {
@@ -570,15 +540,16 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
         actions.append(soon);
       }
       for (const sku of skus) {
-        const buy = button('acct-btn', sku === monthly ? '월간' : '연간');
+        const buy = button(`acct-btn${family === 'pro' && sku === monthly ? ' acct-btn-primary' : ''}`, sku === monthly ? '월간 시작' : '연간 시작');
         buy.dataset.sku = sku;
-        buy.disabled = checkoutBusy !== null || pending !== undefined && pending !== null;
+        buy.setAttribute('aria-label', `${family === 'pro' ? 'Pro' : 'Hama'} ${sku === monthly ? '월간' : '연간'} 시작`);
+        buy.disabled = checkoutBusy !== null || pending != null;
         if (checkoutBusy === sku) setBusy(buy, true);
         buy.addEventListener('click', () => { void checkout(sku); });
         actions.append(buy);
       }
     }
-    row.append(name, price, actions);
+    row.append(head, copy, price, annual, actions);
     return row;
   }
 
@@ -715,6 +686,10 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
     const families = plan?.api && !planInfo.paymentFailed ? upgradeFamilies(planInfo.tier) : [];
     keepFocus(offers, () => offers.replaceChildren(...families.map(offerRow)));
     offers.hidden = families.length === 0;
+    if (plan?.status()?.pendingCheckout) say(planError, '');
+    else if (!checkoutBusy && plan?.status()?.lastCheckout?.code === 'timed_out') {
+      say(planError, '결제 확인 시간이 지났어요. 잠시 후 다시 시도해 주세요.');
+    }
 
     const stats = current.stats;
     statsSection.root.hidden = !stats;
@@ -751,9 +726,29 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
   }
 
   let lastState: AccountStatus['state'] | null = null;
+  let signInStartedAt: number | null = null;
   function render(): void {
     const current = status();
     const signedIn = isSignedIn(current);
+    if (current?.signIn) signInStartedAt = current.signIn.startedAt;
+    const wasSigningIn = lastState === 'signing_in' || lastState === 'choose_device';
+    if (!embedded && signedIn && wasSigningIn) {
+      lastState = current!.state;
+      const done = onSignedIn;
+      onSignedIn = undefined;
+      const createdAt = current!.account?.createdAt ?? 0;
+      const newAccount = signInStartedAt !== null && createdAt >= signInStartedAt - 5000
+        && createdAt <= Date.now() + 60_000;
+      finish();
+      if (done) done();
+      else void openPostLogin(current!, store, plan, newAccount);
+      return;
+    }
+    layer.dataset.modal = !embedded && !signedIn ? 'true' : 'false';
+    page.dataset.authPopup = !embedded && !signedIn ? 'true' : 'false';
+    back.setAttribute('aria-label', signedIn ? '돌아가기' : '닫기');
+    back.title = signedIn ? '돌아가기' : '닫기';
+    back.replaceChildren(createIcon(signedIn ? 'browserBack' : 'close'));
     page.dataset.state = signedIn ? 'signed_in' : current?.state ?? 'signed_out';
     signIn.element.hidden = signedIn;
     signed.hidden = !signedIn;
@@ -765,17 +760,10 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
     }
     const state = current?.state ?? null;
     if (state !== lastState) {
-      const wasSigningIn = lastState === 'signing_in' || lastState === 'choose_device';
       lastState = state;
       // 판이 바뀌면 초점이 사라진 단추에 남지 않게 새 판의 첫 자리로 옮긴다.
-      if (!page.contains(document.activeElement) || document.activeElement === document.body) {
+      if (!embedded && (!page.contains(document.activeElement) || document.activeElement === document.body)) {
         (signedIn ? back : signIn.focusTarget() ?? back).focus({ preventScroll: true });
-      }
-      if (signedIn && wasSigningIn && onSignedIn) {
-        const done = onSignedIn;
-        onSignedIn = undefined;
-        finish();
-        done();
       }
     }
   }
@@ -914,32 +902,34 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
     signIn.dispose();
     document.removeEventListener('keydown', onKeyDown, true);
     document.removeEventListener('pointerdown', onPointerDown, true);
-    openPage = null;
+    if (!embedded) openPage = null;
     page.classList.remove('acct-page-open');
-    const remove = (): void => { page.remove(); };
-    if (reducedMotion()) remove();
+    const remove = (): void => { layer.remove(); };
+    if (embedded || reducedMotion()) remove();
     else {
       page.addEventListener('transitionend', (event) => { if (event.target === page) remove(); }, { once: true });
       window.setTimeout(remove, 400);
     }
     const active = document.activeElement;
-    if ((!active || active === document.body || page.contains(active)) && previousFocus?.isConnected) {
+    if (!embedded && (!active || active === document.body || page.contains(active)) && previousFocus?.isConnected) {
       previousFocus.focus({ preventScroll: true });
     }
     resolveClosed();
   }
   back.addEventListener('click', finish);
 
-  document.body.append(page);
-  document.addEventListener('keydown', onKeyDown, true);
-  document.addEventListener('pointerdown', onPointerDown, true);
+  (options.container ?? document.body).append(layer);
+  if (!embedded) {
+    document.addEventListener('keydown', onKeyDown, true);
+    document.addEventListener('pointerdown', onPointerDown, true);
+  }
   render();
   requestAnimationFrame(() => {
     page.classList.add('acct-page-open');
-    if (!options.section) (isSignedIn(status()) ? back : signIn.focusTarget() ?? back).focus({ preventScroll: true });
+    if (!embedded && !options.section) (isSignedIn(status()) ? back : signIn.focusTarget() ?? back).focus({ preventScroll: true });
   });
   const handle: AccountPageHandle = { close: finish, closed };
-  openPage = { handle, reveal };
+  if (!embedded) openPage = { handle, reveal };
   if (options.section) reveal(options);
   return handle;
 }

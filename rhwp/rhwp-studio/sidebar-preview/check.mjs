@@ -216,7 +216,10 @@ try {
   async function screenshot(name) {
     // Capture without resizing the viewport; a resize re-clamps the panel widths mid-check.
     const sidebar = await page.$('.ag-root');
-    await sidebar.screenshot({ path: resolve(artifacts, `${name}.png`), captureBeyondViewport: false });
+    const bounds = await sidebar?.boundingBox();
+    const modal = await page.$('.acct-layer, .ag-sheet-layer[data-host="body"]');
+    const target = !modal && bounds && bounds.width >= 1 && bounds.height >= 1 ? sidebar : page;
+    await target.screenshot({ path: resolve(artifacts, `${name}.png`), captureBeyondViewport: false });
   }
   async function step(name, run) {
     try {

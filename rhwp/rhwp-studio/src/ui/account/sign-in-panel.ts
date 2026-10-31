@@ -2,6 +2,7 @@
 // 계정 페이지와 처음 설정의 계정 장이 같이 쓴다. 로그인을 마치면 부른 쪽이 다음 화면을 정한다.
 // 가입을 고르면 단추 글이 '가입'으로 바뀌고, 이메일은 AuthKit 의 가입 화면으로 연다.
 import './account-page.css';
+import { createTypingHama } from '../agent-sidebar/chat-hama.ts';
 import { formatLastSeen, platformLabel } from './account-format.ts';
 import { PROVIDER_LABEL, platformGlyph, providerGlyph } from './account-glyphs.ts';
 import type { AccountStore } from './account-store.ts';
@@ -56,40 +57,23 @@ export function createSignInPanel(
 ): SignInPanel {
   const api = store.api!;
   const root = el('div', `acct-signin acct-signin-${options.variant}`);
-  let intent: AccountSignInIntent = options.intent ?? 'sign_in';
+  let intent: AccountSignInIntent = options.intent ?? 'sign_up';
 
   // ── 로그아웃 ──
   const out = el('div', 'acct-signin-out');
   if (options.variant === 'page') {
-    const mark = el('span', 'ag-rau-icon acct-signin-mark');
-    mark.setAttribute('aria-hidden', 'true');
-    out.append(mark);
+    out.append(createTypingHama(), el('h1', 'acct-signin-title', 'HamaEditor'));
   }
   const switcher = el('div', 'acct-signin-switch');
-  switcher.setAttribute('role', 'radiogroup');
+  switcher.setAttribute('role', 'group');
   switcher.setAttribute('aria-label', '로그인 또는 가입');
-  const intentButtons = new Map<AccountSignInIntent, HTMLButtonElement>();
-  for (const value of ['sign_in', 'sign_up'] as const) {
-    const control = button('acct-signin-switch-option', INTENT_LABEL[value]);
-    control.dataset.intent = value;
-    control.setAttribute('role', 'radio');
-    control.addEventListener('click', () => {
-      if (intent === value) return;
-      intent = value;
-      error = '';
-      render();
-    });
-    intentButtons.set(value, control);
-    switcher.append(control);
-  }
-  // 두 칸 사이는 화살표로 옮긴다(라디오 묶음).
-  switcher.addEventListener('keydown', (event) => {
-    if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return;
-    event.preventDefault();
-    intent = intent === 'sign_in' ? 'sign_up' : 'sign_in';
+  const switchPrompt = el('span');
+  const switchLink = button('acct-signin-switch-link');
+  switcher.append(switchPrompt, switchLink);
+  switchLink.addEventListener('click', () => {
+    intent = intent === 'sign_up' ? 'sign_in' : 'sign_up';
     error = '';
     render();
-    intentButtons.get(intent)?.focus();
   });
   const socials = el('div', 'acct-signin-socials');
   const socialButtons = new Map<AccountProvider, HTMLButtonElement>();
@@ -131,7 +115,7 @@ export function createSignInPanel(
   const outError = el('p', 'acct-error', '');
   outError.setAttribute('role', 'alert');
   const unavailable = el('p', 'acct-signin-unavailable', '');
-  out.append(switcher, socials, divider, emailForm, outError, unavailable);
+  out.append(socials, divider, emailForm, switcher, outError, unavailable);
 
   // ── 로그인 중 ──
   const waiting = el('div', 'acct-signin-wait');
@@ -258,13 +242,9 @@ export function createSignInPanel(
     const available = status?.available !== false;
     const providers = new Set(status?.providers ?? ['email', 'google']);
     switcher.hidden = !available;
-    for (const [value, control] of intentButtons) {
-      const selected = value === intent;
-      control.classList.toggle('acct-active', selected);
-      control.setAttribute('aria-checked', selected ? 'true' : 'false');
-      control.tabIndex = selected ? 0 : -1;
-      control.disabled = busyProvider !== null;
-    }
+    switchPrompt.textContent = intent === 'sign_up' ? '계정이 있다면?' : '계정이 없다면?';
+    switchLink.textContent = intent === 'sign_up' ? '로그인' : '가입';
+    switchLink.disabled = busyProvider !== null;
     const verb = INTENT_LABEL[intent];
     for (const [provider, control] of socialButtons) {
       socialLabels.get(provider)!.textContent = `${PROVIDER_LABEL[provider]}로 ${verb}`;

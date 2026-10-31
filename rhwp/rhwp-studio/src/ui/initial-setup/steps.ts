@@ -2,8 +2,7 @@
  * 첫 실행 설정의 단계, 하마 대사, 한컴 글꼴 찾기.
  *
  * 화면에는 고를 것만 두고, 설명은 하마가 한 줄로 한다. 글꼴 단계는 한컴 글꼴을 스스로 찾지
- * 못했을 때만 넣는다. Rau-0.1 단계는 허브에 붙어 있을 때, 자동 버그 수정 단계는 데스크톱(자동 수정 API 가
- * 있을 때)에만 맨 끝에 넣는다.
+ * 못했을 때만 넣는다. 마지막에는 요금제를 안내한다.
  *   - 데스크톱: 설치 글꼴 색인이 이미 있다. 한컴 글꼴이 없으면 다시 찾기와 한컴오피스 받기만 둔다.
  *   - 브라우저: 허브 색인과 이미 허락된 설치 글꼴 목록으로 먼저 조용히 찾는다. 못 찾으면 한 번
  *     눌러 찾기(설치 글꼴 권한)와 한컴오피스 받기를 두고, 그래도 없을 때만 글꼴 폴더를 권한다.
@@ -17,14 +16,14 @@ import {
   type SystemFontIndex,
 } from '../../core/desktop-fonts.ts';
 import { canPersistFontFolder } from '../../core/font-folder.ts';
-import type { AccountStatus } from '../account/account-types.ts';
+import type { PlanTier } from '../plan/plan-types.ts';
 import {
   detectLocalFonts,
   getDetectedLocalFonts,
   isLocalFontAccessSupported,
 } from '../../core/local-fonts.ts';
 
-export type SetupStep = 'theme' | 'models' | 'fonts' | 'account' | 'taste' | 'autofix';
+export type SetupStep = 'theme' | 'fonts' | 'welcome' | 'account' | 'plans' | 'models' | 'hama';
 /** missing: 데스크톱에서 색인에 한컴 글꼴이 없다. discover: 브라우저에서 아직 못 찾았다. */
 export type FontStepKind = 'missing' | 'discover';
 
@@ -32,17 +31,18 @@ export const HANCOM_OFFICE_URL = 'https://www.hancom.com/product/office/officeVi
 
 export const HIPPO_LINES = {
   theme: '화면은 어떤 게 편해요?',
-  models: '같이 일할 AI를 연결해 주세요.',
+  welcome: '어떻게 시작할까요?',
+  plans: '나에게 맞는 요금제를 골라 주세요.',
+  models: '쓰고 있는 AI가 있으면 연결해 주세요.',
+  hama: 'Hama도 함께할 준비가 됐어요!',
   modelConnected: '연결됐어요!',
-  taste: 'Rau-0.1은 문서마다 자동으로 사용자님의 사용 기록을 토대로 취향을 기억해서 점점 맞추어가요. 사용할까요?',
-  autofix: '예상치 못한 오류가 발생하면, AI가 자동으로 고치고 개발자에게 버그를 제보하는 기능입니다. 앱의 실행 기록 및 현재 상태 등을 개발자가 버그 수정용으로 사용할 수 있습니다.',
   discover: '문서 글꼴을 찾아볼게요.',
   searching: '찾는 중이에요…',
   found: '한컴 글꼴을 찾았어요!',
   missing: '한컴 글꼴이 안 보여요. 한컴오피스를 설치하면 알아서 찾아요.',
   missingWithFolder: '한컴 글꼴이 안 보여요. 한컴오피스를 설치하거나 글꼴 폴더를 알려 주세요.',
   done: '설정이 완료되었어요!',
-  account: '계정이 있으면 요금제를 어디서나 써요.',
+  account: '계속하려면 로그인이 필요해요',
   signedIn: '로그인했어요!',
 } as const;
 
@@ -84,21 +84,20 @@ export function planFontStep(env: FontEnvironment): FontStepKind | null {
   return env.canDiscover ? 'discover' : null;
 }
 
-/** 계정 기능이 열려 있고 아직 로그인하지 않았을 때만 계정 장을 넣는다. 계정 API 가 없으면(웹) null. */
-export function needsAccountStep(status: Pick<AccountStatus, 'available' | 'state'> | null): boolean {
-  return status !== null && status.available && status.state !== 'signed_in';
-}
-
-/** 계정은 데스크톱에서 아직 로그인하지 않았을 때만, Rau-0.1 과 자동 버그 수정은 맨 끝에 이 순서로 둔다. */
+/** 무료 경로는 홈으로, AI 경로는 계정과 실제 유료 등급을 확인한 뒤 연결 단계로 간다. */
 export function planSteps(
   fontStep: FontStepKind | null,
-  options: { autofix?: boolean; account?: boolean; taste?: boolean } = {},
+  options: { ai?: boolean; account?: boolean; signedIn?: boolean; tier?: PlanTier } = {},
 ): SetupStep[] {
-  const steps: SetupStep[] = ['theme', 'models'];
+  const steps: SetupStep[] = ['theme'];
   if (fontStep) steps.push('fonts');
+  steps.push('welcome');
+  if (!options.ai) return steps;
   if (options.account) steps.push('account');
-  if (options.taste) steps.push('taste');
-  if (options.autofix) steps.push('autofix');
+  if (!options.signedIn) return steps;
+  if (!options.tier || options.tier === 'free') return [...steps, 'plans'];
+  steps.push('models');
+  if (options.tier === 'hama') steps.push('hama');
   return steps;
 }
 

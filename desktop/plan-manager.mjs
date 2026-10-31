@@ -11,7 +11,7 @@
 //   늘리지 못하게 확인 시각보다 이른 시각에는 캐시를 쓰지 않는다.
 // - 결제: 로그인해야 시작한다(sign_in_required). 이메일이 아니라 결제마다 만든 ref 로 확인한다. 이메일로 묻게
 //   하면 구매자 이메일만 알아도 키를 받아 갈 수 있기 때문이다. 웹사이트(website/assets/purchase.js)와 같은 방식으로
-//   ref 를 만들어 Groble 링크에 붙여 열고, GET /v1/license/by-ref 를 5초마다 10분, 그 뒤로 30초마다, 24시간까지
+//   ref 를 만들어 Groble 링크에 붙여 열고, GET /v1/license/by-ref 를 5초마다 1분, 그 뒤로 30초마다, 5분까지
 //   묻는다. 키가 나오면 계정에 연결한다(accountManager.redeem). 진행 중인 결제는 plan.json 에 남겨 다시 실행해도
 //   이어서 묻는다.
 // - 키·ref·결제 주소는 렌더러에 보내지 않고 기록에도 남기지 않는다. plan.json 에는 ref 가 있어 0600 으로 쓴다.
@@ -26,11 +26,11 @@ export const PLAN_SKUS = Object.freeze(['proMonthly', 'proYearly', 'hamaMonthly'
 /** lease 를 확인할 수 없을 때 마지막 확인의 요금제를 보여 주는 기간. */
 export const PLAN_CACHE_MS = 7 * 24 * 60 * 60 * 1000;
 /** 결제 시작 뒤 이 시간 동안은 자주, 그 뒤로는 드물게 묻는다. */
-export const CHECKOUT_FAST_WINDOW_MS = 10 * 60 * 1000;
+export const CHECKOUT_FAST_WINDOW_MS = 60 * 1000;
 export const CHECKOUT_FAST_POLL_MS = 5 * 1000;
 export const CHECKOUT_SLOW_POLL_MS = 30 * 1000;
 /** 이만큼 지나도 키가 나오지 않으면 묻기를 그만둔다. 키는 메일로도 가므로 직접 넣으면 된다. */
-export const CHECKOUT_GIVE_UP_MS = 24 * 60 * 60 * 1000;
+export const CHECKOUT_GIVE_UP_MS = 5 * 60 * 1000;
 /** 오래 켜 둔 앱에서 캐시 만료와 확인 시각을 이 간격으로 다시 본다. */
 const REFRESH_TICK_MS = 60 * 60 * 1000;
 /** lease 로 다시 확인했을 때 확인 시각을 이 간격으로만 파일에 쓴다. */
@@ -266,7 +266,7 @@ export function createPlanManager({
     polling = true;
     try {
       if (Math.max(0, now() - pending.startedAt) >= CHECKOUT_GIVE_UP_MS) {
-        log.info?.('[plan] checkout gave up after 24 h');
+        log.info?.('[plan] checkout confirmation timed out');
         await finishCheckout(pending.ref, { ok: false, code: 'timed_out' });
         return;
       }

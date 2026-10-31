@@ -1,5 +1,5 @@
 import { installLicenseGate } from './ui/license-gate';
-import { createPlanStore, desktopPlanApi, type PlanStore } from './ui/plan/plan-store';
+import { sharedPlanStore } from './ui/plan/plan-store';
 import { mountAccountButton } from './ui/account/account-button';
 import { listenForAccountPageEvents } from './ui/account/account-page';
 import { accountStore, recordAccountActivity } from './ui/account/account-store';
@@ -354,7 +354,6 @@ import { afterBootScreen, markStudioReady } from './ui/boot-screen.ts';
 import { isInitialSetupActive, onInitialSetupInactive, wasLicensedHere } from './ui/initial-setup/active.ts';
 import { desktopGiftApi } from './ui/special-event/gift.ts';
 import { startSpecialEvent } from './ui/special-event/special-event-trigger.ts';
-import { startAutofixIntro } from './ui/autofix/autofix-intro.ts';
 import { showEditingSettingsFallback } from './ui/agent-sidebar/settings-editing-fallback.ts';
 import { AGENT_LABEL } from './ui/agent-sidebar/providers.ts';
 import { initInlinePrompt } from './agent/inline-prompt.ts';
@@ -3140,16 +3139,6 @@ function templateBridge() {
   return attachedSession.activeChat?.bridge ?? null;
 }
 
-/** 문서 홈의 Hama 입구·계정 단추·계정 페이지가 함께 쓰는 요금제 상태. 데스크톱 요금제 API 가 없으면 null. */
-let windowPlanStore: PlanStore | null | undefined;
-function sharedPlanStore(): PlanStore | null {
-  if (windowPlanStore === undefined) {
-    const plan = desktopPlanApi();
-    windowPlanStore = plan ? createPlanStore(plan) : null;
-  }
-  return windowPlanStore;
-}
-
 /** 문서 홈의 Hama 입구(Pro·기존 라이선스). 데스크톱 요금제 API 가 없으면 두지 않는다. */
 function mountHomeHamaEntry(slot: HTMLElement): void {
   const store = sharedPlanStore();
@@ -3197,7 +3186,7 @@ function installDocumentHome(): void {
       mountHomeHamaEntry(slot);
       mountAccountButton(slot, { store: accountStore(), plan: sharedPlanStore() });
     },
-    mountCorner: (slot) => mountUpdateHippo(slot),
+    mountCorner: (slot) => mountUpdateHippo(slot, window, __APP_VERSION__, sharedPlanStore()),
     unsaved: {
       list: () => unsavedDocumentStore.list(),
       subscribe: (listener) => unsavedDocumentStore.subscribe(listener),
@@ -6716,8 +6705,4 @@ void initPromise.then(() => {
     },
     open: async (options) => (await import('./ui/special-event/special-event-popup.ts')).openSpecialEventPopup(options),
   });
-}, () => {});
-// 자동 버그 수정 소개(데스크톱만). 처음 설정을 마치고 아직 답하지 않은 사람에게 한 번 묻는다.
-void initPromise.then(() => {
-  startAutofixIntro({ whenReady: afterBootScreen });
 }, () => {});

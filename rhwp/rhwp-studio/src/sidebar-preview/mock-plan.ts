@@ -30,6 +30,7 @@ export interface MockPlan {
   setTier(tier: PlanTier): void;
   setSignedIn(signedIn: boolean): void;
   setCheckout(mode: MockCheckoutMode): void;
+  expireCheckout(): void;
   /** 결제를 시작한 상품들(순서대로). */
   readonly checkouts: PlanSku[];
 }
@@ -105,6 +106,13 @@ export function createMockPlan(
     setCheckout(mode) {
       checkoutMode = mode;
       emit({ checkout: checkoutOptions() });
+    },
+    expireCheckout() {
+      const pending = status.pendingCheckout;
+      if (!pending) return;
+      if (timer !== null) window.clearTimeout(timer);
+      timer = null;
+      emit({ pendingCheckout: null, lastCheckout: { ok: false, sku: pending.sku, code: 'timed_out' } });
     },
     checkouts,
   };

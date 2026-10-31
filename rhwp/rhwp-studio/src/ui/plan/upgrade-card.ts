@@ -1,14 +1,13 @@
 // 요금제 카드. 무료 / Pro / Hama 를 나란히 두고, 결제는 데스크톱 main 이 연다(rhwpDesktop.plan).
 // 결제를 시작하면 카드는 확인을 기다리고, 요금제가 산 등급으로 바뀌면 잠깐 알리고 닫힌다.
 // 로그아웃 상태의 결제(sign_in_required)는 카드를 닫고 계정 페이지의 로그인으로 보낸 뒤, 로그인하면 카드로 돌아온다.
-// 키를 직접 붙여 넣는 길은 계정(rhwpDesktop.account.redeem)을, 계정 API 가 없는 예전 데스크톱은 license.activate 를 쓴다.
 // 어디서든 window 의 'rhwp:open-plan-card' 이벤트로 연다(detail.focus 로 Pro·Hama 칸을 짚는다).
 import '../agent-sidebar/sheet.css';
 import './upgrade-card.css';
 import { createSheetFrame } from '../agent-sidebar/sheet.ts';
 import { createIcon } from '../agent-sidebar/icons.ts';
 import { openAccountPage } from '../account/account-page.ts';
-import { accountStore, isSignedIn, type AccountStore } from '../account/account-store.ts';
+import { accountStore, type AccountStore } from '../account/account-store.ts';
 import { createHamaMark } from './hama-mark.ts';
 import type { DesktopLicenseApi } from '../agent-sidebar/settings-license.ts';
 import { PLAN_CYCLES, planPrice, planSkuAvailable, won, type PlanFamily } from './plan-offers.ts';
@@ -26,7 +25,7 @@ const SKU_LABEL: Record<PlanSku, string> = { proMonthly: 'Pro · 월간', proYea
 export interface PlanCardOptions {
   store: PlanStore;
   license: DesktopLicenseApi | null;
-  /** 키 등록과 로그인. 생략하면 창의 계정 상태를 쓴다. */
+  /** 결제 전 로그인할 계정. 생략하면 창의 계정 상태를 쓴다. */
   account?: AccountStore;
   focus?: PlanCardFocus;
 }
@@ -58,7 +57,7 @@ export function openPlanCard(options: PlanCardOptions): PlanCardHandle | null {
     openCard.focus(options.focus);
     return openCard.handle;
   }
-  const { store, license } = options;
+  const { store } = options;
   const api = store.api!;
   const account = options.account ?? accountStore();
   const frame = createSheetFrame({
@@ -82,14 +81,11 @@ export function openPlanCard(options: PlanCardOptions): PlanCardHandle | null {
   const body = el('div', 'ag-pricing-body');
   sheet.append(body);
 
-  type View = 'plans' | 'waiting' | 'key' | 'done';
+  type View = 'plans' | 'waiting' | 'done';
   let view: View = 'plans';
-  /** 이 등급이 되면 성공. 결제는 산 등급, 키는 에이전트가 열리는 아무 등급. */
-  let awaiting: { sku: PlanSku | null } | null = null;
+  /** 결제한 상품의 등급이 되면 성공. */
+  let awaiting: { sku: PlanSku } | null = null;
   let notice = '';
-  let keyError = '';
-  let keyBusy = false;
-  let keyValue = '';
   let checkoutBusy = false;
   let focused: PlanCardFocus | undefined = options.focus;
   let successTimer: number | null = null;
@@ -148,31 +144,8 @@ export function openPlanCard(options: PlanCardOptions): PlanCardHandle | null {
     try { await api.cancelCheckout(); } catch { /* 다음 상태가 다시 그린다 */ }
   }
 
-  /** 계정이 있으면 계정에 키를 등록하고, 예전 데스크톱이면 이 기기에서 키를 활성화한다. */
-  async function activateKey(): Promise<void> {
-    const key = keyValue.trim();
-    if ((!account.api && !license) || !key || keyBusy) return;
-    keyBusy = true;
-    keyError = '';
-    render();
-    try {
-      const result = account.api ? await account.api.redeem(key) : await license!.activate(key);
-      if (!result.ok) keyError = ('message' in result && result.message) || '키를 활성화하지 못했어요';
-      else {
-        awaiting = { sku: null };
-        settleIfDone();
-      }
-    } catch {
-      keyError = '키를 활성화하지 못했어요';
-    } finally {
-      keyBusy = false;
-      render();
-    }
-  }
-
   function reached(current: PlanStatus): boolean {
     if (!awaiting) return false;
-    if (awaiting.sku === null) return current.agentUnlocked && current.tier !== 'free';
     return current.tier === tierForSku(awaiting.sku);
   }
 
@@ -183,7 +156,9 @@ export function openPlanCard(options: PlanCardOptions): PlanCardHandle | null {
       // 결제를 기다리다 main 이 접었다(취소·거절·포기).
       if (view === 'waiting' && current.pendingCheckout === null) {
         const last = current.lastCheckout;
-        if (last && !last.ok) notice = last.code === 'revoked' ? '결제가 취소되었어요' : '결제를 확인하지 못했어요';
+        if (last && !last.ok) notice = last.code === 'timed_out'
+          ? '결제 확인 시간이 지났어요. 잠시 후 다시 시도해 주세요.'
+          : last.code === 'revoked' ? '결제가 취소되었어요' : '결제를 확인하지 못했어요';
         if (!last?.ok) {
           awaiting = null;
           view = 'plans';
@@ -244,20 +219,6 @@ export function openPlanCard(options: PlanCardOptions): PlanCardHandle | null {
     return soon;
   }
 
-  function keyLink(): HTMLButtonElement | null {
-    if (!account.api && !license) return null;
-    const link = button('ag-pricing-link', '키 직접 입력');
-    link.addEventListener('click', () => {
-      // 키는 계정에 붙는다. 로그아웃이면 먼저 로그인한다.
-      if (account.api && !isSignedIn(account.status()) && sendToSignIn()) return;
-      view = 'key';
-      keyError = '';
-      render();
-      sheet.querySelector<HTMLInputElement>('.ag-pricing-key-input')?.focus();
-    });
-    return link;
-  }
-
   function renderPlans(): void {
     const tier = status()?.tier ?? null;
     const grid = el('div', 'ag-pricing-grid');
@@ -268,9 +229,7 @@ export function openPlanCard(options: PlanCardOptions): PlanCardHandle | null {
     message.setAttribute('role', 'status');
     message.hidden = !notice;
     foot.append(message);
-    const link = keyLink();
-    if (link) foot.append(link);
-    if (notice || link) body.append(foot);
+    if (notice) body.append(foot);
   }
 
   function renderWaiting(): void {
@@ -286,47 +245,8 @@ export function openPlanCard(options: PlanCardOptions): PlanCardHandle | null {
     const cancel = button('ag-pricing-btn', '취소');
     cancel.addEventListener('click', () => { void cancelCheckout(); });
     actions.append(cancel);
-    const link = keyLink();
-    if (link) actions.append(link);
     wait.append(actions);
     body.append(wait);
-  }
-
-  function renderKey(): void {
-    const form = el('form', 'ag-pricing-key');
-    form.noValidate = true;
-    const row = el('div', 'ag-pricing-key-row');
-    const input = el('input', 'ag-pricing-key-input');
-    input.type = 'text';
-    input.autocomplete = 'off';
-    input.spellcheck = false;
-    input.setAttribute('autocapitalize', 'characters');
-    input.placeholder = 'HAMA-…';
-    input.setAttribute('aria-label', '라이선스 키');
-    input.value = keyValue;
-    input.disabled = keyBusy;
-    const submit = el('button', 'ag-pricing-btn ag-pricing-btn-primary', account.api ? '등록' : '활성화');
-    submit.type = 'submit';
-    submit.disabled = keyBusy || !keyValue.trim();
-    input.addEventListener('input', () => {
-      keyValue = input.value;
-      submit.disabled = keyBusy || !keyValue.trim();
-    });
-    row.append(input, submit);
-    const error = el('p', 'ag-pricing-error', keyError);
-    error.setAttribute('role', 'alert');
-    error.hidden = !keyError;
-    const back = button('ag-pricing-link', '돌아가기');
-    back.addEventListener('click', () => {
-      view = status()?.pendingCheckout ? 'waiting' : 'plans';
-      render();
-    });
-    form.append(row, error, back);
-    form.addEventListener('submit', (event) => {
-      event.preventDefault();
-      void activateKey();
-    });
-    body.append(form);
   }
 
   function renderDone(): void {
@@ -341,15 +261,12 @@ export function openPlanCard(options: PlanCardOptions): PlanCardHandle | null {
   }
 
   function render(): void {
-    const focusInKey = view === 'key' && document.activeElement?.classList.contains('ag-pricing-key-input');
     body.replaceChildren();
     sheet.dataset.view = view;
     legacyMark.hidden = status()?.tier !== 'legacy';
     if (view === 'plans') renderPlans();
     else if (view === 'waiting') renderWaiting();
-    else if (view === 'key') renderKey();
     else renderDone();
-    if (focusInKey) sheet.querySelector<HTMLInputElement>('.ag-pricing-key-input')?.focus();
   }
 
   function focusColumn(target: PlanCardFocus | undefined): void {

@@ -7,7 +7,7 @@ import test from 'node:test';
 import { createAccountClient } from '../desktop/account-client.mjs';
 import { createAccountManager } from '../desktop/account-manager.mjs';
 import {
-  CHECKOUT_FAST_POLL_MS, CHECKOUT_FAST_WINDOW_MS, CHECKOUT_GIVE_UP_MS, CHECKOUT_SLOW_POLL_MS,
+  CHECKOUT_FAST_POLL_MS, CHECKOUT_FAST_WINDOW_MS, CHECKOUT_SLOW_POLL_MS,
   createPlanManager, PLAN_CACHE_MS, PLAN_SKUS,
 } from '../desktop/plan-manager.mjs';
 import { PLAN_CHECKOUT } from '../desktop/plan-config.mjs';
@@ -347,7 +347,7 @@ test('a revoked ref ends the checkout, and cancel stops polling', async (t) => {
   assert.deepEqual([status.pendingCheckout, timers.next], [null, null]);
 });
 
-test('a pending checkout resumes after a restart and gives up after 24 hours', async (t) => {
+test('a pending checkout resumes after a restart, times out after five minutes, and permits retry', async (t) => {
   const { clock, account, byRef, opened, timers, make } = await setup(t);
   const first = make();
   await first.start();
@@ -356,7 +356,7 @@ test('a pending checkout resumes after a restart and gives up after 24 hours', a
   assert.equal(timers.next, null);
 
   // 다시 실행: 남은 결제를 바로 이어서 묻는다.
-  clock.t = T0 + HOUR;
+  clock.t = T0 + CHECKOUT_FAST_POLL_MS;
   const second = make();
   await second.start();
   assert.deepEqual((await second.getStatus()).pendingCheckout, { sku: 'proMonthly', startedAt: T0 });
@@ -367,8 +367,10 @@ test('a pending checkout resumes after a restart and gives up after 24 hours', a
   assert.deepEqual((await second.getStatus()).lastCheckout, { ok: true, sku: 'proMonthly' });
 
   await second.startCheckout('proMonthly');
-  clock.t += CHECKOUT_GIVE_UP_MS;
+  clock.t += 5 * 60 * 1000;
   await timers.fire();
   const status = await second.getStatus();
   assert.deepEqual([status.pendingCheckout, status.lastCheckout, timers.next], [null, { ok: false, sku: 'proMonthly', code: 'timed_out' }, null]);
+  assert.equal((await second.startCheckout('proMonthly')).ok, true);
+  assert.equal((await second.getStatus()).lastCheckout, null);
 });

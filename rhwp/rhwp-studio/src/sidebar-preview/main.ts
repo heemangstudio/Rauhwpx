@@ -78,7 +78,6 @@ import type { PlanTier } from '../ui/plan/plan-types.ts';
 import { createPlanStore } from '../ui/plan/plan-store.ts';
 import { mountHomeScene } from './home-scene.ts';
 import { startSpecialEvent } from '../ui/special-event/special-event-trigger.ts';
-import { startAutofixIntro } from '../ui/autofix/autofix-intro.ts';
 import { installManualAutofix } from '../ui/autofix/autofix-manual.ts';
 import { isInitialSetupActive, onInitialSetupInactive, wasLicensedHere } from '../ui/initial-setup/active.ts';
 
@@ -397,8 +396,6 @@ if (params.get('editor') === '1') {
   // 앱과 같이 명령 검색 왼쪽에 자동 수정 단추를 단다(`autofix=` 가 있고 켠 상태일 때).
   installManualAutofix({ reportIssue: () => report('버그 제보 · issue report fixture') });
 }
-// 앱과 같은 트리거로 자동 버그 수정 소개를 띄운다. `autofix=undecided` 일 때만 뜬다.
-if (mockAutofix) startAutofixIntro({ whenReady: async () => {} });
 if ((params.get('event') === 'special' || mockLicense) && mockGift) {
   // 앱과 같은 트리거로 띄운다. 기록은 메모리에만 남겨 새로고침하면 다시 뜬다.
   const records = new Map<string, string>();

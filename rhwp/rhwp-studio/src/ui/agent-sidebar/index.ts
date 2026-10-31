@@ -5157,6 +5157,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
      여기서 관리한다(스킬 페이지와 같은 계약). */
   const settingsPanel = createSettingsPanel({
     bridge,
+    plan: planStore,
     // ChatGPT·Claude 로그인은 앱 안 브라우저를 별도 창으로 연다(설정이 만들어진 뒤에 정의된다).
     openSignInWindow: (url) => openSignInWindow(url),
     agentLocked: agentLockedByPlan,
@@ -5187,14 +5188,18 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     openAgentSetup: (agent) => settingsPanel.openAgentSetup(agent),
     beginAgentConnect: (agent) => settingsPanel.beginAgentConnect(agent),
     openCalibration: (options) => writingStyleCalibration.open(options),
-    taste: {
-      get: () => bridge.requestTasteSettings(),
-      set: (patch) => bridge.setTasteSettings(patch),
+    plan: planStore,
+    openPlans: async () => {
+      const card = openPlanCard({ store: planStore, license: planLicenseApi });
+      if (!card) return false;
+      await card.closed;
+      return true;
     },
     onFinished: () => {
       adoptFirstRunDefaultAgent();
       updateReconnectChip();
       updateCalibrationChip();
+      openDocumentHome?.({ instant: true });
     },
   };
   // 창마다 처음 켜진 사이드바 하나만 첫 실행 설정을 띄운다 — 채팅마다 사이드바가 따로 있다.

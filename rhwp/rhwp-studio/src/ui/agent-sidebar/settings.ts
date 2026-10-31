@@ -60,6 +60,7 @@ import type { ThreadSummary } from '../../agent/threads.ts';
 import { createArchiveSettingsPane } from './settings-archive.ts';
 import { createAccountSettingsSection } from '../account/account-settings.ts';
 import { accountStore } from '../account/account-store.ts';
+import type { PlanStore } from '../plan/plan-store.ts';
 import { createPiGiftLine } from './settings-gift.ts';
 import { createAutofixSettingsSection } from './settings-autofix.ts';
 import { createTasteSettingsSection } from './settings-taste.ts';
@@ -329,6 +330,7 @@ interface PiDraftModel {
 
 export interface SettingsPanelDeps {
   bridge: SidebarBridge;
+  plan?: PlanStore | null;
   updatesApi?: DesktopUpdatesApi | null;
   eventBus?: EventBus;
   editorRuntime: EditorSettingsRuntime;
@@ -633,7 +635,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     },
   });
   panes.get('theme')?.appendChild(themeSettings.element);
-  const accountSection = desktopAccount.api ? createAccountSettingsSection(desktopAccount) : null;
+  const accountSection = desktopAccount.api ? createAccountSettingsSection(desktopAccount, deps.plan) : null;
   if (accountSection) {
     const accountContent = el('div', 'ag-settings-destination-content');
     accountContent.append(accountSection.root);
@@ -1809,6 +1811,8 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     }
     renderDestinationState();
     syncUsagePolling();
+    if (destination === 'account') accountSection?.open();
+    else accountSection?.close();
     if (destination === 'browser') browserPane.open();
     if (destination === 'skills') refreshSkills?.();
     if (destination === 'project') projectPane.open();
@@ -3637,6 +3641,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     },
     close(): void {
       settingsOpen = false;
+      accountSection?.close();
       browserPane.close();
       syncUsagePolling();
       if (editingSettings.isDirty()) editingSettings.cancel();

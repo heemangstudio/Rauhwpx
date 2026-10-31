@@ -2,6 +2,25 @@
    창의 제목 막대 아래를 모두 덮는 한 장. 가운데 한 단(680px)에 머리카락 선으로 칸을 나눈다.
    면·잉크·모서리·움직임은 에이전트 UI 토큰을 쓰고, Hama 파랑은 Hama 표와 사용량 막대에만 쓴다. */
 
+.acct-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 960;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  pointer-events: none;
+}
+
+.acct-layer[data-modal='true'] {
+  background: var(--overlay-bg);
+  pointer-events: auto;
+}
+
+html:is(.desktop-mac, .desktop-windows) .acct-layer {
+  top: var(--desktop-titlebar-height, 38px);
+}
+
 .acct-page {
   --plan-hama: #3d9bd1;
   --acct-err: var(--ag-err, var(--ui-danger, #c4372b));
@@ -12,6 +31,7 @@
   display: flex;
   flex-direction: column;
   min-width: 0;
+  pointer-events: auto;
   background: var(--n-surface-raised);
   color: var(--n-ink);
   font-family: var(--ag-font);
@@ -34,6 +54,76 @@ html:is(.desktop-mac, .desktop-windows) .acct-page {
   border-top: 1px solid var(--n-ink-hairline);
 }
 
+.acct-page[data-auth-popup='true'],
+html:is(.desktop-mac, .desktop-windows) .acct-page[data-auth-popup='true'] {
+  position: relative;
+  inset: auto;
+  width: min(400px, 100%);
+  height: min(520px, 100%);
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--n-ink-hairline);
+  border-radius: var(--ag-r-sheet);
+  box-shadow: var(--ag-elev-sheet);
+}
+
+.acct-login-art {
+  display: none;
+}
+
+.acct-login-success {
+  text-align: center;
+}
+
+.acct-login-success .acct-signin-mark {
+  display: block;
+  margin: 0 auto 16px;
+}
+
+.acct-login-success-email {
+  margin: 8px 0 28px;
+  color: var(--n-ink-secondary);
+  font-size: var(--ag-fs-secondary);
+  overflow-wrap: anywhere;
+}
+
+.acct-login-success-done {
+  width: 100%;
+}
+
+.acct-page[data-auth-popup='true'] .acct-login-art {
+  display: block;
+  position: absolute;
+  inset: -36px -220px auto auto;
+  margin: 0;
+  color: var(--n-ink);
+  opacity: .075;
+  font-family: 'Nanum Gothic Coding', monospace;
+  font-size: 6px;
+  line-height: 1;
+  letter-spacing: 0;
+  white-space: pre;
+  transform: rotate(-12deg);
+  mask-image: linear-gradient(to bottom, transparent, #000 20%, #000 45%, transparent 78%);
+  pointer-events: none;
+  user-select: none;
+}
+
+.acct-page[data-auth-popup='true'] .acct-bar,
+.acct-page[data-auth-popup='true'] .acct-scroll {
+  position: relative;
+}
+
+.acct-page[data-auth-popup='true'] .acct-bar {
+  justify-content: flex-end;
+  height: 44px;
+  padding: 6px 12px;
+}
+
+.acct-page[data-auth-popup='true'] .acct-column {
+  padding: 12px 28px 36px;
+}
+
 .acct-page.acct-page-open {
   opacity: 1;
   transform: none;
@@ -44,6 +134,45 @@ html:is(.desktop-mac, .desktop-windows) .acct-page {
 
 .acct-signin {
   --acct-err: var(--ag-err, var(--ui-danger, #c4372b));
+}
+
+.acct-layer.acct-embedded-layer {
+  position: static;
+  display: block;
+  padding: 0;
+  z-index: auto;
+}
+
+.acct-page.acct-embedded,
+html:is(.desktop-mac, .desktop-windows) .acct-page.acct-embedded {
+  position: static;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  opacity: 1;
+  transform: none;
+  transition: none;
+  z-index: auto;
+}
+
+.acct-embedded .acct-bar {
+  display: none;
+}
+
+.acct-embedded .acct-scroll {
+  overflow: visible;
+  scrollbar-gutter: auto;
+}
+
+.acct-embedded .acct-column {
+  max-width: none;
+  min-height: 0;
+  padding: 0;
+}
+
+.acct-embedded .acct-column[data-view='sign-in'] {
+  min-height: 480px;
+  padding: 24px 0;
 }
 
 :is(.acct-page, .acct-signin) button {
@@ -356,54 +485,47 @@ html:is(.desktop-mac, .desktop-windows) .acct-page {
 
 .acct-signin-mark {
   align-self: center;
-  width: 36px;
-  height: 36px;
-  margin-bottom: 20px;
-  color: var(--n-ink);
-}
-
-
-/* 로그인·가입 전환. 두 칸이 반씩 나누고, 고른 칸만 떠 보인다. */
-.acct-signin-switch {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 2px;
+  width: 104px;
+  height: 64px;
   margin-bottom: 8px;
-  padding: 2px;
-  border-radius: var(--ag-r-row);
-  background: var(--n-ink-fill-hover);
+  image-rendering: pixelated;
 }
 
-.acct-signin-switch-option {
-  height: 32px;
-  padding: 0 12px;
-  border: 0;
-  border-radius: calc(var(--ag-r-row) - 2px);
-  background: transparent;
+.acct-signin-title {
+  margin: 0 0 24px;
+  color: var(--n-ink);
+  font-size: clamp(32px, 5vw, 42px);
+  font-weight: 650;
+  line-height: 1.15;
+  letter-spacing: -0.04em;
+  text-align: center;
+}
+
+
+.acct-signin-switch {
+  display: flex;
+  justify-content: flex-end;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 4px;
   color: var(--n-ink-secondary);
-  font-size: var(--ag-fs-secondary);
-  font-weight: var(--ag-fw-medium);
-  transition: var(--ag-transition-color);
+  font-size: var(--ag-fs-meta);
 }
 
-.acct-signin-switch-option:hover:not(:disabled, .acct-active) {
+.acct-signin-switch-link {
+  padding: 4px 0;
+  border: 0;
+  background: transparent;
   color: var(--n-ink);
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
 }
 
-.acct-signin-switch-option.acct-active {
-  background: var(--n-surface-raised);
-  box-shadow: var(--n-elev-1);
-  color: var(--n-ink);
-}
-
-/* 어두운 화면에서는 고른 칸이 판보다 밝아야 떠 보인다. */
-:root[data-theme-effective='dark'] .acct-signin-switch {
-  background: var(--n-ink-fill-soft);
-}
-
-:root[data-theme-effective='dark'] .acct-signin-switch-option.acct-active {
-  background: var(--n-ink-fill-selected);
-  box-shadow: none;
+.acct-signin-switch-link:focus-visible {
+  outline: var(--ag-focus-ring);
+  outline-offset: var(--ag-focus-offset);
 }
 
 .acct-signin-socials {
@@ -468,7 +590,7 @@ html:is(.desktop-mac, .desktop-windows) .acct-page {
 
 .acct-signin-email {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   gap: 8px;
 }
 
@@ -479,6 +601,8 @@ html:is(.desktop-mac, .desktop-windows) .acct-page {
 }
 
 .acct-signin-email .acct-input {
+  flex: 1 1 0;
+  min-width: 0;
   padding: 0 12px;
 }
 
@@ -711,82 +835,114 @@ html:is(.desktop-mac, .desktop-windows) .acct-page {
   color: var(--n-ink);
 }
 
-.acct-offers {
-  display: flex;
-  flex-direction: column;
-  margin-top: 16px;
+.acct-section[data-section='plan'] {
+  padding: 24px;
+  border: 1px solid var(--n-ink-hairline);
+  border-radius: var(--ag-r-card);
 }
 
-/* 무료면 요금제 이름 바로 아래 판매 칸이 온다. */
-.acct-plan-head + .acct-plan-term[hidden] + .acct-alert[hidden] + .acct-offers {
-  margin-top: 12px;
+.acct-plan-current {
+  color: var(--n-ink-secondary);
+  font-size: var(--ag-fs-secondary);
+}
+
+.acct-plan-tier {
+  font-size: var(--ag-fs-body);
+}
+
+.acct-offers {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 24px;
+  padding-top: 24px;
+  border-top: 1px solid var(--n-ink-hairline);
 }
 
 .acct-offer {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding-right: 24px;
+}
+
+.acct-offer + .acct-offer {
+  padding: 0 0 0 24px;
+  border-left: 1px solid var(--n-ink-hairline);
+}
+
+.acct-offer:only-child {
+  grid-column: 1 / -1;
+  padding-right: 0;
+}
+
+.acct-offer-head {
+  display: flex;
   align-items: center;
-  gap: 12px;
-  min-height: 48px;
+  justify-content: space-between;
+  min-height: 40px;
+  gap: 8px;
 }
 
 .acct-offer-name {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: var(--ag-fs-body);
+  margin: 0;
+  font-size: 24px;
   font-weight: var(--ag-fw-strong);
+  letter-spacing: var(--ag-track-tight);
+}
+
+.acct-offer-description {
+  min-height: 3em;
+  margin: 8px 0 20px;
+  color: var(--n-ink-secondary);
+  font-size: var(--ag-fs-secondary);
+  line-height: 1.5;
 }
 
 .acct-offer-price {
+  margin: auto 0 0;
   color: var(--n-ink-secondary);
-  font-size: var(--ag-fs-body);
+  font-size: var(--ag-fs-secondary);
   font-variant-numeric: tabular-nums;
+}
+
+.acct-offer-price strong {
+  color: var(--n-ink);
+  font-size: 26px;
+  font-weight: var(--ag-fw-strong);
+  letter-spacing: var(--ag-track-tight);
+}
+
+.acct-offer-annual {
+  min-height: 1.5em;
+  margin: 4px 0 20px;
+  color: var(--n-ink-secondary);
+  font-size: var(--ag-fs-meta);
 }
 
 .acct-offer-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
+  min-height: 36px;
 }
 
 .acct-offer-actions .acct-btn {
-  min-width: 64px;
+  flex: 1;
+  min-width: 0;
 }
 
 .acct-offer-wait {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 0 4px;
+  gap: 6px;
   color: var(--n-ink-secondary);
+  font-size: var(--ag-fs-secondary);
 }
 
-/* Hama 로 올라가는 자리. 하마 마크의 픽셀을 그대로 키운 그림을 옅은 Hama 파랑 판에 둔다.
-   판의 모서리는 4px 두 계단으로 깎아 그림의 픽셀과 맞춘다. */
-.acct-hama-offer {
-  --acct-hama-fill: color-mix(in oklab, var(--plan-hama) 8%, var(--n-surface-raised));
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  /* 그림의 물결이 결제 칸의 아래 끝과 한 줄에 선다. */
-  align-items: end;
-  gap: 24px;
-  padding: 20px;
-  background: var(--acct-hama-fill);
-  clip-path: polygon(0 8px, 4px 8px, 4px 4px, 8px 4px, 8px 0, calc(100% - 8px) 0, calc(100% - 8px) 4px, calc(100% - 4px) 4px, calc(100% - 4px) 8px, 100% 8px, 100% calc(100% - 8px), calc(100% - 4px) calc(100% - 8px), calc(100% - 4px) calc(100% - 4px), calc(100% - 8px) calc(100% - 4px), calc(100% - 8px) 100%, 8px 100%, 8px calc(100% - 4px), 4px calc(100% - 4px), 4px calc(100% - 8px), 0 calc(100% - 8px));
-}
-
-:root[data-theme-effective='dark'] .acct-hama-offer {
-  --acct-hama-fill: color-mix(in oklab, var(--plan-hama) 11%, var(--n-surface-raised));
-}
-
-.acct-offer + .acct-hama-offer {
-  margin-top: 8px;
-}
-
-.acct-hama-offer-art {
-  display: block;
-  line-height: 0;
+.acct-offer-head .acct-hama-scene {
+  width: 64px;
+  height: 36px;
 }
 
 /* 판 16×9 칸, 칸마다 8px. 정수 배라 2배 화면에서도 칸이 번지지 않는다. */
@@ -834,110 +990,7 @@ html:is(.desktop-mac, .desktop-windows) .acct-page {
   }
 }
 
-.acct-hama-offer-body {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  min-width: 0;
-}
 
-.acct-hama-offer-name {
-  margin: 0;
-  color: var(--n-ink);
-  font-size: var(--ag-fs-display);
-  font-weight: var(--ag-fw-strong);
-  letter-spacing: var(--ag-track-tight);
-  line-height: var(--ag-lh-tight);
-}
-
-.acct-hama-choices {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.acct-hama-choices > :is(.acct-offer-wait, .acct-btn) {
-  justify-self: start;
-}
-
-.acct-hama-choice {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
-  min-width: 0;
-  padding: 10px 14px 11px;
-  border: 0;
-  border-radius: var(--ag-r-chip);
-  background: var(--n-surface-raised);
-  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--plan-hama) 22%, transparent);
-  color: var(--n-ink);
-  text-align: left;
-  transition: background-color var(--ag-dur-fast) var(--ag-ease-out);
-}
-
-.acct-hama-choice:hover:not(:disabled) {
-  background: color-mix(in oklab, var(--plan-hama) 6%, var(--n-surface-raised));
-  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--plan-hama) 40%, transparent);
-}
-
-.acct-hama-choice-yearly,
-.acct-hama-choice-yearly:hover:not(:disabled) {
-  box-shadow: none;
-}
-
-.acct-hama-choice-yearly {
-  --acct-hama-solid: color-mix(in oklab, var(--plan-hama) 78%, black);
-  background: var(--acct-hama-solid);
-  color: #fff;
-}
-
-.acct-hama-choice-yearly:hover:not(:disabled) {
-  background: color-mix(in oklab, var(--acct-hama-solid) 90%, black);
-}
-
-:root[data-theme-effective='dark'] .acct-hama-choice-yearly {
-  --acct-hama-solid: var(--plan-hama);
-  color: #0b1a24;
-}
-
-:root[data-theme-effective='dark'] .acct-hama-choice-yearly:hover:not(:disabled) {
-  background: color-mix(in oklab, var(--plan-hama) 88%, white);
-}
-
-.acct-hama-choice:disabled {
-  opacity: 0.6;
-}
-
-.acct-hama-choice-cycle {
-  font-size: var(--ag-fs-meta);
-  font-weight: var(--ag-fw-medium);
-  opacity: 0.78;
-}
-
-.acct-hama-choice-price {
-  font-size: var(--ag-fs-body);
-  font-weight: var(--ag-fw-strong);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-
-.acct-hama-choice-was {
-  margin-left: 4px;
-  font-size: var(--ag-fs-meta);
-  font-weight: var(--ag-fw-regular);
-  opacity: 0.7;
-}
-
-.acct-hama-choice .acct-btn-spinner {
-  position: absolute;
-  top: 10px;
-  right: 12px;
-}
-
-.acct-hama-choice[aria-busy='true'] {
-  position: relative;
-}
 
 /* 사용량 */
 .acct-stats {
@@ -1195,15 +1248,23 @@ html:is(.desktop-mac, .desktop-windows) .acct-page {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .acct-offer {
-    grid-template-columns: 1fr auto;
+  .acct-section[data-section='plan'] {
+    padding: 18px;
   }
 
-  .acct-offer-price {
-    grid-row: 2;
-    grid-column: 1 / -1;
-    margin-top: -12px;
-    padding-bottom: 10px;
+  .acct-offers {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 24px;
+  }
+
+  .acct-offer {
+    padding: 0;
+  }
+
+  .acct-offer + .acct-offer {
+    padding: 24px 0 0;
+    border-left: 0;
+    border-top: 1px solid var(--n-ink-hairline);
   }
 
   .acct-claim {

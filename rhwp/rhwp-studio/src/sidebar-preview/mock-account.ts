@@ -274,8 +274,10 @@ export function createMockAccount(
           else if (loginHint?.includes('limit')) {
             emit({ ...status, state: 'choose_device', deviceChoice: { limit: 5, devices: fullDevices() } });
           } else {
-            const next = signedIn('pro', 'signed-in');
-            emit({ ...next, account: { ...next.account!, provider } });
+            const newAccount = loginHint === 'new@example.com';
+            const next = signedIn(newAccount ? 'free' : 'pro', 'signed-in');
+            emit({ ...next, account: { ...next.account!, provider,
+              ...(newAccount ? { createdAt: Date.now(), email: loginHint } : {}) } });
           }
         }, SIGN_IN_DELAY_MS);
       }

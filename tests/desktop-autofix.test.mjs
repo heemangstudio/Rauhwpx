@@ -57,9 +57,10 @@ function fakeCliSetup({ codex = { authenticated: true, authMethod: 'oauth' }, cl
   };
 }
 
-test('settings normalize to opt-in defaults and keep the priority order', () => {
+test('settings default to enabled, preserve opt-outs and keep the priority order', () => {
   assert.deepEqual(normalizeAutofixSettings(null), defaultAutofixSettings());
-  assert.equal(defaultAutofixSettings().enabled, false);
+  assert.equal(defaultAutofixSettings().enabled, true);
+  assert.equal(normalizeAutofixSettings({ enabled: false, decided: true }).enabled, false);
   const settings = normalizeAutofixSettings({
     enabled: true,
     providers: [
@@ -69,7 +70,7 @@ test('settings normalize to opt-in defaults and keep the priority order', () => 
     ],
   });
   assert.equal(settings.enabled, true);
-  assert.equal(settings.decided, false);
+  assert.equal(settings.decided, true);
   assert.deepEqual(settings.providers, [
     { id: 'claude', enabled: false, model: 'claude-sonnet-5-5', effort: 'medium' },
     { id: 'codex', enabled: true, model: 'sol', effort: 'low' },

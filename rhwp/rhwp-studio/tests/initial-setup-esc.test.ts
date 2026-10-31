@@ -54,6 +54,9 @@ class FakeNode {
   private classes = new Set<string>();
   readonly tagName: string;
   constructor(tagName: string) { this.tagName = tagName.toUpperCase(); }
+  getContext() {
+    return { canvas: this, fillStyle: '', clearRect() {}, fillRect() {} };
+  }
   get className() { return [...this.classes].join(' '); }
   set className(value: string) { this.classes = new Set(value.split(/\s+/).filter(Boolean)); }
   classList = {
@@ -238,16 +241,14 @@ function status(agent: AgentName, partial: Partial<AgentSetupStatus> = {}): Agen
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-async function openWizard() {
+async function openWizard(tier?: 'pro' | 'hama') {
   const storage = memoryStore();
   let finished = 0;
   const ui = createInitialSetup({
     openAgentSetup: () => {},
     storage,
     detectFontStep: async () => null,
-    autofixAvailable: () => false,
-    taste: null,
-    license: null,
+    plan: tier ? { api: null, status: () => ({ tier, signedIn: true }), subscribe: () => () => {}, dispose() {} } as never : undefined,
     onFinished: () => { finished += 1; },
   });
   ui.open();
@@ -298,18 +299,20 @@ test('Esc in the provider connect dialog closes only that dialog; the first-run 
 });
 
 test('finishing first-run setup with only Codex connected makes Codex the provider of the untouched chat, not of a started one', async () => {
-  const { ui, storage, finished } = await openWizard();
+  const { ui, storage, finished } = await openWizard('pro');
   ui.handleEvent({
     type: 'agent-setup-status',
     statuses: { claude: status('claude'), codex: status('codex', { available: true, installed: true, authenticated: true, connected: true }), pi: status('pi') },
   } as never);
-  // 테마 → 모델 → 완료 장면 → 시작.
+  // 테마 → AI 경로 → 선택적 연결 → 홈.
   const primary = ui.element.querySelector('.rhwp-setup-primary');
   assert.ok(primary);
-  for (let step = 0; step < 4 && finished() === 0; step += 1) {
-    primary.click();
-    await tick();
-  }
+  primary.click();
+  await tick();
+  ui.element.querySelectorAll('.rhwp-setup-path')[1]!.click();
+  await tick();
+  primary.click();
+  await tick();
   assert.equal(finished(), 1, 'the setup finished');
 
   const prefs = loadAgentPrefs(storage);
@@ -320,5 +323,23 @@ test('finishing first-run setup with only Codex connected makes Codex the provid
   assert.equal(firstRunAgentForChat(prefs.defaultAgent, { ...untouched, userMessages: 1 }), null);
   assert.equal(firstRunAgentForChat(prefs.defaultAgent, { ...untouched, working: true }), null);
   assert.equal(firstRunAgentForChat(prefs.defaultAgent, { ...untouched, selectedAgent: 'codex' }), null);
+  ui.dispose();
+});
+
+
+test('Hama subscribers who skip provider connection start with the hosted agent', async () => {
+  const { ui, storage, finished } = await openWizard('hama');
+  const primary = ui.element.querySelector('.rhwp-setup-primary')!;
+  primary.click();
+  await tick();
+  ui.element.querySelectorAll('.rhwp-setup-path')[1]!.click();
+  await tick();
+  primary.click();
+  await tick();
+  assert.equal(ui.element.querySelector('.rhwp-setup-dialog')!.dataset.step, 'hama');
+  primary.click();
+  await tick();
+  assert.equal(finished(), 1);
+  assert.equal(loadAgentPrefs(storage).defaultAgent, 'hama');
   ui.dispose();
 });

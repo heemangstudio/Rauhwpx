@@ -1,4 +1,5 @@
-import { updateAllSign } from './update-all-sign.ts';
+import { homeUpdateSign } from './update-all-sign.ts';
+import type { PlanStore } from '../plan/plan-store.ts';
 import { isInitialSetupActive, onInitialSetupInactive } from '../initial-setup/active.ts';
 /**
  * 문서 홈 오른쪽 아래 가장자리의 업데이트 하마. 가장자리 위로 고개를 내밀고 팻말 막대를 물어
@@ -494,7 +495,7 @@ export interface ReleaseNotesSource {
   onSeen(): void;
 }
 
-export function createUpdateHippo(api: DesktopUpdatesApi, notes: ReleaseNotesSource | null = null): UpdateHippo {
+export function createUpdateHippo(api: DesktopUpdatesApi, notes: ReleaseNotesSource | null = null, plan: PlanStore | null = null): UpdateHippo {
   let state: DesktopUpdateState | null = null;
   let notesSign = notes ? releaseNotesSign(notes.version, notes.items) : null;
   let confirming = false;
@@ -503,7 +504,7 @@ export function createUpdateHippo(api: DesktopUpdatesApi, notes: ReleaseNotesSou
   const unified = Boolean(api.getAllState && api.onAllState && api.updateAll);
   // 업데이트 팻말이 먼저고, 릴리스 노트는 그 팻말이 없을 때만 든다.
   const sync = () => hippo.setSign(isInitialSetupActive() ? null
-    : (unified ? updateAllSign(allState) : updateSign(state, { confirming })) ?? notesSign);
+    : (unified ? homeUpdateSign(allState, state, plan?.status() ?? null, { confirming }) : updateSign(state, { confirming })) ?? notesSign);
   const hippo = createUpdateSignHippo((id) => {
     switch (id) {
       case 'update-all': void api.updateAll?.().catch(() => {}); break;
@@ -524,6 +525,7 @@ export function createUpdateHippo(api: DesktopUpdatesApi, notes: ReleaseNotesSou
     sync();
   });
   const unsubscribeInitial = onInitialSetupInactive(sync);
+  const unsubscribePlan = plan?.subscribe(sync) ?? (() => {});
   const unsubscribeAll = unified ? api.onAllState!((next) => { allState = next; sync(); }) : () => {};
   if (unified) void api.getAllState!().then((initial) => {
     if (!disposed && !allState) { allState = initial; sync(); }
@@ -540,7 +542,7 @@ export function createUpdateHippo(api: DesktopUpdatesApi, notes: ReleaseNotesSou
   }).catch(() => {});
   return {
     element: hippo.element,
-    dispose() { disposed = true; unsubscribeInitial(); unsubscribeAll(); unsubscribe(); hippo.dispose(); },
+    dispose() { disposed = true; unsubscribePlan(); unsubscribeInitial(); unsubscribeAll(); unsubscribe(); hippo.dispose(); },
   };
 }
 
@@ -568,10 +570,10 @@ function releaseNotesFor(version: string, host: UpdatesHost): ReleaseNotesSource
  * 가짜 업데이트를 띄울 수 있다(dev-updates-mock.ts, 배포 번들에는 들어가지 않는다).
  * `?update-hippo=release-notes` 는 본 기록과 상관없이 가장 최근 릴리스 노트를 든다.
  */
-export function mountUpdateHippo(slot: HTMLElement, host: UpdatesHost = window, version = __APP_VERSION__): void {
+export function mountUpdateHippo(slot: HTMLElement, host: UpdatesHost = window, version = __APP_VERSION__, plan: PlanStore | null = null): void {
   const api = host.rhwpDesktop?.updates;
   if (api) {
-    slot.append(createUpdateHippo(api, releaseNotesFor(version, host)).element);
+    slot.append(createUpdateHippo(api, releaseNotesFor(version, host), plan).element);
     return;
   }
   if (import.meta.env.DEV) {
