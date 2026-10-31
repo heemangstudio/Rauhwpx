@@ -2,11 +2,11 @@
  *
  *  인사 문장 대신 120×40 칸 캔버스에 짧은 장면을 그린다. 주인공은 입력기 위의 하마
  *  (hama-art.ts)와 같은 실루엣·팔레트·1px 격자다. 빈 채팅이 열리면 장면 하나를 한 번
- *  보여 준 뒤 물에 떠 있는 하마로 돌아간다. 가리키면 같은 장면을 다시, 누르면 다음
- *  장면을 보여 준다. 장면 사이와 끝은 4×4 디더 순서로 칸을 바꿔 넘어간다.
+ *  보여 준 뒤 마지막 모습으로 멈춘다. 가리키면 같은 장면을 다시, 누르면 다음 장면을
+ *  보여 준다. 장면 사이와 끝은 4×4 디더 순서로 칸을 바꿔 넘어간다.
  *
  *  모든 움직임은 15fps 로 끊는다. 캔버스는 CSS 에서 입력기 하마와 같은 3배로 키우고
- *  pixelated 로 그린다. 동작 줄이기 설정이면 장면의 마지막 모습만 멈춰 그린다. */
+ *  pixelated 로 그린다. 동작 줄이기 설정이면 처음부터 마지막 모습만 그린다. */
 
 import {
   COLORS, LIGHT_COLORS, POSES, PROPS, sparkle, dot, fade, lerp, arc, droplets, ripples,
@@ -18,11 +18,9 @@ const H = 40;
 /** 땅(물) 윗면의 행. 하마의 7행이 바로 위에 선다. */
 const FLOOR = 34;
 const STEP = 1000 / 15;
-const SCENE_TAIL_MS = 700;
 const SWAP_MS = 320;
-const SETTLE_MS = 420;
 const HIDDEN_POLL_MS = 500;
-/** 물에 떠 있는 하마의 자리(0열). 물보라 장면도 여기로 내려앉는다. */
+/** 물보라 장면에서 하마가 내려앉아 떠 있는 자리(0열). */
 const FLOAT_X = 53;
 const POND = [26, 94] as const;
 /** 물에 뜬 하마가 잠기는 깊이(행). 귀·머리·등만 물 위에 남는다. */
@@ -74,11 +72,11 @@ export interface PixelScene {
 }
 
 export const PIXEL_SCENES: readonly PixelScene[] = [
-  { id: 'lines', label: '한 줄씩 차근차근', duration: 4400 },
+  { id: 'lines', label: '한 줄씩 차근차근', duration: 4000 },
   { id: 'mountain', label: '오늘도 한 걸음 더', duration: 5000 },
-  { id: 'coffee', label: '커피 한 잔', duration: 4000 },
-  { id: 'thought', label: '생각을 문서로', duration: 4200 },
-  { id: 'splash', label: '오늘도 화이팅', duration: 3400 },
+  { id: 'coffee', label: '커피 한 잔', duration: 3600 },
+  { id: 'thought', label: '생각을 문서로', duration: 3800 },
+  { id: 'splash', label: '오늘도 화이팅', duration: 3300 },
 ];
 
 /** 직전 장면과 겹치지 않게 하나를 고른다. */
@@ -159,6 +157,8 @@ export function createPixelGreeting(opts: { reducedMotion: () => boolean }): Pix
     layers([{ art: POSES[pose] }], x, o);
   };
   const walk = (t: number): PoseName => (Math.floor(t / 120) % 2 ? 'step' : 'stand');
+  /** 입을 벌린 하마 위의 반짝임. 머리에 닿지 않게 띄운다. */
+  const twinkle = (size: number): Layer[] => sparkle(size).map((l) => ({ ...l, x: l.x! + 2, y: l.y! - 1 }));
 
   function sky(t: number): void {
     STARS.forEach(([x, y], i) => {
@@ -196,22 +196,16 @@ export function createPixelGreeting(opts: { reducedMotion: () => boolean }): Pix
   }
 
   /** 물에 뜬 하마 — 머리와 등만 내놓는다. 까딱일 때마다 물결이 양옆으로 번진다. */
-  function float(t: number, x: number, sink = 0): void {
+  function float(t: number, x: number): void {
     const bob = Math.floor(t / 900) % 2;
-    pet(t % 5300 > 5100 ? 'ear' : 'stand', x, { y: FLOAT_Y + bob + sink, clip: true });
+    pet('stand', x, { y: FLOAT_Y + bob, clip: true });
     const k = Math.floor((t % 900) / 180);
-    if (!sink && k < 3) {
+    if (k < 3) {
       px(x - 1 - k, FLOOR - 1, pal[fade(k + 1)]!);
       px(x + 13 + k, FLOOR - 1, pal[fade(k + 1)]!);
     }
   }
 
-  // 쉬는 모습: 물에 떠서 까딱이며, 가끔 귀를 턴다.
-  const idle: Draw = (t) => {
-    t = q(t); sky(t);
-    float(t, FLOAT_X);
-    water(t);
-  };
   const empty: Draw = () => {};
 
   const scenes: Record<string, Draw> = {
@@ -229,7 +223,7 @@ export function createPixelGreeting(opts: { reducedMotion: () => boolean }): Pix
       page(home + 20, typed([5, 4, 5, 3], t - arrive - 200, 80, 160));
       if (t < arrive) pet(walk(t), x);
       else if (typing) pet(down ? 'pawDown' : 'pawUp', home);
-      else layers([{ art: POSES.cheer }, ...sparkle(t < 3700 ? 1 : 2)], home);
+      else layers([{ art: POSES.cheer }, ...twinkle(t < 3700 ? 1 : 2)], home);
     },
     // 산을 걸어 올라 꼭대기에 깃발을 꽂는다.
     mountain(t) {
@@ -265,9 +259,10 @@ export function createPixelGreeting(opts: { reducedMotion: () => boolean }): Pix
       }
       if (t < climb) pet(walk(t), x, { ground });
       else if (plant < 500) pet(plant > 0 ? 'pawUp' : 'stand', top, { ground });
-      else layers([{ art: POSES.cheer }, ...sparkle(Math.floor(plant / 140) % 3)], top, { ground });
+      // 멈추는 모습에서는 반짝임을 가장 크게 남긴다.
+      else layers([{ art: POSES.cheer }, ...twinkle(plant < 1700 ? Math.floor(plant / 140) % 3 : 2)], top, { ground });
     },
-    // 잔이 떨어져 놓이고, 김이 오르면 주둥이를 담가 마신 뒤 숨을 내쉰다.
+    // 잔이 떨어져 놓이고, 김이 오르면 주둥이를 담가 마신 뒤 고개를 들고 숨을 내쉰다.
     coffee(t) {
       t = q(t); sky(t); floor();
       const x = 44;
@@ -291,9 +286,9 @@ export function createPixelGreeting(opts: { reducedMotion: () => boolean }): Pix
       // 마실 때는 몸을 숙여 앞으로 내밀어 주둥이를 잔에 담근다.
       if (t < 1300) pet(t % 900 < 120 ? 'ear' : 'stand', x);
       else if (t < 2700) pet(sip ? 'crouch' : 'stand', sip ? x + 2 : x);
-      else pet(t < 3400 ? 'open' : t < 3550 ? 'ear' : 'stand', x);
+      else pet(t < 3200 ? 'open' : 'cheer', x);
     },
-    // 머리 위로 생각 점이 차오르고, 구름 속 종이가 저절로 써진다.
+    // 머리 위로 생각 점이 차오르고, 구름 속 종이가 저절로 써지면 폴짝 뛰고 구름을 올려다본다.
     thought(t) {
       t = q(t); sky(t); floor();
       const x = 34;
@@ -332,12 +327,12 @@ export function createPixelGreeting(opts: { reducedMotion: () => boolean }): Pix
       if (!done) pet(t > 1200 && t % 1400 < 120 ? 'ear' : 'stand', x);
       else {
         const hop = t - 2900;
-        pet(hop > 0 && hop < 360 ? 'step' : t > 2700 && t < 2900 ? 'crouch' : 'stand', x, {
+        pet(hop > 0 && hop < 360 ? 'step' : hop <= 0 ? 'crouch' : 'cheer', x, {
           y: hop > 0 && hop < 360 ? arc(hop / 360, 3) : 0,
         });
       }
     },
-    // 둑에서 웅크렸다 공처럼 말아 연못으로 뛰어들고, 떠올라 물에 뜬다.
+    // 둑에서 웅크렸다 공처럼 말아 연못으로 뛰어들고, 떠올라 까딱이다 입을 크게 벌린다.
     splash(t) {
       t = q(t); sky(t);
       const bank = 34;
@@ -367,7 +362,8 @@ export function createPixelGreeting(opts: { reducedMotion: () => boolean }): Pix
       if (up < 260) {
         pet('ear', FLOAT_X, { y: Math.round(lerp(9, FLOAT_Y, up / 260)), clip: true });
         layers(ripples(6, up), FLOAT_X);
-      } else float(t, FLOAT_X);
+      } else if (t < 2900) float(t, FLOAT_X);
+      else layers([{ art: POSES.cheer }, ...twinkle(t < 3100 ? 1 : 2)], FLOAT_X, { y: FLOAT_Y, clip: true });
     },
   };
 
@@ -382,6 +378,8 @@ export function createPixelGreeting(opts: { reducedMotion: () => boolean }): Pix
   let swap: { from: Shown; to: Shown; start: number; duration: number } | null = null;
   let sceneIndex: number | null = null;
   let sceneUntil: number | null = null;
+  /** 지금 장면의 마지막 모습. 장면이 끝나면 여기서 멈춘다. */
+  let still: Draw = empty;
   let timer: number | null = null;
 
   function paint(now: number): void {
@@ -412,13 +410,15 @@ export function createPixelGreeting(opts: { reducedMotion: () => boolean }): Pix
     const now = performance.now();
     if (sceneUntil !== null && now > sceneUntil) {
       sceneUntil = null;
-      show(idle, SETTLE_MS);
+      show(still, 0);
     }
     // 창이 숨었거나 설정 같은 다른 면 뒤에 있으면 그리지 않고 드문드문 살피기만 한다.
     const hidden = document.visibilityState === 'hidden'
       || (typeof canvas.checkVisibility === 'function' && !canvas.checkVisibility({ visibilityProperty: true }));
     if (!hidden) paint(now);
-    if (current.draw !== empty || swap) timer = window.setTimeout(tick, hidden ? HIDDEN_POLL_MS : STEP);
+    // 멈춘 모습을 그렸으면 프레임을 끝낸다. 숨어 있었다면 보일 때 한 번 그리려고 계속 살핀다.
+    const moving = sceneUntil !== null || swap !== null;
+    if (moving || (hidden && current.draw !== empty)) timer = window.setTimeout(tick, hidden ? HIDDEN_POLL_MS : STEP);
   }
 
   function run(): void {
@@ -440,17 +440,24 @@ export function createPixelGreeting(opts: { reducedMotion: () => boolean }): Pix
     sceneIndex = index;
     const scene = PIXEL_SCENES[index]!;
     const draw = scenes[scene.id]!;
+    still = () => draw(scene.duration);
     canvas.setAttribute('aria-label', scene.label);
+    themeWatch.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme-effective'] });
     if (opts.reducedMotion()) {
       sceneUntil = null;
-      show(() => draw(scene.duration), 0);
+      show(still, 0);
       paint(performance.now());
       return;
     }
     show(draw, current.draw === empty ? 0 : SWAP_MS);
-    sceneUntil = performance.now() + scene.duration + SCENE_TAIL_MS;
+    sceneUntil = performance.now() + scene.duration;
     run();
   }
+
+  // 멈춘 동안에는 프레임이 돌지 않으므로 테마가 바뀔 때 다시 그린다.
+  const themeWatch = new MutationObserver(() => {
+    if (timer === null) paint(performance.now());
+  });
 
   canvas.addEventListener('pointerenter', () => {
     if (sceneIndex !== null && sceneUntil === null && !swap && !opts.reducedMotion()) play(sceneIndex);
@@ -463,6 +470,7 @@ export function createPixelGreeting(opts: { reducedMotion: () => boolean }): Pix
     if (timer !== null) window.clearTimeout(timer);
     timer = null;
     sceneUntil = null;
+    themeWatch.disconnect();
     show(empty, 0);
     paint(performance.now());
   }
