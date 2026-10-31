@@ -7,6 +7,7 @@ import { createAgentCursor, viewportPointToDisplay, type AgentPointer } from './
 import type { SidebarBridge } from '../../agent/bridge.ts';
 import type { BrowserDownload, BrowserTab } from '../../agent/types.ts';
 import { createBrowserController } from './browser-controller.ts';
+import type { ChromeSignIn } from './chrome-sign-in.ts';
 import { createBrowserPresentation, nativeBrowserApi, type BrowserPresentationMode } from './browser-presentation.ts';
 import { saveBrowserCaptureDraft, type BrowserCaptureDestination, type BrowserCaptureDraft } from './browser-capture-store.ts';
 import { createIcon, type SidebarIconName } from './icons.ts';
@@ -38,6 +39,7 @@ export function createWorkbenchBrowser(options: {
   tabFilter?(tab: BrowserTab): boolean;
   onFloatTab?(tabId: string, point?: { x: number; y: number }): void;
   onClose?(): void;
+  chromeSignIn?: ChromeSignIn;
 }) {
   const controller = createBrowserController(options.bridge, { nativePresentation: Boolean(nativeBrowserApi()), tabFilter: options.tabFilter });
   const element = document.createElement('section'); element.className = 'ag-browser';
@@ -148,6 +150,20 @@ export function createWorkbenchBrowser(options: {
     handle(controller.action('navigate', { ...controller.identity(tab), url }).then(() => controller.readFrame()));
   }, challenge);
   element.append(challenge);
+  // 패스키·Google 로그인은 Google Chrome에서 하고 로그인만 돌려받는다.
+  const chromeBar = document.createElement('div'); chromeBar.className = 'ag-browser-challenge ag-browser-chrome-sign-in'; chromeBar.hidden = true; chromeBar.setAttribute('role', 'status');
+  const chromeMessage = document.createElement('span'); chromeBar.append(chromeMessage);
+  const chromeOffers = new Map<string, string>();
+  const chromeStart = button('Google Chrome으로 로그인', 'Google Chrome으로 로그인', () => { const url = chromeOffers.get(controller.tab()?.tabId ?? '') ?? controller.tab()?.url; if (url) startChromeSignIn(url); }, chromeBar);
+  const chromeDismiss = button('닫기', '닫기', () => { const tabId = controller.tab()?.tabId; if (tabId) void nativeBrowserApi()?.chromeSignIn?.({ dismissTabId: tabId }).catch(() => {}); }, chromeBar);
+  const chromeFinish = button('Chrome 로그인 완료', '완료', () => { void options.chromeSignIn?.finish().catch(() => {}); }, chromeBar);
+  const chromeCancel = button('Chrome 로그인 취소', '취소', () => { void options.chromeSignIn?.cancel().catch(() => {}); }, chromeBar);
+  element.append(chromeBar);
+  function startChromeSignIn(url: string): void {
+    if (!options.chromeSignIn?.available()) return;
+    void options.chromeSignIn.start(url).catch(() => {});
+  }
+  const stopChromeSignIn = options.chromeSignIn?.subscribe(() => { paint(); layout(); });
   const upload = document.createElement('div'); upload.className = 'ag-browser-upload'; upload.hidden = true;
   const uploadLabel = document.createElement('span'); uploadLabel.textContent = '페이지에서 파일을 요청했습니다.';
   const uploadFiles = document.createElement('input'); uploadFiles.type = 'file'; uploadFiles.hidden = true; uploadFiles.setAttribute('aria-label', '웹사이트에 보낼 파일');
@@ -225,6 +241,8 @@ export function createWorkbenchBrowser(options: {
   const menuReload = button('새로고침', '새로고침', () => { details.open = false; navigate('reload'); }, menu);
   menuReload.prepend(createIcon('refresh'));
   const menuSleep = button('탭 잠자기', '탭 잠자기', () => handle(sleepCurrentTab()), menu);
+  const menuChrome = button('Google Chrome으로 로그인', 'Chrome으로 로그인', () => { details.open = false; const url = controller.tab()?.url; if (url) startChromeSignIn(url); }, menu);
+  menuChrome.hidden = !options.chromeSignIn;
   details.append(summary, menu); toolbar.append(details);
   let nativeMenuPending = false;
   summary.addEventListener('click', event => {
@@ -240,12 +258,14 @@ export function createWorkbenchBrowser(options: {
       { id: 'chat', label: '채팅으로 돌아가기' },
       { id: 'reload', label: '새로고침', enabled: manualSleepingTab !== tabId },
       { id: 'sleep', label: manualSleepingTab === tabId ? '탭 깨우기' : '탭 잠자기' },
+      ...(options.chromeSignIn ? [{ id: 'chrome', label: 'Chrome으로 로그인', enabled: options.chromeSignIn.available() && !options.chromeSignIn.site() && /^https:/.test(controller.tab()?.url ?? '') }] : []),
     ], { x: rect.right, y: rect.bottom }).then(choice => {
       if (disposed || previewLocked() || controller.tab()?.tabId !== tabId) return;
       if (choice === 'popout') popoutButton.click();
       else if (choice === 'chat') options.onChat();
       else if (choice === 'reload') navigate('reload');
       else if (choice === 'sleep') handle(sleepCurrentTab());
+      else if (choice === 'chrome') { const url = controller.tab()?.url; if (url) startChromeSignIn(url); }
     }).finally(() => { nativeMenuPending = false; });
   });
 
@@ -718,6 +738,12 @@ export function createWorkbenchBrowser(options: {
     controlButton.title = held ? '에이전트에게 돌려주기' : '직접 조작'; controlButton.setAttribute('aria-label', controlButton.title);
     challenge.hidden = !tab?.challenge; continueChallenge.disabled = !connected || controller.state.busy;
     fallbackSearch.hidden = !tab?.challenge?.fallback; fallbackSearch.disabled = !connected || controller.state.busy;
+    const chromeSite = options.chromeSignIn?.site() ?? null; const chromeOffer = tab ? chromeOffers.get(tab.tabId) : undefined;
+    chromeBar.hidden = !options.chromeSignIn || !chromeSite && !chromeOffer;
+    chromeMessage.textContent = chromeSite ? `Chrome에서 ${chromeSite}에 로그인하는 중` : chromeOffer ? new URL(chromeOffer).hostname : '';
+    chromeStart.hidden = chromeDismiss.hidden = !!chromeSite; chromeFinish.hidden = chromeCancel.hidden = !chromeSite;
+    chromeStart.disabled = !options.chromeSignIn?.available(); chromeStart.title = chromeStart.disabled ? options.chromeSignIn?.unavailableReason() ?? '' : 'Google Chrome으로 로그인';
+    menuChrome.disabled = !options.chromeSignIn?.available() || !!chromeSite || !/^https:/.test(tab?.url ?? '');
     menuSleep.textContent = manualSleepingTab === tab?.tabId ? '탭 깨우기' : '탭 잠자기';
     status.textContent = manualSleepingTab === tab?.tabId ? '잠든 탭' : nativeRecovering ? '페이지 다시 여는 중' : reconnecting || nativePending ? '브라우저 연결 중' : !connected ? '연결 끊김' : !tab ? '브라우저 준비' : tab.challenge ? 'Google 확인 필요' : tab.status === 'sleeping' ? '잠든 탭 깨우는 중' : tab.status === 'loading' ? '페이지 여는 중' : '에이전트 브라우저';
     status.title = status.textContent; status.dataset.owner = tab?.controller.owner ?? '';
@@ -821,6 +847,19 @@ export function createWorkbenchBrowser(options: {
       if (target) { acceptZoom(target.tabId, event); paint(); }
     }
     if (event.reason === 'zoom') return;
+    if (typeof event.tabId === 'string' && 'chromeSignIn' in event) {
+      const offer = event.chromeSignIn as { siteUrl?: unknown } | null;
+      const had = chromeOffers.get(event.tabId);
+      if (offer && typeof offer.siteUrl === 'string') chromeOffers.set(event.tabId, offer.siteUrl); else chromeOffers.delete(event.tabId);
+      if (had !== chromeOffers.get(event.tabId)) { paint(); layout(); }
+    }
+    if (event.type === 'presentation-command' && typeof event.command === 'string' && event.command.startsWith('chrome-sign-in')) {
+      // 띄운 창의 Chrome 로그인 띠. 창은 그대로 두고 허브 요청만 보낸다.
+      if (event.command === 'chrome-sign-in' && typeof event.url === 'string') startChromeSignIn(event.url);
+      else if (event.command === 'chrome-sign-in-finish') void options.chromeSignIn?.finish().catch(() => {});
+      else if (event.command === 'chrome-sign-in-cancel') void options.chromeSignIn?.cancel().catch(() => {});
+      return;
+    }
     if (event.type === 'presentation-command') {
       const target = controller.state.tabs.find((row) => row.tabId === event.tabId || row.nativeTargetId && (row.nativeTargetId === event.tabId || row.nativeTargetId === event.nativeTargetId));
       if (!target) return;
@@ -912,7 +951,7 @@ export function createWorkbenchBrowser(options: {
     dock() { nativePopout = false; presentation.present('dock'); address.focus({ preventScroll: true }); },
     float(point?: { x: number; y: number }) { floatCurrentTab(point); handle(controller.refresh().then(() => controller.readFrame())); },
     async releaseTab(tabId: string): Promise<void> { await nativePending?.catch(() => undefined); if (nativeTab === tabId) { nativeTab = null; nativeProjection = ''; await nativeBrowserApi()?.detach({ tabId }); } layout(); },
-    dispose() { agentCursor.dispose(); stopAutofixSettings(); stalledAutofix?.dispose(); cancelPreviewClose(); captureMotion.cancel(); document.removeEventListener('visibilitychange', scheduleFrame); document.removeEventListener('pointerdown', dismissOutside, true); disposed = true; reportSidebarView(); cancelNativeHealth(); if (frameTimer) clearTimeout(frameTimer); if (layoutFrame !== null) cancelAnimationFrame(layoutFrame); resizeObserver.disconnect(); visibilityObserver.disconnect(); window.removeEventListener('scroll', layout, true); window.removeEventListener('resize', layout); unsubscribe(); unsubscribeUpload(); unsubscribeNative?.(); controller.dispose(); if (nativeTab) handle(nativeBrowserApi()!.detach({ tabId: nativeTab })); presentation.dispose(); },
+    dispose() { agentCursor.dispose(); stopAutofixSettings(); stopChromeSignIn?.(); stalledAutofix?.dispose(); cancelPreviewClose(); captureMotion.cancel(); document.removeEventListener('visibilitychange', scheduleFrame); document.removeEventListener('pointerdown', dismissOutside, true); disposed = true; reportSidebarView(); cancelNativeHealth(); if (frameTimer) clearTimeout(frameTimer); if (layoutFrame !== null) cancelAnimationFrame(layoutFrame); resizeObserver.disconnect(); visibilityObserver.disconnect(); window.removeEventListener('scroll', layout, true); window.removeEventListener('resize', layout); unsubscribe(); unsubscribeUpload(); unsubscribeNative?.(); controller.dispose(); if (nativeTab) handle(nativeBrowserApi()!.detach({ tabId: nativeTab })); presentation.dispose(); },
   };
 }
 export type WorkbenchBrowser = ReturnType<typeof createWorkbenchBrowser>;

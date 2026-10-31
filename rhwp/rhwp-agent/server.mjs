@@ -864,14 +864,14 @@ const chatgptStore = createChatgptStore({ filePath: path.join(path.dirname(PROJE
 await chatgptStore.ready();
 const chatgptDriver = createChatgptDriver({
   store: chatgptStore,
-  browser: { available: () => ownedBrowser.nativeActive(), drive: (actor, options, operation) => ownedBrowser.drive(actor, options, operation) },
+  browser: { available: () => ownedBrowser.nativeActive() || ownedBrowser.signInActive(), busy: () => ownedBrowser.signInActive(), drive: (actor, options, operation) => ownedBrowser.drive(actor, options, operation) },
 });
 // ask_claude: 같은 방식으로 사용자의 Claude.ai. 상태는 claude.json 에 따로 둔다.
 const claudeStore = createClaudeStore({ filePath: path.join(path.dirname(PROJECTS_ROOT), 'claude.json'), logger: log });
 await claudeStore.ready();
 const claudeDriver = createClaudeDriver({
   store: claudeStore,
-  browser: { available: () => ownedBrowser.nativeActive(), drive: (actor, options, operation) => ownedBrowser.drive(actor, options, operation) },
+  browser: { available: () => ownedBrowser.nativeActive() || ownedBrowser.signInActive(), busy: () => ownedBrowser.signInActive(), drive: (actor, options, operation) => ownedBrowser.drive(actor, options, operation) },
 });
 /** 웹 비서(ask_chatgpt·ask_claude)마다 저장소·구동기·오류·문구. */
 const WEB_ASSISTANTS = Object.freeze({

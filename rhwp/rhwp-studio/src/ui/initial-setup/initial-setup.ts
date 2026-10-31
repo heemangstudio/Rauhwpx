@@ -17,6 +17,7 @@ import type {
   AgentSetupStatusMap,
   SidebarEvent,
 } from '../../agent/types.ts';
+import { createWebAssistantConnection, WEB_ASSISTANTS, type WebAssistant, type WebAssistantConnectionOptions } from '../agent-sidebar/web-assistant-settings.ts';
 import { getThemeMode, setThemeMode } from '../../core/theme.ts';
 import type { ThemeMode } from '../../core/user-settings.ts';
 import { chooseFontFolder } from '../../core/font-folder.ts';
@@ -123,6 +124,8 @@ export interface InitialSetupDeps {
   plan?: PlanStore;
   /** 요금제 장에 넣을 세 칸. 없으면 안내 한 줄만 둔다. */
   createPlanChooser?: (hooks: Pick<PlanChooserOptions, 'onFinish' | 'onRender' | 'doneHoldMs'>) => PlanChooser | null;
+  /** ChatGPT·Claude 계정 연결(데스크톱 앱 브라우저). 없으면 연결 단계가 없다. */
+  connectors?: WebAssistantConnectionOptions | null;
   /** 끝내거나 건너뛰어 다시 열 일이 없어졌을 때. */
   onFinished?: () => void;
 }
@@ -148,6 +151,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   let setupStatuses: AgentSetupStatusMap | null = null;
   let lastFocus: HTMLElement | null = null;
   let fontStep: FontStepKind | null = null;
+  const connectorOptions = deps.connectors ?? null;
   let steps: SetupStep[] = planSteps(null);
   let stepIndex = 0;
   let themeStep: InitialSetupRecord['themeStep'] = record.themeStep;
@@ -166,6 +170,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
       ai, account: accountStep,
       signedIn: accountApi ? account?.status()?.state === 'signed_in' : plan?.signedIn === true,
       tier: plan?.tier ?? 'free',
+      connectors: connectorOptions !== null,
     });
     const index = steps.indexOf(preferred);
     stepIndex = index >= 0 ? index : Math.min(stepIndex, steps.length - 1);
@@ -270,6 +275,43 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     cards.set(agent, { root: card, action });
   }
   modelsPanel.append(grid);
+
+  // ── 연결: 쓰고 있는 ChatGPT·Claude 계정. 설정 → AI → 연결의 줄과 같은 연결을 카드로 보인다. ──
+  const connectorsPanel = el('div', 'rhwp-setup-panel rhwp-setup-connectors');
+  connectorsPanel.dataset.step = 'connectors';
+  const connectorGrid = el('div', 'rhwp-setup-grid');
+  connectorGrid.setAttribute('role', 'list');
+  const CONNECTOR_LOGO: Record<WebAssistant, AgentName> = { chatgpt: 'codex', claude: 'claude' };
+  const connectors = connectorOptions ? (['chatgpt', 'claude'] as const).map((service) => {
+    const connection = createWebAssistantConnection(service, connectorOptions);
+    const card = el('div', 'rhwp-setup-card');
+    card.setAttribute('role', 'listitem');
+    card.dataset.service = service;
+    const action = button('rhwp-setup-card-action');
+    const logo = el('span', 'rhwp-setup-card-logo');
+    logo.appendChild(createProviderIcon(CONNECTOR_LOGO[service]));
+    const status = el('span', 'rhwp-setup-card-status');
+    const check = el('span', 'rhwp-setup-check');
+    check.appendChild(createIcon('check'));
+    action.append(logo, el('span', 'rhwp-setup-card-name', WEB_ASSISTANTS[service].name), status, check);
+    // 누르면 켜고 앱 안 로그인 창을 연다. 로그인되면 창이 저절로 닫힌다.
+    action.addEventListener('click', () => {
+      const current = connection.status();
+      if (current?.signedIn === true || connection.signingIn() || connectorOptions.chromeSignIn?.site()) return;
+      void (async () => { if (!current?.enabled) await connection.setEnabled(true); await connection.signIn(); })();
+    });
+    // 패스키·Google 계정은 Chrome에서 로그인한다. 진행 중이면 같은 자리가 '완료'가 된다.
+    const alt = button('rhwp-setup-font-folder rhwp-setup-card-alt', 'Chrome으로 로그인');
+    alt.addEventListener('click', () => {
+      void (async () => { if (!connection.status()?.enabled) await connection.setEnabled(true); await connection.chrome(); })();
+    });
+    card.append(action, alt);
+    connectorGrid.appendChild(card);
+    const entry = { service, connection, card, action, status, alt, signedIn: false };
+    connection.subscribe(() => renderConnector(entry));
+    return entry;
+  }) : [];
+  connectorsPanel.append(connectorGrid);
 
   // ── 글꼴: 스스로 찾고, 못 찾으면 찾기·한컴오피스 받기, 그래도 없으면 폴더 ──
   const fontsPanel = el('div', 'rhwp-setup-panel');
@@ -407,10 +449,10 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   );
   const modelsHint = el('p', 'rhwp-setup-hint', '연결은 나중에 설정에서도 할 수 있어요.');
   modelsPanel.append(modelsHint);
-  body.append(introPanel, themePanel, fontsPanel, welcomePanel, accountElement, plansPanel, modelsPanel, rauPanel);
+  body.append(introPanel, themePanel, fontsPanel, welcomePanel, accountElement, plansPanel, modelsPanel, connectorsPanel, rauPanel);
   const panels: Record<SetupStep, HTMLElement> = {
     intro: introPanel, theme: themePanel, fonts: fontsPanel, welcome: welcomePanel,
-    account: accountElement, plans: plansPanel, models: modelsPanel, rau: rauPanel,
+    account: accountElement, plans: plansPanel, models: modelsPanel, connectors: connectorsPanel, rau: rauPanel,
   };
 
   function mountPlanChooser(): void {
@@ -489,6 +531,28 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     }
   }
 
+  function renderConnector(entry: (typeof connectors)[number]): void {
+    const status = entry.connection.status();
+    const chromeSite = connectorOptions?.chromeSignIn?.site() ?? null;
+    const chromeHere = !!chromeSite && WEB_ASSISTANTS[entry.service].signInUrl.includes(chromeSite);
+    const signedIn = status?.signedIn === true;
+    entry.card.dataset.configured = signedIn ? 'true' : 'false';
+    entry.status.textContent = signedIn ? '연결됨'
+      : chromeHere ? 'Chrome에서 로그인 중'
+      : entry.connection.signingIn() ? '로그인 창에서 로그인'
+      : entry.connection.checking() ? '확인 중…'
+      : status?.busy ? 'Chrome 로그인 중'
+      : '';
+    entry.action.setAttribute('aria-label', signedIn ? `${WEB_ASSISTANTS[entry.service].name} 연결됨` : `${WEB_ASSISTANTS[entry.service].name} 연결`);
+    const chrome = connectorOptions?.chromeSignIn;
+    entry.alt.hidden = !chrome || chrome.available() === false || signedIn || !!chromeSite && !chromeHere;
+    entry.alt.textContent = chromeHere ? '완료' : 'Chrome으로 로그인';
+    entry.alt.disabled = !chromeHere && entry.connection.signingIn();
+    // 이 단계에서 새로 연결되면 하마가 알린다.
+    if (signedIn && !entry.signedIn && currentStep() === 'connectors' && overlay.isConnected) hippo.say(HIPPO_LINES.connectorConnected);
+    entry.signedIn = signedIn;
+  }
+
   function renderFonts(): void {
     if (fontSearch === 'idle' && fontStep === 'missing') fontSearch = 'missing';
     const rescan = fontStep === 'missing' || fontSearch === 'missing';
@@ -510,6 +574,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     if (step === 'models') {
       return configuredAgents().length > 0 ? HIPPO_LINES.modelConnected : HIPPO_LINES.models;
     }
+    if (step === 'connectors') return connectors.some((entry) => entry.signedIn) ? HIPPO_LINES.connectorConnected : HIPPO_LINES.connectors;
     if (step === 'welcome') return HIPPO_LINES.welcome;
     if (step === 'plans') return HIPPO_LINES.plans;
     if (step === 'rau') return HIPPO_LINES.rau;
@@ -533,7 +598,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     dialog.dataset.step = step;
     const labels: Record<SetupStep, string> = {
       intro: '안내', theme: '화면 테마', models: 'AI 연결', fonts: '글꼴', account: '계정',
-      welcome: '시작 방법', plans: '요금제', rau: 'Rau 소개',
+      welcome: '시작 방법', plans: '요금제', connectors: '계정 연결', rau: 'Rau 소개',
     };
     dots.replaceChildren(...steps.map((name, index) => {
       const dot = button('rhwp-setup-dot');
@@ -557,6 +622,8 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     primary.dataset.quiet = leave || step === 'models' ? 'true' : 'false';
     primary.dataset.leave = leave ? 'true' : 'false';
     if (spokenStep !== step && overlay.isConnected) {
+      // 연결 단계에 들어올 때 상태를 다시 읽는다(켜진 서비스만 보이지 않는 탭으로 로그인을 확인한다).
+      if (step === 'connectors') for (const entry of connectors) { renderConnector(entry); void entry.connection.refresh(true); }
       spokenStep = step;
       hippo.say(lineFor(step));
     }
@@ -689,6 +756,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
       stopPlan();
       unmountPlanChooser();
       accountPanel?.dispose();
+      for (const entry of connectors) entry.connection.dispose();
       hippo.dispose();
       document.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('focus', onWindowFocus);

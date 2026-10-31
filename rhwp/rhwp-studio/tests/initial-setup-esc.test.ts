@@ -241,7 +241,7 @@ function status(agent: AgentName, partial: Partial<AgentSetupStatus> = {}): Agen
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-async function openWizard(tier?: 'hama' | 'rau') {
+async function openWizard(tier?: 'hama' | 'rau', connectors?: import('../src/ui/agent-sidebar/web-assistant-settings.ts').WebAssistantConnectionOptions) {
   const storage = memoryStore();
   let finished = 0;
   const ui = createInitialSetup({
@@ -249,6 +249,7 @@ async function openWizard(tier?: 'hama' | 'rau') {
     storage,
     detectFontStep: async () => null,
     plan: tier ? { api: null, status: () => ({ tier, signedIn: true }), subscribe: () => () => {}, dispose() {} } as never : undefined,
+    ...(connectors ? { connectors } : {}),
     onFinished: () => { finished += 1; },
   });
   ui.open();
@@ -328,6 +329,50 @@ test('finishing first-run setup with only Codex connected makes Codex the provid
   ui.dispose();
 });
 
+
+test('paid setup asks for ChatGPT and Claude after the provider step, and a card turns the service on and opens sign-in', async () => {
+  const requests: string[] = [];
+  const windows: Array<[string, string]> = [];
+  let finishSignIn = () => {};
+  const { ui, finished } = await openWizard('rau', {
+    request: async (action) => {
+      requests.push(action);
+      return { enabled: action === 'chatgpt.configure', available: true, signedIn: false };
+    },
+    openSignInWindow: async (url, title) => {
+      windows.push([url, title]);
+      return { closed: new Promise<void>((resolve) => { finishSignIn = resolve; }), close: async () => { finishSignIn(); } };
+    },
+    isConnected: () => true,
+  });
+  const dialog = ui.element.querySelector('.rhwp-setup-dialog')!;
+  const primary = ui.element.querySelector('.rhwp-setup-primary')!;
+  primary.click();
+  await tick();
+  primary.click();
+  await tick();
+  ui.element.querySelectorAll('.rhwp-setup-path')[1]!.click();
+  await tick();
+  assert.equal(dialog.dataset.step, 'rau');
+  primary.click();
+  await tick();
+  assert.equal(dialog.dataset.step, 'models');
+  primary.click();
+  await tick();
+  assert.equal(dialog.dataset.step, 'connectors');
+
+  const card = ui.element.querySelectorAll('.rhwp-setup-card').find((node) => node.dataset.service === 'chatgpt')!;
+  card.querySelector('.rhwp-setup-card-action')!.click();
+  for (let i = 0; i < 5; i += 1) await tick();
+  assert.ok(requests.includes('chatgpt.configure'), 'the card turned ChatGPT on');
+  assert.deepEqual(windows.map(([, title]) => title), ['ChatGPT'], 'the sign-in window opened with the service name');
+
+  primary.click();
+  await tick();
+  assert.equal(finished(), 1);
+  ui.dispose();
+  finishSignIn();
+});
 
 test('Rau subscribers who skip provider connection see the Rau introduction and keep the regular default agent', async () => {
   const { ui, storage, finished } = await openWizard('rau');

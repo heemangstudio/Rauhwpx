@@ -17,7 +17,7 @@ async function savedLogin(broker) {
   return (await broker.saveLogin({ actor, requestId: request.requestId, account: { origin, label: 'Fixture website' }, username: 'fixture-user', password: 'fixture-password' })).account;
 }
 
-async function harness(t, { failSignIn = false, protectedAutofill = false } = {}) {
+async function harness(t, { failSignIn = false, protectedAutofill = false, siteImport = false } = {}) {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-native-passkey-handoff-'));
   const checkpoints = new Map();
   const launches = [];
@@ -31,10 +31,24 @@ async function harness(t, { failSignIn = false, protectedAutofill = false } = {}
   if (protectedAutofill) nativeStorage.origins = [{ origin: 'https://unrelated.example', localStorage: [{ name: 'keep', value: 'retained-private' }], indexedDB: [{ name: 'retained-database' }] }];
   const signedInStorage = { cookies: [cookie('siteSession', 'site.example', 'after'), cookie('unrelatedSession', 'unrelated.example', 'private-unrelated')],
     origins: [{ origin, localStorage: [{ name: 'sessionFlag', value: 'approved' }] }, { origin: 'https://unrelated.example', localStorage: [{ name: 'unrelatedFlag', value: 'private' }] }] };
+  if (siteImport) {
+    signedInStorage.cookies.push(cookie('apiSession', '.api.site.example', 'after-api'));
+    signedInStorage.origins[0].indexedDB = [{ name: 'site-cache' }];
+    signedInStorage.origins.push({ origin: 'https://docs.site.example', localStorage: [{ name: 'closedTab', value: 'no-tab' }] });
+  }
+  let windowsClosed;
   const nativeAdapter = {
     async bind(value) { bindings.push(value); }, async control() {},
     async inventory() { return pages.map((page) => ({ nativeTargetId: page.target, passwordProtected: shielded, tabId: bindings.find((entry) => entry.targetId === page.target)?.tabId })); },
   };
+  if (siteImport) Object.assign(nativeAdapter, {
+    async importSession({ origins, state, reload }) {
+      imports.push({ kind: 'site', origins: [...origins], state: structuredClone(state) });
+      const scoped = (entry) => origins.some((value) => new URL(value).hostname === entry.domain.replace(/^\./, ''));
+      nativeStorage = { cookies: [...nativeStorage.cookies.filter((entry) => !scoped(entry)), ...state.cookies], origins: [...nativeStorage.origins.filter((entry) => !origins.includes(entry.origin)), ...state.origins] };
+      if (reload) for (const page of pages) if (origins.includes(new URL(page.url()).origin)) await page.reload();
+    },
+  });
   if (protectedAutofill) Object.assign(nativeAdapter, {
     async passwordFill() { shielded = true; return { completed: true }; },
     async passwordStorageState() { return shielded ? { cookies: structuredClone(nativeStorage.cookies), origins: [] } : null; },
@@ -73,6 +87,7 @@ async function harness(t, { failSignIn = false, protectedAutofill = false } = {}
     signInFactory: async (settings) => {
       assert.equal(settings.authenticationMethod, 'mac-passkey');
       if (failSignIn) throw Object.assign(new Error('Controlled Chrome launch failure'), { code: 'BROWSER_SIGN_IN_START_FAILED' });
+      windowsClosed = settings.onWindowsClosed;
       return { mode: 'standalone-no-debug', provider: 'chrome', authenticationMethod: 'mac-passkey', exited: false, async close() {} };
     },
     credentialBroker: {
@@ -85,7 +100,7 @@ async function harness(t, { failSignIn = false, protectedAutofill = false } = {}
   });
   t.after(async () => { await browser.close(); await fs.rm(dataDir, { recursive: true, force: true }); });
   const opened = await browser.request(actor, 'open', { url: `${origin}/research` });
-  return { browser, opened, nativeAdapter, clearSession: (...args) => clearSession(...args), launches, imports, confirmations, pages, bindings, storage: () => nativeStorage };
+  return { browser, opened, nativeAdapter, closeChromeWindows: () => windowsClosed?.(), clearSession: (...args) => clearSession(...args), launches, imports, confirmations, pages, bindings, storage: () => nativeStorage };
 }
 
 test('Mac passkey confirmation returns approved website authentication to the retained native guest', async (t) => {
@@ -225,4 +240,38 @@ test('pending native session cleanup blocks both checkpoint saves and archive re
     assert.equal(await broker.restoreCheckpoint({ profileId: 'native' }), null);
   } finally { release(); await signOut; }
   assert.equal(await broker.restoreCheckpoint({ profileId: 'native' }), null);
+});
+
+test('Chrome sign-in for one site brings back that site and its subdomains without a saved account', async (t) => {
+  const f = await harness(t, { siteImport: true });
+  await assert.rejects(f.browser.request({ threadId: 'research', agentId: 'owner' }, 'sign-in-site', { url: `${origin}/login` }), { code: 'BROWSER_HUMAN_REQUIRED' });
+  const started = await f.browser.request(actor, 'sign-in-site', { url: `${origin}/login` });
+  assert.equal(started.runtime.signIn.site, 'site.example');
+  await assert.rejects(f.browser.request({ threadId: 'research', agentId: 'owner' }, 'open', {}), { code: 'BROWSER_SIGN_IN_ACTIVE' });
+  const finished = await f.browser.request(actor, 'sign-in-site-finish');
+  assert.equal(finished.site, 'site.example');
+  assert.equal(finished.runtime.mode, 'native');
+  assert.equal(finished.runtime.signIn, null);
+  assert.deepEqual(f.launches, ['native', 'chrome', 'native']);
+  const imported = f.imports.find((entry) => entry.kind === 'site');
+  assert.deepEqual(imported.origins.sort(), ['https://api.site.example', 'https://docs.site.example', origin].sort());
+  assert.deepEqual(imported.state.cookies.map((entry) => entry.name).sort(), ['apiSession', 'siteSession']);
+  // IndexedDB는 옮기지 않고, 열린 탭이 없는 출처의 localStorage는 건너뛴다.
+  assert.deepEqual(imported.state.origins, [{ origin, localStorage: [{ name: 'sessionFlag', value: 'approved' }] }]);
+  assert.equal(f.pages[0].authenticated, true, 'the open page reloads with the imported session');
+  assert.equal(f.confirmations.length, 0, 'no saved account is involved');
+});
+
+test('closing the Chrome window finishes a site sign-in, and cancel returns without importing', async (t) => {
+  const f = await harness(t, { siteImport: true });
+  await f.browser.request(actor, 'sign-in-site', { url: `${origin}/login` });
+  f.closeChromeWindows();
+  for (let attempt = 0; attempt < 100 && (await f.browser.inventory(actor)).runtime.mode !== 'native'; attempt++) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal((await f.browser.inventory(actor)).runtime.signIn, null);
+  assert.equal(f.imports.filter((entry) => entry.kind === 'site').length, 1);
+  await f.browser.request(actor, 'sign-in-site', { url: `${origin}/login` });
+  const cancelled = await f.browser.request(actor, 'sign-in-site-cancel');
+  assert.equal(cancelled.runtime.mode, 'native');
+  assert.equal(f.imports.filter((entry) => entry.kind === 'site').length, 1, 'cancel imports nothing');
+  await assert.rejects(f.browser.request(actor, 'sign-in-site-finish'), { code: 'BROWSER_SIGN_IN_INACTIVE' });
 });

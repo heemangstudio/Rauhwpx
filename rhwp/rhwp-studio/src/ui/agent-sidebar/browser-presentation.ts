@@ -4,7 +4,7 @@ import { FLOAT_EDGE_GAP, FLOAT_INSET, clampFloatPosition, fitFloatFrame, project
 export type BrowserPresentationMode = 'dock' | 'float' | 'popout';
 export interface NativeBrowserApi {
   passwords?: { armSave(args: { tabId: string; enabled: boolean }): Promise<{ enabled: boolean; navigationEpoch: number }> };
-  attach(args: { tabId: string; expectedTargetId?: string; bounds: { x: number; y: number; width: number; height: number }; mode: BrowserPresentationMode; interactive: boolean; signIn?: boolean; focus?: boolean }): Promise<unknown>;
+  attach(args: { tabId: string; expectedTargetId?: string; bounds: { x: number; y: number; width: number; height: number }; mode: BrowserPresentationMode; interactive: boolean; signIn?: boolean; title?: string; focus?: boolean }): Promise<unknown>;
   detach(args: { tabId: string }): Promise<unknown>;
   getState(args: { tabId: string; expectedTargetId?: string; checkPaint?: boolean }): Promise<unknown>;
   reload?(args: { tabId: string; expectedTargetId?: string; navigationEpoch?: number; recovery?: boolean }): Promise<unknown>;
@@ -12,6 +12,8 @@ export interface NativeBrowserApi {
   /** 에이전트 커서를 게스트 위 표시 계층에 그린다. x·y는 페이지 CSS px다. */
   pointer?(args: { tabId: string; expectedTargetId?: string; x: number; y: number; phase: 'move' | 'down' | 'up' | 'click'; durationMs: number }): Promise<unknown>;
   onEvent?(callback: (event: Record<string, unknown>) => void): () => void;
+  /** Chrome 로그인 진행 상태를 띄운 창들에 알리거나, 한 탭의 Chrome 로그인 제안을 숨긴다. */
+  chromeSignIn?(args: { site?: string | null; dismissTabId?: string }): Promise<unknown>;
 }
 export function nativeBrowserApi(): NativeBrowserApi | undefined {
   return (globalThis as { rhwpDesktop?: { browser?: NativeBrowserApi } }).rhwpDesktop?.browser;

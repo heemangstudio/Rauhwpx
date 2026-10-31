@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
+import { parse as parseDomainName } from 'tldts';
 import { denialError, sameSite, signedInKey, siteScope, webOrigin } from './browser-policy.mjs';
 import { createBrowserNetworkGuard } from './owned-browser-network.mjs';
 import { OwnedBrowserError, inspectOwnedBrowserRuntime, inspectMacPasskeyCapability, installOwnedBrowserRuntime, startOwnedBrowserRuntime, startOwnedBrowserSignIn } from './owned-browser-runtime.mjs';
@@ -257,6 +258,11 @@ export function createOwnedBrowserService(options = {}) {
   let handoffPromise;
   let handoffProfile = false;
   let handoffPreviousMode;
+  // Chrome에서 사이트 하나에 로그인하는 동안의 상태. 저장 계정 없이 사용자가 고른 사이트만 돌려받는다.
+  let signInSite = null;
+  let siteFinish = null;
+  // Chrome이 뜨는 중에 눌린 취소. 뜨자마자 닫는다.
+  let siteCancelRequested = false;
   let passkeys;
   // 에이전트가 이 탭에서 거절된 요청. 조작 결과로 돌려준다(blocked 는 오류, dropped 는 목록).
   const DROPPED_LIMIT = 10;
@@ -286,7 +292,7 @@ export function createOwnedBrowserService(options = {}) {
   // 사용자가 직접 조작을 가져간 탭(controller.held). 에이전트 쓰기를 막고, 그동안의 페이지 요청은 사용자의 것으로 본다(pageActor).
   const userHolds = (tab) => tab.controller.held === true;
   const nativeControl = (tab) => ({ targetId: tab.nativeTargetId, human: true, held: userHolds(tab) });
-  const runtimeInfo = () => ({ runtimeId, generation, passkeys, state: resetting ? 'resetting' : resetFailed ? 'reset-failed' : handoffPending ? 'sign-in-starting' : state, kind: runtime?.kind ?? (runtimeMode === 'native' ? 'native' : 'chromium'), mode: runtimeMode, headless, profile: 'shared', profileId: profileId(), security: 'restricted-plaintext-profile', supportsSignIn: true, supportsNative: !!nativeAdapter, googleSignIn: runtimeMode === 'native' ? 'switch-to-full-browser' : 'standalone-no-debug-available', signIn: signIn ? { mode: signIn.mode, accountId: signInAccountId, exited: signIn.exited } : null });
+  const runtimeInfo = () => ({ runtimeId, generation, passkeys, state: resetting ? 'resetting' : resetFailed ? 'reset-failed' : handoffPending ? 'sign-in-starting' : state, kind: runtime?.kind ?? (runtimeMode === 'native' ? 'native' : 'chromium'), mode: runtimeMode, headless, profile: 'shared', profileId: profileId(), security: 'restricted-plaintext-profile', supportsSignIn: true, supportsNative: !!nativeAdapter, googleSignIn: runtimeMode === 'native' ? 'switch-to-full-browser' : 'standalone-no-debug-available', signIn: signIn || signInSite ? { mode: signIn?.mode ?? 'standalone-no-debug', accountId: signInAccountId, exited: signIn ? signIn.exited : true, ...(signInSite ? { site: signInSite.domain } : {}) } : null });
   const descriptor = (tab) => redactValues({ tabId: tab.tabId, scope: tab.scope ?? 'agent', threadId: tab.threadId, documentId: tab.documentId, projectId: tab.projectId, agentId: tab.agentId, profileId: profileId(), url: tab.snapshot?.passwordProtected ? tab.snapshot.url : publicURL(tab.page?.url?.() ?? tab.url), title: tab.snapshot?.passwordProtected ? '' : tab.title, status: challengeFor(tab) ? 'challenge-required' : tab.status, challenge: challengeFor(tab), navigationEpoch: tab.navigationEpoch, controllerEpoch: tab.controllerEpoch, controller: { ...tab.controller }, runtime: runtime?.kind ?? tab.runtime ?? 'chromium', nativeTargetId: tab.nativeTargetId, openerTabId: tab.openerTabId, zoomFactor: tab.zoomFactor ?? 1, runtimeGeneration: generation, snapshotId: tab.snapshot?.snapshotId ?? null, ...(tab.pendingDialog ? { dialog: { type: tab.pendingDialog.type, message: tab.lastDialog?.message ?? '', ...(tab.pendingDialog.owner === 'human' ? { owner: 'user' } : {}) } } : {}) }, protectedFor(tab));
   const challengeResult = (action, tab) => ({ ok: false, action, ...challengeFor(tab), tab: descriptor(tab), runtime: runtimeInfo(), continuation: { tabId: tab.tabId, humanControl: true, reuseTab: true } });
   // 사이트 아이콘은 사용자 화면용 이벤트와 목록에만 붙인다. 에이전트 결과·browser_status·tabs.json은 descriptor만 쓴다.
@@ -297,7 +303,8 @@ export function createOwnedBrowserService(options = {}) {
   const previewActivity = (actor, tab, active = true) => { if (!actor.isHuman && !tab.system) emit('owned_browser_activity', { active, sessionId: actor.sessionId ?? tab.sessionId, ...(actor.taskId ? { subagent: true } : {}), tab: descriptor(tab), runtime: runtimeInfo() }); };
   const persist = () => {
     if (resetting || resetFailed) return Promise.resolve();
-    const records = [...tabs.values()].map((tab) => ({ ...descriptor(tab), sessionId: tab.sessionId, taskId: tab.taskId, ...(tab.system ? { system: tab.system } : {}), searchQuery: googleResearchURL(tab.page?.url?.() ?? tab.url) && typeof tab.searchQuery === 'string' ? text(tab.searchQuery, 4000) : undefined }));
+    // 로그인 창 같은 일회용 탭은 다음 실행에 되살리지 않는다.
+    const records = [...tabs.values()].filter((tab) => !tab.transient).map((tab) => ({ ...descriptor(tab), sessionId: tab.sessionId, taskId: tab.taskId, ...(tab.system ? { system: tab.system } : {}), searchQuery: googleResearchURL(tab.page?.url?.() ?? tab.url) && typeof tab.searchQuery === 'string' ? text(tab.searchQuery, 4000) : undefined }));
     persistQueue = persistQueue.catch(() => {}).then(async () => {
       await fs.mkdir(path.dirname(descriptorFile), { recursive: true, mode: 0o700 });
       const temp = `${descriptorFile}.${crypto.randomBytes(8).toString('hex')}.part`;
@@ -779,6 +786,7 @@ export function createOwnedBrowserService(options = {}) {
     } catch { await abort(); }
   };
   const ensureRuntime = async () => {
+    if (closed) throw error('BROWSER_CLOSED', 'The browser service has closed.');
     if (resetting || resetFailed) throw error('BROWSER_RESET_REQUIRED', 'Complete browser cleanup in Settings before starting another browser.', true);
     if (signIn || handoffPending) throw error('BROWSER_SIGN_IN_ACTIVE', 'Complete sign-in in the full browser, then confirm the account in Browser settings.', true);
     if (starting) return starting;
@@ -788,6 +796,8 @@ export function createOwnedBrowserService(options = {}) {
       try {
         if (runtime) { await runtime.close().catch(() => {}); runtime = null; }
         runtime = await runtimeFactory({ dataDir, guard, nativeAdapter: selectedAdapter(), headless, autoInstall: options.autoInstall !== false, onEvent: (progress) => emit('owned_browser_runtime', { runtime: { ...runtimeInfo(), ...progress } }) });
+        // 서비스가 그 사이에 닫혔으면 막 뜬 브라우저를 남기지 않는다.
+        if (closed) { await runtime.close().catch(() => {}); runtime = null; throw error('BROWSER_CLOSED', 'The browser service has closed.'); }
         generation++;
         let checkpoint;
         if (credentialBroker?.restoreCheckpoint) {
@@ -801,7 +811,7 @@ export function createOwnedBrowserService(options = {}) {
           if (pageTabs.has(page) || page.isClosed()) return;
           if (!parent || tabs.size >= limits.maxTabs) { await page.close(); return; }
           // Pages created by popup scripts never gain another agent's binding.
-          const tab = makeTab({ ...actorForTab(parent), scope: parent.scope }); tab.controller = { ...parent.controller }; tab.humanDriven = parent.humanDriven; tab.openerTabId = parent.tabId; tabs.set(tab.tabId, tab);
+          const tab = makeTab({ ...actorForTab(parent), scope: parent.scope }); tab.controller = { ...parent.controller }; tab.humanDriven = parent.humanDriven; tab.openerTabId = parent.tabId; tab.transient = parent.transient; tabs.set(tab.tabId, tab);
           try { await attach(tab, page); }
           catch (failure) {
             // 인증 보조 창은 CDP 바인딩이 끝나기 전에 스스로 닫힐 수 있다.
@@ -871,23 +881,103 @@ export function createOwnedBrowserService(options = {}) {
     return starting;
   };
   const makeTab = (input) => { const global = input.isHuman || input.scope === 'global'; const actor = global ? { ...input, threadId: null, projectId: null, documentId: null, agentId: 'human', taskId: null } : input; return ({ lastActivityAt: Date.now(), scope: global ? 'global' : 'agent', tabId: id('tab'), threadId: actor.threadId ?? null, projectId: actor.projectId ?? null, documentId: actor.documentId ?? null, agentId: actor.agentId ?? 'human', ownerId: actor.ownerId, sessionId: actor.sessionId, taskId: actor.taskId, ...(SYSTEM_ACTORS.has(actor.system) ? { system: actor.system } : {}), url: 'about:blank', title: '', status: 'ready', page: null, navigationEpoch: 0, controllerEpoch: 1, controller: { owner: global ? 'human' : 'agent' }, queue: Promise.resolve(), heldKeys: new Set(), heldButtons: new Set(), snapshot: null, frame: null }); };
+  const beginHandoff = async ({ url, authenticationMethod, accountId, site = null, onWindowsClosed }) => {
+    handoffPreviousMode = runtimeMode;
+    handoffPending = true;
+    // 사이트는 처음부터 기록한다. 앱 브라우저를 멈추는 사이에 눌린 취소도 이 로그인을 찾는다.
+    signInSite = site ? { domain: site, url } : null;
+    try {
+      let resolveHandoff; handoffPromise = new Promise((resolve) => { resolveHandoff = resolve; });
+      try {
+        if (starting) await starting;
+        clearInterval(checkpointTimer);
+        if (runtime) { await saveCheckpoint().catch(() => {}); await runtime.close(); runtime = null; }
+        await credentialBroker?.deleteCheckpoint?.({ profileId: 'default' });
+        for (const tab of tabs.values()) { tab.page = null; tab.status = 'disconnected'; tab.controllerEpoch++; tab.controller = { owner: tab.scope === 'global' ? 'human' : 'agent' }; invalidate(tab); }
+        runtimeMode = 'managed'; state = 'sign-in'; signInAccountId = accountId;
+        const start = options.signInFactory ?? startOwnedBrowserSignIn;
+        signIn = await start({ dataDir, url, authenticationMethod, autoInstall: options.autoInstall !== false, onExit: () => emit('owned_browser_runtime', { runtime: runtimeInfo() }), ...(onWindowsClosed ? { onWindowsClosed } : {}) });
+      } finally { resolveHandoff(); handoffPromise = null; }
+    } catch (failure) {
+      siteCancelRequested = false;
+      signInAccountId = null; signInSite = null; handoffPending = false; runtimeMode = handoffPreviousMode ?? runtimeMode; handoffPreviousMode = null; state = 'idle';
+      await ensureRuntime().catch(() => {});
+      throw failure;
+    }
+    finally { handoffPending = false; }
+    emit('owned_browser_runtime', { runtime: runtimeInfo() });
+    if (site && siteCancelRequested) { siteCancelRequested = false; void finishSiteSignIn({ importSession: false }).catch(() => {}); }
+  };
+  /** Chrome을 닫고 네이티브 브라우저로 돌아온다. importSession이면 그 사이트의 로그인만 가져온다. 여러 번 불러도 한 번만 돈다. */
+  const finishSiteSignIn = ({ importSession }) => {
+    if (siteFinish) return siteFinish;
+    // 끝난 뒤 늦게 온 'Chrome 닫힘'이나 서비스 종료 뒤의 신호는 아무것도 바꾸지 않는다.
+    if (!signInSite || closed) return Promise.resolve(null);
+    const site = signInSite;
+    // 취소는 Chrome이 뜨기를 기다리지 않는다. 뜬 뒤 beginHandoff가 바로 닫는다.
+    if (handoffPending && !importSession) { siteCancelRequested = true; return Promise.resolve(site); }
+    siteFinish = (async () => {
+      let imported = false;
+      try {
+        // Chrome이 아직 뜨는 중이면(바로 취소한 경우) 뜬 뒤에 닫는다.
+        if (handoffPromise) await handoffPromise;
+        // Chrome을 닫지 못하면 로그인을 연 채로 둔다. 사용자가 다시 완료하거나 취소할 수 있다.
+        if (signIn) { await signIn.close(); signIn = null; signInAccountId = null; }
+        if (importSession && !closed) {
+          handoffProfile = true; state = 'idle';
+          await ensureRuntime();
+          // IndexedDB는 옮기지 않으므로 읽지 않는다. 큰 사이트(claude.ai)에서 읽는 데만 몇 초가 걸린다.
+          await returnFromSignIn({ site: site.domain }, await runtime.context.storageState());
+          await policy?.markSignedIn?.({ profileId: 'native', domain: site.domain, source: 'handoff' });
+          imported = true;
+        }
+        return site;
+      } catch (failure) {
+        emit('owned_browser_sign_in', { site: site.domain, ok: false, code: failure?.code ?? 'BROWSER_SITE_SIGN_IN_FAILED' });
+        throw failure;
+      } finally {
+        if (!signIn) {
+          // Chrome이 닫혔으면 성공·실패와 상관없이 네이티브 브라우저로 되돌린다.
+          handoffPreviousMode = null; handoffProfile = false;
+          if (!closed && runtimeMode !== 'native') { await runtime?.close().catch(() => {}); runtime = null; state = 'idle'; runtimeMode = 'native'; await ensureRuntime().catch(() => {}); }
+          // 앱 브라우저가 돌아온 뒤에야 로그인이 끝난 것으로 알린다. 그 전의 상태 알림은 진행 중으로 남는다.
+          signInSite = null;
+        }
+        siteFinish = null;
+        emit('owned_browser_runtime', { runtime: runtimeInfo() });
+        if (imported) emit('owned_browser_sign_in', { site: site.domain, ok: true });
+      }
+    })();
+    return siteFinish;
+  };
   const returnFromSignIn = async (account, storage) => {
-    const origins = new Set(account.origins);
-    const hosts = account.origins.map((origin) => new URL(origin).hostname);
+    // 사이트 로그인은 등록 도메인과 그 하위 호스트의 쿠키·저장소를 돌려받는다. IndexedDB는 옮길 수 없어 뺀다.
+    const underSite = (host) => !!account.site && (host === account.site || host.endsWith(`.${account.site}`));
+    const siteOrigins = account.site ? [...new Set([...storage.cookies.map((cookie) => `https://${String(cookie.domain).replace(/^\./, '').toLowerCase()}`), ...storage.origins.map((entry) => entry.origin)])]
+      .filter((origin) => { try { const url = new URL(origin); return url.protocol === 'https:' && underSite(url.hostname); } catch { return false; } }).slice(0, 32) : null;
+    if (siteOrigins && !siteOrigins.length) throw error('BROWSER_SITE_SIGN_IN_EMPTY', 'Chrome did not keep a session for this website. Sign in there, then finish again.', true);
+    const origins = new Set(siteOrigins ?? account.origins);
+    const hosts = [...origins].map((origin) => new URL(origin).hostname);
     const matchesApprovedHost = (cookie) => {
       const domain = cookie.domain.replace(/^\./, '').toLowerCase();
       return hosts.some((host) => host === domain || cookie.domain.startsWith('.') && host.endsWith(`.${domain}`));
     };
-    const approved = { cookies: storage.cookies.filter(matchesApprovedHost), origins: storage.origins.filter((entry) => origins.has(entry.origin)) };
+    // 사이트 로그인은 그 등록 도메인 아래의 쿠키만 옮긴다. 상위 도메인(.example) 쿠키는 다른 사이트와 나눠 쓰는 것이다.
+    const insideSite = (cookie) => !account.site || underSite(String(cookie.domain).replace(/^\./, '').toLowerCase());
+    const approved = { cookies: storage.cookies.filter((cookie) => matchesApprovedHost(cookie) && insideSite(cookie)), origins: storage.origins.filter((entry) => origins.has(entry.origin)).map((entry) => account.site ? { origin: entry.origin, localStorage: entry.localStorage ?? [] } : entry) };
     clearInterval(checkpointTimer);
     await runtime.close(); runtime = null; state = 'idle'; runtimeMode = 'native';
-    await credentialBroker.saveCheckpoint?.({ profileId: 'native', state: approved });
+    // 사이트 로그인은 네이티브 체크포인트를 그 사이트만으로 덮지 않는다. 끝에서 전체 상태를 다시 저장한다.
+    if (!account.site) await credentialBroker.saveCheckpoint?.({ profileId: 'native', state: approved });
     await ensureRuntime();
     // 유지된 네이티브 게스트는 자동 체크포인트 복원을 건너뛰므로 승인된 세션을 직접 병합한다.
     const adapter = selectedAdapter();
     if (adapter?.importSession) {
       // 메인 프로세스가 승인된 사이트만 갱신한다. 보호된 탭의 숨겨진 저장소는 읽거나 지우지 않는다.
-      await adapter.importSession({ origins: [...origins], state: approved, reload: true });
+      // 열린 탭이 없는 출처의 localStorage는 네이티브 쪽에서 쓸 곳이 없다. 사이트 로그인은 그 항목을 건너뛴다.
+      const openOrigins = new Set([...tabs.values()].flatMap((tab) => { try { return tab.page && !tab.page.isClosed() ? [new URL(tab.page.url()).origin] : []; } catch { return []; } }));
+      const imported = account.site ? { cookies: approved.cookies, origins: approved.origins.filter((entry) => openOrigins.has(entry.origin)) } : approved;
+      await adapter.importSession({ origins: [...origins], state: imported, reload: true });
     } else {
       if (await adapter?.passwordStorageState?.()) throw error('BROWSER_NATIVE_SESSION_IMPORT_UNAVAILABLE', 'Reconnect the desktop browser before restoring this sign-in.', true);
       const retained = await browserStorageState();
@@ -2091,7 +2181,7 @@ export function createOwnedBrowserService(options = {}) {
       try { const result = await credentialBroker.resetBrowserData({ actor }); return { ok: true, action, ...result, runtime: runtimeInfo(), tabs: [] }; }
       catch (failure) { resetting = false; resetFailed = true; throw failure; }
     }
-    if (!actor.isHuman && action !== 'status' && (signIn || handoffPending)) throw error('BROWSER_SIGN_IN_ACTIVE', 'The user owns the browser profile during sign-in. Wait for account confirmation.', true);
+    if (!actor.isHuman && action !== 'status' && (signIn || handoffPending || siteFinish)) throw error('BROWSER_SIGN_IN_ACTIVE', 'The user owns the browser profile during sign-in. Wait for account confirmation.', true);
     // 다시 시작한 뒤 첫 에이전트 관찰 전에 예전에 입력한 값을 가릴 목록에 다시 넣는다.
     if (!actor.isHuman) await loadProtected();
     if (action === 'status') { passkeys = await inspectMacPasskeyCapability(); return { ...(await inventory(actor)), ...(typeof args.history === 'string' ? { history: await visitedSites(actor, args.history) } : {}), readiness: state === 'ready' ? { state: 'ready', installed: true, passkeys }
@@ -2121,28 +2211,29 @@ export function createOwnedBrowserService(options = {}) {
       const account = credentialBroker?.listAccounts && (await credentialBroker.listAccounts()).accounts.find((entry) => entry.id === args.accountId);
       if (!account || account.profileId !== 'default' || !account.origins.includes(new URL(url).origin)) throw error('BROWSER_ACCOUNT_REGISTRATION_REQUIRED', 'Add and approve this website account in Browser settings before opening full-browser sign-in.');
       if (signIn || handoffPending) throw error('BROWSER_SIGN_IN_ACTIVE', 'Finish the current sign-in before opening another account.');
-      handoffPreviousMode = runtimeMode;
-      handoffPending = true;
-      try {
-        let resolveHandoff; handoffPromise = new Promise((resolve) => { resolveHandoff = resolve; });
-        try {
-        if (starting) await starting;
-        clearInterval(checkpointTimer);
-        if (runtime) { await saveCheckpoint().catch(() => {}); await runtime.close(); runtime = null; }
-        await credentialBroker.deleteCheckpoint?.({ profileId: 'default' });
-        for (const tab of tabs.values()) { tab.page = null; tab.status = 'disconnected'; tab.controllerEpoch++; tab.controller = { owner: tab.scope === 'global' ? 'human' : 'agent' }; invalidate(tab); }
-        runtimeMode = 'managed'; state = 'sign-in'; signInAccountId = account.id;
-        const start = options.signInFactory ?? startOwnedBrowserSignIn;
-        signIn = await start({ dataDir, url, authenticationMethod: args.authenticationMethod, autoInstall: options.autoInstall !== false, onExit: () => emit('owned_browser_runtime', { runtime: runtimeInfo() }) });
-        } finally { resolveHandoff(); handoffPromise = null; }
-      } catch (failure) {
-        signInAccountId = null; handoffPending = false; runtimeMode = handoffPreviousMode ?? runtimeMode; handoffPreviousMode = null; state = 'idle';
-        await ensureRuntime().catch(() => {});
-        throw failure;
-      }
-      finally { handoffPending = false; }
-      emit('owned_browser_runtime', { runtime: runtimeInfo() });
+      await beginHandoff({ url, authenticationMethod: args.authenticationMethod, accountId: account.id });
       return { ok: true, action, runtime: runtimeInfo(), signIn: { mode: 'standalone-no-debug', accountId: account.id, message: 'Complete sign-in in the separate Chromium window, then confirm the account in Browser settings.' } };
+    }
+    if (action === 'sign-in-site') {
+      // 사용자가 누른 사이트 하나를 Google Chrome에서 로그인한다. 누른 것 자체가 그 사이트의 승인이다.
+      if (!actor.isHuman) throw error('BROWSER_HUMAN_REQUIRED', 'Chrome sign-in is started by the user.');
+      if (signIn || handoffPending || siteFinish || signInSite) throw error('BROWSER_SIGN_IN_ACTIVE', 'Finish the current sign-in first.', true);
+      if (runtimeMode !== 'native' || !nativeAdapter?.importSession) throw error('BROWSER_SITE_SIGN_IN_UNAVAILABLE', 'Chrome sign-in needs the desktop browser.');
+      const url = guard.parse(args.url).href;
+      // 등록 도메인이 있는 HTTPS 사이트만 받는다. 공용 접미사(github.io, co.uk)·IP·localhost는 사이트 하나가 아니다.
+      const parsed = new URL(url).protocol === 'https:' ? parseDomainName(new URL(url).hostname, { allowPrivateDomains: true }) : null;
+      const site = parsed && !parsed.isIp && parsed.domain ? parsed.domain : null;
+      if (!site) throw error('BROWSER_SITE_SIGN_IN_UNAVAILABLE', 'Chrome sign-in needs an HTTPS website.');
+      await beginHandoff({ url, authenticationMethod: 'mac-passkey', accountId: null, site,
+        // 사용자가 Chrome 창을 닫으면 로그인이 끝난 것으로 본다.
+        onWindowsClosed: () => { void finishSiteSignIn({ importSession: true }).catch(() => {}); } });
+      return { ok: true, action, runtime: runtimeInfo() };
+    }
+    if (action === 'sign-in-site-finish' || action === 'sign-in-site-cancel') {
+      if (!actor.isHuman) throw error('BROWSER_HUMAN_REQUIRED', 'Chrome sign-in is finished by the user.');
+      if (!signInSite && !siteFinish) throw error('BROWSER_SIGN_IN_INACTIVE', 'No Chrome sign-in is open.');
+      const site = await finishSiteSignIn({ importSession: action === 'sign-in-site-finish' });
+      return { ok: true, action, ...(site ? { site: site.domain } : {}), runtime: runtimeInfo() };
     }
     if (action === 'confirm-sign-in') {
       if (!actor.isHuman || !credentialBroker?.confirmAccountSession) throw error('BROWSER_HUMAN_REQUIRED', 'Confirm the signed-in account from Browser settings.');
@@ -2200,6 +2291,7 @@ export function createOwnedBrowserService(options = {}) {
       if (signIn || handoffPending) throw error('BROWSER_SIGN_IN_ACTIVE', 'The user owns the browser profile during sign-in.', true);
       await assertPolicy(actor, action, url, null, args);
       const tab = makeTab(actor);
+      if (actor.isHuman && args.transient === true) tab.transient = true;
       if (googleResearchURL(url)) tab.searchQuery = new URL(url).searchParams.get('q') || undefined;
       tabs.set(tab.tabId, tab);
       tab.blocked = null; tab.dropped = null; tab.navHops = []; tab.changePermitted = false;
@@ -2495,6 +2587,8 @@ export function createOwnedBrowserService(options = {}) {
     },
     /** 앱 안 브라우저가 데스크톱 네이티브 런타임인가. ChatGPT 연결은 이때만 쓴다. */
     nativeActive: () => runtimeMode === 'native' && !!nativeAdapter,
+    /** 사용자가 별도 브라우저(Chrome)에서 로그인하는 중이라 앱 브라우저가 멈춰 있다. */
+    signInActive: () => !!nativeAdapter && (!!signIn || handoffPending || !!siteFinish),
     /**
      * 허브 행위자(actor.system) 하나가 자기 탭의 페이지를 직접 다룬다. 탭이 없으면 url 로 열고, 작업은 탭 대기열에서 차례로 돈다.
      * 페이지 요청은 이 행위자로 정책을 받는다. 사용자가 탭을 잡고 있으면 기다리지 않고 거절한다.
@@ -2524,8 +2618,18 @@ export function createOwnedBrowserService(options = {}) {
           tab.sessionId = actor.sessionId; tab.nativeGeneration = nativeState?.generation; tab.zoomFactor = nativeState?.zoomFactor;
         }
         tab.activeActor = actor; tab.lastActivityAt = Date.now();
+        // 숨은 탭을 다루는 동안 데스크톱이 탭을 깨워 둔다(초점 흉내·백그라운드 제한 해제). 허브가 멈추면 30초 뒤 풀린다.
+        const adapter = selectedAdapter();
+        const activity = adapter?.activity && tab.nativeTargetId ? { targetId: tab.nativeTargetId, tabId: tab.tabId, sessionId: tab.sessionId, chatId: tab.threadId, generation: runtime.nativeGeneration, token: id('activity') } : null;
+        let renewal = null;
+        if (activity && await adapter.activity({ ...activity, active: true }).then(() => true, () => false)) {
+          renewal = setInterval(() => { void adapter.activity({ ...activity, active: true, renew: true }).catch(() => {}); }, 10_000); renewal.unref?.();
+        }
         try { return await operation(tab.page, { tabId: tab.tabId }); }
-        finally { tab.activeActor = null; tab.lastActivityAt = Date.now(); publish(tab); void persist(); }
+        finally {
+          if (renewal) { clearInterval(renewal); void adapter.activity({ ...activity, active: false }).catch(() => {}); }
+          tab.activeActor = null; tab.lastActivityAt = Date.now(); publish(tab); void persist();
+        }
       });
     },
     ownsTarget(actor, target) {
@@ -2550,6 +2654,6 @@ export function createOwnedBrowserService(options = {}) {
         const tab = makeTab(record); Object.assign(tab, { tabId: record.tabId, nativeTargetId: record.nativeTargetId, url: publicURL(record.url), title: text(record.title, 500), openerTabId: typeof record.openerTabId === 'string' ? text(record.openerTabId, 160) : undefined, searchQuery: googleResearchURL(record.url) && typeof record.searchQuery === 'string' ? text(record.searchQuery, 4000) : undefined, restorePending: true, sleeping: record.status === 'sleeping', status: record.status === 'sleeping' ? 'sleeping' : 'disconnected', navigationEpoch: Number(record.navigationEpoch) || 0, controllerEpoch: (Number(record.controllerEpoch) || 0) + 1 }); tabs.set(tab.tabId, tab);
       }
     },
-    async close() { if (closed) return; closed = true; clearInterval(sleepTimer); unsubscribeNativeEvents?.(); if (starting) await starting.catch(() => {}); if (handoffPromise) await handoffPromise; clearInterval(checkpointTimer); for (const tab of tabs.values()) { await releaseInput(tab); } await persist().catch(() => {}); await history.flush(); await saveCheckpoint().catch(() => {}); await signIn?.close(); await runtime?.close(); await nativeAdapter?.dispose?.(); await favicons.clear(); state = 'closed'; },
+    async close() { if (closed) return; closed = true; clearInterval(sleepTimer); unsubscribeNativeEvents?.(); if (starting) await Promise.race([starting.catch(() => {}), new Promise((resolve) => setTimeout(resolve, 500))]); if (handoffPromise) await handoffPromise; clearInterval(checkpointTimer); for (const tab of tabs.values()) { await releaseInput(tab); } await persist().catch(() => {}); await history.flush(); await saveCheckpoint().catch(() => {}); await signIn?.close(); await runtime?.close(); await nativeAdapter?.dispose?.(); await favicons.clear(); state = 'closed'; },
   };
 }

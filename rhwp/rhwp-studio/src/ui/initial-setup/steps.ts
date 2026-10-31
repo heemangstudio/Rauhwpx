@@ -23,7 +23,7 @@ import {
   isLocalFontAccessSupported,
 } from '../../core/local-fonts.ts';
 
-export type SetupStep = 'intro' | 'theme' | 'fonts' | 'welcome' | 'account' | 'plans' | 'models' | 'rau';
+export type SetupStep = 'intro' | 'theme' | 'fonts' | 'welcome' | 'account' | 'plans' | 'models' | 'connectors' | 'rau';
 /** missing: 데스크톱에서 색인에 한컴 글꼴이 없다. discover: 브라우저에서 아직 못 찾았다. */
 export type FontStepKind = 'missing' | 'discover';
 
@@ -38,6 +38,8 @@ export const HIPPO_LINES = {
   rau: 'Rau도 함께할 준비가 됐어요!',
   hamaReady: 'Hama를 쓸 수 있어요! 쓰고 있는 AI를 연결해 주세요.',
   modelConnected: '연결됐어요!',
+  connectors: '쓰고 있는 ChatGPT·Claude 계정을 연결하면 AI가 그 기억을 참고해요.',
+  connectorConnected: '연결됐어요!',
   discover: '문서 글꼴을 찾아볼게요.',
   searching: '찾는 중이에요…',
   found: '한컴 글꼴을 찾았어요!',
@@ -89,7 +91,7 @@ export function planFontStep(env: FontEnvironment): FontStepKind | null {
 /** 무료 경로는 홈으로, AI 경로는 계정과 실제 유료 등급을 확인한 뒤 연결 단계로 간다. */
 export function planSteps(
   fontStep: FontStepKind | null,
-  options: { ai?: boolean; account?: boolean; signedIn?: boolean; tier?: PlanTier } = {},
+  options: { ai?: boolean; account?: boolean; signedIn?: boolean; tier?: PlanTier; connectors?: boolean } = {},
 ): SetupStep[] {
   const steps: SetupStep[] = ['intro', 'theme'];
   if (fontStep) steps.push('fonts');
@@ -101,6 +103,8 @@ export function planSteps(
   // Rau 는 시작을 먼저 축하하고 나서 쓰던 AI 를 연결한다.
   if (options.tier === 'rau') steps.push('rau');
   steps.push('models');
+  // ChatGPT·Claude 계정 연결은 AI 연결에 이어서 묻는다.
+  if (options.connectors) steps.push('connectors');
   return steps;
 }
 

@@ -519,6 +519,32 @@
   line-height: var(--ag-lh-tight);
 }
 
+/* ── 연결: ChatGPT·Claude 두 장. 카드 아래에 Chrome 로그인 링크 ── */
+
+.rhwp-setup-connectors .rhwp-setup-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.rhwp-setup-connectors .rhwp-setup-card {
+  display: grid;
+  justify-items: center;
+}
+
+.rhwp-setup-card-status {
+  min-height: 1.4em;
+  color: var(--n-ink-secondary);
+  font-size: var(--ag-fs-secondary);
+  line-height: var(--ag-lh-tight);
+}
+
+.rhwp-setup-card[data-configured='true'] .rhwp-setup-card-status {
+  color: var(--n-ink);
+}
+
+.rhwp-setup-card-alt {
+  margin-top: 4px;
+}
+
 /* ── 글꼴: 찾기와 한컴오피스 받기 두 칸, 못 찾았을 때만 폴더 링크 ── */
 
 .rhwp-setup-font-actions {

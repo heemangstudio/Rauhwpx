@@ -25,6 +25,7 @@ import {
 import { createEffortSlider } from './effort-slider.ts';
 import { createBrowserSettingsPane } from './browser-settings.ts';
 import { createWebAssistantSettingsRow, type SignInWindow } from './web-assistant-settings.ts';
+import type { ChromeSignIn } from './chrome-sign-in.ts';
 import { createIcon } from './icons.ts';
 import { createProviderQuota } from './provider-quota.ts';
 import { createUsageViews } from './token-usage-view.ts';
@@ -358,7 +359,9 @@ export interface SettingsPanelDeps {
   /** 호스팅 Rau(Rau 요금제·체험) 자격. 데스크톱만. 없으면 Rau-0.1 에 Rau 줄이 없다. */
   rau?: DesktopRauApi | null;
   /** 주소를 앱 안 브라우저의 별도 창으로 연다(ChatGPT·Claude 로그인). */
-  openSignInWindow?: (url: string) => Promise<SignInWindow>;
+  openSignInWindow?: (url: string, title: string) => Promise<SignInWindow>;
+  /** 패스키·Google 로그인을 Google Chrome으로 넘긴다(데스크톱 앱). */
+  chromeSignIn?: ChromeSignIn;
   /** 무료 요금제면 true. AI 설정은 잠기고, 들어가려는 길마다 요금제 카드가 열린다. */
   agentLocked?: () => boolean;
   openPlans?: () => void;
@@ -727,6 +730,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   const assistantRows = (['chatgpt', 'claude'] as const).map(service => createWebAssistantSettingsRow(service, {
     request: (action, args) => bridge.requestBrowser(action, args),
     ...(deps.openSignInWindow ? { openSignInWindow: deps.openSignInWindow } : {}),
+    ...(deps.chromeSignIn ? { chromeSignIn: deps.chromeSignIn } : {}),
     isConnected: () => connectionState === 'connected',
   }));
   connection.body.append(providerList, ...assistantRows.map(row => row.root), hubRow);

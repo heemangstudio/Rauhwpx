@@ -158,6 +158,10 @@ test('AI 경로는 로그인과 유료 요금제를 확인한 뒤 연결로 이�
   assert.deepEqual(planSteps(null, { ai: true, signedIn: true, tier: 'hama' }), ['intro', 'theme', 'welcome', 'models']);
   assert.deepEqual(planSteps(null, { ai: true, signedIn: true, tier: 'rau' }), ['intro', 'theme', 'welcome', 'rau', 'models']);
   assert.deepEqual(planSteps(null, { ai: true, signedIn: false, tier: 'rau', account: true }), ['intro', 'theme', 'welcome', 'account']);
+  // ChatGPT·Claude 연결은 데스크톱 유료 경로에서 AI 연결 뒤에 묻는다.
+  assert.deepEqual(planSteps(null, { ai: true, signedIn: true, tier: 'hama', connectors: true }), ['intro', 'theme', 'welcome', 'models', 'connectors']);
+  assert.deepEqual(planSteps(null, { ai: true, signedIn: true, tier: 'rau', connectors: true }), ['intro', 'theme', 'welcome', 'rau', 'models', 'connectors']);
+  assert.deepEqual(planSteps(null, { ai: true, signedIn: true, tier: 'free', connectors: true }), ['intro', 'theme', 'welcome', 'plans']);
 });
 
 test('한컴 설치 폴더의 글꼴이나 한컴 전용 글꼴이 있으면 한컴 글꼴이 있다고 본다', () => {

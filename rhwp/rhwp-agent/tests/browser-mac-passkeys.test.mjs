@@ -112,3 +112,22 @@ test('real signed Chrome handoff retains local fixture authentication after mana
   assert.ok(stored.cookies.some((cookie) => cookie.name === 'fixtureAuth' && cookie.httpOnly));
   assert.equal(runtime.kind, 'chrome');
 });
+
+test('closing the last Chrome window ends the sign-in although macOS keeps Chrome running', async (t) => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-chrome-windows-'));
+  t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
+  const child = Object.assign(new EventEmitter(), { pid: 4242, exitCode: null, signalCode: null });
+  // Chrome needs a moment to show its window; an empty count before that must not end the sign-in.
+  const counts = [0, 0, 1, 1, 0, 0];
+  let closed = 0;
+  const signIn = await startOwnedBrowserSignIn({ dataDir, url: 'https://site.example/login', authenticationMethod: 'mac-passkey',
+    inspectPasskeyBrowser: async () => ({ supported: true, executablePath: '/signed-chrome' }),
+    spawnProcess: () => { queueMicrotask(() => child.emit('spawn')); return child; },
+    countWindows: async (pid) => { assert.equal(pid, 4242); return counts.length ? counts.shift() : 0; },
+    windowPollMs: 1, onWindowsClosed: () => { closed++; } });
+  for (let attempt = 0; attempt < 200 && !closed; attempt++) await new Promise((resolve) => setTimeout(resolve, 2));
+  assert.equal(closed, 1);
+  assert.equal(counts.length, 0, 'the window closed only after it had been seen');
+  child.emit('exit', 0);
+  await signIn.close();
+});
