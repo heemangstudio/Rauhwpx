@@ -465,3 +465,130 @@ test('admin lookup by email, id and key shows the account without sessions or gr
   assert.equal((await fetch(`${s.origin}/v1/admin/accounts?email=x`)).status, 403);
   assert.deepEqual(await s.adminGet('/v1/admin/licenses?keyId=' + keyId).then((r) => [r.licenses[0].accountId, r.licenses[0].linkedBy]), [body.account.id, 'email']);
 });
+
+// ------------------------------------------------------------ licenses
+
+/** A Pro (or Hama) purchase with its own email; resolves to the raw key and its key id. */
+async function bought(s, { n, email = `buyer${n}@groble.example`, contentId, price, cycle } = {}) {
+  const event = proPaid({ merchantUid: `order_${n}`, ref: `ref-${n}`, email, ...(contentId ? { contentId, price, cycle } : {}) });
+  await s.buy(event);
+  const [license] = (await s.adminGet(`/v1/admin/licenses?ref=ref-${n}`)).licenses;
+  return { key: license.key, keyId: license.keyId, merchantUid: `order_${n}`, email };
+}
+
+test('redeem links a typed key once, and refuses bad formats, unknown, revoked and other accounts\' keys', async (t) => {
+  const s = await setup(t);
+  const me = await s.signIn({ email: 'me@example.com' }, device(1));
+  const other = await s.signIn({ email: 'other@example.com' }, device(2));
+  const redeem = (session, key) => s.post('/v1/account/redeem', { key }, s.bearer(session)).then(s.json);
+  const pro = await bought(s, { n: 1 });
+
+  const first = await redeem(me.session, ` ${pro.key.toLowerCase().replace(/-/g, ' ')} `);
+  assert.equal(first.status, 200, JSON.stringify(first.body));
+  assert.deepEqual([first.body.alreadyLinked, first.body.license.keyId, first.body.license.linkedBy, first.body.license.primary, first.body.plan.tier], [false, pro.keyId, 'redeem', true, 'pro']);
+  assert.equal(first.body.license.maskedKey, `${pro.key.slice(0, 10)}-•••••-•••••-•••••-${pro.key.slice(-5)}`);
+  assert.ok(!JSON.stringify(first.body).includes(pro.key), 'the full key never comes back');
+  assert.equal(typeof first.body.lease, 'string');
+  const again = await redeem(me.session, pro.key);
+  assert.deepEqual([again.status, again.body.alreadyLinked, again.body.licenses.length], [200, true, 1]);
+
+  assert.deepEqual(await redeem(other.session, pro.key), { status: 409, body: { ok: false, error: 'key_linked_elsewhere' } });
+  assert.deepEqual(await redeem(me.session, 'HAMA-12345'), { status: 400, body: { ok: false, error: 'invalid_format' } });
+  assert.deepEqual(await redeem(me.session, 42), { status: 400, body: { ok: false, error: 'invalid_format' } });
+  assert.deepEqual(await redeem(me.session, 'HAMA-00000-00000-00000-00000-00000'), { status: 404, body: { ok: false, error: 'invalid_key' } });
+  const revoked = await bought(s, { n: 2 });
+  await s.admin('/v1/admin/licenses/revoke', { keyId: revoked.keyId });
+  assert.deepEqual(await redeem(me.session, revoked.key), { status: 403, body: { ok: false, error: 'revoked' } });
+  assert.deepEqual(await redeem('hes_nope', pro.key), { status: 401, body: { ok: false, error: 'session_invalid' } });
+});
+
+test('claim links an order bought with another email by order number and Groble email, without telling which part was wrong', async (t) => {
+  const s = await setup(t);
+  const me = await s.signIn({ email: 'me@example.com' }, device(1));
+  const other = await s.signIn({ email: 'other@example.com' }, device(2));
+  const claim = (session, orderId, email) => s.post('/v1/account/claim', { orderId, email }, s.bearer(session)).then(s.json);
+  const pro = await bought(s, { n: 1, email: 'Groble.Buyer@example.com' });
+
+  const notFound = { status: 404, body: { ok: false, error: 'order_not_found' } };
+  assert.deepEqual(await claim(me.session, pro.merchantUid, 'me@example.com'), notFound, 'wrong email');
+  assert.deepEqual(await claim(me.session, 'order_404', 'groble.buyer@example.com'), notFound, 'unknown order');
+  assert.deepEqual(await claim(me.session, '', ''), notFound);
+  const ok = await claim(me.session, pro.merchantUid, ' GROBLE.BUYER@example.com ');
+  assert.equal(ok.status, 200, JSON.stringify(ok.body));
+  assert.deepEqual([ok.body.alreadyLinked, ok.body.license.keyId, ok.body.license.linkedBy, ok.body.plan.tier], [false, pro.keyId, 'claim', 'pro']);
+  assert.equal((await claim(me.session, pro.merchantUid, 'groble.buyer@example.com')).body.alreadyLinked, true);
+  assert.deepEqual(await claim(other.session, pro.merchantUid, 'groble.buyer@example.com'), { status: 409, body: { ok: false, error: 'key_linked_elsewhere' } });
+
+  // A held order (wrong price) has no key yet.
+  const held = proPaid({ merchantUid: 'order_held', ref: 'ref-held', email: 'held@example.com', price: 1000 });
+  assert.equal((await (await signedGroblePost(s.origin, SECRET, held)).json()).action, 'held');
+  assert.deepEqual(await claim(me.session, 'order_held', 'held@example.com'), { status: 409, body: { ok: false, error: 'order_not_ready' } });
+  assert.deepEqual(await claim(me.session, 'order_held', 'someone@example.com'), notFound, 'a held order needs the right email too');
+});
+
+test('redeem and claim are limited per account per hour', async (t) => {
+  const s = await setup(t);
+  const me = await s.signIn({ email: 'me@example.com' }, device(1));
+  const other = await s.signIn({ email: 'other@example.com' }, device(2));
+  const redeem = (session) => s.post('/v1/account/redeem', { key: 'HAMA-00000-00000-00000-00000-00000' }, s.bearer(session)).then(s.json);
+  const claim = (session) => s.post('/v1/account/claim', { orderId: 'nope', email: 'x@example.com' }, s.bearer(session)).then(s.json);
+  for (let i = 0; i < 20; i += 1) assert.equal((await redeem(me.session)).body.error, 'invalid_key');
+  assert.deepEqual(await redeem(me.session), { status: 429, body: { ok: false, error: 'rate_limited' } });
+  assert.equal((await redeem(other.session)).body.error, 'invalid_key', 'another account has its own budget');
+  for (let i = 0; i < 10; i += 1) assert.equal((await claim(me.session)).body.error, 'order_not_found');
+  assert.deepEqual(await claim(me.session), { status: 429, body: { ok: false, error: 'rate_limited' } });
+  s.clock.now += 61 * MINUTE;
+  assert.equal((await redeem(me.session)).body.error, 'invalid_key');
+  assert.equal((await claim(me.session)).body.error, 'order_not_found');
+});
+
+test('redeeming a Pro and then a Hama key moves the tier, the primary license and the lease with them', async (t) => {
+  const s = await setup(t, { HAMA_ENABLED: 'true' });
+  await s.admin('/v1/admin/licenses/issue', { email: 'me@example.com', note: 'lifetime' });
+  const me = await s.signIn({ email: 'me@example.com' }, device(1));
+  const keys = { 'hama-prod-1': PAIR.publicKeyRawBase64 };
+  const leaseOf = (body) => verifyAccountLease(body.lease, keys, { now: s.clock.now }).payload;
+  assert.deepEqual([me.plan.tier, leaseOf(me).tier, leaseOf(me).plan, me.plan.autoRenew], ['legacy', 'legacy', 'lifetime', null]);
+  const redeem = (key) => s.post('/v1/account/redeem', { key }, s.bearer(me.session)).then(s.json);
+
+  s.clock.now += MINUTE;
+  const pro = await bought(s, { n: 1 });
+  const withPro = (await redeem(pro.key)).body;
+  assert.deepEqual([withPro.plan.tier, withPro.plan.keyId, withPro.plan.autoRenew, leaseOf(withPro).tier, leaseOf(withPro).keyId], ['pro', pro.keyId, true, 'pro', pro.keyId]);
+  assert.equal(leaseOf(withPro).licenseExpiresAt, withPro.plan.expiresAt);
+  assert.deepEqual(withPro.licenses.map((l) => [l.keyId === pro.keyId, l.primary]), [[true, true], [false, false]]);
+
+  s.clock.now += MINUTE;
+  const hama = await bought(s, { n: 2, contentId: HAMA_MONTHLY, price: 12900, cycle: 1 });
+  const withHama = (await redeem(hama.key)).body;
+  assert.deepEqual([withHama.plan.tier, withHama.plan.edition, leaseOf(withHama).tier, leaseOf(withHama).keyId], ['hama', 'hama', 'hama', hama.keyId]);
+  assert.deepEqual(withHama.licenses.map((l) => l.keyId), [hama.keyId, pro.keyId, me.licenses[0].keyId], 'primary first, then newest');
+  assert.equal((await s.hamaStatus(withHama.lease)).status, 200);
+});
+
+test('admin unlink frees a key for good, admin link moves it, and the CLI wraps both', async (t) => {
+  const { execFile } = await import('node:child_process');
+  const { promisify } = await import('node:util');
+  const cli = (...args) => promisify(execFile)(process.execPath, [new URL('../scripts/license-admin.mjs', import.meta.url).pathname, ...args], { env: { ...process.env, SITE_API_BASE: s.origin, ADMIN_TOKEN: ADMIN } });
+  const s = await setup(t);
+  await s.admin('/v1/admin/licenses/issue', { email: 'me@example.com' });
+  const me = await s.signIn({ email: 'me@example.com' }, device(1));
+  const other = await s.signIn({ email: 'other@example.com' }, device(2));
+  const keyId = me.licenses[0].keyId;
+
+  const listed = await cli('accounts', '--email', 'me@example.com');
+  assert.match(listed.stdout, new RegExp(`\\n${me.account.id} me@example.com · 기기 1 · 키 ${keyId} active\\n$`));
+  const unlinked = await cli('account-unlink', '--key-id', keyId);
+  assert.match(unlinked.stdout, /^200 /);
+  const file = (await s.licensesFile()).licenses[keyId];
+  assert.deepEqual([file.accountId, file.unlinkedBy, typeof file.unlinkedAt], [undefined, 'admin', 'string']);
+  // The owner's verified email does not pull it back on refresh.
+  assert.deepEqual((await s.refresh(me.session)).body.licenses, []);
+
+  assert.deepEqual(await s.admin('/v1/admin/accounts/link', { keyId, accountId: 'acct_000000000000000000' }), { ok: false, error: 'account_not_found' });
+  const linked = await s.admin('/v1/admin/accounts/link', { keyId, accountId: other.account.id });
+  assert.deepEqual([linked.ok, linked.license.accountId, linked.license.linkedBy], [true, other.account.id, 'admin']);
+  assert.deepEqual((await s.refresh(other.session)).body.licenses.map((l) => [l.keyId, l.linkedBy]), [[keyId, 'admin']]);
+  assert.deepEqual(await s.admin('/v1/admin/accounts/unlink', { keyId: 'lic_none' }), { ok: false, error: 'invalid_key' });
+  assert.equal((await fetch(`${s.origin}/v1/admin/accounts/unlink`, { method: 'POST', body: JSON.stringify({ keyId }) })).status, 403);
+});

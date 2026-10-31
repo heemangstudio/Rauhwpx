@@ -403,6 +403,15 @@ export function siteRequestListener({
             allowAccount('account', 300, TEN_MINUTES);
             send(200, await accounts.removeDevice(bearerToken(req), await readAccountJson(req)));
             return;
+          // Per-account limits live in accounts.mjs; this one only stops floods.
+          case 'POST /v1/account/redeem':
+            allowAccount('account', 300, TEN_MINUTES);
+            send(200, await accounts.redeem(bearerToken(req), await readAccountJson(req)));
+            return;
+          case 'POST /v1/account/claim':
+            allowAccount('account', 300, TEN_MINUTES);
+            send(200, await accounts.claim(bearerToken(req), await readAccountJson(req)));
+            return;
           default:
             throw siteError('NOT_FOUND', 'not found');
         }
@@ -412,6 +421,15 @@ export function siteRequestListener({
           allow('admin', 120, TEN_MINUTES);
           if (!accounts) throw siteError('NOT_FOUND', 'not found');
           send(200, await accounts.admin.lookup(bearerToken(req), Object.fromEntries(searchParams)));
+          return;
+        case 'POST /v1/admin/accounts/unlink':
+          allow('admin', 120, TEN_MINUTES);
+          send(200, await licenses.admin.unlinkAccount(bearerToken(req), await readJson(req)));
+          return;
+        case 'POST /v1/admin/accounts/link':
+          allow('admin', 120, TEN_MINUTES);
+          if (!accounts) throw siteError('NOT_FOUND', 'not found');
+          send(200, await accounts.admin.link(bearerToken(req), await readJson(req)));
           return;
         case 'GET /v1/groble/webhook':
           // Deploy check: 404 until this build is live, 503 while the secret is missing.

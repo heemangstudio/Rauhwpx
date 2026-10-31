@@ -1244,6 +1244,43 @@ export function createLicensesService({
     });
   }
 
+  /** The shared checks of redeem and claim: a revoked key or another account's key is refused. */
+  function linkForAccount(license, accountId, linkedBy) {
+    if (license.status === 'revoked') throw licenseError('revoked', 403);
+    if (license.accountId && license.accountId !== accountId) throw licenseError('key_linked_elsewhere', 409);
+    const alreadyLinked = license.accountId === accountId;
+    if (!alreadyLinked) linkLicense(license, accountId, linkedBy);
+    return { dirty: !alreadyLinked, value: { alreadyLinked, keyId: license.keyId } };
+  }
+
+  /** Links a key the user typed. Resolves to `{ alreadyLinked, keyId }`. */
+  async function redeemForAccount(accountId, rawKey) {
+    const key = normalizeLicenseKey(rawKey);
+    if (!key) throw licenseError('invalid_format', 400);
+    return mutate((state) => {
+      const license = Object.hasOwn(state.keyIndex, key) ? state.licenses[state.keyIndex[key]] : undefined;
+      if (!license) throw licenseError('invalid_key', 404);
+      return linkForAccount(license, accountId, 'redeem');
+    });
+  }
+
+  /**
+   * Links the key of a Groble order bought with another email: the order number and the buyer email
+   * must both match, and anything else is order_not_found so neither can be probed. A held order has
+   * no key yet (order_not_ready).
+   */
+  async function claimForAccount(accountId, { orderId, email } = {}) {
+    const merchantUid = str(orderId, 128);
+    const buyer = str(email, 254)?.toLowerCase();
+    return mutate((state) => {
+      const order = merchantUid && Object.hasOwn(state.orders, merchantUid) ? state.orders[merchantUid] : undefined;
+      if (!order || !buyer || order.email?.toLowerCase() !== buyer) throw licenseError('order_not_found', 404);
+      const license = order.keyId ? state.licenses[order.keyId] : undefined;
+      if (!license) throw order.status === 'held' ? licenseError('order_not_ready', 409) : licenseError('order_not_found', 404);
+      return linkForAccount(license, accountId, 'claim');
+    });
+  }
+
   /**
    * The principal of an account lease for a hosted service, the same shape as authenticateLease plus
    * `accountId`. The license is chosen now by purpose: `gift` a live beta key, `hama` a key with an
@@ -1604,6 +1641,36 @@ export function createLicensesService({
         return { value: { ok: true, previousExpiresAt: iso(before), license: licenseView(license) } };
       });
     },
+    /** Frees a key from its account. The owner's email no longer links it back on its own; `linkAccount` or a redeem does. */
+    async unlinkAccount(token, body) {
+      requireAdmin(token);
+      return mutate(async (state) => {
+        const license = findLicense(state, { keyId: str(body?.keyId, 64), key: body?.key });
+        if (!license) throw licenseError('invalid_key', 404);
+        const changed = Boolean(license.accountId);
+        if (changed) {
+          delete license.accountId;
+          delete license.linkedAt;
+          delete license.linkedBy;
+          license.unlinkedAt = new Date(now()).toISOString();
+          license.unlinkedBy = 'admin';
+        }
+        return { dirty: changed, value: { ok: true, changed, license: licenseView(license) } };
+      });
+    },
+    /** Links a key to an account the caller checked exists, moving it from any other account. */
+    async linkAccount(token, body) {
+      requireAdmin(token);
+      const accountId = str(body?.accountId, 64);
+      if (!accountId) throw licenseError('account_not_found', 404);
+      return mutate(async (state) => {
+        const license = findLicense(state, { keyId: str(body?.keyId, 64), key: body?.key });
+        if (!license) throw licenseError('invalid_key', 404);
+        const previousAccountId = license.accountId ?? null;
+        linkLicense(license, accountId, 'admin');
+        return { value: { ok: true, previousAccountId, license: licenseView(license) } };
+      });
+    },
     /** Free one device slot without touching the key's other devices. */
     async removeDevice(token, body) {
       requireAdmin(token);
@@ -1743,6 +1810,8 @@ export function createLicensesService({
     accountEntitlements,
     accountLicensesView,
     linkByEmail,
+    redeemForAccount,
+    claimForAccount,
     authenticateAccount,
     admin,
   };
