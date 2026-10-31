@@ -23,7 +23,6 @@ export async function checkAccountPage({ page, open, screenshot }) {
   await openFromButton(page);
   assert.equal(await pageState(page), 'signed_out');
   assert.equal(await page.$eval('[data-provider="google"]', (node) => node.checkVisibility()), true);
-  assert.equal(await page.$eval('[data-provider="kakao"]', (node) => node.checkVisibility()), false, 'Kakao waits for the server');
   assert.equal(await page.$eval('.acct-signed', (node) => node.checkVisibility()), false, 'nothing else while signed out');
   await page.keyboard.press('Escape');
   await page.waitForFunction(() => !document.querySelector('.acct-page'));

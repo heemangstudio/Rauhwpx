@@ -19,7 +19,7 @@ export interface SignInPanel {
   dispose(): void;
 }
 
-const SOCIAL: readonly AccountProvider[] = ['google', 'kakao'];
+const SOCIAL: readonly AccountProvider[] = ['google'];
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className = '', text = ''): HTMLElementTagNameMap[K] {

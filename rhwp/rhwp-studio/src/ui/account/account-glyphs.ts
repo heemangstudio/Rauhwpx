@@ -81,17 +81,12 @@ export function providerGlyph(provider: AccountProvider): SVGSVGElement {
     );
     return node;
   }
-  if (provider === 'kakao') {
-    const node = svg('0 0 24 24', 'acct-provider-glyph');
-    node.append(path('M12 3.2C6.6 3.2 2.3 6.6 2.3 10.8c0 2.7 1.8 5.1 4.5 6.4-.2.7-.7 2.6-.8 3-.1.5.2.5.4.4l3.6-2.4c.6.1 1.3.1 2 .1 5.4 0 9.7-3.4 9.7-7.6S17.4 3.2 12 3.2z', { fill: 'currentColor' }));
-    return node;
-  }
   const node = svg('0 0 16 16', 'acct-provider-glyph');
   node.append(path('M2.5 4h11v8h-11zM2.8 4.4 8 8.6l5.2-4.2', STROKE));
   return node;
 }
 
-export const PROVIDER_LABEL: Record<AccountProvider, string> = { email: '이메일', google: 'Google', kakao: '카카오' };
+export const PROVIDER_LABEL: Record<AccountProvider, string> = { email: '이메일', google: 'Google' };
 
 /** 기기 종류. Mac 은 노트북, 나머지는 화면. */
 export function platformGlyph(platform: string): SVGSVGElement {

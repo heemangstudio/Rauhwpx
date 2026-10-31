@@ -12,13 +12,11 @@ const TIMEOUT_MS = 10_000;
 
 /**
  * App provider id → WorkOS `provider`. `email` is the AuthKit hosted page (Magic Auth is enabled
- * in the dashboard). `kakao` is the hook for a later connection: it stays null, so listing it in
- * ACCOUNT_AUTH_PROVIDERS fails startup until it maps to one. Any other id is unknown and fails startup too.
+ * in the dashboard). Any other id in ACCOUNT_AUTH_PROVIDERS is unknown and fails startup.
  */
 export const WORKOS_PROVIDERS = Object.freeze({
   email: 'authkit',
   google: 'GoogleOAuth',
-  kakao: null,
 });
 
 /** WorkOS `authentication_method` → app provider id; anything else signed in through the AuthKit page. */

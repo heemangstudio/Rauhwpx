@@ -1,7 +1,7 @@
 // HamaEditor 계정. 데스크톱 main(desktop/account-manager.mjs)이 가지고 rhwpDesktop.account 로 알린다.
 // 이 꼴은 계약(§5)과 같다. 오류 글(message)은 main 이 한국어로 만들어 보내고, Studio 는 그대로 보인다.
 
-export type AccountProvider = 'email' | 'google' | 'kakao';
+export type AccountProvider = 'email' | 'google';
 /** 로그인 판에서 고른 길. 서버에서는 같은 로그인이고, 가입은 AuthKit 이메일 화면만 바꾼다. */
 export type AccountSignInIntent = 'sign_in' | 'sign_up';
 export type AccountState = 'signed_out' | 'signing_in' | 'choose_device' | 'signed_in';

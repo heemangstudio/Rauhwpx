@@ -30,7 +30,7 @@ const AVATAR_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 const DEVICE_ID_RE = /^[A-Za-z0-9\-_.:]{8,128}$/;
 const STATE_RE = /^[A-Za-z0-9_-]{16,128}$/;
 const BATCH_RE = /^[A-Za-z0-9_-]{8,64}$/;
-const KNOWN_PROVIDERS = ['email', 'google', 'kakao'];
+const KNOWN_PROVIDERS = ['email', 'google'];
 
 const sha256 = (value) => createHash('sha256').update(value).digest('hex');
 const b64sha = (value) => createHash('sha256').update(value, 'ascii').digest('base64url');
