@@ -375,6 +375,10 @@ html:is(.desktop-mac, .desktop-windows) .acct-page.acct-embedded {
   color: var(--n-ink);
 }
 
+.acct-name-edit:hover {
+  background: transparent;
+}
+
 .acct-icon-btn .ag-icon {
   width: 13px;
   height: 13px;
@@ -768,6 +772,11 @@ html:is(.desktop-mac, .desktop-windows) .acct-page.acct-embedded {
   border-top: 1px solid var(--n-ink-hairline);
 }
 
+/* 요금제는 테두리 있는 카드라 바로 아래 칸의 윗줄이 겹쳐 보인다. */
+.acct-section[data-section='plan'] + .acct-section {
+  border-top: 0;
+}
+
 .acct-section-head {
   display: flex;
   align-items: baseline;
@@ -906,6 +915,12 @@ html:is(.desktop-mac, .desktop-windows) .acct-page.acct-embedded {
   margin-top: 24px;
   padding-top: 24px;
   border-top: 1px solid var(--n-ink-hairline);
+}
+
+.acct-offers.acct-offers-continuing {
+  margin-top: 20px;
+  padding-top: 0;
+  border-top: 0;
 }
 
 .acct-offer {

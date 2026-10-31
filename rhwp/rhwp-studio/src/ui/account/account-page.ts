@@ -558,9 +558,7 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
     if (family === 'rau') name.prepend(rauMark());
     head.append(name);
     if (family === 'hama') head.append(createHamaScene('acct-hama-scene'));
-    const copy = el('p', 'acct-offer-description', family === 'hama'
-      ? '쓰던 AI 계정을 연결해 에이전트를 써요.'
-      : 'Hama의 모든 기능에 Rau 모드를 더해요.');
+    const copy = el('p', 'acct-offer-description', family === 'hama' ? '쓰던 AI 계정을 연결해 에이전트를 써요.' : '');
     const monthlyPrice = planPrice(planStatus, monthly);
     const yearlyPrice = planPrice(planStatus, yearly);
     const price = el('p', 'acct-offer-price');
@@ -595,7 +593,11 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
         actions.append(buy);
       }
     }
-    row.append(head, copy, price, annual);
+    // 체험 중인 요금제는 위의 현재 요금제 칸이 이름을 보여 주므로 가격과 단추만 잇는다.
+    const continuing = family === current.plan.tier;
+    if (continuing) row.classList.add('acct-offer-continuing');
+    else row.append(head, copy);
+    row.append(price, annual);
     if (family === 'rau' && current.trial?.state === 'ended' && current.plan.tier !== 'rau') {
       row.append(el('p', 'acct-meta acct-offer-trial-ended', '무료 체험이 끝났어요'));
     }
@@ -737,6 +739,7 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
       ? (onTrial ? ['rau'] : upgradeFamilies(planInfo.tier))
       : [];
     keepFocus(offers, () => offers.replaceChildren(...families.map((family) => offerRow(family, current))));
+    offers.classList.toggle('acct-offers-continuing', families.length === 1 && families[0] === current.plan.tier);
     offers.hidden = families.length === 0;
     if (plan?.status()?.pendingCheckout) say(planError, '');
     else if (!checkoutBusy && plan?.status()?.lastCheckout?.code === 'timed_out') {
