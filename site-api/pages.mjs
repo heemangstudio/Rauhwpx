@@ -125,3 +125,34 @@ export function renderUniqueInstallsPage({ uniqueInstalls }) {
 </section>`,
   });
 }
+
+/**
+ * The account sign-in callback's answer for a login it does not know or that expired: the browser
+ * tab the user signed in from shows it, so it stays one line and a way back, with no external assets.
+ */
+export function renderAccountLoginErrorPage() {
+  return `<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>HamaEditor</title>
+<style>
+body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 24px; box-sizing: border-box;
+  background: #fafaf8; color: #1c1c1e; font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif; }
+main { text-align: center; }
+h1 { margin: 0 0 6px; font-size: 18px; font-weight: 600; }
+p { margin: 0; color: #6e6e73; }
+@media (prefers-color-scheme: dark) { body { background: #111113; color: #f2f2f0; } p { color: #9a9aa0; } }
+</style>
+</head>
+<body>
+<main>
+<h1>로그인 시간이 지났어요</h1>
+<p>앱에서 다시 시도해 주세요.</p>
+</main>
+</body>
+</html>
+`;
+}

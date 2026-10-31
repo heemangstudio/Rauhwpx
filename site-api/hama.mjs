@@ -169,6 +169,25 @@ export function createHamaService({
     return { who, plan, ledger: own(state.ledgers, who.keyId) };
   }
 
+  /**
+   * The current billing period of an active plan, for the account page: `{ usedUsd, allowanceUsd,
+   * periodEndsAt (epoch ms), calls }`, or null without an active plan. Read-only.
+   */
+  async function usageSummary(keyId) {
+    const state = await read();
+    const plan = own(state.plans, keyId);
+    if (plan?.status !== 'active') return null;
+    const ledger = normalizeLedger(structuredClone(own(state.ledgers, keyId) ?? {}));
+    const w = windows(ledger, effectivePlan(plan), settings, now());
+    const current = ledger.period && Date.parse(ledger.period.start) === w.period.start;
+    return {
+      usedUsd: w.cap_month.usedUsd,
+      allowanceUsd: effectivePlan(plan).allowanceUsd,
+      periodEndsAt: w.period.end,
+      calls: current ? Math.max(0, Math.floor(finite(ledger.period.calls) ?? 0)) : 0,
+    };
+  }
+
   /** Whether `keyId` holds an active plan. Hosted Rau reads this for its eligibility and cap. */
   async function planActive(keyId) {
     return own((await read()).plans, keyId)?.status === 'active';
@@ -403,5 +422,5 @@ export function createHamaService({
     },
   };
 
-  return { status, admit, record, models, planActive, syncSubscriptions, admin, config: settings };
+  return { status, admit, record, models, planActive, usageSummary, syncSubscriptions, admin, config: settings };
 }

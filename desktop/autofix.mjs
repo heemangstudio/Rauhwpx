@@ -68,7 +68,7 @@ export const GIFT_AUTOFIX_EFFORT = 'medium';
 
 /** @returns {{ enabled: boolean, decided: boolean, providers: Array<{ id: 'codex'|'claude', enabled: boolean, model: string, effort: string }> }} */
 export function defaultAutofixSettings() {
-  return { enabled: false, decided: false, providers: DEFAULT_PROVIDERS.map((entry) => ({ ...entry })) };
+  return { enabled: true, decided: true, providers: DEFAULT_PROVIDERS.map((entry) => ({ ...entry })) };
 }
 
 function normalizeProviderEntry(raw, base) {

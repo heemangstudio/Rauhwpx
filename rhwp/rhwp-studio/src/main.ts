@@ -1,5 +1,8 @@
-import { installLicenseGate, mountLicenseRegisterButton } from './ui/license-gate';
-import { createPlanStore, desktopPlanApi } from './ui/plan/plan-store';
+import { installLicenseGate } from './ui/license-gate';
+import { sharedPlanStore } from './ui/plan/plan-store';
+import { mountAccountButton } from './ui/account/account-button';
+import { listenForAccountPageEvents } from './ui/account/account-page';
+import { accountStore, recordAccountActivity } from './ui/account/account-store';
 import { mountHamaHomeEntry } from './ui/plan/hama-home-entry';
 import { openPlanCard } from './ui/plan/upgrade-card';
 import type { DesktopLicenseApi } from './ui/agent-sidebar/settings-license';
@@ -351,7 +354,6 @@ import { afterBootScreen, markStudioReady } from './ui/boot-screen.ts';
 import { isInitialSetupActive, onInitialSetupInactive, wasLicensedHere } from './ui/initial-setup/active.ts';
 import { desktopGiftApi } from './ui/special-event/gift.ts';
 import { startSpecialEvent } from './ui/special-event/special-event-trigger.ts';
-import { startAutofixIntro } from './ui/autofix/autofix-intro.ts';
 import { showEditingSettingsFallback } from './ui/agent-sidebar/settings-editing-fallback.ts';
 import { AGENT_LABEL } from './ui/agent-sidebar/providers.ts';
 import { initInlinePrompt } from './agent/inline-prompt.ts';
@@ -1485,7 +1487,8 @@ function prepareCanvasKitLocalFonts(fontNames: readonly string[] | undefined): v
 async function initialize(): Promise<void> {
   void suppressDesktopServiceWorker();
   installDesktopWindowChrome();
-  void installLicenseGate();
+  installLicenseGate();
+  listenForAccountPageEvents({ plan: sharedPlanStore() });
   installDesktopDocumentState({
     subscribe: (update) => {
       desktopDocumentStateUpdate = update;
@@ -3138,9 +3141,8 @@ function templateBridge() {
 
 /** 문서 홈의 Hama 입구(Pro·기존 라이선스). 데스크톱 요금제 API 가 없으면 두지 않는다. */
 function mountHomeHamaEntry(slot: HTMLElement): void {
-  const plan = desktopPlanApi();
-  if (!plan) return;
-  const store = createPlanStore(plan);
+  const store = sharedPlanStore();
+  if (!store) return;
   const license = (globalThis as { rhwpDesktop?: { license?: DesktopLicenseApi } }).rhwpDesktop?.license ?? null;
   mountHamaHomeEntry(slot, { store, open: () => { openPlanCard({ store, license, focus: 'hama' }); } });
 }
@@ -3181,15 +3183,10 @@ function installDocumentHome(): void {
       return renderFirstPage(session.wasm).catch(() => null);
     },
     mountTopbarTrailing: (slot) => {
-      const plan = desktopPlanApi();
-      if (plan) {
-        const store = createPlanStore(plan);
-        const license = (globalThis as { rhwpDesktop?: { license?: DesktopLicenseApi } }).rhwpDesktop?.license ?? null;
-        mountLicenseRegisterButton(slot, () => { openPlanCard({ store, license, focus: 'pro' }); });
-      }
       mountHomeHamaEntry(slot);
+      mountAccountButton(slot, { store: accountStore(), plan: sharedPlanStore() });
     },
-    mountCorner: (slot) => mountUpdateHippo(slot),
+    mountCorner: (slot) => mountUpdateHippo(slot, window, __APP_VERSION__, sharedPlanStore()),
     unsaved: {
       list: () => unsavedDocumentStore.list(),
       subscribe: (listener) => unsavedDocumentStore.subscribe(listener),
@@ -4730,8 +4727,13 @@ function setupEventListeners(): void {
     }
   });
 
-  eventBus.on('document-dirty-changed', () => {
+  eventBus.on('document-dirty-changed', (payload) => {
     eventBus.emit('command-state-changed');
+    // 계정 통계: 이 창에서 문서를 처음 고친 때. 세션을 붙이거나 자동 저장을 되살린 표시는 편집이 아니다.
+    const change = payload as { dirty?: boolean; reason?: string } | undefined;
+    if (change?.dirty && change.reason !== 'document-session-attached' && change.reason !== 'autosave-recovered') {
+      recordAccountActivity('document_edited', attachedSession.documentId);
+    }
   });
 
   eventBus.on('document-file-handle-saved', (payload) => {
@@ -6703,8 +6705,4 @@ void initPromise.then(() => {
     },
     open: async (options) => (await import('./ui/special-event/special-event-popup.ts')).openSpecialEventPopup(options),
   });
-}, () => {});
-// 자동 버그 수정 소개(데스크톱만). 처음 설정을 마치고 아직 답하지 않은 사람에게 한 번 묻는다.
-void initPromise.then(() => {
-  startAutofixIntro({ whenReady: afterBootScreen });
 }, () => {});

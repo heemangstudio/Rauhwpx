@@ -1,6 +1,6 @@
 # site-api
 
-Small Node service behind the website beta form, the desktop install counter, licenses and issue reports. It has no dependencies and stores everything as files in one data directory.
+Small Node service behind the website beta form, the desktop install counter, accounts, licenses and issue reports. It has no dependencies and stores everything as files in one data directory.
 
 ## Routes
 
@@ -141,6 +141,39 @@ At about $0.0003 a call on the default model, the $2 cap is roughly 6,600 calls 
 
 Keys look like `HAMA-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX` (125 random bits, Crockford base32). The server assumes **one replica**: all license writes go through one in-process lock and an atomic temp-file rename.
 
+### Accounts
+
+HamaEditor accounts sign in with WorkOS AuthKit (email magic link on the AuthKit page, or Google) through the system browser and a loopback callback in the app. `accounts.mjs` owns accounts, devices and sessions; `workos.mjs` is the only outbound call (10 s timeouts). The plan follows the account's linked licenses, and the app gets an account lease (v2) instead of a license lease. Every `/v1/account/*` route answers `503 accounts_not_configured` until `WORKOS_API_KEY` (and the license signing key, which signs the account lease) is set. They are app routes: no CORS. Errors are `{ok:false, error, ...extra}`.
+
+- `GET /v1/account/auth/providers` → `{ok, providers}` from `ACCOUNT_AUTH_PROVIDERS`. `email` is AuthKit's own page (`provider=authkit`, with `login_hint` when given), `google` `GoogleOAuth`. Any other id fails startup.
+- `POST /v1/account/auth/start {provider, challenge, port, state, loginHint?}` → `{ok, url, expiresAt}`: `challenge` is base64url(SHA-256(PKCE verifier)), `port` the app's loopback port (1024–65535), `state` the app's nonce (`[A-Za-z0-9_-]{16,128}`). The login lives 10 minutes; `url` is the WorkOS authorize URL with the login id as `state`. Errors: 400 `invalid` with `field`, 400 `provider_unavailable`, 429 `rate_limited` (20 per IP per 10 minutes).
+- `GET /v1/account/auth/callback` is the WorkOS redirect target. It takes the login (single use), exchanges the code with `WORKOS_API_KEY`, finds the account by WorkOS user, else by verified email, else creates one, and answers 302 to `http://127.0.0.1:<port>/auth/callback?code=<grant>&state=<app state>`. A WorkOS error answers the same URL with `error=auth_cancelled` (`access_denied`) or `auth_failed`. An unknown or expired login gets a one-line Korean page and no redirect. Codes, grants, sessions and full emails are never logged. A verified email then links that email's licenses to the account.
+- `POST /v1/account/auth/token {code, verifier, device:{id, name, platform, appVersion}, replaceDeviceId?}` → `{ok, session, ...account}`. The grant is single use, bound to the PKCE challenge, valid 10 minutes and 10 attempts; every failure is 400 `grant_invalid`. An account holds `ACCOUNT_DEVICE_LIMIT` devices; the same device id signing in again replaces its session and keeps its slot. At the limit it answers 409 `device_limit {limit, devices}` (the grant stays), and a retry with `replaceDeviceId` removes that device and its session first (404 `device_not_found` for another id). 30 per IP per 10 minutes.
+- Session routes take `Authorization: Bearer hes_...`. A session is per device, stored only as its SHA-256, and is invalid (401 `session_invalid`) once its device is removed, it signed out, the account is gone, or it was not used for 180 days. `POST /v1/account/refresh {appVersion?}` → the account payload with a fresh lease; it marks the device seen (at most once an hour) and links licenses of a verified email bought since. `POST /v1/account/signout` removes this device and is idempotent. `POST /v1/account/devices/remove {deviceId}` → `{ok, signedOut:false, devices}`, or `{ok, signedOut:true}` for the calling device; 404 `device_not_found`.
+- `POST /v1/account/redeem {key}` links a key the user typed (any spacing or case; the `HAMA-` prefix is optional) → `{ok, alreadyLinked, license, ...account}`, where `license` is the key as `licenses` lists it. Errors: 400 `invalid_format`, 404 `invalid_key`, 403 `revoked`, 409 `key_linked_elsewhere`. 20 per account per hour (429 `rate_limited`, failures count).
+- `POST /v1/account/claim {orderId, email}` links the key of a Groble order bought with another email: `orderId` is the Groble order number (`merchantUid`) and `email` the buyer email on that order (any case). Same answer as redeem. An unknown order, a wrong email or an order without a key is 404 `order_not_found` (one code, so neither can be probed); a held order is 409 `order_not_ready`; also 403 `revoked` and 409 `key_linked_elsewhere`. 10 per account per hour.
+- `POST /v1/account/profile {name}` → `{ok, account}`. 1–30 characters, no control characters (400 `name_invalid`). A name the user set is never replaced by a later sign-in.
+- `PUT /v1/account/avatar` with the picture as the raw body (`Content-Type` `image/jpeg`, `image/png` or `image/webp`, at most 1 MiB) → `{ok, avatar:{rev, type, bytes}}`. The first bytes must match the type. Errors: 413 `too_large` (a body declared past 2 MiB is refused unread), 415 `unsupported_type`, 429 `rate_limited` (30 per account per hour). It is stored as `avatars/<accountId>.<ext>` (temp file and rename, mode 0600) and `rev` goes up by one on every upload, also after a removal. `GET /v1/account/avatar` → the bytes with `Content-Type`, `ETag: "<rev>"` (304 for a matching `If-None-Match`) and `Cache-Control: private, no-cache`; 404 `no_avatar`. `POST /v1/account/avatar/remove` → `{ok}`.
+- `POST /v1/account/stats {batchId, agentSessions, documentsEdited}` → `{ok, stats}` adds the app's activity counts (integers 0–1000; `batchId` `[A-Za-z0-9_-]{8,64}`). A batch id among the account's last 50 is a no-op, so a retried flush counts once. 400 `invalid` with `field`.
+- `POST /v1/account/delete {confirm}` → `{ok}`. `confirm` is the account email (any case; 400 `confirm_mismatch`). While a linked key is live and auto-renewing (`subscription.autoRenew` not false and not terminated) it answers 409 `subscription_active {manageUrl}` (`GROBLE_PAYMENT_FIX_URL`) and changes nothing; a cancel request, a terminated subscription or a lifetime key does not block. Then, without holding both locks: the keys are unlinked (`unlinkedBy: 'delete'`, so the same email links them to a new account), the account with its devices, sessions, picture and stats is removed, and the WorkOS user is deleted best effort (a failure is logged and the answer is still 200). Hama ledgers stay on their license keys.
+- The account payload: `account {id, email, name, avatar, provider, createdAt}`, `plan {tier, keyId, edition, plan, expiresAt, autoRenew, paymentFailed, paymentGraceEndsAt, manageUrl, rau:{eligible}}`, `licenses` (masked keys, primary first), `devices` (newest first, `current` marks the caller), `deviceLimit`, `stats {agentSessions, documentsEdited, since, hama}`, `lease` and `leaseExpiresAt`. `stats.hama` is `{usedUsd, allowanceUsd, periodEndsAt, calls}` for the current billing period of the account's Hama key (the key Hama itself would use), and `null` without an active plan or with `HAMA_ENABLED` off. Times are epoch ms except `account.createdAt` (ISO).
+- Tier: a linked license is live while active and before its expiry plus payment grace (lifetime keys always). Rank 3 is a Hama key or a key with an active Hama plan (`tier: 'hama'`), 2 a Pro key (`pro`), 1 any other key (`legacy`); no live license is `free`. The primary license is the highest rank, then the latest end, then the oldest.
+- Licenses link on the license record (`accountId`, `linkedAt`, `linkedBy`): every non-revoked key bought with the account's **verified** email (`email`), a Groble purchase whose buyer email belongs to a verified account at once (`purchase`), a redeemed key (`redeem`), a claimed order (`claim`) and an admin link (`admin`). An unverified email links nothing, and a key an admin unlinked is never linked back by email.
+- Account lease: `payload.signature` like the license lease, same key and `kid`, payload `{v:2, kid, accountId, deviceId, keyId (primary or null), tier, plan, issuedAt, expiresAt[, licenseExpiresAt][, paymentGraceEndsAt]}`, valid 7 days (3 when the primary key is a beta key). `license-lease.mjs` `signAccountLease` and `verifyAccountLease(lease, keys, {deviceId, accountId})` (reasons as `verifyLease`, with `wrong_account`); each version's verifier rejects the other. Gifts, Hama and Rau accept both: a v1 lease authenticates as before, and a v2 lease needs its account and a live session on its device, then picks the license for the service now: a live beta key for the gift, a key with an active Hama plan or the Hama edition for Hama, the best Rau plan for Rau, else the primary. Rau answers `rau_requires_pro` to a free account; the others answer 401.
+- Admin: `GET /v1/admin/accounts?email=|id=|keyId=` → `{ok, accounts}` with devices, stats and linked licenses (never sessions or grants). `POST /v1/admin/accounts/unlink {keyId}` → `{ok, changed, license}` frees a key from its account; `POST /v1/admin/accounts/link {keyId, accountId}` → `{ok, previousAccountId, license}` links it to an existing account (`account_not_found` 404), moving it from any other. License views carry `accountId`, `linkedBy`, `linkedAt` and `unlinkedAt`.
+
+```sh
+node scripts/license-admin.mjs accounts --email user@example.com   # or --id acct_... | --key-id lic_...; last lines: <id> <email> · 기기 N · 키 <keyId> <status>
+node scripts/license-admin.mjs account-unlink --key-id lic_...
+node scripts/license-admin.mjs account-link --key-id lic_... --account-id acct_...
+```
+
+Owner setup in the WorkOS dashboard (production environment of client `client_01M66W83D02NGE62TDVKR8PW8S`):
+
+1. Redirects: add `https://rau-credits-production.up.railway.app/v1/account/auth/callback` (the `ACCOUNT_AUTH_REDIRECT_URI` default) as a redirect URI.
+2. Authentication: enable Magic Auth, and Google OAuth with its own client credentials (WorkOS's shared test credentials only work in staging).
+3. API keys: create a secret key and set it on Railway `rau-credits` as `WORKOS_API_KEY`. It stays only there.
+
 ## Data
 
 | File | Contents |
@@ -154,7 +187,9 @@ Keys look like `HAMA-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX` (125 random bits, Crockford 
 | `feedback/<id>/` | `report.json` (message, meta, sha256 of the install id, attachment sizes) plus `screenshot.png`/`.jpg`, `log.txt`, `chat.txt`, `document.hwp`/`.hwpx`/`.hml` (any other format as `document.bin`) when sent. Reports older than 90 days are pruned on each write and list |
 | `rau.json` | `{ allowances: { [keyId]: { status, name, capUsd, period, openrouterHash, openrouterKey, ledger: { ['YYYY-MM']: usd }, createdAt, limitSetAt, lastUsedAt } } }`: hosted Rau-0.1 keys, the last 3 months of spend |
 | `gifts.json` | `{ events: { [eventId]: { grants: { [keyId]: { status, name, limitUsd, pendingLimitUsd?, openrouterHash, openrouterKey, claimedAt, ... } }, allocations: { [keyId]: usd } } } }` |
-| `hama.json` | `{ plans: { [keyId]: { status, allowanceUsd, periodAnchor, enrolledAt, disabledAt?, disabledReason? } }, ledgers: { [keyId]: { minutes, hours, period, ids, totalUsd, calls, lastCallAt } } }`. A heavy key holds about 40 KB of ledger, so the 8 MiB store limit fits roughly 200 of them |
+| `hama.json` | `{ plans: { [keyId]: { status, allowanceUsd, periodAnchor, enrolledAt, disabledAt?, disabledReason? } }, ledgers: { [keyId]: { minutes, hours, period: { start, usedUsd, calls }, ids, totalUsd, calls, lastCallAt } } }`. A heavy key holds about 40 KB of ledger, so the 8 MiB store limit fits roughly 200 of them |
+| `accounts.json` | `{ accounts: { [accountId]: { id, workosUserId, email, emailLower, emailVerified, name, nameSource, avatar, provider, createdAt, lastSignInAt, devices: { [deviceId]: { name, platform, appVersion, addedAt, lastSeenAt, sessionHash } }, stats } }, byWorkosUser, byEmail (verified emails only), sessions: { [sha256(token)]: { accountId, deviceId, createdAt, lastUsedAt } }, logins, grants }`. Logins and grants live 10 minutes and are pruned on every write. `stats` is `{ agentSessions, documentsEdited, since, batches }` (last 50 batch ids). Licenses link to accounts in `licenses.json` |
+| `avatars/<accountId>.<jpg, png or webp>` | One profile picture per account, at most 1 MiB, mode 0600 |
 | `hama-usage/<keyId>.jsonl` | One line per billed Hama call: `{at, id, route, provider, model, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd, costSource}`. Past 4 MiB the file moves to `<keyId>.1.jsonl` (one older file kept) |
 
 All files live in `RAU_SITE_DATA`. On Railway it defaults to the `/data` volume; locally it defaults to the current directory.
@@ -220,6 +255,12 @@ All files live in `RAU_SITE_DATA`. On Railway it defaults to the `/data` volume;
 | `ANTHROPIC_API_KEY` | Owner's Anthropic Console key for Hama's Claude calls. Secret; set only on Railway |
 | `ANTHROPIC_API_BASE` | Anthropic API base, default `https://api.anthropic.com`. Only for local tests |
 | `HAMA_OPENROUTER_KEY` | OpenRouter key for cheap models and the Claude backup route. Give it a hard credit limit on OpenRouter. Secret; set only on Railway. `OPENROUTER_API_BASE` applies to it too |
+| `WORKOS_API_KEY` | WorkOS secret key. Turns the account routes on. Secret; set only on Railway |
+| `WORKOS_CLIENT_ID` | WorkOS client id (public), default `client_01M66W83D02NGE62TDVKR8PW8S` |
+| `WORKOS_API_BASE` | WorkOS API base, default `https://api.workos.com`. Only for local tests |
+| `ACCOUNT_AUTH_REDIRECT_URI` | Callback WorkOS redirects to, default `https://rau-credits-production.up.railway.app/v1/account/auth/callback`. Must be registered in WorkOS → Redirects |
+| `ACCOUNT_AUTH_PROVIDERS` | Comma list of sign-in providers, default `email,google`. Only `email` and `google` exist; any other id fails startup |
+| `ACCOUNT_DEVICE_LIMIT` | Devices per account, 1–20, default 5 |
 
 ## Run and deploy
 

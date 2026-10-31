@@ -18,6 +18,7 @@ function status(tier: PlanTier, agentUnlocked = tier !== 'free'): PlanStatus {
     },
     pendingCheckout: null,
     lastCheckout: null,
+    signedIn: true,
   };
 }
 

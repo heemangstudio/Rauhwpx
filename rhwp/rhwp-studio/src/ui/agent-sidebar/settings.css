@@ -3370,38 +3370,6 @@
   outline-offset: -2px;
 }
 
-/* 라이선스: 가린 키는 누르면 전체 키를 복사한다. 글줄 안에 그대로 앉고 올리면 밑줄이 생긴다. */
-.ag-settings-page .ag-settings-license-key {
-  padding: 0;
-  border: 0;
-  background: none;
-  color: inherit;
-  font: inherit;
-  cursor: default;
-}
-.ag-settings-page .ag-settings-license-key:hover { color: var(--n-ink); text-decoration: underline; text-underline-offset: 2px; }
-.ag-settings-page .ag-settings-license-key:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; border-radius: 3px; }
-.ag-settings-page .ag-settings-license-key[hidden] { display: none; }
-/* 라이선스: 상태 카드 아래, 카드 밖에 버튼들. */
-.ag-settings-page .ag-settings-license-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-.ag-settings-page .ag-settings-license-contact {
-  padding: 0;
-  border: 0;
-  background: none;
-  color: inherit;
-  font: inherit;
-  text-decoration: underline;
-  text-underline-offset: 3px;
-  cursor: pointer;
-}
-.ag-settings-page .ag-settings-license-contact:focus-visible {
-  outline: var(--ag-focus-ring);
-  outline-offset: 2px;
-}
 /* 잠금 설정도 다른 설정 카드와 같은 여백·경계를 쓴다. */
 .ag-settings-page .ag-settings-edit-lock {
   min-height: 56px;

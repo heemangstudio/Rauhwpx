@@ -2,17 +2,18 @@
 // 에이전트 잠금에 상태(PlanStatus)를 준다.
 //
 // 규칙
-// - 요금제: Hama 가 켜져 있으면 hama, 서명한 lease 가 있으면 edition 'pro'·'hama' 는 그 요금제, 그 밖의 키(GLJFC9 연간·평생·
-//   Signature·베타·기존 사용자·수동 발급)는 legacy, 없으면 free. 라이선스를 보지 않는 개발 빌드(unenforced)는
-//   요금제와 상관없이 에이전트를 연다.
-// - 오프라인 캐시: lease 로 정한 요금제를 userData/plan.json 에 적어 두고, lease 를 확인할 수 없을 때만
-//   (lease_expired·needs_activation) 마지막 확인에서 7일까지 그 요금제를 보여 준다. 화면 표시용일 뿐이고
-//   호스팅 AI 는 서버가 늘 따로 확인한다. 해지·만료·키 없음이면 캐시를 지운다. 시계를 되돌려 늘리지 못하게
-//   확인 시각보다 이른 시각에는 캐시를 쓰지 않는다.
-// - 결제: 이메일이 아니라 결제마다 만든 ref 로 확인한다. 이메일로 묻게 하면 구매자 이메일만 알아도 키를 받아 갈
-//   수 있기 때문이다. 웹사이트(website/assets/purchase.js)와 같은 방식으로 ref 를 만들어 Groble 링크에 붙여 열고,
-//   GET /v1/license/by-ref 를 5초마다 10분, 그 뒤로 30초마다, 24시간까지 묻는다. 키가 나오면 라이선스 관리자로
-//   활성화한다. 진행 중인 결제는 plan.json 에 남겨 다시 실행해도 이어서 묻는다.
+// - 요금제는 계정에서 정한다(라이선스 관리자는 더 이상 정하지 않는다). Hama 가 켜져 있으면 hama, 확인한 계정
+//   lease 가 있으면 그 tier('free'·'pro'·'legacy'·'hama'), 로그인하지 않았으면 free. 라이선스를 보지 않는 개발
+//   빌드(enforce 끔)는 요금제와 상관없이 에이전트를 연다.
+// - 오프라인 캐시: lease 로 정한 요금제를 그 계정 id 와 함께 userData/plan.json 에 적어 두고, 로그인한 채 lease 를
+//   확인할 수 없을 때만(오프라인으로 lease 가 끝남 등) 마지막 확인에서 7일까지 그 요금제를 보여 준다. 화면 표시용일
+//   뿐이고 호스팅 AI 는 서버가 늘 따로 확인한다. 로그아웃·무료 lease·다른 계정이면 캐시를 지운다. 시계를 되돌려
+//   늘리지 못하게 확인 시각보다 이른 시각에는 캐시를 쓰지 않는다.
+// - 결제: 로그인해야 시작한다(sign_in_required). 이메일이 아니라 결제마다 만든 ref 로 확인한다. 이메일로 묻게
+//   하면 구매자 이메일만 알아도 키를 받아 갈 수 있기 때문이다. 웹사이트(website/assets/purchase.js)와 같은 방식으로
+//   ref 를 만들어 Groble 링크에 붙여 열고, GET /v1/license/by-ref 를 5초마다 1분, 그 뒤로 30초마다, 5분까지
+//   묻는다. 키가 나오면 계정에 연결한다(accountManager.redeem). 진행 중인 결제는 plan.json 에 남겨 다시 실행해도
+//   이어서 묻는다.
 // - 키·ref·결제 주소는 렌더러에 보내지 않고 기록에도 남기지 않는다. plan.json 에는 ref 가 있어 0600 으로 쓴다.
 import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
@@ -25,11 +26,11 @@ export const PLAN_SKUS = Object.freeze(['proMonthly', 'proYearly', 'hamaMonthly'
 /** lease 를 확인할 수 없을 때 마지막 확인의 요금제를 보여 주는 기간. */
 export const PLAN_CACHE_MS = 7 * 24 * 60 * 60 * 1000;
 /** 결제 시작 뒤 이 시간 동안은 자주, 그 뒤로는 드물게 묻는다. */
-export const CHECKOUT_FAST_WINDOW_MS = 10 * 60 * 1000;
+export const CHECKOUT_FAST_WINDOW_MS = 60 * 1000;
 export const CHECKOUT_FAST_POLL_MS = 5 * 1000;
 export const CHECKOUT_SLOW_POLL_MS = 30 * 1000;
 /** 이만큼 지나도 키가 나오지 않으면 묻기를 그만둔다. 키는 메일로도 가므로 직접 넣으면 된다. */
-export const CHECKOUT_GIVE_UP_MS = 24 * 60 * 60 * 1000;
+export const CHECKOUT_GIVE_UP_MS = 5 * 60 * 1000;
 /** 오래 켜 둔 앱에서 캐시 만료와 확인 시각을 이 간격으로 다시 본다. */
 const REFRESH_TICK_MS = 60 * 60 * 1000;
 /** lease 로 다시 확인했을 때 확인 시각을 이 간격으로만 파일에 쓴다. */
@@ -38,10 +39,8 @@ const BY_REF_TIMEOUT_MS = 10_000;
 /** Groble sellerReference 규칙. 서버(site-api/licenses.mjs REF_RE)와 같다. */
 const REF_RE = /^[A-Za-z0-9\-_.:=~]{1,128}$/;
 const CACHED_TIERS = new Set(['pro', 'hama', 'legacy']);
-/** lease 를 지금 확인할 수 없을 뿐인 라이선스 상태. 이때만 캐시를 쓴다. */
-const UNVERIFIABLE_STATES = new Set(['lease_expired', 'needs_activation']);
-/** 다시 물어도 바뀌지 않는 활성화 실패. 결제 확인을 끝내고 키를 직접 넣게 한다. */
-const FINAL_ACTIVATION_CODES = new Set(['invalid_key', 'revoked', 'expired', 'device_limit', 'invalid_format', 'bad_lease']);
+/** 다시 물어도 바뀌지 않는 키 연결 실패. 결제 확인을 끝내고 키를 직접 넣게 한다. 그 밖(네트워크·로그아웃 등)은 계속 묻는다. */
+const FINAL_REDEEM_CODES = new Set(['invalid_key', 'revoked', 'invalid_format', 'key_linked_elsewhere']);
 
 /** 결제 링크는 groble.im 의 https 주소일 때만 쓴다. 아니면 null. */
 export function checkoutUrlFrom(value) {
@@ -64,14 +63,17 @@ function withRef(url, ref) {
 }
 
 function emptyState() {
-  return { v: 1, tier: null, verifiedAt: 0, pendingCheckout: null };
+  return { v: 1, tier: null, accountId: null, verifiedAt: 0, pendingCheckout: null };
 }
 
 function sanitizeState(raw) {
   const state = emptyState();
   if (!raw || typeof raw !== 'object' || Array.isArray(raw) || raw.v !== 1) return state;
-  if (CACHED_TIERS.has(raw.tier) && Number.isSafeInteger(raw.verifiedAt) && raw.verifiedAt > 0) {
+  // 계정 id 가 없는 예전 캐시(라이선스로 정한 요금제)는 버린다.
+  if (CACHED_TIERS.has(raw.tier) && typeof raw.accountId === 'string' && raw.accountId
+    && Number.isSafeInteger(raw.verifiedAt) && raw.verifiedAt > 0) {
     state.tier = raw.tier;
+    state.accountId = raw.accountId;
     state.verifiedAt = raw.verifiedAt;
   }
   const pending = raw.pendingCheckout;
@@ -83,7 +85,8 @@ function sanitizeState(raw) {
 }
 
 export function createPlanManager({
-  licenseManager,
+  accountManager,
+  enforce = true,
   fetchImpl = globalThis.fetch,
   apiBase = DEFAULT_LICENSE_API_BASE,
   userDataDir,
@@ -149,36 +152,45 @@ export function createPlanManager({
     }]));
   }
 
-  /** 라이선스 상태로 요금제를 정하고 캐시를 고친다. 상태 파일 쓰기는 부르는 쪽이 한다. */
-  function derive(license) {
+  function clearCache() {
+    state.tier = null;
+    state.accountId = null;
+    state.verifiedAt = 0;
+  }
+
+  /** 계정(entitlement: { signedIn, accountId, tier })으로 요금제를 정하고 캐시를 고친다. 상태 파일 쓰기는 부르는 쪽이 한다. */
+  function derive(entitlement) {
     const t = now();
-    const unenforced = license?.state === 'unenforced';
+    const signedIn = entitlement?.signedIn === true;
+    const accountId = signedIn ? entitlement.accountId : null;
     let tier = 'free';
     let source = 'none';
     let cachedUntil = null;
     if (hamaActive() === true) {
       tier = 'hama';
       source = 'live';
-    } else if (license?.paid) {
-      tier = license.edition === 'pro' || license.edition === 'hama' ? license.edition : 'legacy';
+    } else if (signedIn && entitlement.tier) {
+      tier = entitlement.tier;
       source = 'live';
-      if (state.tier !== tier || t - state.verifiedAt >= VERIFIED_PERSIST_MS || t < state.verifiedAt) {
+      if (!CACHED_TIERS.has(tier)) clearCache();
+      else if (state.tier !== tier || state.accountId !== accountId || t - state.verifiedAt >= VERIFIED_PERSIST_MS || t < state.verifiedAt) {
         state.tier = tier;
+        state.accountId = accountId;
         state.verifiedAt = t;
       }
-    } else if (state.tier && UNVERIFIABLE_STATES.has(license?.state)
+    } else if (signedIn && state.tier && state.accountId === accountId
       && t >= state.verifiedAt && t - state.verifiedAt < PLAN_CACHE_MS) {
       tier = state.tier;
       source = 'cached';
       cachedUntil = state.verifiedAt + PLAN_CACHE_MS;
-    } else if (!unenforced) {
-      // 해지·만료·키 없음, 7일이 지났거나 시계가 확인 시각보다 이르면 캐시를 버린다.
-      state.tier = null;
-      state.verifiedAt = 0;
+    } else {
+      // 로그아웃·다른 계정, 7일이 지났거나 시계가 확인 시각보다 이르면 캐시를 버린다.
+      clearCache();
     }
     return {
       tier,
-      agentUnlocked: tier !== 'free' || unenforced,
+      signedIn,
+      agentUnlocked: tier !== 'free' || !enforce,
       source,
       cachedUntil,
       checkout: checkoutView(),
@@ -196,11 +208,11 @@ export function createPlanManager({
     try { onChange(status); } catch (error) { log.warn?.('[plan] change listener failed:', error); }
   }
 
-  /** 라이선스 상태(없으면 지금 읽는다)로 다시 정하고, 바뀌었으면 알린다. */
-  function refresh(license) {
+  /** 계정 상태를 지금 읽어 다시 정하고, 바뀌었으면 알린다. */
+  function refresh() {
     return serialize(async () => {
       await load();
-      status = derive(license ?? await licenseManager.status());
+      status = derive(await accountManager.entitlement());
       await persist().catch((error) => log.warn?.('[plan] state write failed:', error?.message ?? error));
       emit();
       return status;
@@ -227,13 +239,13 @@ export function createPlanManager({
   }
 
   /** 진행 중인 결제를 끝낸다. 같은 ref 일 때만. */
-  async function finishCheckout(ref, outcome, license) {
+  async function finishCheckout(ref, outcome) {
     await serialize(async () => {
       if (state.pendingCheckout?.ref !== ref) return;
       lastCheckout = { sku: state.pendingCheckout.sku, ...outcome };
       state.pendingCheckout = null;
     });
-    await refresh(license);
+    await refresh();
   }
 
   async function askByRef(ref) {
@@ -254,7 +266,7 @@ export function createPlanManager({
     polling = true;
     try {
       if (Math.max(0, now() - pending.startedAt) >= CHECKOUT_GIVE_UP_MS) {
-        log.info?.('[plan] checkout gave up after 24 h');
+        log.info?.('[plan] checkout confirmation timed out');
         await finishCheckout(pending.ref, { ok: false, code: 'timed_out' });
         return;
       }
@@ -270,15 +282,16 @@ export function createPlanManager({
         return;
       }
       if (answer?.status === 'issued' && typeof answer.key === 'string' && answer.key) {
-        const result = await licenseManager.activate(answer.key);
+        // 이미 이 계정에 붙은 키(alreadyLinked)도 성공이다. 웹훅이 이메일로 먼저 붙였을 수 있다.
+        const result = await accountManager.redeem(answer.key);
         if (result?.ok) {
-          log.info?.('[plan] checkout activated');
-          await finishCheckout(pending.ref, { ok: true }, result.status);
+          log.info?.('[plan] checkout linked to the account');
+          await finishCheckout(pending.ref, { ok: true });
           return;
         }
-        if (FINAL_ACTIVATION_CODES.has(result?.code)) {
-          log.warn?.('[plan] checkout key activation failed:', result.code);
-          await finishCheckout(pending.ref, { ok: false, code: result.code }, result.status);
+        if (FINAL_REDEEM_CODES.has(result?.code)) {
+          log.warn?.('[plan] checkout key could not be linked:', result.code);
+          await finishCheckout(pending.ref, { ok: false, code: result.code });
           return;
         }
       }
@@ -291,6 +304,8 @@ export function createPlanManager({
   async function startCheckout(sku) {
     const url = PLAN_SKUS.includes(sku) ? checkoutUrlFrom(config?.[sku]?.url) : null;
     if (!url) return { ok: false, code: 'not_available', status: await refresh() };
+    // 결제한 키는 계정에 붙는다. 로그인하지 않았으면 결제를 열지 않는다.
+    if (!(await accountManager.entitlement())?.signedIn) return { ok: false, code: 'sign_in_required', status: await refresh() };
     const pending = await serialize(async () => {
       await load();
       if (state.pendingCheckout) return null;
@@ -343,8 +358,8 @@ export function createPlanManager({
 
   return {
     getStatus: () => refresh(),
-    /** 라이선스 관리자의 onChange 에서 부른다. */
-    licenseChanged: (license) => refresh(license),
+    /** 계정 관리자의 onChange 에서 부른다. */
+    accountChanged: () => refresh(),
     startCheckout,
     cancelCheckout,
     start,

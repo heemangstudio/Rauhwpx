@@ -1,10 +1,10 @@
 /**
- * 첫 실행 설정 — 테마, 모델 연결, (필요하면) 글꼴, (데스크톱에서 키가 없으면) 라이선스, (데스크톱이면) 자동 버그 수정.
+ * 첫 실행 설정 — 화면·글꼴 뒤 무료 편집과 AI 경로를 나누고, AI 는 로그인·요금제·선택적 연결 순서로 안내한다.
  *
  * 화면에는 고를 것만 두고 설명은 하마의 말풍선 한 줄로 한다. 실제 로그인·설치는 설정 모달이
  * 맡는다. 문체 보정은 여기서 묻지 않고 첫 대화 뒤 사이드바의 작은 칩이 권한다.
  * 부트 화면이 사라진 뒤에 열리고, 첫 실행이 문서를 열면서 시작됐으면 열지 않고 미룬다.
- * 라이선스 장에서 키를 활성화하면 선물 크레딧 창(special-event)이 이 창 위에 바로 뜰 수 있게 비켜 준다.
+ * 요금제 안내는 기존 결제 카드로 이어지고, 무료로 시작할 수도 있다.
  */
 import '../agent-sidebar/motion.css';
 import './initial-setup.css';
@@ -16,9 +16,7 @@ import type {
   AgentName,
   AgentSetupStatusMap,
   SidebarEvent,
-  TasteSettings,
 } from '../../agent/types.ts';
-import { RAU_TASTE_NAME } from '../../agent/taste.ts';
 import { getThemeMode, setThemeMode } from '../../core/theme.ts';
 import type { ThemeMode } from '../../core/user-settings.ts';
 import { chooseFontFolder } from '../../core/font-folder.ts';
@@ -30,9 +28,10 @@ import {
   SUGGESTED_AGENT,
 } from './catalog.ts';
 import { createHippo } from './hippo.ts';
-import { autofixApi, autofixSettings, onAutofixSettings, updateAutofixSettings } from '../autofix/autofix.ts';
-import type { DesktopLicenseApi, LicenseStatus } from '../agent-sidebar/settings-license.ts';
-import { createLicenseStep, needsLicenseStep } from './license-step.ts';
+import { createPartyHama } from '../agent-sidebar/chat-hama.ts';
+import { accountStore, type AccountStore } from '../account/account-store.ts';
+import type { PlanStore } from '../plan/plan-store.ts';
+import { createAccountStep } from './account-step.ts';
 import { holdInitialSetup, markLicensedHere, releaseInitialSetup } from './active.ts';
 import {
   completeInitialSetup,
@@ -56,7 +55,7 @@ import {
 
 const FONT_SEARCH_TIMEOUT_MS = 30_000;
 /** 활성화를 축하한 뒤 마지막 장면으로 넘어가기까지. */
-const LICENSED_HOLD_MS = 1_400;
+const SIGNED_IN_HOLD_MS = 1_400;
 
 const THEME_CHOICES: ReadonlyArray<{ mode: ThemeMode; label: string }> = [
   { mode: 'system', label: '시스템 설정' },
@@ -117,15 +116,11 @@ export interface InitialSetupDeps {
   chooseFontFolder?: () => Promise<unknown>;
   canOfferFontFolder?: () => boolean;
   openExternal?: (url: string) => void;
-  /** 자동 버그 수정 단계를 넣을지. 기본은 데스크톱 자동 수정 API 가 있을 때. */
-  autofixAvailable?: () => boolean;
-  /** Rau-0.1 설정(허브가 정본). 없으면 Rau-0.1 단계가 없다. */
-  taste?: {
-    get(): Promise<TasteSettings | null>;
-    set(patch: Partial<TasteSettings>): Promise<TasteSettings | null>;
-  } | null;
-  /** 데스크톱 라이선스. 생략하면 rhwpDesktop.license 를 쓰고, null 이면 라이선스 장이 없다. */
-  license?: DesktopLicenseApi | null;
+  /** 데스크톱 계정. 생략하면 창의 계정 상태를 쓰고, null 이면 계정 장이 없다. */
+  account?: AccountStore | null;
+  plan?: PlanStore;
+  /** 기존 결제 카드가 닫힐 때까지 기다린다. 열 수 없으면 false. */
+  openPlans?: () => Promise<boolean>;
   /** 끝내거나 건너뛰어 다시 열 일이 없어졌을 때. */
   onFinished?: () => void;
 }
@@ -151,31 +146,39 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   let setupStatuses: AgentSetupStatusMap | null = null;
   let lastFocus: HTMLElement | null = null;
   let fontStep: FontStepKind | null = null;
-  const withAutofix = (deps.autofixAvailable ?? (() => autofixApi() !== null))();
-  const tasteApi = deps.taste ?? null;
-  const withTaste = tasteApi !== null;
-  let steps: SetupStep[] = planSteps(null, { autofix: withAutofix, taste: withTaste });
+  let steps: SetupStep[] = planSteps(null);
   let stepIndex = 0;
   let themeStep: InitialSetupRecord['themeStep'] = record.themeStep;
   let fontStepState: InitialSetupRecord['fontStep'] = record.fontStep;
   let fontSearch: 'idle' | 'searching' | 'found' | 'missing' = 'idle';
-  const licenseApi = deps.license === undefined
-    ? (window as Window & { rhwpDesktop?: { license?: DesktopLicenseApi } }).rhwpDesktop?.license ?? null
-    : deps.license;
-  let licenseStep = false;
+  const account = deps.account === undefined ? accountStore() : deps.account;
+  const accountApi = account?.api ?? null;
+  let accountStep = false;
+  let ai = false;
+  let choosingPlan = false;
+  function rebuildSteps(preferred = currentStep()): void {
+    const plan = deps.plan?.status();
+    steps = planSteps(fontStep, {
+      ai, account: accountStep,
+      signedIn: accountApi ? account?.status()?.state === 'signed_in' : plan?.signedIn === true,
+      tier: plan?.tier ?? 'free',
+    });
+    const index = steps.indexOf(preferred);
+    stepIndex = index >= 0 ? index : Math.min(stepIndex, steps.length - 1);
+  }
   const fontStepReady = (deps.detectFontStep ?? detectFontStep)()
     .catch(() => null)
     .then((kind) => {
       fontStep = kind;
-      steps = planSteps(kind, { autofix: withAutofix, license: licenseStep, taste: withTaste });
+      rebuildSteps();
       renderFonts();
       renderStep();
     });
-  // 라이선스 장은 처음 본 상태로 정한다. 이 창에서 활성화해도 장은 그대로 남는다.
-  const licenseStepReady = (licenseApi ? licenseApi.getStatus().catch(() => null) : Promise.resolve(null))
+  // 계정 장은 처음 본 상태로 정한다. 이 창에서 로그인해도 장은 그대로 남는다.
+  const accountStepReady = (accountApi ? accountApi.getStatus().catch(() => null) : Promise.resolve(null))
     .then((status) => {
-      licenseStep = needsLicenseStep(status);
-      steps = planSteps(fontStep, { autofix: withAutofix, license: licenseStep, taste: withTaste });
+      accountStep = accountApi !== null && status?.state !== 'signed_in';
+      rebuildSteps();
       renderStep();
     });
 
@@ -256,90 +259,6 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   }
   modelsPanel.append(grid);
 
-  // ── Rau-0.1: 호스팅 학습을 켜거나 끄면 바로 저장한다. ──
-  const tastePanel = el('div', 'rhwp-setup-panel rhwp-setup-taste');
-  tastePanel.dataset.step = 'taste';
-  const tasteGroup = el('div', 'rhwp-setup-font-actions');
-  tasteGroup.setAttribute('role', 'radiogroup');
-  tasteGroup.setAttribute('aria-label', RAU_TASTE_NAME);
-  const tasteChoices = ([[true, '켜기', 'sparkles'], [false, '끄기', 'minimize']] as const).map(([enabled, label, icon]) => {
-    const root = button('rhwp-setup-font-action');
-    root.setAttribute('role', 'radio');
-    const iconSlot = el('span', 'rhwp-setup-font-icon');
-    iconSlot.appendChild(createIcon(icon));
-    const check = el('span', 'rhwp-setup-check');
-    check.appendChild(createIcon('check'));
-    root.append(iconSlot, el('span', 'rhwp-setup-font-label', label), check);
-    root.addEventListener('click', () => void saveTaste({ enabled }));
-    tasteGroup.append(root);
-    return { enabled, root };
-  });
-  tastePanel.append(tasteGroup);
-  /** 허브가 답하기 전에는 기본값을 보인다. */
-  let taste: Pick<TasteSettings, 'enabled' | 'provider'> = { enabled: true, provider: 'auto' };
-  let tasteRequest = 0;
-  async function loadTaste(): Promise<void> {
-    if (!tasteApi) return;
-    const seq = ++tasteRequest;
-    const current = await tasteApi.get().catch(() => null);
-    if (disposed || seq !== tasteRequest || !current) return;
-    taste = { enabled: current.enabled, provider: current.provider };
-    renderTaste();
-  }
-  async function saveTaste(patch: Partial<TasteSettings>): Promise<void> {
-    if (!tasteApi) return;
-    const seq = ++tasteRequest;
-    taste = { ...taste, ...patch };
-    renderTaste();
-    const saved = await tasteApi.set(patch).catch(() => null);
-    if (disposed || seq !== tasteRequest) return;
-    // 저장하지 못했으면 허브의 값으로 되돌린다.
-    if (saved) {
-      taste = { enabled: saved.enabled, provider: saved.provider };
-      renderTaste();
-    } else {
-      console.warn('[initial-setup] Rau-0.1 설정을 저장하지 못했습니다');
-      void loadTaste();
-    }
-  }
-
-  // ── 자동 버그 수정: 기본은 꺼짐. 고르는 순간 답한 것으로 저장한다. ──
-  const autofixPanel = el('div', 'rhwp-setup-panel');
-  autofixPanel.dataset.step = 'autofix';
-  const autofixGroup = el('div', 'rhwp-setup-font-actions');
-  autofixGroup.setAttribute('role', 'radiogroup');
-  autofixGroup.setAttribute('aria-label', '자동 버그 수정');
-  /* 글꼴 단추와 같은 면을 쓴다. */
-  const autofixChoices = ([[true, '켜기', 'sparkles'], [false, '끄기', 'minimize']] as const).map(([enabled, label, icon]) => {
-    const root = button('rhwp-setup-font-action');
-    root.setAttribute('role', 'radio');
-    const iconSlot = el('span', 'rhwp-setup-font-icon');
-    iconSlot.appendChild(createIcon(icon));
-    const check = el('span', 'rhwp-setup-check');
-    check.appendChild(createIcon('check'));
-    root.append(iconSlot, el('span', 'rhwp-setup-font-label', label), check);
-    root.addEventListener('click', () => {
-      autofixChoice = enabled;
-      renderAutofix();
-      void updateAutofixSettings({ decided: true, enabled }).catch((error) => {
-        console.warn('[initial-setup] 자동 버그 수정 설정을 저장하지 못했습니다:', error);
-      });
-    });
-    autofixGroup.append(root);
-    return { enabled, root };
-  });
-  autofixPanel.append(autofixGroup);
-  /** 답한 값. 아직 답하지 않았으면 null(둘 다 고르지 않은 상태). */
-  let autofixChoice: boolean | null = null;
-  const readAutofixChoice = () => {
-    const current = autofixSettings();
-    if (current?.decided) autofixChoice = current.enabled;
-  };
-  readAutofixChoice();
-  const stopAutofixSettings = withAutofix
-    ? onAutofixSettings(() => { readAutofixChoice(); renderAutofix(); })
-    : () => {};
-
   // ── 글꼴: 스스로 찾고, 못 찾으면 찾기·한컴오피스 받기, 그래도 없으면 폴더 ──
   const fontsPanel = el('div', 'rhwp-setup-panel');
   fontsPanel.dataset.step = 'fonts';
@@ -406,7 +325,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   /* 한컴오피스를 설치하고 돌아오면 묻지 않고 다시 찾아본다. */
   let lastFocusSearch = 0;
   function onWindowFocus(): void {
-    if (!overlay.isConnected || celebrating || currentStep() !== 'fonts') return;
+    if (!overlay.isConnected || currentStep() !== 'fonts') return;
     if (fontSearch === 'found' || fontSearch === 'searching') return;
     if (Date.now() - lastFocusSearch < 4000) return;
     lastFocusSearch = Date.now();
@@ -416,40 +335,119 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   }
   window.addEventListener('focus', onWindowFocus);
 
-  // ── 라이선스: 구매와 키 넣기. 활성화를 잠깐 보여 준 뒤 다음 장으로 넘어간다. ──
-  let licensedTimer: number | undefined;
-  const licensePanel = licenseApi
-    ? createLicenseStep({
-      api: licenseApi,
-      status: null,
-      say: (line) => hippo.say(line),
+  // ── 계정: Google·이메일 로그인. 로그인을 잠깐 보여 준 뒤 다음 장으로 넘어간다. ──
+  let signedInTimer: number | undefined;
+  const accountPanel = account && accountApi
+    ? createAccountStep({
+      store: account,
       cheer: (line) => hippo.cheer(line),
-      onLicensed: () => {
-        markLicensedHere();
-        window.clearTimeout(licensedTimer);
-        licensedTimer = window.setTimeout(() => {
-          if (overlay.isConnected && !celebrating && currentStep() === 'license') void next();
-        }, LICENSED_HOLD_MS);
+      onSignedIn: (status) => {
+        // 유료 요금제로 로그인했으면 선물 창이 환영 인사로 뜬다.
+        if (status.plan.tier !== 'free') markLicensedHere();
+        window.clearTimeout(signedInTimer);
+        signedInTimer = window.setTimeout(() => {
+          if (overlay.isConnected && currentStep() === 'account') void next();
+        }, SIGNED_IN_HOLD_MS);
       },
-      onStateChange: () => renderStep(),
+      onStateChange: () => { rebuildSteps(); renderStep(); },
     })
     : null;
-  const licenseElement = licensePanel?.element ?? el('div', 'rhwp-setup-panel');
+  const accountElement = accountPanel?.element ?? el('div', 'rhwp-setup-panel');
 
   const body = el('div', 'rhwp-setup-body');
-  body.append(themePanel, modelsPanel, fontsPanel, licenseElement, tastePanel, autofixPanel);
+  const welcomePanel = el('div', 'rhwp-setup-panel rhwp-setup-paths');
+  const freePath = button('rhwp-setup-path');
+  freePath.dataset.path = 'free';
+  freePath.append(createIcon('document'), el('strong', '', '문서부터 시작'), el('span', '', '로그인 없이 무료로 편집하세요.'));
+  freePath.addEventListener('click', finish);
+  const aiPath = button('rhwp-setup-path');
+  aiPath.dataset.path = 'ai';
+  const routeNotice = el('p', 'rhwp-setup-notice');
+  routeNotice.setAttribute('role', 'status');
+  routeNotice.hidden = true;
+  aiPath.append(createIcon('sparkles'), el('strong', '', 'AI와 함께 시작'), el('span', '', '로그인하고 나에게 맞는 요금제를 고르세요.'));
+  aiPath.addEventListener('click', () => {
+    if (!accountApi && !deps.plan?.status()?.signedIn) {
+      routeNotice.textContent = 'AI 설정은 데스크톱 앱에서 시작할 수 있어요.';
+      routeNotice.hidden = false;
+      return;
+    }
+    ai = true;
+    rebuildSteps('welcome');
+    void next();
+  });
+  welcomePanel.append(freePath, aiPath, routeNotice);
+
+  const plansPanel = el('div', 'rhwp-setup-panel rhwp-setup-plans');
+  const planSummary = el('div', 'rhwp-setup-plan-summary');
+  for (const [name, copy] of [['Pro', '내 Codex·Claude 계정으로 문서 작업'], ['Hama', '기본 제공 AI 크레딧으로 바로 시작']]) {
+    const row = el('div', 'rhwp-setup-plan-row');
+    row.append(el('strong', '', name), el('span', '', copy));
+    planSummary.append(row);
+  }
+  const planAction = button('rhwp-setup-upgrade-action', '요금제 선택');
+  const planError = el('p', 'rhwp-setup-notice');
+  planError.setAttribute('role', 'status');
+  planError.hidden = true;
+  planAction.addEventListener('click', () => { void choosePlan(); });
+  plansPanel.append(planSummary, planAction, planError);
+
+  const hamaPanel = el('div', 'rhwp-setup-panel rhwp-setup-upgrade');
+  hamaPanel.append(
+    createPartyHama(),
+    el('h2', 'rhwp-setup-upgrade-title', '이제 Hama와 함께해요'),
+    el('p', 'rhwp-setup-upgrade-copy', 'Hama 에이전트는 추가 연결 없이 바로 쓸 수 있어요. 기본 제공 AI 크레딧과 Rau-0.1도 준비됐어요.'),
+    el('p', 'rhwp-setup-hint', 'Codex·Claude도 설정에서 언제든 연결할 수 있어요.'),
+  );
+  const modelsHint = el('p', 'rhwp-setup-hint', '연결은 나중에 설정에서도 할 수 있어요.');
+  modelsPanel.append(modelsHint);
+  body.append(themePanel, fontsPanel, welcomePanel, accountElement, plansPanel, modelsPanel, hamaPanel);
   const panels: Record<SetupStep, HTMLElement> = {
-    theme: themePanel,
-    models: modelsPanel,
-    taste: tastePanel,
-    autofix: autofixPanel,
-    fonts: fontsPanel,
-    license: licenseElement,
+    theme: themePanel, fonts: fontsPanel, welcome: welcomePanel,
+    account: accountElement, plans: plansPanel, models: modelsPanel, hama: hamaPanel,
   };
+
+  async function choosePlan(): Promise<void> {
+    if (choosingPlan) return;
+    if (!deps.openPlans) {
+      planError.textContent = '요금제는 데스크톱 앱에서 선택할 수 있어요.';
+      planError.hidden = false;
+      return;
+    }
+    choosingPlan = true;
+    planAction.disabled = true;
+    overlay.hidden = true;
+    try {
+      const opened = await deps.openPlans();
+      if (disposed || !overlay.isConnected) return;
+      if (!opened) {
+        planError.textContent = '요금제를 열지 못했어요. 다시 시도해 주세요.';
+        planError.hidden = false;
+        return;
+      }
+      if (!deps.plan?.status() || deps.plan.status()!.tier === 'free') {
+        finish();
+        return;
+      }
+      markLicensedHere();
+      rebuildSteps('models');
+      renderStep();
+      focusStep();
+    } catch {
+      planError.textContent = '요금제를 열지 못했어요. 다시 시도해 주세요.';
+      planError.hidden = false;
+    } finally {
+      choosingPlan = false;
+      planAction.disabled = false;
+      overlay.hidden = false;
+      if (overlay.isConnected) focusStep();
+    }
+  }
 
   const footer = el('footer', 'rhwp-setup-footer');
   const dots = el('span', 'rhwp-setup-dots');
-  dots.setAttribute('aria-hidden', 'true');
+  dots.setAttribute('role', 'group');
+  dots.setAttribute('aria-label', '설정 단계');
   const primary = button('rhwp-setup-primary', '다음');
   footer.append(dots, primary);
 
@@ -480,23 +478,6 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     }
   }
 
-  function renderAutofix(): void {
-    for (const choice of autofixChoices) {
-      const picked = autofixChoice === choice.enabled;
-      choice.root.setAttribute('aria-checked', picked ? 'true' : 'false');
-      choice.root.dataset.done = picked ? 'true' : 'false';
-    }
-  }
-
-  function renderTaste(): void {
-    for (const choice of tasteChoices) {
-      const picked = taste.enabled === choice.enabled;
-      choice.root.setAttribute('aria-checked', picked ? 'true' : 'false');
-      choice.root.dataset.done = picked ? 'true' : 'false';
-    }
-
-  }
-
   function renderFonts(): void {
     if (fontSearch === 'idle' && fontStep === 'missing') fontSearch = 'missing';
     const rescan = fontStep === 'missing' || fontSearch === 'missing';
@@ -517,9 +498,10 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     if (step === 'models') {
       return configuredAgents().length > 0 ? HIPPO_LINES.modelConnected : HIPPO_LINES.models;
     }
-    if (step === 'taste') return HIPPO_LINES.taste;
-    if (step === 'autofix') return HIPPO_LINES.autofix;
-    if (step === 'license') return licensePanel?.licensed() ? HIPPO_LINES.licensed : HIPPO_LINES.license;
+    if (step === 'welcome') return HIPPO_LINES.welcome;
+    if (step === 'plans') return HIPPO_LINES.plans;
+    if (step === 'hama') return HIPPO_LINES.hama;
+    if (step === 'account') return accountPanel?.signedIn() ? HIPPO_LINES.signedIn : HIPPO_LINES.account;
     if (fontSearch === 'found') return HIPPO_LINES.found;
     if (fontSearch === 'missing') return offerFolder() ? HIPPO_LINES.missingWithFolder : HIPPO_LINES.missing;
     return HIPPO_LINES.discover;
@@ -532,17 +514,30 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
       panel.hidden = name !== step;
     }
     dialog.dataset.step = step;
-    dots.replaceChildren(...steps.map((_, index) => {
-      const dot = el('span', 'rhwp-setup-dot');
-      if (index === stepIndex) dot.dataset.current = 'true';
+    const labels: Record<SetupStep, string> = {
+      theme: '화면 테마', models: 'AI 연결', fonts: '글꼴', account: '계정',
+      welcome: '시작 방법', plans: '요금제', hama: 'Hama 소개',
+    };
+    dots.replaceChildren(...steps.map((name, index) => {
+      const dot = button('rhwp-setup-dot');
+      dot.setAttribute('aria-label', labels[name]);
+      dot.title = labels[name];
+      if (index === stepIndex) dot.setAttribute('aria-current', 'step');
+      dot.addEventListener('click', () => {
+        stepIndex = index;
+        renderStep();
+        focusStep();
+      });
       return dot;
     }));
     const last = stepIndex >= steps.length - 1;
-    // 키 없이 넘어가면 무료로 쓴다.
-    const later = step === 'license' && !licensePanel?.licensed();
-    primary.textContent = later ? '나중에' : last ? '완료' : '다음';
-    // 키가 없을 때는 구매 칸이 눈에 먼저 띄도록 다음 단추를 낮춘다.
-    primary.dataset.quiet = later ? 'true' : 'false';
+    // 로그인하지 않고 넘어가면 무료로 쓴다.
+    const leave = step === 'welcome' || step === 'plans' || (step === 'account' && !accountPanel?.signedIn());
+    primary.hidden = step === 'welcome';
+    primary.textContent = leave ? '무료로 시작' : step === 'models' ? '연결 건너뛰기' : last ? '홈으로' : '다음';
+    if (step === 'models' && configuredAgents().length > 0) primary.textContent = last ? '홈으로' : '다음';
+    primary.setAttribute('aria-label', primary.textContent);
+    primary.dataset.quiet = leave || step === 'models' ? 'true' : 'false';
     if (spokenStep !== step && overlay.isConnected) {
       spokenStep = step;
       hippo.say(lineFor(step));
@@ -551,23 +546,24 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
 
   function focusStep(): void {
     const step = currentStep();
-    if (step === 'license' && licensePanel) {
-      licensePanel.focusTarget().focus({ preventScroll: true });
+    if (step === 'account' && accountPanel) {
+      (accountPanel.focusTarget() ?? primary).focus({ preventScroll: true });
       return;
     }
     const panel = panels[step];
-    // 자동 버그 수정은 직접 골라야 켜진다. 아무것도 고르지 않았으면 켜기에 포커스를 두지 않는다.
     const target = panel.querySelector<HTMLElement>('[aria-checked="true"]')
-      ?? (step === 'autofix' ? null : panel.querySelector<HTMLElement>('button:not([disabled])'));
+      ?? panel.querySelector<HTMLElement>('button:not([disabled])');
     (target ?? primary).focus({ preventScroll: true });
   }
 
-  /* 마지막 장면에 들어서는 순간 끝난 것으로 저장한다. 그 뒤로 닫는 방법은 상관없다. */
+  /* 홈으로 나가는 순간 설정 완료 상태를 저장한다. */
   let saved = false;
   function save(): void {
     if (saved) return;
     saved = true;
-    applyFirstRunDefaultAgent(configuredAgents(), storage ?? null);
+    const connected = configuredAgents();
+    const defaults = connected.length === 0 && deps.plan?.status()?.tier === 'hama' ? ['hama' as const] : connected;
+    applyFirstRunDefaultAgent(defaults, storage ?? null);
     record = completeInitialSetup({
       themeStep: themeStep === 'done' ? 'done' : 'skipped',
       providerStep: configuredAgents().length > 0 ? 'configured' : 'skipped',
@@ -582,31 +578,17 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     deps.onFinished?.();
   }
 
-  /* 마지막 장면: 고를 것은 치우고, 하마가 신나서 완료를 알린다. */
-  let celebrating = false;
-  function showDone(): void {
-    window.clearTimeout(licensedTimer);
-    save();
-    celebrating = true;
-    // 키를 활성화했으면 선물 창이 이 장면 위에 바로 뜨도록 비켜 준다.
-    if (licensePanel?.licensed()) releaseInitialSetup(overlay);
-    for (const panel of Object.values(panels)) panel.hidden = true;
-    dialog.dataset.step = 'done';
-    dots.hidden = true;
-    primary.textContent = '시작';
-    hippo.celebrate(HIPPO_LINES.done);
-    primary.focus({ preventScroll: true });
-  }
-
   async function next(): Promise<void> {
-    if (celebrating) {
+    // 글꼴·계정 장을 넣을지 알기 전에는 마지막 장을 정하지 않는다.
+    await Promise.all([fontStepReady, accountStepReady]);
+    if (currentStep() === 'plans' || (currentStep() === 'welcome' && !ai)
+      || (currentStep() === 'account' && !accountPanel?.signedIn())) {
       finish();
       return;
     }
-    // 글꼴·라이선스 장을 넣을지 알기 전에는 마지막 장을 정하지 않는다.
-    await Promise.all([fontStepReady, licenseStepReady]);
+    rebuildSteps();
     if (stepIndex >= steps.length - 1) {
-      showDone();
+      finish();
       return;
     }
     stepIndex += 1;
@@ -618,7 +600,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   skip.addEventListener('click', () => finish());
 
   function onKeyDown(event: KeyboardEvent): void {
-    if (!overlay.isConnected || !overlay.classList.contains('rhwp-setup-open')) return;
+    if (choosingPlan || !overlay.isConnected || !overlay.classList.contains('rhwp-setup-open')) return;
     if (!initialSetupTakesEscape(event, document)) return;
     event.preventDefault();
     finish();
@@ -630,16 +612,14 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     lastFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     document.body.appendChild(overlay);
     overlay.setAttribute('aria-hidden', 'false');
+    ai = false;
+    steps = planSteps(fontStep);
     stepIndex = 0;
     spokenStep = null;
     saved = false;
-    celebrating = false;
     dots.hidden = false;
     renderTheme();
     renderCards();
-    renderAutofix();
-    renderTaste();
-    void loadTaste();
     renderFonts();
     renderStep();
     requestAnimationFrame(() => {
@@ -657,6 +637,11 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     window.setTimeout(() => overlay.remove(), 420);
   }
 
+  const stopPlan = deps.plan?.subscribe(() => {
+    if (choosingPlan || disposed) return;
+    rebuildSteps();
+    renderStep();
+  }) ?? (() => {});
   document.addEventListener('keydown', onKeyDown);
 
   return {
@@ -668,7 +653,8 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
       const before = configuredAgents().length;
       setupStatuses = event.statuses;
       renderCards();
-      if (overlay.isConnected && !celebrating && currentStep() === 'models' && configuredAgents().length > before) {
+      renderStep();
+      if (overlay.isConnected && currentStep() === 'models' && configuredAgents().length > before) {
         hippo.cheer(HIPPO_LINES.modelConnected);
       }
     },
@@ -677,10 +663,10 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     },
     dispose(): void {
       disposed = true;
-      window.clearTimeout(licensedTimer);
-      licensePanel?.dispose();
+      window.clearTimeout(signedInTimer);
+      stopPlan();
+      accountPanel?.dispose();
       hippo.dispose();
-      stopAutofixSettings();
       document.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('focus', onWindowFocus);
       overlay.remove();

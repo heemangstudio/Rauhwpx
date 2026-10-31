@@ -64,11 +64,20 @@ import { setAutofixApi, type AutofixStatus } from '../ui/autofix/autofix.ts';
 import { createMockLicense, mockLicenseMode } from './mock-license.ts';
 import { createMockRau, mockRauMode, MOCK_RAU_UPGRADE_URL } from './mock-rau.ts';
 import { createMockPlan, mockCheckoutMode, mockCheckoutModes, mockPlanTier, mockPlanTiers, type MockCheckoutMode } from './mock-plan.ts';
+import {
+  createMockAccount,
+  mockAccountScenario,
+  mockAccountScenarios,
+  mockAccountSignedIn,
+  mockAccountTier,
+  type MockAccountScenario,
+} from './mock-account.ts';
+import { accountStore, setAccountApi } from '../ui/account/account-store.ts';
+import { listenForAccountPageEvents } from '../ui/account/account-page.ts';
 import type { PlanTier } from '../ui/plan/plan-types.ts';
 import { createPlanStore } from '../ui/plan/plan-store.ts';
 import { mountHomeScene } from './home-scene.ts';
 import { startSpecialEvent } from '../ui/special-event/special-event-trigger.ts';
-import { startAutofixIntro } from '../ui/autofix/autofix-intro.ts';
 import { installManualAutofix } from '../ui/autofix/autofix-manual.ts';
 import { isInitialSetupActive, onInitialSetupInactive, wasLicensedHere } from '../ui/initial-setup/active.ts';
 
@@ -213,11 +222,30 @@ const liveChat = reload === 'running' || reload === 'question' || reload === 'en
  * 앱 요금제. `plan=free|pro|legacy|hama` 면 데스크톱 요금제 API 가 생긴다(없으면 웹처럼 잠금·↑ 단추 없음).
  * 요금제 카드의 '키 직접 입력'이 쓰도록 라이선스 대역도 무료 상태로 함께 둔다(HAMA- 키가 Pro 를 연다).
  */
-const mockPlan = createMockPlan(mockPlanTier(params), {
+/*
+ * 계정. `account=signed-out|signing-in|choose-device|free|pro|hama|legacy|payment-failed|offline` 이면 데스크톱
+ * 계정 API 가 생기고, `plan=` 이 없으면 요금제 대역도 계정의 등급과 로그인 여부를 따라 함께 생긴다.
+ */
+const accountScenario = mockAccountScenario(params);
+const mockPlan = createMockPlan(mockPlanTier(params) ?? (accountScenario ? mockAccountTier(accountScenario) : null), {
   checkout: mockCheckoutMode(params),
   hold: params.get('checkoutHold') === '1',
+  signedIn: accountScenario ? mockAccountSignedIn(accountScenario) : true,
   report,
 });
+const mockAccount = createMockAccount(accountScenario, { report, hold: params.get('accountHold') === '1' });
+if (mockAccount) {
+  setAccountApi(mockAccount.api);
+  // 로그인 여부와 등급은 계정이 정하고, 결제로 바뀐 등급은 계정에도 남는다.
+  mockAccount.api.onChange((status) => {
+    mockPlan?.setSignedIn(status.state === 'signed_in');
+    if (mockPlan && mockPlan.status().tier !== status.plan.tier) mockPlan.setTier(status.plan.tier);
+  });
+  mockPlan?.api.onChange((status) => {
+    if (status.tier !== mockAccount.status().plan.tier) mockAccount.setTier(status.tier);
+  });
+  listenForAccountPageEvents({ plan: mockPlan ? createPlanStore(mockPlan.api) : null });
+}
 const mockLicense = createMockLicense(
   mockPlan && mockLicenseMode(params) === 'off' ? 'free' : mockLicenseMode(params), report);
 mockLicense?.onLicensed(() => {
@@ -368,8 +396,6 @@ if (params.get('editor') === '1') {
   // 앱과 같이 명령 검색 왼쪽에 자동 수정 단추를 단다(`autofix=` 가 있고 켠 상태일 때).
   installManualAutofix({ reportIssue: () => report('버그 제보 · issue report fixture') });
 }
-// 앱과 같은 트리거로 자동 버그 수정 소개를 띄운다. `autofix=undecided` 일 때만 뜬다.
-if (mockAutofix) startAutofixIntro({ whenReady: async () => {} });
 if ((params.get('event') === 'special' || mockLicense) && mockGift) {
   // 앱과 같은 트리거로 띄운다. 기록은 메모리에만 남겨 새로고침하면 다시 뜬다.
   const records = new Map<string, string>();
@@ -649,7 +675,12 @@ mock.boot();
 if (params.get('hub') === 'down') mock.setConnection('disconnected');
 /* `home=1`: 문서 홈(표본 최근 문서). Pro·기존 라이선스면 위 막대에 Hama 입구가 선다. */
 const home = params.get('home') === '1'
-  ? mountHomeScene({ plan: mockPlan ? createPlanStore(mockPlan.api) : null, license: mockLicense?.api ?? null, report })
+  ? mountHomeScene({
+    plan: mockPlan ? createPlanStore(mockPlan.api) : null,
+    license: mockLicense?.api ?? null,
+    account: mockAccount ? accountStore() : null,
+    report,
+  })
   : null;
 const projectScene = createProjectScene(sidebar);
 sessions.push({ sidebar, mock, documentId: () => documentId });
@@ -759,6 +790,11 @@ if (mockPlan) {
   mockPlan.api.onChange((status) => { planSelect.value = status.tier; });
 }
 planSelect.addEventListener('change', () => mockPlan?.setTier(planSelect.value as PlanTier));
+const accountSelect = document.querySelector<HTMLSelectElement>('#account')!;
+for (const scenario of mockAccountScenarios) accountSelect.add(new Option(scenario, scenario));
+accountSelect.closest('label')!.hidden = !mockAccount;
+if (accountScenario) accountSelect.value = accountScenario;
+accountSelect.addEventListener('change', () => mockAccount?.setScenario(accountSelect.value as MockAccountScenario));
 checkoutSelect.addEventListener('change', () => mockPlan?.setCheckout(checkoutSelect.value as MockCheckoutMode));
 const theme = document.querySelector<HTMLSelectElement>('#theme')!;
 theme.value = userSettings.getThemeSettings().mode;
@@ -899,6 +935,7 @@ const preview = { ...mock, sidebar, versions, eventBus, enterFocusMode, undoStat
   planCardRequests,
   autofix: mockAutofix,
   plan: mockPlan,
+  account: mockAccount,
   home,
   sessions, attachSession, chats, showChat, openChatCalls, attention, attentionNotices, attentionCounts,
   openFromAttention,

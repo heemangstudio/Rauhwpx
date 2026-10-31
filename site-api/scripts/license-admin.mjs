@@ -24,6 +24,9 @@
 //   node scripts/license-admin.mjs gift-disable --key-id lic_... [--reason "..."]   # disables the OpenRouter key too
 //   node scripts/license-admin.mjs gift-amount --key-id lic_... --usd 30   # this beta key's gift; 0 = none, a claimed key's limit changes on OpenRouter
 //   node scripts/license-admin.mjs rau                                # hosted Rau-0.1 allowances: this month's spend against the cap
+//   node scripts/license-admin.mjs accounts --email user@example.com | --id acct_... | --key-id lic_...   # accounts with devices and linked keys
+//   node scripts/license-admin.mjs account-unlink --key-id lic_...     # free a key from its account
+//   node scripts/license-admin.mjs account-link --key-id lic_... --account-id acct_...
 import { adminRequest, siteApiBase } from './admin-request.mjs';
 
 const [command, ...argv] = process.argv.slice(2);
@@ -61,6 +64,8 @@ const posts = {
   'remove-device': '/v1/admin/licenses/remove-device',
   'gift-disable': '/v1/admin/gifts/disable',
   'gift-amount': '/v1/admin/gifts/amount',
+  'account-unlink': '/v1/admin/accounts/unlink',
+  'account-link': '/v1/admin/accounts/link',
 };
 const gets = {
   lookup: '/v1/admin/licenses',
@@ -73,6 +78,7 @@ const gets = {
   gifts: '/v1/admin/gifts',
   rau: '/v1/admin/rau',
   downloads: '/v1/admin/downloads',
+  accounts: '/v1/admin/accounts',
 };
 if (command === 'webhooks') {
   if (args.rejected && args.held) { process.stderr.write('pick one of --rejected or --held\n'); process.exit(2); }
@@ -97,7 +103,7 @@ if (gets[command]) {
   }
   res = await adminRequest({ base, token, method: 'POST', path: posts[command], body });
 } else {
-  process.stderr.write('usage: license-admin.mjs issue|beta|betas|signatures|customers|lookup|orders|webhooks|attention|ack|release|apply-renewal|revoke|restore|reset-devices|remove-device|resend-email|extend|downloads|gifts|gift-disable|gift-amount|rau [--flags]\n');
+  process.stderr.write('usage: license-admin.mjs issue|beta|betas|signatures|customers|lookup|orders|webhooks|attention|ack|release|apply-renewal|revoke|restore|reset-devices|remove-device|resend-email|extend|downloads|gifts|gift-disable|gift-amount|rau|accounts|account-unlink|account-link [--flags]\n');
   process.exit(2);
 }
 const parsed = res.json;
@@ -131,6 +137,10 @@ if (command === 'rau' && res.ok && parsed) {
   const lines = [`${parsed.model} · ${parsed.period} · cap Pro $${parsed.capsUsd.pro}, Hama $${parsed.capsUsd.hama} · resets ${parsed.resetsAt}`];
   for (const a of parsed.allowances) lines.push(`${a.keyId} ${a.status} · $${a.usedUsd ?? '?'} / $${a.capUsd}`);
   process.stdout.write(`\n${lines.join('\n')}\n`);
+}
+if (command === 'accounts' && res.ok && parsed) {
+  const lines = parsed.accounts.map((a) => `${a.id} ${a.email}${a.emailVerified ? '' : ' (미인증)'} · 기기 ${a.devices.length} · 키 ${a.licenses.map((l) => `${l.keyId} ${l.status}`).join(', ') || '-'}`);
+  process.stdout.write(`\n${lines.join('\n') || '계정 없음'}\n`);
 }
 // The key alone on the last line, so it can be copied without picking through the JSON.
 if (command === 'beta' && res.ok && parsed?.license?.key) {

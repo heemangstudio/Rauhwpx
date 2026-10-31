@@ -1,0 +1,1289 @@
+/* ─── 계정 페이지 ─────────────────────────────────────
+   창의 제목 막대 아래를 모두 덮는 한 장. 가운데 한 단(680px)에 머리카락 선으로 칸을 나눈다.
+   면·잉크·모서리·움직임은 에이전트 UI 토큰을 쓰고, Hama 파랑은 Hama 표와 사용량 막대에만 쓴다. */
+
+.acct-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 960;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  pointer-events: none;
+}
+
+.acct-layer[data-modal='true'] {
+  background: var(--overlay-bg);
+  pointer-events: auto;
+}
+
+html:is(.desktop-mac, .desktop-windows) .acct-layer {
+  top: var(--desktop-titlebar-height, 38px);
+}
+
+.acct-page {
+  --plan-hama: #3d9bd1;
+  --acct-err: var(--ag-err, var(--ui-danger, #c4372b));
+  position: fixed;
+  inset: 0;
+  /* 문서 홈(900)·홈 단추(950) 위, 처음 설정(1100)·명령 검색·시트·대화상자 아래. */
+  z-index: 960;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  pointer-events: auto;
+  background: var(--n-surface-raised);
+  color: var(--n-ink);
+  font-family: var(--ag-font);
+  font-size: var(--ag-fs-secondary);
+  line-height: var(--ag-lh-secondary);
+  opacity: 0;
+  transform: translateY(6px);
+  transition:
+    opacity var(--ag-dur-exit) var(--ag-ease-out),
+    transform var(--ag-dur-exit) var(--ag-ease-out);
+}
+
+:root[data-theme-effective='dark'] .acct-page {
+  --plan-hama: #62b3e2;
+}
+
+/* 데스크톱 창: 신호등과 제목 막대는 그대로 두고 그 아래부터 덮는다. */
+html:is(.desktop-mac, .desktop-windows) .acct-page {
+  top: var(--desktop-titlebar-height, 38px);
+  border-top: 1px solid var(--n-ink-hairline);
+}
+
+.acct-page[data-auth-popup='true'],
+html:is(.desktop-mac, .desktop-windows) .acct-page[data-auth-popup='true'] {
+  position: relative;
+  inset: auto;
+  width: min(400px, 100%);
+  height: min(520px, 100%);
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--n-ink-hairline);
+  border-radius: var(--ag-r-sheet);
+  box-shadow: var(--ag-elev-sheet);
+}
+
+.acct-login-art {
+  display: none;
+}
+
+.acct-login-success {
+  text-align: center;
+}
+
+.acct-login-success .acct-signin-mark {
+  display: block;
+  margin: 0 auto 16px;
+}
+
+.acct-login-success-email {
+  margin: 8px 0 28px;
+  color: var(--n-ink-secondary);
+  font-size: var(--ag-fs-secondary);
+  overflow-wrap: anywhere;
+}
+
+.acct-login-success-done {
+  width: 100%;
+}
+
+.acct-page[data-auth-popup='true'] .acct-login-art {
+  display: block;
+  position: absolute;
+  inset: -36px -220px auto auto;
+  margin: 0;
+  color: var(--n-ink);
+  opacity: .075;
+  font-family: 'Nanum Gothic Coding', monospace;
+  font-size: 6px;
+  line-height: 1;
+  letter-spacing: 0;
+  white-space: pre;
+  transform: rotate(-12deg);
+  mask-image: linear-gradient(to bottom, transparent, #000 20%, #000 45%, transparent 78%);
+  pointer-events: none;
+  user-select: none;
+}
+
+.acct-page[data-auth-popup='true'] .acct-bar,
+.acct-page[data-auth-popup='true'] .acct-scroll {
+  position: relative;
+}
+
+.acct-page[data-auth-popup='true'] .acct-bar {
+  justify-content: flex-end;
+  height: 44px;
+  padding: 6px 12px;
+}
+
+.acct-page[data-auth-popup='true'] .acct-column {
+  padding: 12px 28px 36px;
+}
+
+.acct-page.acct-page-open {
+  opacity: 1;
+  transform: none;
+  transition:
+    opacity var(--ag-dur-base) var(--ag-ease-out),
+    transform var(--ag-dur-slow) var(--ag-spring);
+}
+
+.acct-signin {
+  --acct-err: var(--ag-err, var(--ui-danger, #c4372b));
+}
+
+.acct-layer.acct-embedded-layer {
+  position: static;
+  display: block;
+  padding: 0;
+  z-index: auto;
+}
+
+.acct-page.acct-embedded,
+html:is(.desktop-mac, .desktop-windows) .acct-page.acct-embedded {
+  position: static;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  opacity: 1;
+  transform: none;
+  transition: none;
+  z-index: auto;
+}
+
+.acct-embedded .acct-bar {
+  display: none;
+}
+
+.acct-embedded .acct-scroll {
+  overflow: visible;
+  scrollbar-gutter: auto;
+}
+
+.acct-embedded .acct-column {
+  max-width: none;
+  min-height: 0;
+  padding: 0;
+}
+
+.acct-embedded .acct-column[data-view='sign-in'] {
+  min-height: 480px;
+  padding: 24px 0;
+}
+
+:is(.acct-page, .acct-signin) button {
+  font: inherit;
+  cursor: default;
+}
+
+:is(.acct-page, .acct-signin) :is(button, input):focus-visible {
+  outline: var(--ag-focus-ring);
+  outline-offset: var(--ag-focus-offset);
+}
+
+.acct-bar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  height: 52px;
+  padding: 0 14px;
+}
+
+.acct-back {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--ag-r-row);
+  background: transparent;
+  color: var(--n-ink-secondary);
+  transition: var(--ag-transition-color);
+}
+
+.acct-back:hover {
+  background: var(--n-ink-fill-hover);
+  color: var(--n-ink);
+}
+
+.acct-back .ag-icon {
+  width: 16px;
+  height: 16px;
+}
+
+.acct-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.acct-column {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 744px;
+  min-height: 100%;
+  margin: 0 auto;
+  padding: 4px 32px 64px;
+}
+
+.acct-column[data-view='sign-in'] {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding-bottom: 104px;
+}
+
+.acct-signed[hidden],
+.acct-signin[hidden],
+.acct-page [hidden],
+.acct-signin [hidden] {
+  display: none !important;
+}
+
+/* ── 단추·입력 ───────────────────────────────────────── */
+.acct-btn {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--ag-r-row);
+  background: var(--n-ink-fill-hover);
+  color: var(--n-ink);
+  font-size: var(--ag-fs-secondary);
+  font-weight: var(--ag-fw-medium);
+  white-space: nowrap;
+  transition: var(--ag-transition-color);
+}
+
+.acct-btn:hover:not(:disabled) {
+  background: var(--n-ink-fill-pressed);
+}
+
+.acct-btn:disabled {
+  color: var(--n-ink-tertiary);
+}
+
+.acct-btn-primary {
+  background: var(--ag-primary-bg);
+  color: var(--ag-primary-fg);
+}
+
+.acct-btn-primary:hover:not(:disabled) {
+  background: var(--ag-primary-bg-hover);
+}
+
+.acct-btn-primary:disabled {
+  background: var(--ag-primary-bg-disabled);
+  color: var(--ag-primary-fg);
+}
+
+.acct-btn-quiet {
+  background: transparent;
+  color: var(--n-ink-secondary);
+}
+
+.acct-btn-quiet:hover:not(:disabled) {
+  background: var(--n-ink-fill-hover);
+  color: var(--n-ink);
+}
+
+.acct-btn-danger {
+  background: color-mix(in oklab, var(--acct-err) 12%, transparent);
+  color: var(--acct-err);
+}
+
+.acct-btn-danger:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--acct-err) 18%, transparent);
+}
+
+.acct-btn-danger-quiet {
+  background: transparent;
+  color: var(--acct-err);
+}
+
+.acct-btn-danger-quiet:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--acct-err) 9%, transparent);
+}
+
+.acct-btn-spinner {
+  width: 12px;
+  height: 12px;
+  color: currentColor;
+}
+
+.acct-btn[aria-busy='true'] {
+  color: var(--n-ink-secondary);
+}
+
+.acct-btn-primary[aria-busy='true'] {
+  color: var(--ag-primary-fg);
+}
+
+.acct-link {
+  padding: 2px 0;
+  border: 0;
+  border-radius: var(--ag-r-code);
+  background: transparent;
+  color: var(--n-ink-secondary);
+  font-size: var(--ag-fs-meta);
+  transition: var(--ag-transition-color);
+}
+
+.acct-link:hover:not(:disabled) {
+  color: var(--n-ink);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.acct-link:disabled {
+  color: var(--n-ink-tertiary);
+}
+
+.acct-link[aria-busy='true'] {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.acct-icon-btn {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--ag-r-row);
+  background: transparent;
+  color: var(--n-ink-tertiary);
+  transition: var(--ag-transition-color);
+}
+
+.acct-icon-btn:hover {
+  background: var(--n-ink-fill-hover);
+  color: var(--n-ink);
+}
+
+.acct-icon-btn .ag-icon {
+  width: 13px;
+  height: 13px;
+}
+
+.acct-input {
+  box-sizing: border-box;
+  min-width: 0;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--ag-r-row);
+  box-shadow: inset 0 0 0 1px var(--n-ink-hairline-strong);
+  background: transparent;
+  color: var(--n-ink);
+  font: inherit;
+  font-size: var(--ag-fs-secondary);
+  transition: box-shadow var(--ag-dur-fast) var(--ag-ease-out);
+}
+
+.acct-input::placeholder {
+  color: var(--n-ink-tertiary);
+}
+
+.acct-page .acct-input:focus,
+.acct-delete-sheet .acct-input:focus,
+.acct-signin .acct-input:focus {
+  outline: none;
+  box-shadow: inset 0 0 0 1.5px var(--ag-focus-ring-color);
+}
+
+.acct-input:disabled {
+  color: var(--n-ink-secondary);
+}
+
+.acct-meta {
+  margin: 0;
+  color: var(--n-ink-secondary);
+  font-size: var(--ag-fs-meta);
+  line-height: var(--ag-lh-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.acct-redeem-note {
+  margin: 8px 0 0;
+}
+
+.acct-error {
+  margin: 8px 0 0;
+  color: var(--acct-err);
+  font-size: var(--ag-fs-meta);
+  line-height: var(--ag-lh-secondary);
+}
+
+.acct-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  margin-left: 8px;
+  padding: 0 6px;
+  border-radius: var(--ag-r-chip);
+  background: var(--n-ink-fill-selected);
+  color: var(--n-ink-secondary);
+  font-size: 11px;
+  font-weight: var(--ag-fw-medium);
+  line-height: 1;
+  white-space: nowrap;
+  vertical-align: 1px;
+}
+
+.acct-badge-warn {
+  background: color-mix(in oklab, var(--acct-err) 11%, transparent);
+  color: var(--acct-err);
+}
+
+.acct-hama-mark {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  color: var(--plan-hama);
+}
+
+.acct-avatar-large {
+  width: 80px;
+  height: 80px;
+}
+
+.acct-avatar-large .acct-avatar-initial {
+  font-size: 30px;
+}
+
+/* ── 로그인 판 ───────────────────────────────────────── */
+.acct-signin-page {
+  width: min(340px, 100%);
+}
+
+.acct-signin-out,
+.acct-signin-wait,
+.acct-signin-choose {
+  display: flex;
+  flex-direction: column;
+}
+
+.acct-signin-page .acct-signin-out {
+  align-items: stretch;
+  gap: 8px;
+}
+
+.acct-signin-mark {
+  align-self: center;
+  width: 104px;
+  height: 64px;
+  margin-bottom: 8px;
+  image-rendering: pixelated;
+}
+
+.acct-signin-title {
+  margin: 0 0 24px;
+  color: var(--n-ink);
+  font-size: clamp(32px, 5vw, 42px);
+  font-weight: 650;
+  line-height: 1.15;
+  letter-spacing: -0.04em;
+  text-align: center;
+}
+
+
+.acct-signin-switch {
+  display: flex;
+  justify-content: flex-end;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 4px;
+  color: var(--n-ink-secondary);
+  font-size: var(--ag-fs-meta);
+}
+
+.acct-signin-switch-link {
+  padding: 4px 0;
+  border: 0;
+  background: transparent;
+  color: var(--n-ink);
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.acct-signin-switch-link:focus-visible {
+  outline: var(--ag-focus-ring);
+  outline-offset: var(--ag-focus-offset);
+}
+
+.acct-signin-socials {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.acct-signin-provider {
+  display: grid;
+  grid-template-columns: 18px 1fr 18px;
+  gap: 8px;
+  min-height: 40px;
+  padding: 0 14px;
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--n-ink-hairline-strong);
+  font-size: var(--ag-fs-body);
+}
+
+.acct-signin-provider:hover:not(:disabled) {
+  background: var(--n-ink-fill-hover);
+}
+
+.acct-signin-provider .acct-btn-spinner {
+  grid-column: 1;
+  grid-row: 1;
+  justify-self: center;
+}
+
+.acct-signin-provider[aria-busy='true'] .acct-provider-glyph {
+  visibility: hidden;
+}
+
+.acct-provider-glyph {
+  grid-column: 1;
+  grid-row: 1;
+  width: 18px;
+  height: 18px;
+}
+
+.acct-signin-provider > span:last-child {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.acct-signin-or {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 10px 0;
+  color: var(--n-ink-tertiary);
+  font-size: var(--ag-fs-meta);
+}
+
+.acct-signin-or::before,
+.acct-signin-or::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--n-ink-hairline);
+}
+
+.acct-signin-email {
+  display: flex;
+  flex-direction: row;
+  gap: 8px;
+}
+
+.acct-signin-email .acct-input,
+.acct-signin-email .acct-btn {
+  min-height: 40px;
+  font-size: var(--ag-fs-body);
+}
+
+.acct-signin-email .acct-input {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 0 12px;
+}
+
+.acct-signin-unavailable {
+  margin: 0;
+  color: var(--n-ink-secondary);
+  text-align: center;
+}
+
+.acct-signin-wait {
+  align-items: center;
+  gap: 6px;
+  text-align: center;
+}
+
+.acct-signin-spinner {
+  width: 22px;
+  height: 22px;
+  margin-bottom: 10px;
+  color: var(--n-ink-secondary);
+}
+
+.acct-signin-wait-title {
+  margin: 0;
+  font-size: var(--ag-fs-body);
+  font-weight: var(--ag-fw-medium);
+}
+
+.acct-signin-wait .acct-btn {
+  min-width: 88px;
+  margin-top: 16px;
+}
+
+.acct-signin-choose-title {
+  margin: 0 0 12px;
+  font-size: var(--ag-fs-title);
+  font-weight: var(--ag-fw-strong);
+  letter-spacing: var(--ag-track-tight);
+}
+
+.acct-signin-page:has(.acct-signin-choose:not([hidden])) {
+  width: min(480px, 100%);
+}
+
+.acct-signin-choose > .acct-btn {
+  align-self: flex-start;
+  margin-top: 16px;
+  margin-left: -12px;
+}
+
+/* ── 프로필 머리 ─────────────────────────────────────── */
+.acct-profile {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 12px 0 24px;
+}
+
+.acct-profile-avatar {
+  position: relative;
+  flex: none;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+}
+
+.acct-profile-avatar::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: rgb(0 0 0 / 0);
+  transition: background-color var(--ag-dur-fast) var(--ag-ease-out);
+}
+
+.acct-profile-avatar:hover:not(:disabled)::after {
+  background: rgb(0 0 0 / 0.12);
+}
+
+.acct-profile-avatar[data-busy='true'] .acct-avatar {
+  opacity: 0.5;
+}
+
+.acct-profile-copy {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.acct-name-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  min-height: 36px;
+}
+
+.acct-name {
+  overflow: hidden;
+  margin: 0;
+  font-size: 22px;
+  font-weight: var(--ag-fw-strong);
+  line-height: var(--ag-lh-tight);
+  letter-spacing: -0.015em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.acct-name-form {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+}
+
+.acct-name-input {
+  flex: 0 1 320px;
+  min-height: 36px;
+  font-size: var(--ag-fs-title);
+  font-weight: var(--ag-fw-medium);
+}
+
+.acct-email-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  margin: 2px 0 0;
+  color: var(--n-ink-secondary);
+}
+
+.acct-email {
+  overflow-wrap: anywhere;
+}
+
+.acct-offline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--n-ink-tertiary);
+  font-size: var(--ag-fs-meta);
+}
+
+.acct-offline::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: var(--ag-r-pill);
+  background: currentColor;
+}
+
+.acct-photo-actions {
+  display: flex;
+  gap: 14px;
+  margin-top: 6px;
+}
+
+/* ── 칸 ──────────────────────────────────────────────── */
+.acct-section {
+  padding: 20px 0 24px;
+  border-top: 1px solid var(--n-ink-hairline);
+}
+
+.acct-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.acct-label {
+  margin: 0;
+  color: var(--n-ink-secondary);
+  font-size: var(--ag-fs-secondary);
+  font-weight: var(--ag-fw-medium);
+}
+
+/* 요금제 */
+.acct-plan-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.acct-plan-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+}
+
+.acct-plan-name .acct-hama-mark {
+  width: 16px;
+  height: 16px;
+}
+
+.acct-plan-tier {
+  font-size: var(--ag-fs-display);
+  font-weight: var(--ag-fw-strong);
+  letter-spacing: var(--ag-track-tight);
+}
+
+.acct-plan-cycle {
+  color: var(--n-ink-secondary);
+  font-size: var(--ag-fs-body);
+}
+
+.acct-plan-term {
+  margin-top: 4px;
+  font-size: var(--ag-fs-secondary);
+}
+
+.acct-alert {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-top: 16px;
+  padding: 12px 12px 12px 16px;
+  border-radius: var(--ag-r-card);
+  background: color-mix(in oklab, var(--acct-err) 8%, transparent);
+}
+
+.acct-alert-text {
+  flex: 1 1 auto;
+  margin: 0;
+  color: var(--n-ink);
+}
+
+.acct-section[data-section='plan'] {
+  padding: 24px;
+  border: 1px solid var(--n-ink-hairline);
+  border-radius: var(--ag-r-card);
+}
+
+.acct-plan-current {
+  color: var(--n-ink-secondary);
+  font-size: var(--ag-fs-secondary);
+}
+
+.acct-plan-tier {
+  font-size: var(--ag-fs-body);
+}
+
+.acct-offers {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 24px;
+  padding-top: 24px;
+  border-top: 1px solid var(--n-ink-hairline);
+}
+
+.acct-offer {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding-right: 24px;
+}
+
+.acct-offer + .acct-offer {
+  padding: 0 0 0 24px;
+  border-left: 1px solid var(--n-ink-hairline);
+}
+
+.acct-offer:only-child {
+  grid-column: 1 / -1;
+  padding-right: 0;
+}
+
+.acct-offer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 40px;
+  gap: 8px;
+}
+
+.acct-offer-name {
+  margin: 0;
+  font-size: 24px;
+  font-weight: var(--ag-fw-strong);
+  letter-spacing: var(--ag-track-tight);
+}
+
+.acct-offer-description {
+  min-height: 3em;
+  margin: 8px 0 20px;
+  color: var(--n-ink-secondary);
+  font-size: var(--ag-fs-secondary);
+  line-height: 1.5;
+}
+
+.acct-offer-price {
+  margin: auto 0 0;
+  color: var(--n-ink-secondary);
+  font-size: var(--ag-fs-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.acct-offer-price strong {
+  color: var(--n-ink);
+  font-size: 26px;
+  font-weight: var(--ag-fw-strong);
+  letter-spacing: var(--ag-track-tight);
+}
+
+.acct-offer-annual {
+  min-height: 1.5em;
+  margin: 4px 0 20px;
+  color: var(--n-ink-secondary);
+  font-size: var(--ag-fs-meta);
+}
+
+.acct-offer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+}
+
+.acct-offer-actions .acct-btn {
+  flex: 1;
+  min-width: 0;
+}
+
+.acct-offer-actions .acct-offer-yearly {
+  flex: none;
+  margin-left: 4px;
+  font-size: var(--ag-fs-meta);
+}
+
+.acct-offer[data-plan='pro'] .acct-btn-primary {
+  background: #f2f2f2;
+  color: #171717;
+  box-shadow: inset 0 0 0 1px rgb(0 0 0 / 8%);
+}
+
+.acct-offer[data-plan='pro'] .acct-btn-primary:hover:not(:disabled) {
+  background: #fff;
+}
+
+.acct-offer-wait {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--n-ink-secondary);
+  font-size: var(--ag-fs-secondary);
+}
+
+.acct-offer-head .acct-hama-scene {
+  width: 64px;
+  height: 36px;
+}
+
+/* 판 16×9 칸, 칸마다 8px. 정수 배라 2배 화면에서도 칸이 번지지 않는다. */
+.acct-hama-scene {
+  width: 128px;
+  height: 72px;
+  color: var(--plan-hama);
+  overflow: visible;
+}
+
+.hama-scene-hama,
+.hama-scene-spark,
+.hama-scene-spark-arms {
+  fill: currentColor;
+}
+
+.hama-scene-spark-arms {
+  fill: color-mix(in oklab, currentColor 55%, var(--acct-hama-fill, transparent));
+}
+
+.hama-scene-water {
+  fill: color-mix(in oklab, currentColor 42%, var(--acct-hama-fill, var(--n-surface-raised)));
+}
+
+.hama-scene-water-light {
+  fill: color-mix(in oklab, currentColor 20%, var(--acct-hama-fill, var(--n-surface-raised)));
+}
+
+/* 반짝임: 칸이 켜지고 꺼지기만 한다(사이 값 없음). 셋이 서로 다른 박자로. */
+@keyframes acct-hama-twinkle {
+  0%, 62% { opacity: 1; }
+  63%, 84% { opacity: 0; }
+  85%, 100% { opacity: 1; }
+}
+
+.hama-scene-spark-arms { animation: acct-hama-twinkle 2.6s steps(1, end) infinite; }
+.hama-scene-spark-b { animation: acct-hama-twinkle 3.4s steps(1, end) 0.9s infinite; }
+.hama-scene-spark-c { animation: acct-hama-twinkle 2.2s steps(1, end) 1.6s infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .hama-scene-spark-arms,
+  .hama-scene-spark-b,
+  .hama-scene-spark-c {
+    animation: none;
+  }
+}
+
+
+
+/* 사용량 */
+.acct-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: start;
+  gap: 24px;
+}
+
+.acct-stats[data-count='2'] {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.acct-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.acct-stat-value {
+  font-size: var(--ag-fs-display);
+  font-weight: var(--ag-fw-strong);
+  letter-spacing: var(--ag-track-tight);
+  font-variant-numeric: tabular-nums;
+  line-height: var(--ag-lh-tight);
+}
+
+.acct-stat-of {
+  color: var(--n-ink-tertiary);
+  font-size: var(--ag-fs-secondary);
+  font-weight: var(--ag-fw-regular);
+  letter-spacing: 0;
+}
+
+.acct-stat-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--n-ink-secondary);
+}
+
+.acct-stat-hama {
+  order: -1;
+}
+
+.acct-meter {
+  display: block;
+  height: 4px;
+  margin: 8px 0 6px;
+  overflow: hidden;
+  border-radius: var(--ag-r-pill);
+  background: var(--n-ink-fill-selected);
+}
+
+.acct-meter-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--plan-hama);
+}
+
+/* 기기 */
+.acct-count {
+  font-size: var(--ag-fs-meta);
+}
+
+.acct-device-list,
+.acct-license-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.acct-device {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 52px;
+  padding: 6px 0;
+}
+
+.acct-device + .acct-device {
+  border-top: 1px solid var(--n-ink-hairline);
+}
+
+.acct-device-icon {
+  display: grid;
+  place-items: center;
+  color: var(--n-ink-secondary);
+}
+
+.acct-platform-glyph {
+  width: 18px;
+  height: 18px;
+}
+
+.acct-device-copy {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.acct-device-name {
+  overflow: hidden;
+  font-size: var(--ag-fs-body);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.acct-device-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 조용한 단추는 글자가 칸 오른쪽 끝에 닿게 안쪽 여백만큼 내민다. */
+.acct-device-actions > .acct-device-remove.acct-btn-quiet {
+  margin-right: -12px;
+}
+
+/* 라이선스 */
+.acct-license {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 0;
+}
+
+.acct-license:first-child {
+  padding-top: 0;
+}
+
+.acct-license + .acct-license {
+  border-top: 1px solid var(--n-ink-hairline);
+}
+
+.acct-license-head {
+  display: flex;
+  align-items: center;
+}
+
+.acct-key {
+  font-family: var(--ag-mono);
+  font-size: var(--ag-fs-secondary);
+  letter-spacing: 0.02em;
+}
+
+.acct-local-key {
+  margin-top: 8px;
+}
+
+.acct-inline-form {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.acct-license-list[hidden] + .acct-local-key[hidden] + .acct-inline-form {
+  margin-top: 0;
+}
+
+.acct-inline-form .acct-input {
+  flex: 1 1 auto;
+}
+
+.acct-key-input:not(:placeholder-shown) {
+  font-family: var(--ag-mono);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.acct-disclosure {
+  margin-top: 10px;
+}
+
+.acct-disclosure[aria-expanded='true'] {
+  color: var(--n-ink);
+}
+
+.acct-claim {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr) auto;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+/* 로그아웃·삭제 */
+.acct-exit {
+  padding-bottom: 0;
+}
+
+.acct-exit-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ── 계정 삭제 확인 ─────────────────────────────────── */
+.ag-sheet-layer[data-placement='center'] .ag-sheet.acct-delete-sheet {
+  --acct-err: var(--ag-err, var(--ui-danger, #c4372b));
+  max-width: 400px;
+}
+
+.acct-delete-label {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 16px;
+  color: var(--n-ink-secondary);
+  font-size: var(--ag-fs-meta);
+}
+
+.acct-delete-input {
+  min-height: 36px;
+  font-size: var(--ag-fs-secondary);
+}
+
+.acct-delete-manage {
+  margin-top: 10px;
+}
+
+.acct-delete-sheet .ag-sheet-actions {
+  margin-top: 20px;
+}
+
+.acct-delete-sheet .ag-sheet-confirm:disabled {
+  opacity: 0.45;
+}
+
+.acct-delete-sheet .ag-sheet-confirm .acct-btn-spinner {
+  margin-right: 6px;
+  vertical-align: -2px;
+}
+
+@media (max-width: 640px) {
+  .acct-column {
+    padding: 4px 20px 72px;
+  }
+
+  .acct-profile {
+    gap: 16px;
+  }
+
+  .acct-avatar-large {
+    width: 64px;
+    height: 64px;
+  }
+
+  .acct-stats,
+  .acct-stats[data-count='2'] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .acct-section[data-section='plan'] {
+    padding: 18px;
+  }
+
+  .acct-offers {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 24px;
+  }
+
+  .acct-offer {
+    padding: 0;
+  }
+
+  .acct-offer + .acct-offer {
+    padding: 24px 0 0;
+    border-left: 0;
+    border-top: 1px solid var(--n-ink-hairline);
+  }
+
+  .acct-claim {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

@@ -40,6 +40,7 @@ import { checkDocumentMemory } from './document-memory.check.mjs';
 import { checkInstructionsCard, checkTaste, checkTasteHistory } from './taste.check.mjs';
 import { checkRauUpgrade } from './rau-upgrade.check.mjs';
 import { checkPlanCard } from './plan-card.check.mjs';
+import { checkAccountPage } from './account-page.check.mjs';
 import { checkChatScrollRail } from './chat-scroll-rail.check.mjs';
 import { browserLaunchArgs, findBrowserExecutable } from '../tests/browser-support.ts';
 
@@ -67,6 +68,7 @@ const focusedChecks = {
   'taste-history': (h) => checkTasteHistory(h),
   'rau-upgrade': (h) => checkRauUpgrade(h),
   'plan-card': (h) => checkPlanCard(h),
+  'account-page': (h) => checkAccountPage(h),
   'instructions-card': (h) => checkInstructionsCard(h),
   'scroll-rail': (h) => checkChatScrollRail(h),
   'focus-composer': async ({ page, open }) => {
@@ -214,7 +216,10 @@ try {
   async function screenshot(name) {
     // Capture without resizing the viewport; a resize re-clamps the panel widths mid-check.
     const sidebar = await page.$('.ag-root');
-    await sidebar.screenshot({ path: resolve(artifacts, `${name}.png`), captureBeyondViewport: false });
+    const bounds = await sidebar?.boundingBox();
+    const modal = await page.$('.acct-layer, .ag-sheet-layer[data-host="body"]');
+    const target = !modal && bounds && bounds.width >= 1 && bounds.height >= 1 ? sidebar : page;
+    await target.screenshot({ path: resolve(artifacts, `${name}.png`), captureBeyondViewport: false });
   }
   async function step(name, run) {
     try {
@@ -256,6 +261,8 @@ try {
       await page.keyboard.press('KeyB');
       await page.waitForSelector('.ag-workbench-panel[data-view="board"]:not([hidden])', { visible: true });
     });
+    await step('Account page signs in, edits the profile and gates deletion', () =>
+      checkAccountPage({ page, origin, artifacts, open, screenshot: async () => {} }));
   }
   await step('No remote services, document engine, or browser errors', () => {
     assert.deepEqual(forbidden, [], 'No remote services, document engine, or application entry point');

@@ -1,9 +1,22 @@
-import type { UpdateAllState } from '../../desktop-integration.ts';
-import type { UpdateSign, UpdateSignAction } from './update-sign.ts';
+import type { DesktopUpdateState, UpdateAllState } from '../../desktop-integration.ts';
+import type { PlanStatus } from '../plan/plan-types.ts';
+import { updateSign, type UpdateSign, type UpdateSignAction, type UpdateSignView } from './update-sign.ts';
 
 const NAME = { app: 'HamaEditor', claude: 'Claude', codex: 'Codex' };
 const STATUS = { available: '', manual: '직접 설치', queued: '대기', waiting: '채팅 종료 대기',
   running: '업데이트 중', ready: '재시작 대기', done: '완료', failed: '실패' };
+
+/** 홈에서는 로그인한 유료 사용자에게만 CLI 업데이트를 권한다. 앱 업데이트는 누구나 받는다. */
+export function homeUpdateSign(
+  all: UpdateAllState | null,
+  app: DesktopUpdateState | null,
+  plan: PlanStatus | null,
+  view: UpdateSignView,
+): UpdateSign | null {
+  return plan?.signedIn && plan.tier !== 'free' && plan.agentUnlocked
+    ? updateAllSign(all)
+    : updateSign(app, view);
+}
 
 /** One sign for the whole application-wide run, with stable keys during progress. */
 export function updateAllSign(state: UpdateAllState | null): UpdateSign | null {
