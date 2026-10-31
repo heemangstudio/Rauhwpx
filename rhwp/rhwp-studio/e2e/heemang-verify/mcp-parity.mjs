@@ -28,7 +28,7 @@ const SAMPLE = process.env.HV_SAMPLE || 'biz_plan.hwp';
 const TOKEN = 'parity';
 const CALL_TIMEOUT_MS = 15000;
 
-const ENGINE_INDEPENDENT = /^(browser_|project_|request_|ask_user_question$|download_file$|publish_artifact$|delegate_|register_copy_layout_template$|read_agent_instructions$|update_agent_instructions$|read_product_skill$|commit_product_skill$|list_harness_skills$|search_reference_files$|read_reference_chunk$|read_reference_image$)/;
+const ENGINE_INDEPENDENT = /^(browser_|project_|request_|ask_user_question$|download_file$|publish_artifact$|delegate_|register_copy_layout_template$|read_agent_instructions$|read_product_skill$|commit_product_skill$|list_harness_skills$|search_reference_files$|read_reference_chunk$|read_reference_image$)/;
 
 // ─── setup helpers ──────────────────────────────────────────────
 

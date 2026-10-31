@@ -18,9 +18,10 @@ test('작문 트리거는 문서 쓰기가 열린 단계에서만 붙는다', ()
   assert.equal(isBuildPhase('awaiting-approval'), false);
   assert.equal(humanizerPromptBlock('planning'), '');
   assert.match(humanizerPromptBlock('direct'), /<humanize_korean_trigger>/);
-  assert.equal(humanizerPromptBlock('planning', { language: 'en' }), '');
-  assert.match(humanizerPromptBlock('direct', { language: 'en' }), /<english_writing_discipline>/);
-  assert.match(humanizerPromptBlock('direct', { personalProfile: true }), /personal voice portrait/);
+  // 문서 글은 늘 한국어로 본다 — 영어 규율 경로는 없다.
+  assert.doesNotMatch(humanizerPromptBlock('direct', { language: 'en' }), /english_writing_discipline/);
+  assert.doesNotMatch(humanizerPromptBlock('direct'), /user_memory/);
+  assert.match(humanizerPromptBlock('direct', { personalProfile: true }), /user_memory block holds the user's own 문체 rules/);
 });
 
 test('모든 하네스의 시스템 브리프와 문서 편집 서브에이전트가 im-not-ai 룰북을 싣는다', () => {
@@ -52,6 +53,10 @@ test('promptContext 는 단계에 따라 규율을 켜고 끈다', async () => {
   assert.doesNotMatch(planning, /<humanize_korean_trigger>/);
   // 기본값은 바로 실행 채팅이므로 규율이 켜져 있어야 한다.
   assert.match(await registry.promptContext('표를 요약해 줘'), /<humanize_korean_trigger>/);
+  // 개인 문체는 기억(계정 단계)의 문체 규칙이 있을 때만 가리킨다. 예전 말투 블록은 없다.
+  const personal = await registry.promptContext('표를 요약해 줘', undefined, { phase: 'implementing', personalProfile: true });
+  assert.match(personal, /user_memory block holds the user's own 문체 rules/);
+  assert.doesNotMatch(build, /user_memory block|personal_writing_style/);
   await fs.rm(root, { recursive: true, force: true });
 });
 

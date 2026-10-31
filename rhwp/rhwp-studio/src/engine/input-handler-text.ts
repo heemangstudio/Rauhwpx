@@ -497,6 +497,11 @@ function syncCompositionDocument(this: any, preedit: string): void {
 }
 
 export function onCompositionStart(this: any): void {
+  try { startComposition.call(this); }
+  finally { if (!this.isComposing) this.eventBus.emit('user-correction-composition', false); }
+}
+
+function startComposition(this: any): void {
   // 브라우저가 한 조합 세션 안에서 start를 중복 전달하는 경우(IME 재동기화)가 있다.
   // 그때 진행 중인 세션을 중간 커밋하면 자모 단위로 잘린 글자(ㅂ, ㅌ 등)가 확정돼
   // 'ㅂ비고' 같은 손상이 생긴다. anchor가 살아 있으면 세션을 그대로 이어간다 —
@@ -511,6 +516,9 @@ export function onCompositionStart(this: any): void {
   if (this.readOnly || this.userEditingLocked || this.agentTemplateLocked) {
     this.resetTextareaBuffer();
     return;
+  }
+  if (!this.cursor.isInHeaderFooter() && !this.cursor.isInFootnote()) {
+    this.eventBus.emit('user-correction-composition', true, this.cursor.getPosition());
   }
   // 선택 영역이 있으면 삭제 후 조합 시작
   if (
@@ -584,6 +592,11 @@ export function onCompositionUpdate(this: any, event: CompositionEvent): void {
 }
 
 export function onCompositionEnd(this: any, event?: CompositionEvent): void {
+  try { finishComposition.call(this, event); }
+  finally { this.eventBus.emit('user-correction-composition', false); }
+}
+
+function finishComposition(this: any, event?: CompositionEvent): void {
   try {
   const anchor = this.compositionAnchor;
   const previousPreedit = this.imeSession.preedit;

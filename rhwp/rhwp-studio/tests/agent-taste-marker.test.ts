@@ -16,7 +16,7 @@ import {
   type ChatThread,
   type ThreadTasteMarker,
 } from '../src/agent/threads.ts';
-import { readTasteLearned } from '../src/agent/taste.ts';
+import { readTasteLearned, tasteItemChange } from '../src/agent/taste.ts';
 import type { TasteLearned } from '../src/agent/types.ts';
 
 const mem = new Map<string, string>();
@@ -96,14 +96,12 @@ test('the same learn is kept once and a second learn of the same turn joins its 
     learnId: 'learn_2',
     items: [{ op: 'add', entryId: 'mem_d', text: '표 제목은 굵게', origin: 'learned' }],
     changes: [{ op: 'add', entryId: 'mem_d' }],
-    proposal: { draftId: 'draft-1' },
   }));
   assert.ok(merged);
   const markers = tasteMarkers(thread);
   assert.equal(markers.length, 1);
   assert.deepEqual(markers[0]!.items.map((item) => item.entryId), ['mem_a', 'mem_b', 'mem_c', 'mem_d']);
   assert.equal(markers[0]!.changes.length, 4);
-  assert.equal(markers[0]!.proposalDraftId, 'draft-1');
   assert.equal(addTasteMarker(thread, learned({ learnId: 'learn_2' })), null, 'the merged learn is known too');
   assert.equal(findTasteMarker(thread.messages, 'learn_2'), markers[0]);
 });
@@ -111,7 +109,7 @@ test('the same learn is kept once and a second learn of the same turn joins its 
 test('undo state and the opaque changes survive persistence, so undo still works after a reload', () => {
   mem.clear();
   const thread = threadWithTwoTurns();
-  const marker = addTasteMarker(thread, learned({ proposal: { draftId: 'draft-1' } }))!;
+  const marker = addTasteMarker(thread, learned())!;
   assert.ok(settleTasteUndo(marker, { reverted: ['mem_a'], skipped: ['mem_b', 'mem_unknown'] }));
   assert.equal(settleTasteUndo(marker, { reverted: ['mem_a'], skipped: [] }), false, 'nothing new to record');
   upsertThread(thread);
@@ -121,7 +119,6 @@ test('undo state and the opaque changes survive persistence, so undo still works
   assert.deepEqual(restored.changes, learned().changes);
   assert.deepEqual(restored.items, learned().items);
   assert.equal(restored.turnId, 'hub-turn-1');
-  assert.equal(restored.proposalDraftId, 'draft-1');
 });
 
 test('malformed stored taste dividers and items are dropped on load', () => {
@@ -160,9 +157,29 @@ test('taste dividers never reach provider history', () => {
 test('a taste-learned frame with no readable item is ignored', () => {
   const frame = { ...learned(), items: [{ op: 'add', entryId: '', text: 'x', origin: 'learned' }] } as unknown as Record<string, unknown>;
   assert.equal(readTasteLearned(frame), null);
-  const ok = readTasteLearned({ ...learned(), turnId: 42, proposal: { draftId: 'd' } } as unknown as Record<string, unknown>);
+  const ok = readTasteLearned({ ...learned(), turnId: 42 } as unknown as Record<string, unknown>);
   assert.equal(ok?.turnId, null);
-  assert.deepEqual(ok?.proposal, { draftId: 'd' });
+  assert.equal('proposal' in (ok ?? {}), false, 'AGENTS.md proposals are gone');
+});
+
+test('account-tier items keep their change, strength and event ids; older items derive the change from op', () => {
+  const frame = {
+    ...learned(),
+    items: [
+      { op: 'update', entryId: 'rule_1', text: '본문은 한다체', origin: 'learned', change: 'escalated', tier: 'account', kind: 'style', strength: { from: 2, to: 9 }, eventIds: ['ev_1', 7] },
+      { op: 'add', entryId: 'mem_x', text: 'x', origin: 'learned', change: 'bogus' },
+    ],
+  } as unknown as Record<string, unknown>;
+  const items = readTasteLearned(frame)!.items;
+  assert.equal(items[0]!.change, 'escalated');
+  assert.equal(items[0]!.tier, 'account');
+  assert.deepEqual(items[0]!.strength, { from: 2, to: 5 }, 'strength stays within 0..5');
+  assert.deepEqual(items[0]!.eventIds, ['ev_1']);
+  assert.equal(items[1]!.change, undefined, 'an unknown change is dropped');
+  assert.deepEqual(
+    [{ op: 'add' }, { op: 'update' }, { op: 'remove' }].map((item) => tasteItemChange(item as never)),
+    ['new', 'updated', 'retired'],
+  );
 });
 
 /** 문서 하나에 묶인 대화 한 번짜리 채팅 — 최근 활동 순서는 at 이 정한다. */

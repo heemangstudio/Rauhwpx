@@ -1,6 +1,6 @@
 /**
  * 데스크톱 호스팅 Rau API(rhwpDesktop.rau)의 미리보기 대역. `?rau=free|rau|trial|exhausted|upgrade` (기본 off).
- * free 는 Rau 요금제가 아닌 상태(설정 → Rau-0.1 의 Rau 줄에 업그레이드 단추), rau 는 요금제 크레딧이 남은 상태,
+ * free 는 Rau 요금제가 아닌 상태, rau 는 요금제 크레딧이 남은 상태,
  * trial 은 7일 체험 중, exhausted 는 이번 달 크레딧을 다 쓴 상태다. upgrade 는 free 에 더해 허브가 거절을 받은 것처럼
  * 입력창 위 업그레이드 칩을 띄운다. 업그레이드 페이지는 열지 않고 보고만 한다.
  */

@@ -17,7 +17,8 @@ import { createPreviewBrowser } from './mock-browser.ts';
 import { createPreviewProjects } from './mock-projects.ts';
 import { createTurnFailureCollector } from '../agent/provider-failure.ts';
 import { createMockDocumentMemory } from './mock-document-memory.ts';
-import { createMockTaste, sampleTasteDraft } from './mock-taste.ts';
+import { createMockTaste } from './mock-taste.ts';
+import { createMockUserMemory, userMemoryControls } from './mock-user-memory.ts';
 
 export const scenarios = [
   'chat',
@@ -467,6 +468,7 @@ export function createMockBridge(
     listeners.forEach((listener) => listener(event));
   const documentMemory = createMockDocumentMemory(emit, () => chatDocumentId);
   const taste = createMockTaste(emit);
+  const userMemory = createMockUserMemory(emit, () => connection === 'connected');
   /** 선물 프록시의 Claude 모델. 허브처럼 내 키의 모델과 따로 두고 처음에는 Sonnet·Haiku·Opus 를 고른다. */
   const giftCatalog = [
     { id: 'anthropic/claude-sonnet-5.5', name: 'Claude Sonnet 5.5', prompt: 0.000003, completion: 0.000015 },
@@ -643,10 +645,6 @@ export function createMockBridge(
     data.templates.revision++;
     emit({ type: 'templates-catalog', catalog: data.templates });
   };
-  const writingResult = () =>
-    request((requestId) =>
-      emit({ type: 'writing-style-result', requestId, status: data.writing }),
-    );
   const terminalOptions = ['Anthropic', 'OpenAI'];
   let terminalRun: { id: string; agent: T.AgentName; step: number; choice: number } | null = null;
   const terminalMenu = () => `\x1b[2J\x1b[H\x1b[36m◆  ${terminalRun?.agent ?? 'CLI'} 로그인\x1b[0m\r\n\r\n`
@@ -1993,12 +1991,13 @@ export function createMockBridge(
         emit({ type: 'skill-commit-result', requestId, outcome });
         if (outcome.ok) skillsChanged();
       }),
-    requestWritingStyleStatus: () =>
-      request((requestId) =>
-        emit({ type: 'writing-style-status', requestId, status: data.writing }),
-      ),
     ...documentMemory,
     ...taste,
+    requestUserMemory: userMemory.requestUserMemory,
+    startStyleLearn: userMemory.startStyleLearn,
+    cancelStyleLearn: userMemory.cancelStyleLearn,
+    requestStyleLearnStatus: userMemory.requestStyleLearnStatus,
+    answerStyleLearnLegacy: userMemory.answerStyleLearnLegacy,
     requestAgentInstructions: async () => data.instructions,
     saveAgentInstructions: async (content, expectedRevision) => {
       if (expectedRevision !== data.instructions.revision)
@@ -2014,61 +2013,6 @@ export function createMockBridge(
         changedBy: 'preview',
       });
       return data.instructions;
-    },
-    confirmAgentInstructionsDraft: async (draft) => {
-      const status = await bridge.saveAgentInstructions(draft.content, draft.expectedRevision);
-      // 허브처럼 적용한 변경안을 거둔다.
-      emit({ type: 'agent-instructions-draft-cleared', draftId: draft.id, outcome: 'confirmed' });
-      return status;
-    },
-    rejectAgentInstructionsDraft: async (draft) => {
-      emit({
-        type: 'agent-instructions-draft-cleared',
-        draftId: draft.id,
-        outcome: 'rejected',
-      });
-      return true;
-    },
-    requestWritingStyleCatalog: async () => data.writingCatalog,
-    calibrateWritingStyle: (input) =>
-      request((requestId) => {
-        emit({
-          type: 'writing-style-progress',
-          requestId,
-          state: 'analyzing',
-          completed: 0,
-          total: input.files.length,
-        });
-        later(() => {
-          Object.assign(data.writing, {
-            active: true,
-            language: input.language,
-            agent: input.agent,
-            model: input.model,
-            updatedAt: timestamp,
-            sourceCount:
-              (input.append ? data.writing.sourceCount : 0) +
-              input.files.length,
-            pageEstimate: input.files.length * 3,
-            summary: input.language === 'en'
-              ? 'You explain the point plainly, then add context where the reader needs it. The tone is calm and direct.'
-              : '요점을 먼저 전하고, 독자가 궁금해할 부분을 차근차근 풀어 쓰는 편이에요. 차분하고 담백한 말투예요.',
-            sources: input.files.map((file) => ({
-              name: file.name,
-              size: file.size,
-              addedAt: timestamp,
-            })),
-          });
-          emit({
-            type: 'writing-style-result',
-            requestId,
-            status: data.writing,
-          });
-        }, 700);
-      }),
-    setWritingStyleInstruction: (instruction) => {
-      data.writing.additionalInstruction = instruction;
-      return writingResult();
     },
     answerUserQuestion: (interactionId, answers) =>
       request((responseId) => {
@@ -2124,6 +2068,7 @@ export function createMockBridge(
       leaseListeners.clear();
       documentMemory.dispose();
       taste.dispose();
+      userMemory.dispose();
     },
   };
   /**
@@ -2184,6 +2129,7 @@ export function createMockBridge(
       state,
       attempt: state === 'disconnected' ? 4 : 0,
     });
+    if (state === 'connected') userMemory.welcome();
   }
   function addReview() {
     const range = (paragraph: number): T.DocRange => ({
@@ -2358,22 +2304,26 @@ export function createMockBridge(
     }),
     /** 기록에서 배우기의 결과(taste-history-learned)를 보낸다 — 턴에 묶이지 않는다. */
     emitTasteHistoryLearned: (learned: T.TasteHistoryLearned) => emit({ type: 'taste-history-learned', ...learned }),
-    /** 허브가 Rau-0.1 변경안(agent-instructions-draft)을 이 id 로 보낸다. */
-    emitTasteDraft: (id: string) => emit({ type: 'agent-instructions-draft', draft: { ...sampleTasteDraft(data.instructions), id } }),
-    /** 에이전트의 update_agent_instructions 초안 — 지금 채팅의 대화 흐름에 승인 카드로 뜬다. */
-    emitAgentInstructionsDraft: (id = 'preview-agent-draft') => emit({
-      type: 'agent-instructions-draft',
-      draft: {
-        ...sampleTasteDraft(data.instructions),
-        id,
-        content: `${data.instructions.content}\n## 문서 작성\n- 긴 글을 새로 쓰거나 크게 고친 뒤에는 그 범위에 휴머나이즈 패스를 돈다.\n- 사실, 수치, 고유명사는 바꾸지 않는다.`,
-        reason: '긴 글을 쓴 뒤 휴머나이즈 패스를 돌려 달라는 요청이 반복됐습니다.',
-        requestedBy: 'claude',
-        threadId,
-        origin: 'agent',
-        confirmationToken: `${id}-token`,
-      },
-    }),
+    /**
+     * 한 턴의 학습이 문서 기억과 계정 기억(Rau 요금제)을 함께 바꾼 taste-learned. 계정 줄은 mock-user-memory 에
+     * 실제로 적용되고(용어 승격·문체 보강·약한 규칙 감쇄) eventIds 를 싣는다. threadId 를 생략하면 이 브리지의 채팅.
+     */
+    emitAccountTasteLearned: (target: string = threadId) => {
+      const documentId = chatDocumentId ?? 'preview-proposal';
+      const stamp = Date.now().toString(36).slice(-8).padStart(8, '0');
+      const entryId = `mem_live${stamp}`;
+      const items: T.TasteLearnItem[] = [
+        { op: 'add', entryId, text: '표 아래 출처는 작게 쓴다', origin: 'learned', change: 'new', tier: 'document', kind: 'style', strength: { from: 0, to: 1 } },
+        ...userMemoryControls.learnFromChat('사업 제안서'),
+      ];
+      const learned: T.TasteLearned = {
+        threadId: target, turnId: null, documentId, key: `mem-${documentId}`, learnId: `learn_${stamp}`,
+        items, changes: [{ op: 'add', entryId }],
+      };
+      // 허브는 기억을 바꾼 뒤(user-memory) 구분선을 보낸다.
+      later(() => emit({ type: 'taste-learned', ...learned }), 40);
+      return learned;
+    },
     /** 다음 사용자 메시지를 허브가 이 코드로 거절하게 한다. */
     rejectNextMessage: (code = 'AGENT_BUSY') => { rejectNext = code; },
     /** 허브가 같은 이벤트를 다시 보내는 경우(재전송·중복)를 흉내 낸다. */
@@ -2387,10 +2337,8 @@ export function createMockBridge(
       emit({ type: 'usage-report', usage: data.usage });
       bridge.listSkills();
       if (!options.liveChat?.deferWelcome) deliverWelcome();
-      // `taste=sample`: 표본 구분선이 가리키는 Rau-0.1 변경안 — 허브가 붙을 때 다시 보내는 것과 같다.
-      if (new URLSearchParams(location.search).get('taste') === 'sample') {
-        emit({ type: 'agent-instructions-draft', draft: sampleTasteDraft(data.instructions) });
-      }
+      // 허브가 붙으면 계정 기억과 도는 문체 학습을 알린다.
+      userMemory.welcome();
     },
     deliverWelcome,
     /** 선물 상태가 바뀌면 허브처럼 Pi 상태를 다시 보낸다. */

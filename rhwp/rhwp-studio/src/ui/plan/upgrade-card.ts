@@ -129,7 +129,7 @@ export function createPlanChooser(options: PlanChooserOptions): PlanChooser {
     if (!account.api?.startRauTrial) return 'none';
     const current = account.status();
     if (!current || current.state !== 'signed_in') return current?.available === false ? 'none' : 'available';
-    if (current.trial?.state === 'active' && current.plan.tier === 'rau') return 'active';
+    if (current.trial?.state === 'active' && current.plan.rau?.source === 'trial') return 'active';
     if (current.trial?.state === 'available' && current.plan.tier !== 'rau') return 'available';
     return 'none';
   }

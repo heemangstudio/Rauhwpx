@@ -51,7 +51,7 @@ test('updates are newline-normalized and reject stale revisions', async (t) => {
   );
 });
 
-test('revision persists across restarts and keeps old drafts stale', async (t) => {
+test('revision persists across restarts and keeps stale editor saves out', async (t) => {
   const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-agent-instructions-'));
   t.after(() => fs.rm(rootDir, { recursive: true, force: true }));
   const timestamps = [
@@ -72,7 +72,7 @@ test('revision persists across restarts and keeps old drafts stale', async (t) =
   );
 });
 
-test('a missing AGENTS.md advances persisted revision and rejects stale drafts', async (t) => {
+test('a missing AGENTS.md advances persisted revision and rejects stale saves', async (t) => {
   const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-agent-instructions-'));
   t.after(() => fs.rm(rootDir, { recursive: true, force: true }));
   const store = await new AgentInstructionsStore({ rootDir }).init();
@@ -104,7 +104,7 @@ test('Windows startup recovers instruction state left at the replacement gap', a
   assert.equal(recovered.snapshot().revision, 2);
 });
 
-test('corrupt revision metadata is repaired without reviving stale drafts', async (t) => {
+test('corrupt revision metadata is repaired without reviving stale saves', async (t) => {
   const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-agent-instructions-'));
   t.after(() => fs.rm(rootDir, { recursive: true, force: true }));
   const store = await new AgentInstructionsStore({ rootDir }).init();
@@ -308,4 +308,25 @@ test('Windows file-id validation rejects a symlink replacement during loading', 
     new AgentInstructionsStore({ rootDir, platform: 'win32', fsApi: racingFs }).init(),
     (error) => error?.code === 'INSTRUCTIONS_FILE_INVALID',
   );
+});
+
+test('the old default that told agents to edit AGENTS.md is replaced once; edited files are left alone', async (t) => {
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-agent-instructions-'));
+  t.after(() => fs.rm(rootDir, { recursive: true, force: true }));
+  const store = await new AgentInstructionsStore({ rootDir }).init();
+  assert.match(DEFAULT_AGENT_INSTRUCTIONS, /사용자만 고칩니다/);
+  assert.doesNotMatch(DEFAULT_AGENT_INSTRUCTIONS, /지시 도구|제안할 수 있습니다/);
+  const oldDefault = DEFAULT_AGENT_INSTRUCTIONS.replace(
+    /- 이 파일은 사용자만 고칩니다[^\n]*\n- 사용자가 앞으로[^\n]*\n/,
+    '- 사용자가 이 지시를 바꿔 달라고 요청하면 앱의 지시 도구를 통해 전체 수정본을 제출하세요. HamaEditor는 사용자에게 변경안을 보여 주고, 사용자가 승인한 뒤에만 저장합니다.\n'
+      + '- 사용자가 같은 선호를 반복해서 말하거나 에이전트의 행동을 바로잡은 경우에는 지속해서 적용할 것이 명확한 선호를 선제적으로 제안할 수 있습니다. 변경은 작고 구체적으로 유지하고, 무엇을 제안했는지 사용자에게 알리세요.\n'
+      + '- 일회성 작업 세부 정보, 비밀, 인증 정보 또는 추론한 민감한 사실은 저장하지 마세요. 범위가 넓거나 모호한 변경을 하기 전에는 사용자에게 확인하세요.\n',
+  );
+  const written = await store.update(oldDefault, { expectedRevision: store.snapshot().revision });
+  const reopened = await new AgentInstructionsStore({ rootDir }).init();
+  assert.equal(reopened.snapshot().content, DEFAULT_AGENT_INSTRUCTIONS);
+  assert.equal(reopened.snapshot().revision, written.revision + 1);
+  const edited = await reopened.update(`${oldDefault}- 내가 더한 줄\n`, { expectedRevision: reopened.snapshot().revision });
+  const again = await new AgentInstructionsStore({ rootDir }).init();
+  assert.equal(again.snapshot().content, edited.content);
 });

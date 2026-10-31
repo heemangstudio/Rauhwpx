@@ -42,7 +42,7 @@ test('chat grants authorize only their app category and preserve plan approval a
   assert.throws(() => authorizeToolCall({ ...edit, chatPermissionGrants: ['local-execution'] }), { code: 'QUESTION_WRITE_BLOCKED' });
   assert.throws(() => authorizeToolCall({ ...edit, chatPermissionGrants: ['document-edit'], receivedEpoch: 6 }), { code: 'STALE_CAPABILITY_EPOCH' });
   assert.throws(() => authorizeToolCall({ ...edit, workflow: 'plan', phase: 'planning', chatPermissionGrants: ['document-edit'] }), { code: 'PLAN_WRITE_BLOCKED' });
-  assert.throws(() => authorizeToolCall({ ...question, tool: 'update_agent_instructions', category: 'instruction-write', chatPermissionGrants: ['document-edit'] }), { code: 'QUESTION_WRITE_BLOCKED' });
+  assert.throws(() => authorizeToolCall({ ...question, tool: 'commit_product_skill', category: 'instruction-write', chatPermissionGrants: ['document-edit'] }), { code: 'QUESTION_WRITE_BLOCKED' });
   const project = { ...question, tool: 'project_edit', category: 'project-write' };
   assert.throws(() => authorizeToolCall(project), { code: 'PROJECT_CHAT_EDIT_DISABLED' });
   assert.equal(authorizeToolCall({ ...project, chatPermissionGrants: ['project-edit'] }), true);
@@ -220,11 +220,11 @@ test('plan document writes are blocked until implementing', () => {
     expectedEpoch: 7, receivedEpoch: 7,
   }), true);
   assert.throws(() => authorizeToolCall({
-    category: 'instruction-write', tool: 'update_agent_instructions', workflow: 'plan', phase: 'planning',
+    category: 'instruction-write', tool: 'commit_product_skill', workflow: 'plan', phase: 'planning',
     expectedEpoch: 7, receivedEpoch: 7,
   }), (error) => error.code === 'PLAN_WRITE_BLOCKED');
   assert.equal(authorizeToolCall({
-    category: 'instruction-write', tool: 'update_agent_instructions', workflow: 'plan', phase: 'implementing',
+    category: 'instruction-write', tool: 'commit_product_skill', workflow: 'plan', phase: 'implementing',
     expectedEpoch: 7, receivedEpoch: 7,
   }), true);
 });

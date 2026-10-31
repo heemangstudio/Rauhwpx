@@ -49,13 +49,22 @@ function errorFields(error) {
 }
 
 /**
- * 허브의 {type:'rhwp-rau-request', id, operation:'learn', prompt} 에 답한다. 다른 메시지면 null.
- * 성공: {ok:true, value:{text, model}}. 실패: {ok:false, error, code, ...}.
+ * 허브의 {type:'rhwp-rau-request', id, operation:'learn'|'status', prompt?} 에 답한다. 다른 메시지면 null.
+ * learn 성공: {ok:true, value:{text, model}}. status 성공: {ok:true, value: RauStatus} — Studio 의 rau:status 와 같은 답이고
+ * 허브는 이것으로 기억(계정 단계)을 실을지 정한다. 실패: {ok:false, error, code, ...}.
  */
 export async function handleRauRequest({ client, currentLease }, message) {
   if (!message || message.type !== 'rhwp-rau-request' || typeof message.id !== 'string') return null;
   const response = { type: 'rhwp-rau-response', id: message.id };
   try {
+    if (message.operation === 'status') {
+      const status = await statusFor({ client, currentLease });
+      if (!status.ok) throw Object.assign(new Error('Rau status failed.'), { code: status.code });
+      const { ok: _ok, ...value } = status;
+      response.ok = true;
+      response.value = value;
+      return response;
+    }
     if (message.operation !== 'learn') throw Object.assign(new Error('Unsupported Rau operation.'), { code: 'RAU_UNSUPPORTED' });
     const lease = await currentLease();
     if (!lease) throw Object.assign(new Error('No license lease.'), { code: NO_LICENSE });

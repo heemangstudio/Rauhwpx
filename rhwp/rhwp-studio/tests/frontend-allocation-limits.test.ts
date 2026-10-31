@@ -39,7 +39,7 @@ test('dialog uploads read through their size limit', () => {
   for (const [relativePath, call] of [
     ['../src/versioning/controller.ts', 'readBlobBytesWithLimit(file, INSERTED_IMAGE_MAX_BYTES'],
     ['../src/merge/manual-conflict-editor.ts', 'readBlobBytesWithLimit(file, MAX_IMAGE_UPLOAD_BYTES'],
-    ['../src/ui/agent-sidebar/writing-style-calibration.ts', 'readBlobBytesWithLimit(file, MAX_FILE_BYTES'],
+    ['../src/ui/agent-sidebar/settings-rau.ts', 'readBlobBytesWithLimit(file, STYLE_LEARN_MAX_FILE_BYTES'],
     ['../src/ui/compare-dialog.ts', 'readBlobBytesWithLimit(selected, UNTRUSTED_DOCUMENT_MAX_BYTES'],
   ]) {
     const code = source(relativePath);

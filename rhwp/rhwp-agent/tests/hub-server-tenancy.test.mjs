@@ -199,6 +199,7 @@ test('two active provider turns route overlapping MCP ids only to their owning S
       RHWP_TEMPLATES_DIR: path.join(workRoot, 'templates'),
       RHWP_AGENT_INSTRUCTIONS_DIR: path.join(workRoot, 'agent-instructions'),
       RHWP_PI_DIR: piRoot,
+      RHWP_WRITING_STYLE_DIR: path.join(workRoot, 'writing-style'),
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -522,77 +523,28 @@ test('two active provider turns route overlapping MCP ids only to their owning S
   });
   assert.equal((await instructionsToolRead).result.revision, 2);
 
+  // AGENTS.md 는 사용자만 고친다 — 쓰기 도구는 없고, 옛 초안 확인 프레임은 아무것도 쓰지 않는다.
   const instructionsToolUpdated = waitForMessage(alphaMcp, (msg) => msg.type === 'tool-result' && msg.id === 5);
-  const instructionsDraftProposed = waitForMessage(alpha, (msg) => msg.type === 'agent-instructions-draft');
   sendFrame(alphaMcp, {
     type: 'tool-call', id: 5, tool: 'update_agent_instructions',
-    args: {
-      content: '# 내 지시\n\n- 핵심부터 답하기\n- 표는 비교에 도움이 될 때만 쓰기\n',
-      expectedRevision: 2,
-      reason: '반복된 응답 형식 선호를 저장',
-    },
+    args: { content: '# 내 지시\n\n- 에이전트가 쓴 줄\n', expectedRevision: 2 },
     workflow: 'direct', capabilityEpoch: alphaSession.capabilityEpoch,
   });
-  const draftToolResult = (await instructionsToolUpdated).result;
-  assert.equal(draftToolResult.changed, false);
-  assert.equal(draftToolResult.pendingConfirmation, true);
-  assert.equal(draftToolResult.revision, 2);
-  const proposedDraft = (await instructionsDraftProposed).draft;
-  assert.equal(proposedDraft.id, draftToolResult.draftId);
-  assert.equal(proposedDraft.expectedRevision, 2);
-  assert.equal(typeof proposedDraft.confirmationToken, 'string');
+  assert.equal((await instructionsToolUpdated).error?.code, 'UNKNOWN_TOOL');
+  sendFrame(alpha, {
+    type: 'agent-instructions-draft-confirm',
+    requestId: 'instructions-confirm-legacy',
+    draftId: 'draft-1',
+    confirmationToken: 'token',
+  });
+  const instructionsAfter = waitForMessage(alpha, (msg) => (
+    msg.type === 'agent-instructions' && msg.requestId === 'instructions-read-after'
+  ));
+  sendFrame(alpha, { type: 'agent-instructions-request', requestId: 'instructions-read-after' });
+  assert.equal((await instructionsAfter).status.revision, 2);
   assert.equal(
     readFileSync(path.join(workRoot, 'agent-instructions', 'AGENTS.md'), 'utf8'),
     '# 내 지시\n\n- 핵심부터 답하기\n',
-  );
-
-  const invalidConfirmation = waitForMessage(alpha, (msg) => (
-    msg.type === 'agent-instructions-error' && msg.requestId === 'instructions-confirm-invalid-token'
-  ));
-  sendFrame(alpha, {
-    type: 'agent-instructions-draft-confirm',
-    requestId: 'instructions-confirm-invalid-token',
-    draftId: proposedDraft.id,
-    confirmationToken: 'not-the-issued-capability',
-  });
-  assert.equal((await invalidConfirmation).code, 'INSTRUCTIONS_CONFIRMATION_INVALID');
-
-  const crossSessionConfirmation = waitForMessage(beta, (msg) => (
-    msg.type === 'agent-instructions-error' && msg.requestId === 'instructions-confirm-wrong-session'
-  ));
-  sendFrame(beta, {
-    type: 'agent-instructions-draft-confirm',
-    requestId: 'instructions-confirm-wrong-session',
-    draftId: proposedDraft.id,
-    confirmationToken: proposedDraft.confirmationToken,
-  });
-  assert.equal((await crossSessionConfirmation).code, 'INSTRUCTIONS_CONFIRMATION_INVALID');
-
-  const instructionsConfirmed = waitForMessage(alpha, (msg) => (
-    msg.type === 'agent-instructions' && msg.requestId === 'instructions-confirm-1'
-  ));
-  const instructionsDraftCleared = waitForMessage(alpha, (msg) => (
-    msg.type === 'agent-instructions-draft-cleared'
-      && msg.draftId === proposedDraft.id
-      && msg.outcome === 'confirmed'
-  ));
-  const agentInstructionsBroadcast = waitForMessage(beta, (msg) => (
-    msg.type === 'agent-instructions'
-      && msg.changedBy === 'agent-confirmed:pi'
-      && msg.status?.revision === 3
-  ));
-  sendFrame(alpha, {
-    type: 'agent-instructions-draft-confirm',
-    requestId: 'instructions-confirm-1',
-    draftId: proposedDraft.id,
-    confirmationToken: proposedDraft.confirmationToken,
-  });
-  assert.equal((await instructionsConfirmed).status.revision, 3);
-  assert.equal((await instructionsDraftCleared).outcome, 'confirmed');
-  assert.equal((await agentInstructionsBroadcast).status.revision, 3);
-  assert.equal(
-    readFileSync(path.join(workRoot, 'agent-instructions', 'AGENTS.md'), 'utf8'),
-    '# 내 지시\n\n- 핵심부터 답하기\n- 표는 비교에 도움이 될 때만 쓰기\n',
   );
   const alphaTemplateResult = waitForMessage(alphaMcp, (msg) => msg.type === 'tool-result' && msg.id === 6);
   const betaTemplateResult = waitForMessage(betaMcp, (msg) => msg.type === 'tool-result' && msg.id === 6);
@@ -787,6 +739,7 @@ test('owner watchdog disposes the hub when its desktop owner exits', { timeout: 
       RHWP_ORPHAN_IDLE_SHUTDOWN_MS: '250',
       RHWP_WORK_DIR: workRoot, RHWP_REFERENCES_DIR: path.join(workRoot, 'references'), RHWP_PROJECTS_DIR: path.join(workRoot, 'projects'),
       RHWP_AGENT_INSTRUCTIONS_DIR: path.join(workRoot, 'agent-instructions'),
+      RHWP_WRITING_STYLE_DIR: path.join(workRoot, 'writing-style'),
       RHWP_OWN_WORK_DIR: '1',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -824,6 +777,7 @@ test('owner watchdog has an absolute deadline even while an orphan socket stays 
       RHWP_ORPHAN_HARD_SHUTDOWN_MS: '700',
       RHWP_WORK_DIR: workRoot, RHWP_REFERENCES_DIR: path.join(workRoot, 'references'), RHWP_PROJECTS_DIR: path.join(workRoot, 'projects'),
       RHWP_AGENT_INSTRUCTIONS_DIR: path.join(workRoot, 'agent-instructions'),
+      RHWP_WRITING_STYLE_DIR: path.join(workRoot, 'writing-style'),
       RHWP_OWN_WORK_DIR: '1',
     },
     stdio: ['ignore', 'pipe', 'pipe'],

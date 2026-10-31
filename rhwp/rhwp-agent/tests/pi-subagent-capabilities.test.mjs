@@ -37,7 +37,7 @@ test('researcher capabilities are read-only and never expose root control tools'
   assert.equal(registration.allowedTools.has('browser_request_account'), false);
   assert.equal(registration.allowedTools.has('project_edit'), false);
   assert.equal(registration.allowedTools.has('apply_edits'), false);
-  assert.equal(registration.allowedTools.has('update_agent_instructions'), false);
+  assert.equal(registration.allowedTools.has('commit_product_skill'), false);
   assert.equal(registration.allowedTools.has('ask_user_question'), false);
   assert.equal(registration.allowedTools.has('delegate_copy_layout'), false);
 });
@@ -61,7 +61,7 @@ test('editor capabilities inherit the current parent phase without root-only con
 
   assert.equal(direct.allowedTools.has('apply_edits'), true);
   assert.equal(direct.allowedTools.has('ask_user_question'), false);
-  assert.equal(direct.allowedTools.has('update_agent_instructions'), false);
+  assert.equal(direct.allowedTools.has('commit_product_skill'), false);
   assert.equal(direct.allowedTools.has('publish_artifact'), false);
   assert.equal(direct.allowedTools.has('delegate_copy_layout'), false);
   assert.equal(planning.allowedTools.has('apply_edits'), false);

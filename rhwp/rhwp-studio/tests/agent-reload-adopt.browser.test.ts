@@ -98,7 +98,7 @@ async function mount(page: Page, options: MountOptions): Promise<void> {
       };
     }
     const { completeInitialSetup } = await import('/src/ui/initial-setup/state.ts');
-    completeInitialSetup({ providerStep: 'configured', calibrationStep: 'skipped' });
+    completeInitialSetup({ providerStep: 'configured' });
     const { initAgentSidebar } = await import('/src/ui/agent-sidebar/index.ts');
     const { createMockBridge } = await import('/src/sidebar-preview/mock-bridge.ts');
     const { EventBus } = await import('/src/core/event-bus.ts');

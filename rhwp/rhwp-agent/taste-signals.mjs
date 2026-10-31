@@ -6,7 +6,7 @@
 //
 // 지금은 documentId 로 묶는다. 문서 기억 키(repositoryId 등)로 옮기는 일은 학습기가 맡는다.
 
-export const REVIEW_SIGNAL_KINDS = Object.freeze(['accepted', 'rejected', 'rewritten', 'undone', 'history']);
+export const REVIEW_SIGNAL_KINDS = Object.freeze(['accepted', 'rejected', 'rewritten', 'undone', 'history', 'correction']);
 export const MAX_SIGNALS_PER_FRAME = 20;
 export const MAX_SIGNAL_TEXT = 600;
 export const MAX_SIGNALS_PER_DOCUMENT = 100;
@@ -40,6 +40,12 @@ export function normalizeReviewSignal(raw) {
   if (raw.paraIdx !== undefined && !(Number.isSafeInteger(raw.paraIdx) && raw.paraIdx >= 0)) return null;
   if (raw.turnId !== undefined && normalizeId(raw.turnId) === null) return null;
   const signal = { kind: raw.kind, at: new Date(Date.parse(raw.at)).toISOString() };
+  if (raw.kind === 'correction') {
+    const evidenceId = normalizeId(raw.evidenceId);
+    const passageId = normalizeId(raw.passageId);
+    if (!evidenceId || !passageId) return null;
+    signal.evidenceId = evidenceId; signal.passageId = passageId;
+  }
   const before = normalizeText(raw.before);
   const after = normalizeText(raw.after);
   const userText = normalizeText(raw.userText);
@@ -50,7 +56,7 @@ export function normalizeReviewSignal(raw) {
   if (raw.turnId !== undefined) signal.turnId = normalizeId(raw.turnId);
   // 종류마다 학습에 쓸 글이 있어야 한다. 되돌림은 글 없이도 그 사실이 신호다.
   if ((signal.kind === 'accepted' || signal.kind === 'rejected') && !signal.before && !signal.after) return null;
-  if ((signal.kind === 'rewritten' || signal.kind === 'history') && (!signal.after || !signal.userText)) return null;
+  if ((signal.kind === 'rewritten' || signal.kind === 'history' || signal.kind === 'correction') && (!signal.after || !signal.userText)) return null;
   return signal;
 }
 
@@ -79,6 +85,7 @@ export function createTasteSignalBuffer({ perDocument = MAX_SIGNALS_PER_DOCUMENT
   /** documentId → [{ ...signal, threadId }] (Map 순서 = 최근에 신호가 온 순서) */
   const buffers = new Map();
   const listeners = new Set();
+  const seen = new Set();
 
   function ingest(msg) {
     const frame = normalizeReviewSignalFrame(msg);
@@ -87,7 +94,15 @@ export function createTasteSignalBuffer({ perDocument = MAX_SIGNALS_PER_DOCUMENT
     if (frame.signals.length === 0) return { ok: true, documentId: frame.documentId, accepted: 0, dropped };
     const buffer = buffers.get(frame.documentId) ?? [];
     buffers.delete(frame.documentId);
-    buffer.push(...frame.signals.map((signal) => ({ ...signal, threadId: frame.threadId })));
+    for (const signal of frame.signals) {
+      if (signal.kind === 'correction') {
+        const id = `${frame.documentId}:${signal.evidenceId}`;
+        if (seen.has(id)) continue;
+        seen.add(id);
+        while (seen.size > 5000) seen.delete(seen.values().next().value);
+      }
+      buffer.push({ ...signal, threadId: frame.threadId });
+    }
     if (buffer.length > perDocument) buffer.splice(0, buffer.length - perDocument);
     buffers.set(frame.documentId, buffer);
     while (buffers.size > maxDocuments) buffers.delete(buffers.keys().next().value);
@@ -110,6 +125,12 @@ export function createTasteSignalBuffer({ perDocument = MAX_SIGNALS_PER_DOCUMENT
 
   return {
     ingest,
+    /** 모델 실패 뒤 보존한다. 즉시 재시도하지 않고 다음 배치나 턴이 가져간다. */
+    restoreSignals(documentId, rows) {
+      const current = buffers.get(documentId) ?? [];
+      buffers.set(documentId, [...rows, ...current].slice(-perDocument));
+      while (buffers.size > maxDocuments) buffers.delete(buffers.keys().next().value);
+    },
     /** 쌓인 신호를 꺼내고 비운다 (오래된 것부터). filter 를 주면 맞는 것만 꺼내고 나머지는 남긴다. */
     takeSignals(documentId, filter) {
       const buffer = buffers.get(documentId);

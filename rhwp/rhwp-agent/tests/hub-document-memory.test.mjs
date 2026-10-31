@@ -169,7 +169,7 @@ test('document memory is sent once per provider session and again after a change
   assert.deepEqual([changed.documentId, changed.key, changed.revision], ['doc-1', added.memory.key, 1]);
 
   const first = await f.say('첫 질문');
-  assert.match(first, /<document_memory revision="1">[\s\S]*\[style, 직접\] 본문은 한다체 사용/);
+  assert.match(first, /<document_memory revision="1">[\s\S]*\[style, 직접, 강도 3\] 본문은 한다체 사용/);
   assert.equal(hasBlock(await f.say('두 번째 질문')), false, 'an unchanged memory is not sent twice');
 
   const protect = await f.memory({

@@ -25,15 +25,17 @@ export async function checkPlanCard({ page, open, screenshot }) {
   await page.keyboard.press('Escape');
   await new Promise((resolve) => setTimeout(resolve, 400));
   assert.equal(await page.$('.ag-pricing-card'), null, 'a second Esc leaves the card closed');
-  // 집중 화면도 열리지 않는다.
-  await page.keyboard.down('Control');
-  await page.keyboard.down('Meta');
-  await page.keyboard.press('KeyJ');
-  await page.keyboard.up('Meta');
-  await page.keyboard.up('Control');
-  await cardOpen(page);
-  assert.equal(await page.$eval('.ag-root', (root) => root.classList.contains('ag-fullscreen')), false, 'no full screen');
-  if (await page.$('.ag-pricing-card')) await closeCard(page);
+  // 집중 화면도 열리지 않는다. 단축키(⌃⌘J)는 맥에만 있다.
+  if (await page.evaluate(() => /mac|iphone|ipad|ipod/i.test(navigator.userAgentData?.platform || navigator.platform || '') || /mac os x/i.test(navigator.userAgent))) {
+    await page.keyboard.down('Control');
+    await page.keyboard.down('Meta');
+    await page.keyboard.press('KeyJ');
+    await page.keyboard.up('Meta');
+    await page.keyboard.up('Control');
+    await cardOpen(page);
+    assert.equal(await page.$eval('.ag-root', (root) => root.classList.contains('ag-fullscreen')), false, 'no full screen');
+    if (await page.$('.ag-pricing-card')) await closeCard(page);
+  }
 
   // 창 이벤트로도 열린다(다른 화면이 모듈을 가져오지 않고 연다).
   await page.evaluate(() => window.dispatchEvent(new CustomEvent('rhwp:open-plan-card', { detail: { focus: 'rau' } })));

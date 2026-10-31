@@ -1,6 +1,6 @@
 import type { EditorScalarSettings } from '../../core/user-settings.ts';
 
-export const SETTINGS_DESTINATIONS = ['editing', 'theme', 'ai', 'browser', 'skills', 'project', 'archive', 'account'] as const;
+export const SETTINGS_DESTINATIONS = ['editing', 'theme', 'ai', 'rau', 'browser', 'skills', 'project', 'archive', 'account'] as const;
 export type SettingsDestination = (typeof SETTINGS_DESTINATIONS)[number];
 
 /** AI 설정 아래의 세부 탭. */
