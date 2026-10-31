@@ -20,12 +20,12 @@
           <button type="button" id="wall-toggle" class="ghost" aria-keyshortcuts="F">전체 화면</button>
         </header>
         <dl class="stats" aria-live="polite">
-          <div><dt>테스터</dt><dd id="stat-testers">–</dd></div>
-          <div><dt>기기</dt><dd id="stat-devices">–</dd></div>
+          <div><dt>남은 코드</dt><dd id="stat-unused">–</dd></div>
+          <div><dt>사용</dt><dd id="stat-redeemed">–</dd></div>
           <div><dt>최근 24시간</dt><dd id="stat-recent">–</dd></div>
           <div id="stat-attention" class="alert" hidden><dt><span class="lamp alarm"></span>확인할 주문</dt><dd id="stat-attention-count">0</dd></div>
         </dl>
-        <ol id="roster" class="roster" aria-label="테스터"></ol>
+        <ol id="roster" class="roster" aria-label="최근 사용한 코드"></ol>
       </div>
     </div>
   </div>
@@ -42,8 +42,131 @@
       <p id="attention-error" class="error" role="alert"></p>
     </div>
 
-    <section aria-labelledby="feedback-title">
-      <h2 id="feedback-title">제보<span id="feedback-new" class="count" hidden></span><span id="feedback-storage" class="muted storage" hidden></span></h2>
+    <nav class="tabs" role="tablist" aria-label="관리">
+      <button type="button" role="tab" id="tab-gifts" aria-controls="panel-gifts" aria-selected="true">선물 코드</button>
+      <button type="button" role="tab" id="tab-keys" aria-controls="panel-keys" aria-selected="false" tabindex="-1">키</button>
+      <button type="button" role="tab" id="tab-feedback" aria-controls="panel-feedback" aria-selected="false" tabindex="-1">제보<span id="feedback-new" class="count" hidden></span></button>
+    </nav>
+
+    <section id="panel-gifts" role="tabpanel" aria-labelledby="tab-gifts" tabindex="-1">
+      <form id="gift-form" class="gift-form" novalidate>
+        <fieldset class="field">
+          <legend>등급</legend>
+          <div class="seg">
+            <label><input type="radio" name="plan" value="hama">Hama</label>
+            <label><input type="radio" name="plan" value="rau">Rau</label>
+          </div>
+        </fieldset>
+        <fieldset class="field">
+          <legend>기간</legend>
+          <div class="joined">
+            <input id="gift-length" class="length" type="number" inputmode="numeric" min="1" step="1" aria-label="기간" required>
+            <div class="seg">
+              <label><input type="radio" name="unit" value="months">개월</label>
+              <label><input type="radio" name="unit" value="days">일</label>
+            </div>
+          </div>
+        </fieldset>
+        <div class="field">
+          <label for="gift-count">개수</label>
+          <input id="gift-count" class="count-input" type="number" inputmode="numeric" min="1" max="1000" step="1" required>
+        </div>
+        <div class="field">
+          <label for="gift-redeem-by">사용 기한</label>
+          <input id="gift-redeem-by" type="date">
+        </div>
+        <div class="field grow">
+          <label for="gift-note">메모</label>
+          <input id="gift-note" maxlength="500">
+        </div>
+        <button type="submit" id="gift-submit" class="primary" disabled>만들기</button>
+      </form>
+      <p id="gift-error" class="error" role="alert"></p>
+      <div id="generated" aria-live="polite"></div>
+
+      <h2 id="batch-title">묶음</h2>
+      <div class="scroll">
+        <table id="batch-table" aria-labelledby="batch-title" hidden>
+          <thead>
+            <tr><th></th><th>만든 날</th><th>등급</th><th>기간</th><th>남음 / 전체</th><th>사용</th><th>취소</th><th>기한 지남</th><th>사용 기한</th><th>메모</th><th></th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p id="batch-empty" class="muted" hidden>아직 만든 코드가 없어요.</p>
+    </section>
+
+    <div id="panel-keys" role="tabpanel" aria-labelledby="tab-keys" tabindex="-1" hidden>
+      <section aria-labelledby="customer-title">
+        <h2 id="customer-title">고객</h2>
+        <div class="row">
+          <form id="issue-form" class="row grow">
+            <input id="issue-email" class="grow" type="email" placeholder="이메일" aria-label="이메일" required maxlength="254">
+            <button type="submit" class="primary">1년 키 보내기</button>
+          </form>
+          <input id="customer-filter" class="filter" type="search" placeholder="검색" aria-label="이메일 또는 키로 검색">
+        </div>
+        <div id="issued" class="created" hidden>
+          <span id="issued-email"></span>
+          <button type="button" id="issued-key" class="key mono" title="복사"></button>
+        </div>
+        <p id="customer-error" class="error" role="alert"></p>
+        <div class="scroll">
+          <table id="customer-table">
+            <thead>
+              <tr><th></th><th>이메일</th><th>키</th><th>상태</th><th>만료</th><th>기기</th><th>메일</th><th>만든 날</th><th></th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p id="customer-empty" class="muted" hidden>아직 고객이 없어요.</p>
+      </section>
+
+      <section aria-labelledby="beta-title">
+        <h2 id="beta-title">베타 키</h2>
+        <form id="create-form" class="row">
+          <input id="name" class="grow" placeholder="이름" aria-label="이름" required maxlength="100">
+          <input id="devices" class="narrow" type="number" min="1" max="50" value="5" aria-label="기기 수" title="기기 수">
+          <input id="gift" class="narrow" type="number" min="0" max="1000" step="0.01" aria-label="크레딧 (달러)" title="크레딧 (달러)" hidden>
+          <input id="note" class="grow" placeholder="메모" aria-label="메모" maxlength="500">
+          <button type="submit" class="primary">만들기</button>
+        </form>
+        <div id="created" class="created" hidden>
+          <span id="created-name"></span>
+          <button type="button" id="created-key" class="key mono" title="복사"></button>
+        </div>
+        <p id="beta-error" class="error" role="alert"></p>
+        <div class="scroll">
+          <table id="beta-table">
+            <thead>
+              <tr><th></th><th>이름</th><th>키</th><th>상태</th><th>기기</th><th>크레딧</th><th>마지막 사용</th><th>만든 날</th><th></th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p id="beta-empty" class="muted" hidden>아직 베타 키가 없어요.</p>
+      </section>
+
+      <section aria-labelledby="lookup-title">
+        <h2 id="lookup-title">찾기</h2>
+        <form id="lookup-form" class="row">
+          <input id="lookup" class="grow mono" placeholder="키 또는 이메일" aria-label="키 또는 이메일" required>
+          <button type="submit">찾기</button>
+        </form>
+        <p id="lookup-error" class="error" role="alert"></p>
+        <div class="scroll">
+          <table id="lookup-table" hidden>
+            <thead>
+              <tr><th></th><th>이름</th><th>키</th><th>상태</th><th>기기</th><th>마지막 사용</th><th>만든 날</th><th></th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+
+    <section id="panel-feedback" role="tabpanel" aria-labelledby="tab-feedback" tabindex="-1" hidden>
+      <p id="feedback-storage" class="storage" hidden></p>
       <p id="feedback-error" class="error" role="alert"></p>
       <div id="inbox" class="inbox" hidden>
         <ol id="feedback-list" class="inbox-list" aria-label="제보 목록"></ol>
@@ -51,73 +174,6 @@
       </div>
       <p id="feedback-empty" class="muted" hidden>아직 제보가 없어요.</p>
       <dialog id="shot-dialog" class="shot"><img id="shot-full" alt="스크린샷 원본"></dialog>
-    </section>
-
-    <section aria-labelledby="customer-title">
-      <h2 id="customer-title">고객</h2>
-      <div class="row">
-        <form id="issue-form" class="row grow">
-          <input id="issue-email" class="grow" type="email" placeholder="이메일" aria-label="이메일" required maxlength="254">
-          <button type="submit" class="primary">1년 키 보내기</button>
-        </form>
-        <input id="customer-filter" class="filter" type="search" placeholder="검색" aria-label="이메일 또는 키로 검색">
-      </div>
-      <div id="issued" class="created" hidden>
-        <span id="issued-email"></span>
-        <button type="button" id="issued-key" class="key mono" title="복사"></button>
-      </div>
-      <p id="customer-error" class="error" role="alert"></p>
-      <div class="scroll">
-        <table id="customer-table">
-          <thead>
-            <tr><th></th><th>이메일</th><th>키</th><th>상태</th><th>만료</th><th>기기</th><th>메일</th><th>만든 날</th><th></th></tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-      </div>
-      <p id="customer-empty" class="muted" hidden>아직 고객이 없어요.</p>
-    </section>
-
-    <section aria-labelledby="beta-title">
-      <h2 id="beta-title">베타 키</h2>
-      <form id="create-form" class="row">
-        <input id="name" class="grow" placeholder="이름" aria-label="이름" required maxlength="100">
-        <input id="devices" class="narrow" type="number" min="1" max="50" value="5" aria-label="기기 수" title="기기 수">
-        <input id="gift" class="narrow" type="number" min="0" max="1000" step="0.01" aria-label="크레딧 (달러)" title="크레딧 (달러)" hidden>
-        <input id="note" class="grow" placeholder="메모" aria-label="메모" maxlength="500">
-        <button type="submit" class="primary">만들기</button>
-      </form>
-      <div id="created" class="created" hidden>
-        <span id="created-name"></span>
-        <button type="button" id="created-key" class="key mono" title="복사"></button>
-      </div>
-      <p id="beta-error" class="error" role="alert"></p>
-      <div class="scroll">
-        <table id="beta-table">
-          <thead>
-            <tr><th></th><th>이름</th><th>키</th><th>상태</th><th>기기</th><th>크레딧</th><th>마지막 사용</th><th>만든 날</th><th></th></tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-      </div>
-      <p id="beta-empty" class="muted" hidden>아직 베타 키가 없어요.</p>
-    </section>
-
-    <section aria-labelledby="lookup-title">
-      <h2 id="lookup-title">찾기</h2>
-      <form id="lookup-form" class="row">
-        <input id="lookup" class="grow mono" placeholder="키 또는 이메일" aria-label="키 또는 이메일" required>
-        <button type="submit">찾기</button>
-      </form>
-      <p id="lookup-error" class="error" role="alert"></p>
-      <div class="scroll">
-        <table id="lookup-table" hidden>
-          <thead>
-            <tr><th></th><th>이름</th><th>키</th><th>상태</th><th>기기</th><th>마지막 사용</th><th>만든 날</th><th></th></tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-      </div>
     </section>
   </main>
   <script src="/scene.js"></script>

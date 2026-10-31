@@ -1,5 +1,7 @@
 import http from 'node:http';
 
+import { ignorePortProbe } from './port-probe.mjs';
+
 /**
  * In-process stand-ins for the hosted Rau upstreams: Anthropic (`POST /v1/messages`) and OpenRouter's
  * Anthropic-compatible `POST /api/v1/messages`. Both answer the happy path in the Anthropic Messages
@@ -59,6 +61,7 @@ function createFake(path, idPrefix, defaultCost) {
   const release = () => { const w = waiters; waiters = []; w.forEach((fn) => fn()); };
   const held = (res) => new Promise((resolve) => { waiters.push(resolve); res.on('close', resolve); });
   const server = http.createServer(async (req, res) => {
+    if (ignorePortProbe(req, res)) return;
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
     const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : null;

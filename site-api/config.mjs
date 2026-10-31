@@ -397,6 +397,11 @@ export function resolveRauConfig(env = process.env) {
   };
 }
 
+/** Postgres URL; set, every store with a Postgres mapping runs there instead of its JSON file. */
+export function resolveDatabaseUrl(env = process.env) {
+  return trimmed(env.DATABASE_URL);
+}
+
 export function resolveAccountsDbPath(env = process.env) {
   return path.join(resolveDataDir(env), 'accounts.json');
 }

@@ -40,14 +40,6 @@ export function createWaitlistService({
   telegramChatId = '',
   fetchImpl = globalThis.fetch,
 } = {}) {
-  let mutation = Promise.resolve();
-
-  function withLock(fn) {
-    const result = mutation.then(fn, fn);
-    mutation = result.then(() => undefined, () => undefined);
-    return result;
-  }
-
   const sendTelegram = createTelegramSender({
     botToken: telegramBotToken,
     chatId: telegramChatId,
@@ -59,23 +51,23 @@ export function createWaitlistService({
   async function join(body) {
     const email = parseWaitlistEmail(body);
     const key = email.toLowerCase();
-    const created = await withLock(async () => {
-      const state = await store.load();
-      if (!state.entries || typeof state.entries !== 'object' || Array.isArray(state.entries)) {
-        state.entries = {};
-      }
-      if (state.entries[key]) return false;
-      state.entries[key] = { email, joinedAt: new Date(now()).toISOString() };
-      try {
-        await store.save(state);
-      } catch (error) {
-        if (error?.code === 'STORE_TOO_LARGE') {
-          throw waitlistError('WAITLIST_CAPACITY_EXCEEDED', '신청을 받을 수 없어요. 메일로 연락해 주세요');
+    let created;
+    try {
+      ({ value: created } = await store.update((state) => {
+        if (!state.entries || typeof state.entries !== 'object' || Array.isArray(state.entries)) {
+          state.entries = {};
         }
-        throw error;
+        if (state.entries[key]) return { dirty: false, value: false };
+        state.entries[key] = { email, joinedAt: new Date(now()).toISOString() };
+        return { value: true };
+      }));
+    } catch (error) {
+      // The file store's 8 MiB limit; Postgres has none.
+      if (error?.code === 'STORE_TOO_LARGE') {
+        throw waitlistError('WAITLIST_CAPACITY_EXCEEDED', '신청을 받을 수 없어요. 메일로 연락해 주세요');
       }
-      return true;
-    });
+      throw error;
+    }
     if (created) await notify(email);
     return { ok: true };
   }
@@ -84,7 +76,7 @@ export function createWaitlistService({
     if (!tokenMatches(token, adminToken)) {
       throw waitlistError('WAITLIST_FORBIDDEN', '권한이 없어요');
     }
-    const state = await store.load();
+    const state = await store.read();
     const entries = Object.values(state.entries ?? {})
       .sort((a, b) => String(a.joinedAt).localeCompare(String(b.joinedAt)));
     return { count: entries.length, entries };

@@ -29,6 +29,18 @@
     renewal_use_extend: '갱신 결제는 쓰던 키를 연장해서 처리해요.',
     not_a_renewal: '갱신 결제가 아니에요.',
     event_not_found: '이미 처리한 항목이에요.',
+    plan_required: '등급을 골라 주세요.',
+    plan_invalid: '등급이 올바르지 않아요.',
+    duration_required: '기간을 넣어 주세요.',
+    duration_conflict: '기간은 개월이나 일 중 하나로 넣어 주세요.',
+    duration_invalid: '기간은 1에서 120개월, 또는 1에서 3660일 사이예요.',
+    count_invalid: '개수는 1에서 1000 사이예요.',
+    redeem_by_invalid: '사용 기한은 오늘이나 그 뒤 날짜예요.',
+    invalid_code: '코드를 찾을 수 없어요.',
+    invalid_format: '코드 형식이 올바르지 않아요.',
+    batch_not_found: '묶음을 찾을 수 없어요.',
+    code_redeemed: '이미 사용한 코드예요. 그 키를 해지해 주세요.',
+    copy_failed: '복사하지 못했어요.',
   };
 
   async function api(method, path, body) {
@@ -273,7 +285,9 @@
     const devices = customer.devices ?? [];
 
     const email = el('td');
-    email.append(lamp(!revoked && recent(lastSeen(devices))), document.createTextNode(customer.email || '—'));
+    // 선물 코드로 만든 키는 이메일 없이 계정에 붙어요.
+    const gift = customer.source === 'gift_code' && !customer.email;
+    email.append(lamp(!revoked && recent(lastSeen(devices))), gift ? el('span', 'muted', '선물 코드') : document.createTextNode(customer.email || '—'));
     const term = TERM[customer.subscriptionStatus];
     const status = el('td', revoked || term ? 'status bad' : 'status', revoked ? '해지됨' : term ?? '사용 중');
     const expiry = el('td', 'num');
@@ -350,14 +364,15 @@
     return [row, detail];
   }
 
-  function render(tableId, items, build) {
+  /** 표를 다시 그려요. 펼쳐 둔 줄은 idOf 로 알아보고 계속 펼쳐 둬요. */
+  function render(tableId, items, build, idOf = (item) => item.keyId) {
     const body = $(tableId).querySelector('tbody');
-    const open = new Set([...body.querySelectorAll('tr.detail:not([hidden])')].map((tr) => tr.dataset.keyId));
+    const open = new Set([...body.querySelectorAll('tr.detail:not([hidden])')].map((tr) => tr.dataset.id));
     body.replaceChildren();
-    for (const license of items) {
-      const [row, detail] = build(license);
-      detail.dataset.keyId = license.keyId;
-      if (open.has(license.keyId)) {
+    for (const item of items) {
+      const [row, detail] = build(item);
+      detail.dataset.id = idOf(item);
+      if (open.has(detail.dataset.id)) {
         detail.hidden = false;
         row.querySelector('.chevron').setAttribute('aria-expanded', 'true');
       }
@@ -375,29 +390,6 @@
     return relative.format(-Math.round(minutes / 60 / 24), 'day');
   }
 
-  /** 벽 화면용 숫자와 목록. 해지한 키는 세지 않아요. */
-  function showOverview(betas) {
-    const active = betas.filter((b) => b.status !== 'revoked');
-    const devices = active.flatMap((b) => b.devices ?? []);
-    $('stat-testers').textContent = active.length;
-    $('stat-devices').textContent = devices.length;
-    $('stat-recent').textContent = devices.filter((d) => recent(d.lastSeenAt)).length;
-
-    const list = active
-      .map((b) => ({ name: b.name || '—', devices: b.devices ?? [], limit: b.deviceLimit ?? 2, seen: lastSeen(b.devices ?? []) }))
-      .sort((a, b) => String(b.seen ?? '').localeCompare(String(a.seen ?? '')));
-    $('roster').replaceChildren(...list.map((tester) => {
-      const item = el('li', recent(tester.seen) ? '' : 'quiet');
-      item.append(
-        lamp(recent(tester.seen)),
-        el('span', 'who', tester.name),
-        el('span', 'num', `${tester.devices.length}/${tester.limit}`),
-        el('span', 'seen', ago(tester.seen)),
-      );
-      return item;
-    }));
-  }
-
   /** 새로 나타난 기기가 있으면 하마가 별똥별을 봐요. 첫 불러오기는 세지 않아요. */
   let knownDevices = null;
   function noticeNewDevices(betas) {
@@ -410,7 +402,6 @@
   async function loadBetas({ background = false } = {}) {
     try {
       const { betas, giftEvent } = await api('GET', '/api/betas');
-      showOverview(betas);
       noticeNewDevices(betas);
       $('gift').hidden = !giftEvent;
       if (giftEvent) $('gift').placeholder = dollars(giftEvent.amountUsd);
@@ -735,7 +726,7 @@
       showNewCount();
       const used = storage.maxBytes ? storage.bytes / storage.maxBytes : 0;
       $('feedback-storage').hidden = used < 0.8;
-      $('feedback-storage').textContent = `저장 공간 ${Math.round(used * 100)}%`;
+      $('feedback-storage').textContent = `제보 저장 공간 ${Math.round(used * 100)}%`;
       $('inbox').hidden = reports.length === 0;
       $('feedback-empty').hidden = reports.length > 0;
       if (background && busy('#feedback-detail')) return;
@@ -750,10 +741,272 @@
     }
   }
 
+  // ─────────── 선물 코드 ───────────
+  // The server names batch plans by their current names; older batches read the same way.
+  const PLAN_TEXT = { hama: 'Hama', rau: 'Rau' };
+  const CODE_STATUS = { active: '사용 전', redeemed: '사용함', revoked: '취소됨', expired: '기한 지남' };
+  const planText = (plan) => PLAN_TEXT[plan] ?? plan;
+  const termText = (batch) => (batch.durationMonths ? `${batch.durationMonths}개월` : `${batch.durationDays}일`);
+  const giftForm = $('gift-form');
+  const chosen = (name) => giftForm.querySelector(`input[name="${name}"]:checked`)?.value;
+  const whole = (input) => (/^\d{1,6}$/.test(input.value.trim()) ? Number(input.value.trim()) : 0);
+  let issuing = false;
+
+  /** 등급, 기간, 단위, 개수가 다 있어야 만들기를 누를 수 있어요. 미리 골라 둔 값은 없어요. */
+  function syncGiftForm() {
+    const unit = chosen('unit');
+    if (unit) $('gift-length').max = unit === 'days' ? '3660' : '120';
+    else $('gift-length').removeAttribute('max');
+    $('gift-submit').disabled = issuing || !chosen('plan') || !unit || whole($('gift-length')) < 1 || whole($('gift-count')) < 1;
+  }
+  giftForm.addEventListener('input', syncGiftForm);
+  giftForm.addEventListener('change', syncGiftForm);
+  $('gift-redeem-by').min = new Date().toLocaleDateString('sv-SE');
+
+  giftForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if ($('gift-submit').disabled) return;
+    const unit = chosen('unit');
+    const body = {
+      plan: chosen('plan'),
+      [unit === 'days' ? 'durationDays' : 'durationMonths']: whole($('gift-length')),
+      count: whole($('gift-count')),
+      note: $('gift-note').value.trim(),
+      redeemBy: $('gift-redeem-by').value,
+    };
+    issuing = true;
+    syncGiftForm();
+    try {
+      const { batch, codes } = await api('POST', '/api/gift-codes/issue', body);
+      showGenerated(batch, codes);
+      giftForm.reset();
+      window.hamaScene?.celebrate();
+      await loadGiftCodes();
+    } catch (error) {
+      showError('gift-error', error);
+    } finally {
+      issuing = false;
+      syncGiftForm();
+    }
+  });
+
+  // 복사하지도 저장하지도 않은 코드 창. 하나라도 있으면 페이지를 떠날 때 물어봐요.
+  const unkept = new Set();
+  addEventListener('beforeunload', (event) => {
+    if (unkept.size === 0) return;
+    event.preventDefault();
+    event.returnValue = '';
+  });
+
+  function csvOf(batch, codes) {
+    const rows = codes.map((code) => [code, batch.batchId, batch.plan, batch.durationMonths ?? '', batch.durationDays ?? '', batch.redeemBy ?? ''].join(','));
+    return `code,batch_id,plan,duration_months,duration_days,redeem_by\n${rows.join('\n')}\n`;
+  }
+
+  /** 방금 만든 코드. 이 창의 메모리에만 있어서 닫으면 다시 볼 수 없어요. */
+  function showGenerated(batch, codes) {
+    const panel = el('div', 'generated');
+    panel.setAttribute('role', 'group');
+    panel.setAttribute('aria-label', '만든 코드');
+    unkept.add(panel);
+    const kept = () => { unkept.delete(panel); close.textContent = '닫기'; };
+
+    const head = el('div', 'head');
+    const summary = [planText(batch.plan), termText(batch), `${codes.length}개`, batch.redeemBy ? `${fmt(batch.redeemBy, dateOnly)}까지 사용` : '', batch.note]
+      .filter(Boolean).join(' · ');
+    const actions = el('div', 'actions');
+    const copyAll = el('button', 'primary', '복사');
+    copyAll.type = 'button';
+    copyAll.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(codes.join('\n'));
+        copyAll.textContent = '복사했어요';
+        setTimeout(() => { copyAll.textContent = '복사'; }, 1200);
+        kept();
+      } catch {
+        showError('gift-error', new Error('copy_failed'));
+      }
+    });
+    const save = el('button', '', 'CSV 저장');
+    save.type = 'button';
+    save.addEventListener('click', () => {
+      const url = URL.createObjectURL(new Blob([csvOf(batch, codes)], { type: 'text/csv;charset=utf-8' }));
+      const link = el('a');
+      link.href = url;
+      link.download = `gift-codes-${batch.batchId}.csv`;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+      kept();
+    });
+    // 아직 안 챙긴 코드면 한 번 더 눌러야 닫혀요.
+    const close = el('button', '', '닫기');
+    close.type = 'button';
+    let armed = null;
+    close.addEventListener('click', () => {
+      if (unkept.has(panel) && !armed) {
+        close.textContent = '닫을까요?';
+        close.classList.add('armed');
+        armed = setTimeout(() => { armed = null; close.textContent = '닫기'; close.classList.remove('armed'); }, 3000);
+        return;
+      }
+      clearTimeout(armed);
+      unkept.delete(panel);
+      panel.remove();
+      $('gift-length').focus();
+    });
+    actions.append(copyAll, save, close);
+    head.append(el('span', 'summary', summary), actions);
+    panel.append(head, el('p', 'muted once', '닫으면 다시 볼 수 없어요.'), el('pre', 'codes mono', codes.join('\n')));
+    $('generated').prepend(panel);
+    copyAll.focus();
+  }
+
+  /** 펼친 묶음의 코드. 코드는 앞 네 글자만 보여요. */
+  function codeList(batch) {
+    const list = el('ul', 'codes-list');
+    const head = el('li', 'head');
+    for (const text of ['코드', '상태', '사용한 날', '계정', '키', '']) head.append(el('span', '', text));
+    list.append(head);
+    for (const code of batch.codes) {
+      const item = el('li', code.status);
+      const action = el('span', 'action');
+      if (code.status === 'active') {
+        action.append(confirmButton('취소', '취소할까요?', async () => {
+          try {
+            await api('POST', '/api/gift-codes/revoke', { codeHash: code.codeHash });
+          } catch (error) {
+            showError('gift-error', error);
+          }
+          await loadGiftCodes();
+        }, 'small danger'));
+      }
+      item.append(
+        el('span', 'mono', code.maskedCode),
+        el('span', code.status === 'revoked' || code.status === 'expired' ? 'status bad' : 'status', CODE_STATUS[code.status] ?? code.status),
+        el('span', 'num', fmt(code.redeemedAt)),
+        el('span', 'mono id', code.accountId ?? '—'),
+        el('span', 'mono id', code.keyId ?? '—'),
+        action,
+      );
+      list.append(item);
+    }
+    const wrap = el('div', 'codes-wrap');
+    wrap.append(list);
+    return wrap;
+  }
+
+  /** 묶음 한 줄과 펼치면 나오는 코드 목록. */
+  function batchRows(batch) {
+    const c = batch.counts;
+    const total = c.active + c.redeemed + c.revoked + c.expired;
+    const row = el('tr', c.active === 0 ? 'revoked' : '');
+    const detail = el('tr', 'detail');
+    detail.hidden = true;
+    const toggleCell = el('td');
+    toggleCell.append(chevron(detail, '코드 보기'));
+    const revokeAll = confirmButton('남은 코드 취소', '취소할까요?', async () => {
+      try {
+        await api('POST', '/api/gift-codes/revoke', { batchId: batch.batchId });
+      } catch (error) {
+        showError('gift-error', error);
+      }
+      await loadGiftCodes();
+    }, 'danger');
+    revokeAll.disabled = c.active === 0;
+    const actions = el('td', 'actions');
+    actions.append(revokeAll);
+    const note = el('td', batch.note ? '' : 'muted', batch.note || '—');
+    if (batch.note) note.title = batch.note;
+    row.append(
+      toggleCell,
+      el('td', 'num', fmt(batch.createdAt, dateOnly)),
+      el('td', '', planText(batch.plan)),
+      el('td', 'num', termText(batch)),
+      el('td', 'num', `${c.active} / ${total}`),
+      el('td', 'num', String(c.redeemed)),
+      el('td', 'num', String(c.revoked)),
+      el('td', 'num', String(c.expired)),
+      el('td', 'num', batch.redeemBy ? fmt(batch.redeemBy, dateOnly) : '—'),
+      note,
+      actions,
+    );
+    const cell = el('td');
+    cell.colSpan = 11;
+    cell.append(codeList(batch));
+    detail.append(cell);
+    return [row, detail];
+  }
+
+  /** 장면의 숫자와 벽 화면 목록: 남은 코드, 사용한 코드, 최근 24시간에 사용한 코드. */
+  function showGiftOverview(batches) {
+    const codes = batches.flatMap((batch) => batch.codes.map((code) => ({ ...code, batch })));
+    const redeemed = codes.filter((code) => code.status === 'redeemed')
+      .sort((a, b) => String(b.redeemedAt).localeCompare(String(a.redeemedAt)));
+    $('stat-unused').textContent = codes.filter((code) => code.status === 'active').length;
+    $('stat-redeemed').textContent = redeemed.length;
+    $('stat-recent').textContent = redeemed.filter((code) => recent(code.redeemedAt)).length;
+    $('roster').replaceChildren(...redeemed.slice(0, 60).map((code) => {
+      const item = el('li', recent(code.redeemedAt) ? '' : 'quiet');
+      item.append(
+        lamp(recent(code.redeemedAt)),
+        el('span', 'who', code.maskedCode.slice(0, 9)),
+        el('span', 'num', `${planText(code.batch.plan)} ${termText(code.batch)}`),
+        el('span', 'seen', ago(code.redeemedAt)),
+      );
+      return item;
+    }));
+  }
+
+  /** 누가 코드를 새로 쓰면 하마가 별똥별을 봐요. 첫 불러오기는 세지 않아요. */
+  let knownRedeemed = null;
+  function noticeRedemptions(batches) {
+    const ids = new Set(batches.flatMap((b) => b.codes.filter((c) => c.status === 'redeemed').map((c) => c.codeHash)));
+    const fresh = knownRedeemed && [...ids].some((id) => !knownRedeemed.has(id));
+    knownRedeemed = ids;
+    if (fresh) window.hamaScene?.celebrate();
+  }
+
+  async function loadGiftCodes({ background = false } = {}) {
+    try {
+      const { batches } = await api('GET', '/api/gift-codes');
+      showGiftOverview(batches);
+      noticeRedemptions(batches);
+      if (background && busy('#batch-table')) return;
+      render('batch-table', batches, batchRows, (batch) => batch.batchId);
+      $('batch-table').hidden = batches.length === 0;
+      $('batch-empty').hidden = batches.length > 0;
+    } catch (error) {
+      if (!background) showError('gift-error', error);
+    }
+  }
+
+  // ─────────── 탭 ───────────
+  const TABS = ['gifts', 'keys', 'feedback'];
+  function selectTab(name, { focus = false } = {}) {
+    for (const tab of TABS) {
+      const on = tab === name;
+      $(`tab-${tab}`).setAttribute('aria-selected', String(on));
+      $(`tab-${tab}`).tabIndex = on ? 0 : -1;
+      $(`panel-${tab}`).hidden = !on;
+    }
+    if (focus) $(`tab-${name}`).focus();
+    history.replaceState(null, '', name === 'gifts' ? location.pathname : `#${name}`);
+  }
+  for (const tab of TABS) $(`tab-${tab}`).addEventListener('click', () => selectTab(tab));
+  document.querySelector('.tabs').addEventListener('keydown', (event) => {
+    const at = TABS.findIndex((tab) => $(`tab-${tab}`) === document.activeElement);
+    if (at < 0) return;
+    const next = { ArrowRight: at + 1, ArrowLeft: at - 1, Home: 0, End: TABS.length - 1 }[event.key];
+    if (next === undefined) return;
+    event.preventDefault();
+    selectTab(TABS[(next + TABS.length) % TABS.length], { focus: true });
+  });
+  selectTab(TABS.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'gifts');
+
   $('shot-dialog').addEventListener('click', () => $('shot-dialog').close());
 
   async function refreshAll() {
-    await Promise.all([loadAttention(), loadFeedback(), loadCustomers(), loadBetas(), runLookup()]);
+    await Promise.all([loadAttention(), loadGiftCodes(), loadFeedback(), loadCustomers(), loadBetas(), runLookup()]);
   }
 
   $('issue-form').addEventListener('submit', async (event) => {
@@ -824,7 +1077,7 @@
       $('token-form').hidden = true;
       await refreshAll();
     } catch (error) {
-      showError('beta-error', error);
+      showError('gift-error', error);
     }
   });
 
@@ -836,15 +1089,16 @@
         $('token-form').hidden = false;
         return;
       }
-      await Promise.all([loadAttention(), loadFeedback(), loadCustomers(), loadBetas()]);
+      await Promise.all([loadAttention(), loadGiftCodes(), loadFeedback(), loadCustomers(), loadBetas()]);
       setInterval(() => {
         void loadAttention({ background: true });
+        void loadGiftCodes({ background: true });
         void loadFeedback({ background: true });
         void loadCustomers({ background: true });
         void loadBetas({ background: true });
       }, 60_000);
     } catch (error) {
-      showError('beta-error', error);
+      showError('gift-error', error);
     }
   })();
 

@@ -3,8 +3,9 @@ import { randomUUID } from 'node:crypto';
 import { createMemoryStore } from './store.mjs';
 
 /**
- * Rejected and held Groble webhooks, newest last, in their own JSON file so a flood of
- * forged requests never rewrites licenses.json. Bounded by entry count and per-entry size.
+ * Rejected and held Groble webhooks, newest last, in their own store (webhook-log.json, or the
+ * webhook_log table) so a flood of forged requests never rewrites the licenses. Bounded by entry
+ * count and per-entry size.
  */
 export const WEBHOOK_LOG_MAX_ENTRIES = 200;
 const MAX_HEADERS = 30;
@@ -103,47 +104,47 @@ export function createWebhookLog({
   store = createMemoryStore(emptyWebhookLogState()),
   now = Date.now,
   maxEntries = WEBHOOK_LOG_MAX_ENTRIES,
+  newId = () => `wh_${randomUUID().slice(0, 8)}`,
 } = {}) {
-  let chain = Promise.resolve();
+  const entriesOf = (state) => (Array.isArray(state?.entries) ? state.entries : []);
 
-  async function load() {
-    const state = await store.load();
-    return Array.isArray(state?.entries) ? state.entries : [];
+  /** `fn(state)` runs alone on the store with `state.entries` an array; only `{ entries }` is kept. */
+  async function mutate(fn) {
+    const result = await store.update((state) => {
+      const entries = entriesOf(state);
+      for (const key of Object.keys(state)) delete state[key];
+      state.entries = entries;
+      return fn(state);
+    });
+    return result.value;
   }
 
   return {
     /** Append one entry and drop the oldest past `maxEntries`. */
     record(entry) {
-      const run = chain.then(async () => {
-        const entries = await load();
-        const saved = { id: `wh_${randomUUID().slice(0, 8)}`, at: new Date(now()).toISOString(), ...entry };
-        entries.push(saved);
-        await store.save({ entries: entries.slice(-maxEntries) });
-        return saved;
+      return mutate((state) => {
+        let id;
+        // Ids are the row key in Postgres, so a repeat (1 in 2^32 per entry) draws again.
+        do id = newId(); while (state.entries.some((e) => e?.id === id));
+        const saved = { id, at: new Date(now()).toISOString(), ...entry };
+        state.entries = [...state.entries, saved].slice(-maxEntries);
+        return { value: saved };
       });
-      chain = run.catch(() => {});
-      return run;
     },
     /** Mark one entry as reviewed so the dashboard stops showing it. Resolves to the entry, or null. */
     ack(id) {
-      const run = chain.then(async () => {
-        const entries = await load();
-        const entry = typeof id === 'string' ? entries.find((e) => e.id === id) : undefined;
-        if (!entry) return null;
-        if (!entry.ackedAt) {
-          entry.ackedAt = new Date(now()).toISOString();
-          await store.save({ entries });
-        }
-        return entry;
+      return mutate((state) => {
+        const entry = typeof id === 'string' ? state.entries.find((e) => e.id === id) : undefined;
+        if (!entry) return { dirty: false, value: null };
+        if (entry.ackedAt) return { dirty: false, value: entry };
+        entry.ackedAt = new Date(now()).toISOString();
+        return { value: entry };
       });
-      chain = run.catch(() => {});
-      return run;
     },
     /** Newest first. `kind` is 'rejected' or 'held'; omit it for both. */
     async list({ kind, limit } = {}) {
-      await chain;
       const max = Math.min(Math.max(Number.parseInt(limit, 10) || 50, 1), maxEntries);
-      const entries = (await load())
+      const entries = entriesOf(await store.read())
         .filter((e) => !kind || e.kind === kind)
         .reverse()
         .slice(0, max);

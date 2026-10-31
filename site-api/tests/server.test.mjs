@@ -92,7 +92,7 @@ test('health, icon and malformed requests answer without crashing the listener',
   );
   assert.match(malformed, /^HTTP\/1\.1 400 /);
   const healthy = await fetch(`${origin}/healthz`);
-  assert.deepEqual(await healthy.json(), { ok: true });
+  assert.deepEqual(await healthy.json(), { ok: true, storage: 'files' });
   const icon = await fetch(`${origin}/favicon.ico`);
   assert.equal(icon.headers.get('content-type'), 'image/png');
   assert.equal((await fetch(`${origin}/unknown`)).status, 404);

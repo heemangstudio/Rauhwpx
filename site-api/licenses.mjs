@@ -1,6 +1,17 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 
 import { buildProductCatalog } from './config.mjs';
+import {
+  MAX_GIFT_CODES_PER_BATCH,
+  MAX_GIFT_DURATION_DAYS,
+  MAX_GIFT_DURATION_MONTHS,
+  generateGiftCode,
+  giftCodeEdition,
+  giftCodeHash,
+  giftCodePrefix,
+  maskGiftCode,
+  normalizeGiftCode,
+} from './gift-codes.mjs';
 import { heldReasonText } from './held-alert.mjs';
 import { licenseEmail, licenseEmailKind, maskEmail } from './license-email.mjs';
 import {
@@ -35,7 +46,7 @@ const MAX_EXTEND_YEARS = 10;
 const DEFAULT_PAYMENT_GRACE_MAX_MS = 14 * 24 * 60 * 60 * 1000;
 
 export function emptyLicensesState() {
-  return { licenses: {}, keyIndex: {}, orders: {}, refs: {}, webhookEvents: {}, grandfathered: {} };
+  return { licenses: {}, keyIndex: {}, orders: {}, refs: {}, webhookEvents: {}, grandfathered: {}, giftCodeBatches: {}, giftCodes: {} };
 }
 
 export function licenseError(code, status, message = code) {
@@ -118,6 +129,26 @@ function parseUntil(value) {
   return /^\d{4}-\d{2}-\d{2}T/.test(text) ? parseTime(text) : undefined;
 }
 
+/** End of the KST day `days` days after `ms`, like subscriptionEnd for a term counted in days. */
+function daysEnd(ms, days) {
+  const kst = new Date(ms + KST_OFFSET_MS);
+  return Date.UTC(kst.getUTCFullYear(), kst.getUTCMonth(), kst.getUTCDate() + days, 23, 59, 59, 999) - KST_OFFSET_MS;
+}
+
+/** A whole number from a JSON number or a digit string (the CLI sends strings), else undefined. */
+function wholeNumber(value) {
+  if (typeof value === 'string' && /^\d{1,6}$/.test(value.trim())) return Number(value.trim());
+  return Number.isSafeInteger(value) ? value : undefined;
+}
+
+/** `active` (redeemable), `redeemed`, `revoked`, or `expired` for an unredeemed code past its batch's redeemBy. */
+function giftCodeStatusOf(code, batch, nowMs) {
+  if (code.status === 'active' && nowMs > (parseTime(batch?.redeemBy) ?? Infinity)) return 'expired';
+  return code.status;
+}
+
+const GIFT_CODE_STATUSES = ['active', 'redeemed', 'revoked', 'expired'];
+
 /** Subscription keys carry `expiresAt`; every record without it (paid one-time, grandfathered, beta, manual) is lifetime. */
 function expiryOf(license) {
   return parseTime(license?.expiresAt) ?? null;
@@ -154,8 +185,14 @@ function keyCycleMonths(license) {
   return Number.isInteger(months) && months >= 1 && months <= 12 ? months : SUBSCRIPTION_CYCLE_MONTHS;
 }
 
-/** `lifetime` without an expiry, `monthly` for a 1-month key, else `annual`. */
+/** A key created by redeeming a gift code: a fixed term that never renews. */
+function isGiftKey(license) {
+  return license?.source === 'gift_code';
+}
+
+/** `lifetime` without an expiry, `monthly` for a 1-month key, else `annual`. A gift key has no billing plan (null). */
 export function planOf(license) {
+  if (isGiftKey(license)) return null;
   if (expiryOf(license) === null) return 'lifetime';
   return keyCycleMonths(license) === 1 ? 'monthly' : 'annual';
 }
@@ -170,6 +207,12 @@ const WIRE_EDITIONS = Object.freeze({ pro: 'hama', basic: 'hama', hama: 'rau', r
 export function editionOf(license) {
   const stored = license?.edition;
   return typeof stored === 'string' && Object.hasOwn(WIRE_EDITIONS, stored) ? WIRE_EDITIONS[stored] : undefined;
+}
+
+/** Null for a lifetime key, false for a gift key or a cancelled subscription, else true. */
+function autoRenewOf(license) {
+  if (expiryOf(license) === null) return null;
+  return !isGiftKey(license) && license.subscription?.autoRenew !== false;
 }
 
 /** Editions sold as a subscription on their own billing cycle. */
@@ -264,9 +307,10 @@ function licenseView(license, { includeKey = true } = {}) {
     revokeReason: license.revokeReason,
     plan: planOf(license),
     ...signatureView(license),
-    ...(isPlanEdition(license.edition) ? { billingCycleMonths: keyCycleMonths(license) } : {}),
+    ...(isPlanEdition(license.edition) && !isGiftKey(license) ? { billingCycleMonths: keyCycleMonths(license) } : {}),
     expiresAt: license.expiresAt ?? null,
     subscription: license.subscription,
+    giftBatchId: license.giftBatchId,
     extensions: license.extensions,
     note: license.note,
     devices: Object.entries(license.devices ?? {}).map(([deviceId, d]) => ({ deviceId, ...d })),
@@ -288,7 +332,6 @@ function subscriptionStatusOf(license, nowMs, graceMaxMs) {
 /** One paid key for the admin customer list. */
 function customerView(license, nowMs, graceMaxMs) {
   const delivery = license.emailDelivery ?? {};
-  const expiry = expiryOf(license);
   const graceEnd = paymentGraceEndOf(license, graceMaxMs);
   return {
     keyId: license.keyId,
@@ -300,7 +343,7 @@ function customerView(license, nowMs, graceMaxMs) {
     plan: planOf(license),
     ...signatureView(license),
     expiresAt: license.expiresAt ?? null,
-    autoRenew: expiry === null ? null : license.subscription?.autoRenew !== false,
+    autoRenew: autoRenewOf(license),
     paymentGraceEndsAt: graceEnd === null ? null : iso(graceEnd),
     deviceLimit: deviceLimitOf(license),
     devices: Object.entries(license.devices ?? {}).map(([deviceId, d]) => ({ deviceId, platform: d.platform, lastSeenAt: d.lastSeenAt })),
@@ -318,9 +361,9 @@ function customerView(license, nowMs, graceMaxMs) {
 }
 
 /**
- * License key service. Every mutation runs under one in-process lock and saves
- * the whole state through the atomic file store, so concurrent requests never
- * interleave read-modify-write cycles. Assumes ONE Railway replica.
+ * License key service. Every mutation runs exclusively through `store.update` (the atomic file
+ * store, or Postgres with a per-domain advisory lock), so concurrent requests never interleave
+ * read-modify-write cycles.
  */
 export function createLicensesService({
   store = createMemoryStore(emptyLicensesState()),
@@ -349,7 +392,7 @@ export function createLicensesService({
   downloadUrl = 'https://heemangstudios.com/',
   // keyId → `{ periodAnchor }` of an active plan in the frozen hama.json, else null. Read-only.
   legacyRauPlan = async () => null,
-  // A plain read of accounts.json (no lock): the account a verified buyer email belongs to, or null.
+  // A read of the accounts store (never its update lock): the account a verified buyer email belongs to, or null.
   accountForEmail = async () => null,
   webhookLog = createWebhookLog({ now }),
   log = (line) => process.stderr.write(`${line}\n`),
@@ -367,26 +410,17 @@ export function createLicensesService({
   })).map((product) => [product.id, product]));
   const graceEndOf = (license) => paymentGraceEndOf(license, paymentGraceMaxMs);
   const accessEnd = (license) => accessEndOf(license, paymentGraceMaxMs);
+  // Groble's buyer page, for a key that renews or lapses there. Lifetime and gift keys have none.
+  const fixUrlOf = (license) => (expiryOf(license) === null || isGiftKey(license) ? null : paymentFixUrl);
 
-  let mutation = Promise.resolve();
-  function withLock(fn) {
-    const result = mutation.then(fn, fn);
-    mutation = result.then(() => undefined, () => undefined);
-    return result;
-  }
-
+  /** `fn` runs alone on the store and returns `{ value, dirty }`; the state is saved unless `dirty` is false. */
   async function mutate(fn) {
-    return withLock(async () => {
-      const state = normalizeState(await store.load());
-      const result = await fn(state);
-      if (result?.dirty !== false) await store.save(state);
-      return result?.value ?? result;
-    });
+    const result = await store.update((state) => fn(normalizeState(state)));
+    return result?.value ?? result;
   }
 
   async function read() {
-    await mutation.catch(() => {});
-    return normalizeState(await store.load());
+    return normalizeState(await store.read());
   }
 
   function createLicense(state, fields) {
@@ -863,7 +897,7 @@ export function createLicensesService({
     }
     const type = str(event.type, 64);
     const object = event?.data?.object;
-    // Read before the lock: accounts.json is another service's store.
+    // Read before the lock: the accounts store belongs to another service.
     const buyerAccountId = issuesKey(type, object) ? await buyerAccount(object) : null;
     return mutate(async (state) => {
       pruneWebhookEvents(state);
@@ -934,7 +968,7 @@ export function createLicensesService({
         kind: licenseEmailKind(license),
         downloadUrl,
         expiresAt: expiryOf(license),
-        autoRenew: license.subscription?.autoRenew !== false,
+        autoRenew: autoRenewOf(license) !== false,
         cycleMonths: keyCycleMonths(license),
         updatesUntil: parseTime(license.updatesUntil) ?? null,
       });
@@ -1009,7 +1043,7 @@ export function createLicensesService({
     if (license.status === 'revoked') throw Object.assign(licenseError('revoked', 403), { tier: tierOf(license) });
     const end = accessEnd(license);
     if (end !== null && now() >= end) {
-      throw Object.assign(licenseError('expired', 403), { tier: tierOf(license), licenseExpiresAt: expiryOf(license), paymentFixUrl });
+      throw Object.assign(licenseError('expired', 403), { tier: tierOf(license), licenseExpiresAt: expiryOf(license), paymentFixUrl: fixUrlOf(license) ?? undefined });
     }
     return license;
   }
@@ -1058,12 +1092,12 @@ export function createLicensesService({
       expiresAt: payload.expiresAt,
       // The key's own end (null = lifetime). The lease's `expiresAt` above is only the offline window.
       licenseExpiresAt,
-      autoRenew: licenseExpiresAt === null ? null : license.subscription?.autoRenew !== false,
+      autoRenew: autoRenewOf(license),
       // `payment_failed`: Groble could not charge the renewal. The key works until `paymentGraceEndsAt`;
       // the buyer fixes the payment on `paymentFixUrl`.
       licenseState: paymentGraceEndsAt === null ? 'active' : 'payment_failed',
       paymentGraceEndsAt,
-      ...(licenseExpiresAt === null ? {} : { paymentFixUrl }),
+      ...(fixUrlOf(license) ? { paymentFixUrl } : {}),
       devicesUsed: Object.keys(license.devices).length,
       deviceLimit: deviceLimitOf(license),
       ...(license.edition === 'signature' ? {
@@ -1213,7 +1247,7 @@ export function createLicensesService({
       plan: planOf(license),
       status,
       expiresAt: expiry,
-      autoRenew: expiry === null ? null : license.subscription?.autoRenew !== false,
+      autoRenew: autoRenewOf(license),
       primary: license.keyId === primaryKeyId,
       linkedBy: license.linkedBy ?? null,
       linkedAt: parseTime(license.linkedAt) ?? null,
@@ -1255,10 +1289,10 @@ export function createLicensesService({
         edition: license ? accountEditionOf(license) : null,
         plan: license ? planOf(license) : null,
         expiresAt: expiry,
-        autoRenew: expiry === null ? null : license.subscription?.autoRenew !== false,
+        autoRenew: license ? autoRenewOf(license) : null,
         paymentFailed: graceEnd !== null,
         paymentGraceEndsAt: graceEnd,
-        manageUrl: expiry === null ? null : paymentFixUrl,
+        manageUrl: license ? fixUrlOf(license) : null,
       },
       licenses: licensesListOf(entries, license?.keyId ?? null),
       rau: live.find((entry) => entry.rau)?.rau ?? null,
@@ -1326,11 +1360,109 @@ export function createLicensesService({
     });
   }
 
+  /**
+   * Redeems a gift code for an account in one mutation: a new key with the batch's stored edition
+   * (`plan`), running from now for the batch's term and linked to the account, and the code marked
+   * redeemed. A Rau key's credits run monthly from its creation, like any Rau key without a
+   * subscription. The same account again gets the same key back (`alreadyRedeemed`). Resolves to
+   * `{ alreadyRedeemed, keyId, edition }`, the edition by its current name.
+   */
+  async function redeemGiftCode(accountId, rawCode) {
+    const code = normalizeGiftCode(rawCode);
+    if (!code) throw licenseError('invalid_format', 400);
+    const hash = giftCodeHash(code);
+    return mutate((state) => {
+      const record = Object.hasOwn(state.giftCodes, hash) ? state.giftCodes[hash] : undefined;
+      const batch = record && Object.hasOwn(state.giftCodeBatches, record.batchId) ? state.giftCodeBatches[record.batchId] : undefined;
+      if (!record || !batch) throw licenseError('invalid_code', 404);
+      if (record.status === 'redeemed') {
+        if (record.accountId !== accountId) throw licenseError('code_redeemed', 409);
+        return { dirty: false, value: { alreadyRedeemed: true, keyId: record.keyId, edition: giftPlanName(batch) } };
+      }
+      const nowMs = now();
+      const status = giftCodeStatusOf(record, batch, nowMs);
+      if (status === 'revoked') throw licenseError('code_revoked', 410);
+      if (status === 'expired') throw licenseError('code_expired', 410);
+      const expiresMs = batch.durationMonths ? subscriptionEnd(nowMs, batch.durationMonths) : daysEnd(nowMs, batch.durationDays);
+      const license = createLicense(state, {
+        source: 'gift_code',
+        edition: batch.plan,
+        expiresAt: iso(expiresMs),
+        giftBatchId: batch.batchId,
+      });
+      linkLicense(license, accountId, 'gift_code');
+      Object.assign(record, { status: 'redeemed', redeemedAt: iso(nowMs), accountId, keyId: license.keyId });
+      return { value: { alreadyRedeemed: false, keyId: license.keyId, edition: giftPlanName(batch) } };
+    });
+  }
+
+  function giftCodeView(record, batch, nowMs) {
+    return {
+      // An opaque id for admin views and revoke: the SHA-256 cannot give the code back.
+      codeHash: record.codeHash,
+      maskedCode: maskGiftCode(record.prefix),
+      status: giftCodeStatusOf(record, batch, nowMs),
+      createdAt: record.createdAt,
+      redeemedAt: record.redeemedAt ?? null,
+      accountId: record.accountId ?? null,
+      keyId: record.keyId ?? null,
+      revokedAt: record.revokedAt ?? null,
+    };
+  }
+
+  /** A batch's plan by its current name: `hama` or `rau` (the batch stores the edition its keys get). */
+  function giftPlanName(batch) {
+    return editionOf({ edition: batch.plan }) ?? batch.plan;
+  }
+
+  /** A batch with its plan by name, its code counts by status and, filtered by `status`, its masked codes. */
+  function giftBatchView(state, batch, nowMs, status) {
+    const codes = Object.values(state.giftCodes)
+      .filter((record) => record.batchId === batch.batchId)
+      .map((record) => giftCodeView(record, batch, nowMs));
+    const counts = Object.fromEntries(GIFT_CODE_STATUSES.map((name) => [name, codes.filter((c) => c.status === name).length]));
+    return { ...batch, plan: giftPlanName(batch), counts, codes: status ? codes.filter((c) => c.status === status) : codes };
+  }
+
+  /**
+   * `{ plan, durationMonths | durationDays, count, note?, redeemBy? }` checked; plan and term have no
+   * defaults. `plan` is `hama` or `rau` (`basic` and `pro` still mean Hama) and comes back as the
+   * edition to store.
+   */
+  function parseGiftIssue(body) {
+    if (body?.plan === undefined || body.plan === null || body.plan === '') throw licenseError('plan_required', 400);
+    const edition = giftCodeEdition(body.plan);
+    if (!edition) throw licenseError('plan_invalid', 400);
+    const hasMonths = body?.durationMonths !== undefined && body.durationMonths !== null;
+    const hasDays = body?.durationDays !== undefined && body.durationDays !== null;
+    if (hasMonths && hasDays) throw licenseError('duration_conflict', 400);
+    if (!hasMonths && !hasDays) throw licenseError('duration_required', 400);
+    const term = {};
+    if (hasMonths) {
+      const months = wholeNumber(body.durationMonths);
+      if (!(months >= 1 && months <= MAX_GIFT_DURATION_MONTHS)) throw licenseError('duration_invalid', 400);
+      term.durationMonths = months;
+    } else {
+      const days = wholeNumber(body.durationDays);
+      if (!(days >= 1 && days <= MAX_GIFT_DURATION_DAYS)) throw licenseError('duration_invalid', 400);
+      term.durationDays = days;
+    }
+    const count = wholeNumber(body?.count);
+    if (!(count >= 1 && count <= MAX_GIFT_CODES_PER_BATCH)) throw licenseError('count_invalid', 400);
+    let redeemBy;
+    if (body?.redeemBy !== undefined && body.redeemBy !== null && body.redeemBy !== '') {
+      const until = parseUntil(body.redeemBy);
+      if (until === undefined || until <= now()) throw licenseError('redeem_by_invalid', 400);
+      redeemBy = iso(until);
+    }
+    return { plan: edition, ...term, count, note: str(body?.note, 500), redeemBy };
+  }
+
   /** A live subscription Groble will charge again: auto-renewal on and not terminated. */
   function renewsAutomatically(license) {
     const end = accessEnd(license);
     if (license.status !== 'active' || end === null || now() >= end) return false;
-    return license.subscription?.autoRenew !== false && license.subscription?.status !== 'terminated';
+    return autoRenewOf(license) === true && license.subscription?.status !== 'terminated';
   }
 
   /**
@@ -1391,7 +1523,7 @@ export function createLicensesService({
     const installId = typeof body?.installId === 'string' ? body.installId.trim().toLowerCase() : '';
     if (!INSTALL_ID_RE.test(installId)) throw licenseError('install_id_invalid', 400);
     const digest = uniqueInstallDigest(installId);
-    const installs = (await uniqueInstallsStore?.load())?.installs ?? {};
+    const installs = (await uniqueInstallsStore?.read())?.installs ?? {};
     const install = installs[digest];
     const firstSeen = parseTime(install?.firstSeenAt);
     const eligible = install && firstSeen !== undefined && firstSeen < grandfatherCutoff
@@ -1837,6 +1969,76 @@ export function createLicensesService({
         return { value: { ok: true, changed: true, previousExpiresAt: iso(before), license: licenseView(license) } };
       });
     },
+    /**
+     * Issues one batch of gift codes. The answer is the only place the plaintext codes ever appear;
+     * the state keeps their SHA-256 and display prefix.
+     */
+    async issueGiftCodes(token, body) {
+      requireAdmin(token);
+      const fields = parseGiftIssue(body);
+      return mutate(async (state) => {
+        let batchId;
+        do batchId = `gcb_${random(9).toString('hex')}`; while (Object.hasOwn(state.giftCodeBatches, batchId));
+        const createdAt = new Date(now()).toISOString();
+        const batch = { batchId, ...fields, createdAt };
+        for (const k of Object.keys(batch)) if (batch[k] === undefined) delete batch[k];
+        state.giftCodeBatches[batchId] = batch;
+        const codes = [];
+        while (codes.length < fields.count) {
+          const code = generateGiftCode(random);
+          const codeHash = giftCodeHash(code);
+          if (Object.hasOwn(state.giftCodes, codeHash)) continue;
+          state.giftCodes[codeHash] = { codeHash, batchId, prefix: giftCodePrefix(code), status: 'active', createdAt };
+          codes.push(code);
+        }
+        log(`[site-api] gift code batch ${batchId}: ${codes.length} ${giftPlanName(batch)} codes issued`);
+        return { value: { ok: true, batch: giftBatchView(state, batch, now()), codes } };
+      });
+    },
+    /** Batches newest first with counts and masked codes; `batchId` picks one, `status` filters the codes. */
+    async giftCodes(token, { batchId, status } = {}) {
+      requireAdmin(token);
+      if (status && !GIFT_CODE_STATUSES.includes(status)) throw licenseError('status_invalid', 400);
+      const state = await read();
+      const nowMs = now();
+      const batches = Object.values(state.giftCodeBatches)
+        .filter((batch) => !batchId || batch.batchId === batchId)
+        .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+        .map((batch) => giftBatchView(state, batch, nowMs, status));
+      return { ok: true, count: batches.length, batches };
+    },
+    /**
+     * `{ batchId }` revokes every unredeemed code of a batch, `{ code }` or `{ codeHash }` one code. A
+     * redeemed code is 409 code_redeemed with its keyId: revoke that key instead.
+     */
+    async revokeGiftCodes(token, body) {
+      requireAdmin(token);
+      const batchId = str(body?.batchId, 64);
+      const hasCode = body?.code !== undefined && body.code !== null && body.code !== '';
+      const hasHash = body?.codeHash !== undefined && body.codeHash !== null && body.codeHash !== '';
+      if ([Boolean(batchId), hasCode, hasHash].filter(Boolean).length !== 1) throw licenseError('target_required', 400);
+      const code = hasCode ? normalizeGiftCode(body.code) : '';
+      if (hasCode && !code) throw licenseError('invalid_format', 400);
+      if (hasHash && !(typeof body.codeHash === 'string' && /^[0-9a-f]{64}$/.test(body.codeHash))) throw licenseError('invalid_format', 400);
+      const hash = code ? giftCodeHash(code) : hasHash ? body.codeHash : null;
+      const reason = str(body?.reason, 200);
+      return mutate(async (state) => {
+        let targets;
+        if (batchId) {
+          if (!Object.hasOwn(state.giftCodeBatches, batchId)) throw licenseError('batch_not_found', 404);
+          targets = Object.values(state.giftCodes).filter((record) => record.batchId === batchId && record.status === 'active');
+        } else {
+          const record = Object.hasOwn(state.giftCodes, hash) ? state.giftCodes[hash] : undefined;
+          if (!record) throw licenseError('invalid_code', 404);
+          if (record.status === 'redeemed') throw Object.assign(licenseError('code_redeemed', 409), { extra: { keyId: record.keyId } });
+          targets = record.status === 'active' ? [record] : [];
+        }
+        const at = new Date(now()).toISOString();
+        for (const record of targets) Object.assign(record, { status: 'revoked', revokedAt: at, ...(reason ? { revokeReason: reason } : {}) });
+        const batch = state.giftCodeBatches[batchId ?? state.giftCodes[hash].batchId];
+        return { dirty: targets.length > 0, value: { ok: true, changed: targets.length, batch: giftBatchView(state, batch, now()) } };
+      });
+    },
     async resendEmail(token, body) {
       requireAdmin(token);
       const result = await mutate(async (state) => {
@@ -1869,6 +2071,7 @@ export function createLicensesService({
     linkByEmail,
     redeemForAccount,
     claimForAccount,
+    redeemGiftCode,
     unlinkAccount,
     authenticateAccount,
     admin,

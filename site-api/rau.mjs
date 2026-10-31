@@ -26,9 +26,10 @@ import { createMemoryStore } from './store.mjs';
  * upstream once the period's spend reaches the allowance, so the last admitted call may overshoot by
  * its own cost (and calls in flight together by theirs).
  *
- * rau.json = { ledgers: { [principalId]: ledger }, spend: { [weekStart]: { [model]: row } } }. An old
- * `allowances` field (per-license OpenRouter keys of the previous Rau-0.1) is left as it is and never read.
- * Assumes ONE replica: all writes go through one lock.
+ * State = { ledgers: { [principalId]: ledger }, spend: { [weekStart]: { [model]: row } } }, in rau.json
+ * or the rau tables (mappers/rau.mjs). An old `allowances` field (per-license OpenRouter keys of the
+ * previous Rau-0.1) is left as it is and never read. Every write runs exclusively through
+ * `store.update`; upstream calls happen between updates, never inside one.
  */
 
 export const MAX_RAU_PROMPT_BYTES = 48 * 1024;
@@ -97,12 +98,6 @@ export function createRauService({
   const allowanceUsd = usd(config.allowanceUsd ?? 8);
   const configured = Boolean(enabled && upstream?.configured);
 
-  let mutation = Promise.resolve();
-  function withLock(fn) {
-    const result = mutation.then(fn, fn);
-    mutation = result.then(() => undefined, () => undefined);
-    return result;
-  }
   function normalize(state) {
     const next = state && typeof state === 'object' && !Array.isArray(state) ? state : {};
     for (const field of ['ledgers', 'spend']) {
@@ -110,17 +105,13 @@ export function createRauService({
     }
     return next;
   }
+  /** `fn` runs alone on the store and returns `{ value, dirty }`; the state is saved unless `dirty` is false. */
   async function mutate(fn) {
-    return withLock(async () => {
-      const state = normalize(await store.load());
-      const result = await fn(state);
-      if (result?.dirty !== false) await store.save(state);
-      return result?.value ?? result;
-    });
+    const result = await store.update((state) => fn(normalize(state)));
+    return result?.value ?? result;
   }
   async function read() {
-    await mutation.catch(() => {});
-    return normalize(await store.load());
+    return normalize(await store.read());
   }
 
   const allowanceOf = (source) => (source === 'trial' ? RAU_TRIAL_ALLOWANCE_USD : allowanceUsd);

@@ -1,14 +1,17 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { MAX_AVATAR_BYTES, accountError, accountIdForEmail, createAccountsService, emptyAccountsState } from './accounts.mjs';
+import { createFileAvatars, createPostgresAvatars } from './avatars.mjs';
 import {
   DEFAULT_PORT,
   resolveAccountConfig,
   resolveAccountsDbPath,
   resolveAvatarDir,
+  resolveDataDir,
+  resolveDatabaseUrl,
   resolveFeedbackDir,
   resolveFeedbackMaxBytes,
   resolveFeedbackProofKey,
@@ -26,19 +29,33 @@ import {
   resolveDownloadsDbPath,
   retiredEnvNames,
 } from './config.mjs';
+import { createDatabase } from './db.mjs';
 import {
   DEFAULT_FEEDBACK_PROOF_KEY,
   MAX_FEEDBACK_BODY_BYTES,
   createFeedbackService,
+  emptyFeedbackIndex,
   feedbackError,
 } from './feedback.mjs';
 import { GIFT_PROXY_PREFIX, createGiftsService, emptyGiftsState, parseGiftAmount } from './gifts.mjs';
 import { verifyGrobleWebhook } from './groble-webhook.mjs';
+import { createLegacyRauPlans } from './hama-legacy.mjs';
 import { createHeldAlerter } from './held-alert.mjs';
 import { createEmailProvider, resendProviderFromEnv } from './license-email.mjs';
 import { parseSigningPrivateKey, publicKeyFromPrivate, rawPublicKeyBase64 } from './license-lease.mjs';
 import { createLicensesService, emptyLicensesState, licenseError } from './licenses.mjs';
+import { accountsMapper } from './mappers/accounts.mjs';
+import { downloadsMapper } from './mappers/downloads.mjs';
+import { feedbackMapper } from './mappers/feedback.mjs';
+import { giftsMapper } from './mappers/gifts.mjs';
+import { hamaMapper } from './mappers/hama.mjs';
+import { licensesMapper } from './mappers/licenses.mjs';
+import { rauMapper } from './mappers/rau.mjs';
+import { uniqueInstallsMapper } from './mappers/unique-installs.mjs';
+import { waitlistMapper } from './mappers/waitlist.mjs';
+import { webhookLogMapper } from './mappers/webhook-log.mjs';
 import { renderAccountLoginErrorPage, renderUniqueInstallsPage } from './pages.mjs';
+import { createPostgresStore } from './pg-store.mjs';
 import { MAX_RAU_BODY_BYTES, createRauService, emptyRauState, rauRateLimited } from './rau.mjs';
 import { RAU_AGENT_PREFIX, createRauAgentProxy, createRauUpstream, leaseOf } from './rau-proxy.mjs';
 import { createRateLimiter } from './rate-limit.mjs';
@@ -227,6 +244,7 @@ export function siteRequestListener({
   webhookLog = createWebhookLog(),
   webhookAlerts = createWebhookAlerter({ log: () => {} }),
   heldAlerts = createHeldAlerter({ log: () => {} }),
+  storage = 'files',
   log = () => {},
 }) {
   const limiter = createRateLimiter();
@@ -375,6 +393,10 @@ export function siteRequestListener({
           case 'POST /v1/account/claim':
             allowAccount('account', 300, TEN_MINUTES);
             send(200, await accounts.claim(bearerToken(req), await readAccountJson(req)));
+            return;
+          case 'POST /v1/account/gift-codes/redeem':
+            allowAccount('account', 300, TEN_MINUTES);
+            send(200, await accounts.redeemGiftCode(bearerToken(req), await readAccountJson(req)));
             return;
           case 'POST /v1/account/profile':
             allowAccount('account', 300, TEN_MINUTES);
@@ -650,6 +672,18 @@ export function siteRequestListener({
           allow('admin', 120, TEN_MINUTES);
           send(200, await licenses.admin.webhooks(bearerToken(req), Object.fromEntries(searchParams)));
           return;
+        case 'GET /v1/admin/gift-codes':
+          allow('admin', 120, TEN_MINUTES);
+          send(200, await licenses.admin.giftCodes(bearerToken(req), Object.fromEntries(searchParams)));
+          return;
+        case 'POST /v1/admin/gift-codes/issue':
+          allow('admin', 120, TEN_MINUTES);
+          send(200, await licenses.admin.issueGiftCodes(bearerToken(req), await readJson(req)));
+          return;
+        case 'POST /v1/admin/gift-codes/revoke':
+          allow('admin', 120, TEN_MINUTES);
+          send(200, await licenses.admin.revokeGiftCodes(bearerToken(req), await readJson(req)));
+          return;
         case 'POST /v1/admin/licenses/issue':
         case 'POST /v1/admin/licenses/issue-beta':
         case 'POST /v1/admin/licenses/revoke':
@@ -763,7 +797,7 @@ export function siteRequestListener({
           res.end(await readFile(RAU_ICON_PATH));
           return;
         case 'GET /healthz':
-          send(200, { ok: true });
+          send(200, { ok: true, storage });
           return;
         case 'GET /unique-installs':
           allow('unique-install-page', 120, MINUTE);
@@ -836,24 +870,27 @@ export function siteRequestListener({
 }
 
 export function createSiteServer(env = process.env, options = {}) {
-  const uniqueInstallsStore = createFileStore(resolveUniqueInstallsDbPath(env), {
-    emptyState: emptyUniqueInstallsState,
-  });
+  const log = options.log ?? ((line) => process.stderr.write(`${line}\n`));
+  // With a database every store runs there and never touches its JSON file (feedback attachments
+  // stay files in both modes). `options.db` (tests, main) wins over DATABASE_URL.
+  const db = options.db !== undefined ? options.db : databaseFromEnv(env, log);
+  const domainStore = (mapper, filePath, emptyState) => (db
+    ? createPostgresStore({ db, mapper })
+    : createFileStore(filePath, { emptyState }));
+  const uniqueInstallsStore = domainStore(uniqueInstallsMapper, resolveUniqueInstallsDbPath(env), emptyUniqueInstallsState);
   const uniqueInstalls = createUniqueInstallsService({
     store: uniqueInstallsStore,
     pingKey: resolveUniqueInstallPingKey(env) || DEFAULT_UNIQUE_INSTALL_PING_KEY,
   });
   const waitlist = createWaitlistService({
-    store: createFileStore(resolveWaitlistDbPath(env), {
-      emptyState: emptyWaitlistState,
-    }),
+    store: domainStore(waitlistMapper, resolveWaitlistDbPath(env), emptyWaitlistState),
     adminToken: env.RAU_WAITLIST_ADMIN_TOKEN ?? '',
     telegramBotToken: env.RAU_WAITLIST_TELEGRAM_BOT_TOKEN ?? '',
     telegramChatId: env.RAU_WAITLIST_TELEGRAM_CHAT_ID ?? '',
   });
   const licenseConfig = resolveLicenseConfig(env);
   const downloads = createDownloadsService({
-    store: createFileStore(resolveDownloadsDbPath(env), { emptyState: emptyDownloadsState }),
+    store: domainStore(downloadsMapper, resolveDownloadsDbPath(env), emptyDownloadsState),
     adminToken: licenseConfig.adminToken,
     now: options.now,
   });
@@ -863,39 +900,25 @@ export function createSiteServer(env = process.env, options = {}) {
     licenseConfig.publicKeyDerBase64 = publicKey.export({ format: 'der', type: 'spki' }).toString('base64');
     licenseConfig.publicKeyRawBase64 = rawPublicKeyBase64(publicKey);
   }
-  const log = options.log ?? ((line) => process.stderr.write(`${line}\n`));
   const retired = retiredEnvNames(env);
   if (retired.length) log(`[site-api] retired variables are set and ignored: ${retired.join(', ')}`);
   const rauConfig = resolveRauConfig(env);
   for (const warning of rauConfig.warnings) log(`[site-api] ${warning}`);
   const accountConfig = resolveAccountConfig(env);
-  const accountsStore = createFileStore(resolveAccountsDbPath(env), { emptyState: emptyAccountsState });
+  const accountsStore = domainStore(accountsMapper, resolveAccountsDbPath(env), emptyAccountsState);
   const webhookLog = createWebhookLog({
-    store: createFileStore(resolveWebhookLogDbPath(env), { emptyState: emptyWebhookLogState }),
+    store: domainStore(webhookLogMapper, resolveWebhookLogDbPath(env), emptyWebhookLogState),
     now: options.now,
   });
   const alertProvider = options.alertProvider !== undefined ? options.alertProvider : resendProviderFromEnv(env);
   const webhookAlerts = createWebhookAlerter({ provider: alertProvider, now: options.now, log });
   const heldAlerts = createHeldAlerter({ provider: alertProvider, log });
-  // The old hosted Hama plan's hama.json is frozen: read once, never written. Its active plans keep Rau.
-  const legacyHamaStore = createFileStore(resolveHamaDbPath(env), { emptyState: () => ({ plans: {} }) });
-  let legacyPlans = null;
-  async function legacyRauPlan(keyId) {
-    legacyPlans ??= legacyHamaStore.load().then((state) => (state?.plans && typeof state.plans === 'object' ? state.plans : {}));
-    let plans;
-    try {
-      plans = await legacyPlans;
-    } catch (error) {
-      legacyPlans = null;
-      throw error;
-    }
-    const plan = Object.hasOwn(plans, keyId) ? plans[keyId] : undefined;
-    return plan?.status === 'active' ? { periodAnchor: plan.periodAnchor ?? null } : null;
-  }
+  // The old hosted Hama plan's hama.json (or its tables) is frozen: only read, never written. Its active plans keep Rau.
+  const legacyRauPlan = createLegacyRauPlans(domainStore(hamaMapper, resolveHamaDbPath(env), () => ({ plans: {}, ledgers: {} })));
   // Created after accounts (it authenticates through them); accounts read it late.
   let rau = null;
   const licenses = createLicensesService({
-    store: createFileStore(resolveLicensesDbPath(env), { emptyState: emptyLicensesState }),
+    store: domainStore(licensesMapper, resolveLicensesDbPath(env), emptyLicensesState),
     uniqueInstallsStore: uniqueInstallsStore,
     signingKey,
     leaseKid: licenseConfig.signingKeyId,
@@ -918,7 +941,7 @@ export function createSiteServer(env = process.env, options = {}) {
     adminToken: licenseConfig.adminToken,
     downloadUrl: licenseConfig.downloadUrl,
     legacyRauPlan,
-    accountForEmail: async (emailLower) => accountIdForEmail(await accountsStore.load(), emailLower),
+    accountForEmail: async (emailLower) => accountIdForEmail(await accountsStore.read(), emailLower),
     webhookLog,
     now: options.now,
     log,
@@ -936,7 +959,7 @@ export function createSiteServer(env = process.env, options = {}) {
     }) : null,
     signingKey,
     leaseKid: licenseConfig.signingKeyId,
-    avatarDir: resolveAvatarDir(env),
+    avatars: db ? createPostgresAvatars(db) : createFileAvatars(resolveAvatarDir(env)),
     // Bound late: the Rau service authenticates through this one.
     rauConfigured: () => Boolean(rau?.configured),
     rauUsage: async (principal) => (rau ? rau.usage(principal) : null),
@@ -947,7 +970,7 @@ export function createSiteServer(env = process.env, options = {}) {
     log,
   });
   const gifts = createGiftsService({
-    store: createFileStore(resolveGiftsDbPath(env), { emptyState: emptyGiftsState }),
+    store: domainStore(giftsMapper, resolveGiftsDbPath(env), emptyGiftsState),
     authenticate: (lease) => accounts.authenticateLease(lease, { purpose: 'gift' }),
     config: resolveGiftConfig(env),
     adminToken: licenseConfig.adminToken,
@@ -957,7 +980,7 @@ export function createSiteServer(env = process.env, options = {}) {
   });
   const rauUpstream = createRauUpstream({ config: rauConfig, fetchImpl: options.fetchImpl, now: options.now, log });
   const rauService = createRauService({
-    store: createFileStore(resolveRauDbPath(env), { emptyState: emptyRauState }),
+    store: domainStore(rauMapper, resolveRauDbPath(env), emptyRauState),
     // A revoked or expired key still authenticates here, so it hears rau_plan_required instead of 401.
     authenticate: (lease) => accounts.authenticateLease(lease, { allowInactive: true, withRau: true, purpose: 'rau' }),
     upstream: rauUpstream,
@@ -970,6 +993,7 @@ export function createSiteServer(env = process.env, options = {}) {
   rau = { ...rauService, agent: createRauAgentProxy({ rau: rauService, upstream: rauUpstream, now: options.now, log }) };
   const feedback = createFeedbackService({
     dir: resolveFeedbackDir(env),
+    index: domainStore(feedbackMapper, path.join(resolveFeedbackDir(env), 'index.json'), emptyFeedbackIndex),
     proofKey: resolveFeedbackProofKey(env) || DEFAULT_FEEDBACK_PROOF_KEY,
     maxStorageBytes: resolveFeedbackMaxBytes(env),
     adminToken: licenseConfig.adminToken,
@@ -982,7 +1006,11 @@ export function createSiteServer(env = process.env, options = {}) {
       log,
     }),
   });
-  const listener = siteRequestListener({ uniqueInstalls, waitlist, downloads, licenses, accounts, gifts, rau, feedback, licenseConfig, webhookLog, webhookAlerts, heldAlerts, log });
+  const listener = siteRequestListener({
+    uniqueInstalls, waitlist, downloads, licenses, accounts, gifts, rau, feedback, licenseConfig, webhookLog, webhookAlerts, heldAlerts,
+    storage: db ? 'postgres' : 'files',
+    log,
+  });
   setImmediate(() => { void feedback.prune().catch((error) => log(`[site-api] feedback prune failed: ${error?.message ?? error}`)); });
   // Retry any key email that was queued before a restart.
   setImmediate(() => { void licenses.deliverPendingEmails().catch(() => {}); });
@@ -1008,11 +1036,86 @@ export function createSiteServer(env = process.env, options = {}) {
   return server;
 }
 
+function databaseFromEnv(env, log) {
+  const url = resolveDatabaseUrl(env);
+  return url ? createDatabase(url, { log }) : null;
+}
+
+/**
+ * Domains with a Postgres mapping and the JSON files each one replaces. Avatars go with accounts;
+ * feedback attachments stay files. hama.json is frozen but still a source of Rau grants, so it must be
+ * imported too; the old plan's usage logs (`hama-usage/`) are read by nothing and stay behind.
+ */
+function mappedFiles(env) {
+  return [
+    [licensesMapper.domain, resolveLicensesDbPath(env)],
+    [accountsMapper.domain, resolveAccountsDbPath(env)],
+    [webhookLogMapper.domain, resolveWebhookLogDbPath(env)],
+    [hamaMapper.domain, resolveHamaDbPath(env)],
+    [rauMapper.domain, resolveRauDbPath(env)],
+    [giftsMapper.domain, resolveGiftsDbPath(env)],
+    [waitlistMapper.domain, resolveWaitlistDbPath(env)],
+    [uniqueInstallsMapper.domain, resolveUniqueInstallsDbPath(env)],
+    [downloadsMapper.domain, resolveDownloadsDbPath(env)],
+    [feedbackMapper.domain, path.join(resolveFeedbackDir(env), 'index.json')],
+  ];
+}
+
+/** Whether `file` is a non-empty file. */
+async function holdsData(file) {
+  const info = await stat(file).catch(() => null);
+  return Boolean(info?.isFile() && info.size > 0);
+}
+
+/**
+ * Refuses Postgres mode while a mapped JSON file holds data its domain never got: a DATABASE_URL set
+ * before the import would otherwise start every customer from an empty database.
+ */
+export async function checkImported(db, env = process.env) {
+  const { rows } = await db.query('SELECT domain FROM site_store_versions');
+  const written = new Set(rows.map((row) => row.domain));
+  const missing = [];
+  for (const [domain, file] of mappedFiles(env)) {
+    if (written.has(domain)) continue;
+    if (await holdsData(file)) missing.push(path.relative(resolveDataDir(env), file));
+  }
+  if (missing.length) {
+    throw new Error(`DATABASE_URL is set but ${missing.join(', ')} was never imported into Postgres. Import it first, or unset DATABASE_URL to keep the JSON files.`);
+  }
+}
+
+async function main() {
+  const log = (line) => process.stderr.write(`${line}\n`);
+  const port = Number(process.env.PORT ?? DEFAULT_PORT);
+  const db = databaseFromEnv(process.env, log);
+  if (db) {
+    try {
+      await db.ready();
+      await checkImported(db);
+    } catch (error) {
+      log(`[site-api] Postgres is not usable: ${error?.message ?? error}`);
+      await db.close().catch(() => {});
+      process.exit(1);
+    }
+  }
+  const server = createSiteServer(process.env, { db });
+  server.listen(port, '0.0.0.0', () => {
+    log(`[site-api] listening on 0.0.0.0:${port}${db ? ' with Postgres' : ''}`);
+  });
+  if (db) {
+    // Finish in-flight requests, then end the pool; Railway sends SIGTERM before a redeploy.
+    process.once('SIGTERM', () => {
+      log('[site-api] SIGTERM: closing');
+      setTimeout(() => process.exit(0), 10_000).unref();
+      setTimeout(() => server.closeAllConnections?.(), 5_000).unref();
+      server.close(() => {
+        db.close().catch((error) => log(`[site-api] closing Postgres failed: ${error?.message ?? error}`)).finally(() => process.exit(0));
+      });
+      server.closeIdleConnections?.();
+    });
+  }
+}
+
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
 
-if (isMain) {
-  const port = Number(process.env.PORT ?? DEFAULT_PORT);
-  createSiteServer().listen(port, '0.0.0.0', () => {
-    process.stderr.write(`[site-api] listening on 0.0.0.0:${port}\n`);
-  });
-}
+if (isMain) await main();
