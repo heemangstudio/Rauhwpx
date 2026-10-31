@@ -1,5 +1,8 @@
-import { installLicenseGate, mountLicenseRegisterButton } from './ui/license-gate';
-import { createPlanStore, desktopPlanApi } from './ui/plan/plan-store';
+import { installLicenseGate } from './ui/license-gate';
+import { createPlanStore, desktopPlanApi, type PlanStore } from './ui/plan/plan-store';
+import { mountAccountButton } from './ui/account/account-button';
+import { listenForAccountPageEvents } from './ui/account/account-page';
+import { accountStore, recordAccountActivity } from './ui/account/account-store';
 import { mountHamaHomeEntry } from './ui/plan/hama-home-entry';
 import { openPlanCard } from './ui/plan/upgrade-card';
 import type { DesktopLicenseApi } from './ui/agent-sidebar/settings-license';
@@ -1485,7 +1488,8 @@ function prepareCanvasKitLocalFonts(fontNames: readonly string[] | undefined): v
 async function initialize(): Promise<void> {
   void suppressDesktopServiceWorker();
   installDesktopWindowChrome();
-  void installLicenseGate();
+  installLicenseGate();
+  listenForAccountPageEvents({ plan: sharedPlanStore() });
   installDesktopDocumentState({
     subscribe: (update) => {
       desktopDocumentStateUpdate = update;
@@ -3136,11 +3140,20 @@ function templateBridge() {
   return attachedSession.activeChat?.bridge ?? null;
 }
 
+/** 문서 홈의 Hama 입구·계정 단추·계정 페이지가 함께 쓰는 요금제 상태. 데스크톱 요금제 API 가 없으면 null. */
+let windowPlanStore: PlanStore | null | undefined;
+function sharedPlanStore(): PlanStore | null {
+  if (windowPlanStore === undefined) {
+    const plan = desktopPlanApi();
+    windowPlanStore = plan ? createPlanStore(plan) : null;
+  }
+  return windowPlanStore;
+}
+
 /** 문서 홈의 Hama 입구(Pro·기존 라이선스). 데스크톱 요금제 API 가 없으면 두지 않는다. */
 function mountHomeHamaEntry(slot: HTMLElement): void {
-  const plan = desktopPlanApi();
-  if (!plan) return;
-  const store = createPlanStore(plan);
+  const store = sharedPlanStore();
+  if (!store) return;
   const license = (globalThis as { rhwpDesktop?: { license?: DesktopLicenseApi } }).rhwpDesktop?.license ?? null;
   mountHamaHomeEntry(slot, { store, open: () => { openPlanCard({ store, license, focus: 'hama' }); } });
 }
@@ -3181,13 +3194,8 @@ function installDocumentHome(): void {
       return renderFirstPage(session.wasm).catch(() => null);
     },
     mountTopbarTrailing: (slot) => {
-      const plan = desktopPlanApi();
-      if (plan) {
-        const store = createPlanStore(plan);
-        const license = (globalThis as { rhwpDesktop?: { license?: DesktopLicenseApi } }).rhwpDesktop?.license ?? null;
-        mountLicenseRegisterButton(slot, () => { openPlanCard({ store, license, focus: 'pro' }); });
-      }
       mountHomeHamaEntry(slot);
+      mountAccountButton(slot, { store: accountStore(), plan: sharedPlanStore() });
     },
     mountCorner: (slot) => mountUpdateHippo(slot),
     unsaved: {
@@ -4730,8 +4738,13 @@ function setupEventListeners(): void {
     }
   });
 
-  eventBus.on('document-dirty-changed', () => {
+  eventBus.on('document-dirty-changed', (payload) => {
     eventBus.emit('command-state-changed');
+    // 계정 통계: 이 창에서 문서를 처음 고친 때. 세션을 붙이거나 자동 저장을 되살린 표시는 편집이 아니다.
+    const change = payload as { dirty?: boolean; reason?: string } | undefined;
+    if (change?.dirty && change.reason !== 'document-session-attached' && change.reason !== 'autosave-recovered') {
+      recordAccountActivity('document_edited', attachedSession.documentId);
+    }
   });
 
   eventBus.on('document-file-handle-saved', (payload) => {

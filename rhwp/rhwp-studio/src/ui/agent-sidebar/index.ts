@@ -365,6 +365,7 @@ import { desktopGiftApi, type DesktopGiftApi } from '../special-event/gift.ts';
 import { createRauUpgradeChip, desktopRauApi, type DesktopRauApi } from './rau-upgrade.ts';
 import type { DesktopLicenseApi } from './settings-license.ts';
 import { createPlanStore, desktopPlanApi, planLocksAgent } from '../plan/plan-store.ts';
+import { recordAccountActivity } from '../account/account-store.ts';
 import type { DesktopPlanApi } from '../plan/plan-types.ts';
 import { listenForPlanCardEvents, openPlanCard, type PlanCardFocus } from '../plan/upgrade-card.ts';
 import '../plan/plan-lock.css';
@@ -5186,7 +5187,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     openAgentSetup: (agent) => settingsPanel.openAgentSetup(agent),
     beginAgentConnect: (agent) => settingsPanel.beginAgentConnect(agent),
     openCalibration: (options) => writingStyleCalibration.open(options),
-    ...(deps.license !== undefined ? { license: deps.license } : {}),
     taste: {
       get: () => bridge.requestTasteSettings(),
       set: (patch) => bridge.setTasteSettings(patch),
@@ -7427,6 +7427,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       request.acceptance,
       mentions.documents,
     );
+    // 계정 통계: 이 창에서 이 채팅의 첫 메시지가 나간 때.
+    const sentThreadId = currentThread.id;
+    void sent.then((messageId) => { if (messageId) recordAccountActivity('agent_session', sentThreadId); }, () => {});
     if (continuedTurn) {
       markInterruptionResolved(continuedTurn.marker.messageId, request.origin, sent);
       if ((request.origin === 'composer' || request.origin === 'inline') && followUps.snapshot().hold?.reason === 'interrupted') {

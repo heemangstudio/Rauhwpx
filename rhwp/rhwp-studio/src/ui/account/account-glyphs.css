@@ -1,0 +1,35 @@
+/* 계정 사진 원. 크기는 놓인 자리가 정한다(계정 단추 24px, 프로필 80px). 사진이 없으면 중성 면 위 머리글자,
+   로그아웃이면 사람 모양. */
+.acct-avatar {
+  position: relative;
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 50%;
+  background: var(--n-ink-fill-selected);
+  color: var(--n-ink-secondary);
+  box-shadow: inset 0 0 0 1px var(--n-ink-hairline);
+  user-select: none;
+}
+
+.acct-avatar img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.acct-avatar[data-kind='image'] {
+  box-shadow: none;
+}
+
+.acct-avatar-initial {
+  font-weight: var(--ag-fw-strong);
+  line-height: 1;
+}
+
+.acct-avatar-person {
+  width: 62%;
+  height: 62%;
+}
