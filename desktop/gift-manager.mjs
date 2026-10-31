@@ -2,7 +2,7 @@
 //
 // 규칙
 // - macOS·Windows 에서만 쓴다. 다른 OS 에서는 서버에 묻지 않고 늘 available:false 다.
-// - 지금 유효한 라이선스 lease 가 있어야 묻는다. 없으면(키 없음, 해지, 만료) available:false.
+// - 지금 유효한 lease(계정 lease, 무료가 아닌 것)가 있어야 묻는다. 없으면(로그아웃, 무료, 만료) available:false.
 // - 서버 답은 cacheMs 동안 재사용한다. 네트워크·서버 오류면 같은 라이선스의 마지막 답을 지키고 error 만 남긴다.
 // - 서버가 lease 를 거절하면(unauthorized) 답을 버린다.
 // - 허브에 주는 자격 증명의 lease 는 선물을 쓸 수 있을 때(active)만 넣는다.
@@ -24,8 +24,10 @@ export function giftClaimMessage(code) {
   return CLAIM_MESSAGES[code] ?? CLAIM_FALLBACK_MESSAGE;
 }
 
+/** 답을 지킬지 정하는 lease 의 주인. 계정 lease(v2)는 계정과 대표 키, 예전 lease 는 키. */
 function keyIdOf(lease) {
   const payload = decodeLeaseUnverified(lease);
+  if (payload?.v === 2) return typeof payload.accountId === 'string' ? `${payload.accountId}:${payload.keyId ?? ''}` : null;
   return typeof payload?.keyId === 'string' ? payload.keyId : null;
 }
 
