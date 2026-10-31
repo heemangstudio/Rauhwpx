@@ -5,6 +5,7 @@
 // 어디서든 window 의 'rhwp:open-plan-card' 이벤트로 연다(detail.focus 로 Hama·Rau 칸을 짚는다).
 import '../agent-sidebar/sheet.css';
 import './upgrade-card.css';
+import { createRauArt, stretchRauArt, type RauArt } from './rau-art.ts';
 import { createSheetFrame } from '../agent-sidebar/sheet.ts';
 import { createIcon } from '../agent-sidebar/icons.ts';
 import { openAccountPage } from '../account/account-page.ts';
@@ -30,18 +31,10 @@ const FEATURES: Record<'free' | PlanFamily, string[]> = {
   rau: ['Hama의 모든 기능', 'Rau 모드'],
 };
 
-/** Rau 마크(앱 아이콘의 Rau 글리프). */
-function rauMark(className: string): HTMLElement {
-  const mark = document.createElement('span');
-  mark.className = className;
-  mark.setAttribute('aria-hidden', 'true');
-  return mark;
-}
-
 /** 요금제 이름 앞의 마크. 무료는 없다. */
 export function planMark(plan: 'free' | PlanFamily, className: string): Element | null {
   if (plan === 'hama') return createHamaMark(`${className} ${className}-hama`);
-  if (plan === 'rau') return rauMark(`${className} ${className}-rau`);
+  if (plan === 'rau') return createHamaMark(`${className} ${className}-rau`);
   return null;
 }
 
@@ -105,6 +98,9 @@ export function createPlanChooser(options: PlanChooserOptions): PlanChooser {
   const api = store.api!;
   const account = options.account ?? accountStore();
   const body = el('div', 'ag-pricing-body');
+  /** 다시 그려도 물결이 끊기지 않게 하나를 옮겨 붙인다. */
+  let rauArt: RauArt | null = null;
+  let stopStretch: () => void = () => {};
 
   let view: PlanChooserView = 'plans';
   /** 결제한 상품의 등급이 되면 성공. */
@@ -113,7 +109,7 @@ export function createPlanChooser(options: PlanChooserOptions): PlanChooser {
   let notice = '';
   let checkoutBusy = false;
   let trialBusy = false;
-  /** 성공 화면의 등급. 체험은 요금제 상태보다 먼저 끝날 수 있어 따로 든다. */
+  /** 완료 단추의 등급. 체험은 요금제 상태보다 먼저 끝날 수 있어 따로 든다. */
   let doneTier: PlanTier | null = null;
   let focused: PlanCardFocus | undefined = options.focus;
   let successTimer: number | null = null;
@@ -139,7 +135,7 @@ export function createPlanChooser(options: PlanChooserOptions): PlanChooser {
   }
 
   async function beginTrial(): Promise<void> {
-    if (trialBusy || checkoutBusy) return;
+    if (doneTier !== null || trialBusy || checkoutBusy) return;
     const current = account.status();
     if (current?.state !== 'signed_in') {
       if (sendToSignIn()) return;
@@ -181,7 +177,7 @@ export function createPlanChooser(options: PlanChooserOptions): PlanChooser {
   }
 
   async function begin(sku: PlanSku): Promise<void> {
-    if (checkoutBusy) return;
+    if (doneTier !== null || checkoutBusy || trialBusy) return;
     checkoutBusy = true;
     notice = '';
     render();
@@ -243,6 +239,16 @@ export function createPlanChooser(options: PlanChooserOptions): PlanChooser {
   function planColumn(plan: 'free' | PlanFamily, tier: PlanTier | null): HTMLElement {
     const column = el('article', 'ag-pricing-col');
     column.dataset.plan = plan;
+    if (plan === 'rau') {
+      rauArt ??= createRauArt();
+      column.append(rauArt.element);
+      column.addEventListener('click', () => {
+        const host = body.closest<HTMLElement>('.ag-pricing-card, .rhwp-setup-dialog');
+        if (!host) return;
+        stopStretch();
+        stopStretch = stretchRauArt(host, column);
+      });
+    }
     const trial = plan === 'rau' ? trialState() : 'none';
     const current = tier === plan;
     if (current) column.dataset.current = 'true';
@@ -264,7 +270,15 @@ export function createPlanChooser(options: PlanChooserOptions): PlanChooser {
     for (const line of FEATURES[plan]) features.append(el('li', '', line));
 
     // 체험 중인 Rau 는 '체험 중'을 두고 계속 쓸 결제 단추를 그대로 둔다.
-    if (current && trial !== 'active') {
+    if (view === 'done' && doneTier === plan) {
+      const done = button('ag-pricing-btn ag-pricing-btn-primary ag-pricing-btn-success', '');
+      done.disabled = true;
+      done.setAttribute('aria-label', `${TIER_LABEL[plan]} 활성화 완료`);
+      done.append(createIcon('check'));
+      actions.setAttribute('role', 'status');
+      actions.setAttribute('aria-label', `${TIER_LABEL[plan]} 활성화 완료`);
+      actions.append(done);
+    } else if (current && trial !== 'active') {
       actions.append(el('span', 'ag-pricing-current', '사용 중'));
     } else if (plan !== 'free' && !(plan === 'hama' && tier === 'rau')) {
       if (trial === 'active') actions.append(el('span', 'ag-pricing-current ag-pricing-trial-tag', '체험 중'));
@@ -274,7 +288,7 @@ export function createPlanChooser(options: PlanChooserOptions): PlanChooser {
       if (trial === 'available') {
         const start = button('ag-pricing-btn ag-pricing-btn-primary ag-pricing-btn-trial', trialButtonLabel(account.status()?.trial));
         start.dataset.trial = 'rau';
-        start.disabled = trialBusy || checkoutBusy;
+        start.disabled = view === 'done' || trialBusy || checkoutBusy;
         start.addEventListener('click', () => { void beginTrial(); });
         actions.append(start);
       }
@@ -283,7 +297,7 @@ export function createPlanChooser(options: PlanChooserOptions): PlanChooser {
         const primary = sku === monthly && trial !== 'available';
         const buy = button(primary ? 'ag-pricing-btn ag-pricing-btn-primary' : 'ag-pricing-btn', sku === monthly ? '월간' : '연간');
         buy.dataset.sku = sku;
-        buy.disabled = checkoutBusy || trialBusy;
+        buy.disabled = view === 'done' || checkoutBusy || trialBusy;
         buy.addEventListener('click', () => { void begin(sku); });
         actions.append(buy);
       }
@@ -328,23 +342,11 @@ export function createPlanChooser(options: PlanChooserOptions): PlanChooser {
     body.append(wait);
   }
 
-  function renderDone(): void {
-    const done = el('div', 'ag-pricing-state ag-pricing-done');
-    const mark = el('span', 'ag-pricing-done-mark');
-    mark.append(createIcon('check'));
-    const tier = doneTier ?? status()?.tier ?? 'hama';
-    const title = el('p', 'ag-pricing-state-title', `${TIER_LABEL[tier]}를 쓸 수 있어요`);
-    title.setAttribute('role', 'status');
-    done.append(mark, title);
-    body.append(done);
-  }
-
   function render(): void {
     body.replaceChildren();
     options.onRender?.(view, view !== 'plans' || checkoutBusy || trialBusy);
-    if (view === 'plans') renderPlans();
-    else if (view === 'waiting') renderWaiting();
-    else renderDone();
+    if (view === 'waiting') renderWaiting();
+    else renderPlans();
   }
 
   function focusColumn(target: PlanCardFocus | undefined): void {
@@ -381,6 +383,8 @@ export function createPlanChooser(options: PlanChooserOptions): PlanChooser {
       focused ? `.ag-pricing-col[data-plan="${focused}"] button:not([disabled])` : '.ag-pricing-btn-primary:not([disabled])',
     ),
     dispose(): void {
+      rauArt?.dispose();
+      stopStretch();
       unsubscribe();
       unsubscribeAccount();
       if (successTimer !== null) window.clearTimeout(successTimer);

@@ -416,8 +416,6 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   function mountPlanChooser(): void {
     if (planChooser) return;
     planChooser = deps.createPlanChooser?.({
-      // 다음 장(Rau 축하, Hama 는 하마의 말)이 완료를 알린다.
-      doneHoldMs: 0,
       onFinish: () => {
         unmountPlanChooser();
         if (!deps.plan?.status() || deps.plan.status()!.tier === 'free') {

@@ -462,12 +462,12 @@ html:is(.desktop-mac, .desktop-windows) .acct-page.acct-embedded {
 }
 
 .acct-avatar-large {
-  width: 80px;
-  height: 80px;
+  width: 112px;
+  height: 112px;
 }
 
 .acct-avatar-large .acct-avatar-initial {
-  font-size: 30px;
+  font-size: 40px;
 }
 
 /* ── 로그인 판 ───────────────────────────────────────── */
@@ -504,7 +504,6 @@ html:is(.desktop-mac, .desktop-windows) .acct-page.acct-embedded {
   letter-spacing: -0.04em;
   text-align: center;
 }
-
 
 .acct-signin-switch {
   display: flex;
@@ -660,9 +659,11 @@ html:is(.desktop-mac, .desktop-windows) .acct-page.acct-embedded {
 /* ── 프로필 머리 ─────────────────────────────────────── */
 .acct-profile {
   display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 20px;
-  padding: 12px 0 24px;
+  gap: 16px;
+  padding: 12px 0 28px;
+  text-align: center;
 }
 
 .acct-profile-avatar {
@@ -687,23 +688,58 @@ html:is(.desktop-mac, .desktop-windows) .acct-page.acct-embedded {
   background: rgb(0 0 0 / 0.12);
 }
 
+.acct-avatar-badge {
+  position: absolute;
+  z-index: 1;
+  top: 0;
+  right: 0;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: #5f6368;
+  color: #fff;
+  box-shadow: 0 0 0 2px var(--n-surface);
+  transition: background-color var(--ag-dur-fast) var(--ag-ease-out);
+}
+
+.acct-avatar-badge .ag-icon {
+  width: 15px;
+  height: 15px;
+}
+
+.acct-profile-avatar:hover:not(:disabled) .acct-avatar-badge {
+  background: #74787d;
+}
+
 .acct-profile-avatar[data-busy='true'] .acct-avatar {
   opacity: 0.5;
 }
 
 .acct-profile-copy {
   display: flex;
-  flex: 1 1 auto;
   flex-direction: column;
+  align-items: center;
+  width: 100%;
   min-width: 0;
 }
 
+/* 연필은 옆에 띄워 이름이 가운데에 그대로 선다. */
 .acct-name-row {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 4px;
-  min-width: 0;
+  max-width: calc(100% - 64px);
   min-height: 36px;
+}
+
+.acct-name-row .acct-name-edit {
+  position: absolute;
+  top: 50%;
+  left: 100%;
+  margin-left: 4px;
+  transform: translateY(-50%);
 }
 
 .acct-name {
@@ -719,6 +755,8 @@ html:is(.desktop-mac, .desktop-windows) .acct-page.acct-embedded {
 
 .acct-name-form {
   display: flex;
+  justify-content: center;
+  width: 100%;
   align-items: center;
   gap: 6px;
   min-height: 36px;
@@ -734,6 +772,7 @@ html:is(.desktop-mac, .desktop-windows) .acct-page.acct-embedded {
 .acct-email-row {
   display: flex;
   flex-wrap: wrap;
+  justify-content: center;
   align-items: center;
   gap: 4px 10px;
   margin: 2px 0 0;
@@ -760,10 +799,14 @@ html:is(.desktop-mac, .desktop-windows) .acct-page.acct-embedded {
   background: currentColor;
 }
 
-.acct-photo-actions {
-  display: flex;
-  gap: 14px;
-  margin-top: 6px;
+.acct-profile-plan {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 0 0;
+  color: var(--n-ink);
+  font-size: var(--ag-fs-secondary);
+  font-weight: var(--ag-fw-medium);
 }
 
 /* ── 칸 ──────────────────────────────────────────────── */
@@ -800,6 +843,12 @@ html:is(.desktop-mac, .desktop-windows) .acct-page.acct-embedded {
   gap: 12px;
 }
 
+.acct-plan-actions {
+  display: flex;
+  flex: none;
+  gap: 8px;
+}
+
 .acct-plan-name {
   display: flex;
   align-items: center;
@@ -821,13 +870,6 @@ html:is(.desktop-mac, .desktop-windows) .acct-page.acct-embedded {
   background-color: currentColor;
   -webkit-mask: url('/icons/rau.png') center / contain no-repeat;
   mask: url('/icons/rau.png') center / contain no-repeat;
-}
-
-.acct-offer-name .acct-rau-mark {
-  width: 22px;
-  height: 22px;
-  margin-right: 8px;
-  vertical-align: -2px;
 }
 
 /* Rau 크레딧 */
@@ -909,179 +951,12 @@ html:is(.desktop-mac, .desktop-windows) .acct-page.acct-embedded {
   font-size: var(--ag-fs-body);
 }
 
-.acct-offers {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  margin-top: 24px;
-  padding-top: 24px;
-  border-top: 1px solid var(--n-ink-hairline);
-}
-
-.acct-offers.acct-offers-continuing {
-  margin-top: 20px;
-  padding-top: 0;
-  border-top: 0;
-}
-
-.acct-offer {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  padding-right: 24px;
-}
-
-.acct-offer + .acct-offer {
-  padding: 0 0 0 24px;
-  border-left: 1px solid var(--n-ink-hairline);
-}
-
-.acct-offer:only-child {
-  grid-column: 1 / -1;
-  padding-right: 0;
-}
-
-.acct-offer-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  min-height: 40px;
-  gap: 8px;
-}
-
-.acct-offer-name {
-  margin: 0;
-  font-size: 24px;
-  font-weight: var(--ag-fw-strong);
-  letter-spacing: var(--ag-track-tight);
-}
-
-.acct-offer-description {
-  min-height: 3em;
-  margin: 8px 0 20px;
-  color: var(--n-ink-secondary);
-  font-size: var(--ag-fs-secondary);
-  line-height: 1.5;
-}
-
-.acct-offer-price {
-  margin: auto 0 0;
-  color: var(--n-ink-secondary);
-  font-size: var(--ag-fs-secondary);
-  font-variant-numeric: tabular-nums;
-}
-
-.acct-offer-price strong {
-  color: var(--n-ink);
-  font-size: 26px;
-  font-weight: var(--ag-fw-strong);
-  letter-spacing: var(--ag-track-tight);
-}
-
-.acct-offer-annual {
-  min-height: 1.5em;
-  margin: 4px 0 20px;
-  color: var(--n-ink-secondary);
-  font-size: var(--ag-fs-meta);
-}
-
-.acct-offer-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  min-height: 36px;
-}
-
-.acct-offer-actions .acct-btn {
-  flex: 1;
-  min-width: 0;
-}
-
-.acct-offer-actions .acct-offer-yearly {
-  flex: none;
-  margin-left: 4px;
-  font-size: var(--ag-fs-meta);
-}
-
-.acct-offer[data-plan='hama'] .acct-btn-primary {
-  background: #f2f2f2;
-  color: #171717;
-  box-shadow: inset 0 0 0 1px rgb(0 0 0 / 8%);
-}
-
-.acct-offer[data-plan='hama'] .acct-btn-primary:hover:not(:disabled) {
-  background: #fff;
-}
-
-.acct-offer-trial-ended {
-  margin: -12px 0 12px;
-  font-size: var(--ag-fs-meta);
-}
-
-/* 체험 단추는 한 줄을 다 쓰고, 월간·연간은 그 아래에 선다. */
-.acct-offer-actions .acct-offer-trial {
-  flex: 1 0 100%;
-}
-
-.acct-offer-wait {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--n-ink-secondary);
-  font-size: var(--ag-fs-secondary);
-}
-
-.acct-offer-head .acct-hama-scene {
-  width: 64px;
-  height: 36px;
-}
-
-/* 판 16×9 칸, 칸마다 8px. 정수 배라 2배 화면에서도 칸이 번지지 않는다. */
-.acct-hama-scene {
-  width: 128px;
-  height: 72px;
-  color: var(--plan-hama);
-  overflow: visible;
-}
-
-.hama-scene-hama,
-.hama-scene-spark,
-.hama-scene-spark-arms {
-  fill: currentColor;
-}
-
-.hama-scene-spark-arms {
-  fill: color-mix(in oklab, currentColor 55%, var(--acct-hama-fill, transparent));
-}
-
-.hama-scene-water {
-  fill: color-mix(in oklab, currentColor 42%, var(--acct-hama-fill, var(--n-surface-raised)));
-}
-
-.hama-scene-water-light {
-  fill: color-mix(in oklab, currentColor 20%, var(--acct-hama-fill, var(--n-surface-raised)));
-}
-
 /* 반짝임: 칸이 켜지고 꺼지기만 한다(사이 값 없음). 셋이 서로 다른 박자로. */
 @keyframes acct-hama-twinkle {
   0%, 62% { opacity: 1; }
   63%, 84% { opacity: 0; }
   85%, 100% { opacity: 1; }
 }
-
-.hama-scene-spark-arms { animation: acct-hama-twinkle 2.6s steps(1, end) infinite; }
-.hama-scene-spark-b { animation: acct-hama-twinkle 3.4s steps(1, end) 0.9s infinite; }
-.hama-scene-spark-c { animation: acct-hama-twinkle 2.2s steps(1, end) 1.6s infinite; }
-
-@media (prefers-reduced-motion: reduce) {
-  .hama-scene-spark-arms,
-  .hama-scene-spark-b,
-  .hama-scene-spark-c {
-    animation: none;
-  }
-}
-
-
 
 /* 사용량 */
 .acct-stats {
@@ -1326,8 +1201,8 @@ html:is(.desktop-mac, .desktop-windows) .acct-page.acct-embedded {
   }
 
   .acct-avatar-large {
-    width: 64px;
-    height: 64px;
+    width: 96px;
+    height: 96px;
   }
 
   .acct-stats,
@@ -1337,21 +1212,6 @@ html:is(.desktop-mac, .desktop-windows) .acct-page.acct-embedded {
 
   .acct-section[data-section='plan'] {
     padding: 18px;
-  }
-
-  .acct-offers {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 24px;
-  }
-
-  .acct-offer {
-    padding: 0;
-  }
-
-  .acct-offer + .acct-offer {
-    padding: 24px 0 0;
-    border-left: 0;
-    border-top: 1px solid var(--n-ink-hairline);
   }
 
   .acct-claim {
