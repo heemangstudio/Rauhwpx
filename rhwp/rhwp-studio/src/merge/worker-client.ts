@@ -52,6 +52,17 @@ export type MergeWorkerFactory = () => WorkerLike;
 const IDLE_TERMINATE_MS = 30_000;
 /** A fresh worker compiles the engine before it can work; its requests' budgets start once it reports ready. */
 const COLD_START_ALLOWANCE_MS = 30_000;
+const DEFAULT_SOFT_BUDGET_MS = 5_000;
+/**
+ * A fresh worker's first manifest of a large document runs far longer than a warm one: a 13.6 MB, 384-page
+ * HWPX took about 44 s on Windows, then 1.5 s for the same bytes. Every commit and the first enable build
+ * one, so the budget grows with the document instead of failing every version action on large files.
+ */
+const MANIFEST_BUDGET_MS_PER_MIB = 8_000;
+
+export function manifestSoftBudgetMs(byteLength: number): number {
+  return DEFAULT_SOFT_BUDGET_MS + Math.ceil(Math.max(0, byteLength) / (1024 * 1024) * MANIFEST_BUDGET_MS_PER_MIB);
+}
 
 interface Pending<T> {
   operation: MergeWorkerOperation;
@@ -264,7 +275,10 @@ export class MergeWorkerClient {
     bytes: Uint8Array,
     options: MergeWorkerCallOptions = {},
   ): Promise<MergeManifestEntrySeed[] | undefined> {
-    return this.request<MergeManifestEntrySeed[] | null>({ id: 0, operation: 'build-manifest', bytes }, options)
+    return this.request<MergeManifestEntrySeed[] | null>(
+      { id: 0, operation: 'build-manifest', bytes },
+      { ...options, softBudgetMs: options.softBudgetMs ?? manifestSoftBudgetMs(bytes.byteLength) },
+    )
       .then((entries) => entries ?? undefined);
   }
 
@@ -345,7 +359,7 @@ export class MergeWorkerClient {
       const coldStart = !this.workerReady;
       const budget = setTimeout(
         () => this.onBudget(id),
-        (coldStart ? this.coldStartAllowanceMs : 0) + (options.softBudgetMs ?? 5_000),
+        (coldStart ? this.coldStartAllowanceMs : 0) + (options.softBudgetMs ?? DEFAULT_SOFT_BUDGET_MS),
       );
       const pending: Pending<T> = {
         operation,
@@ -417,7 +431,7 @@ export class MergeWorkerClient {
       if (!pending.coldStart) continue;
       pending.coldStart = false;
       clearTimeout(pending.budget);
-      pending.budget = setTimeout(() => this.onBudget(id), pending.options.softBudgetMs ?? 5_000);
+      pending.budget = setTimeout(() => this.onBudget(id), pending.options.softBudgetMs ?? DEFAULT_SOFT_BUDGET_MS);
     }
   }
 

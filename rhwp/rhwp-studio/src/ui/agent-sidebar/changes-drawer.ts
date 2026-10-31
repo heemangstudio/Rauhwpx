@@ -720,6 +720,8 @@ export function createChangesDrawer(options: ChangesDrawerOptions): ChangesDrawe
       if (controller.getState().documentId !== docId) return;
       await refresh();
     } catch (error) {
+      // 그사이 다른 문서로 옮겼어도 실패한 커밋은 진단 기록에 남긴다.
+      console.error('[versions] 변경 사항 작업 실패:', error);
       if (controller.getState().documentId !== docId) return;
       workingError = error instanceof Error ? error.message : String(error);
     } finally {
