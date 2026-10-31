@@ -53,6 +53,7 @@ import {
   resolveGeneratedDocumentArtifact,
 } from './generated-document-artifact.mjs';
 import { launchRequest } from './launch-routing.mjs';
+import { handleStrayUpdateCopy, isStrayUpdateCopy, repairStrayShortcuts, shortcutFolders } from './update-stray-copy.mjs';
 import {
   NativeFileHandleRegistry,
   recoverInterruptedNativeSave,
@@ -233,7 +234,10 @@ const profileDirectories = resolveProfileDirectories({
 });
 app.setPath('userData', profileDirectories.userData);
 registerStudioScheme(protocol);
-const hasSingleInstanceLock = app.requestSingleInstanceLock();
+// 업데이트가 옮겨 둔 임시 사본(%TEMP%\nsXXXX.tmp\old-install)으로 떴으면 잠금을 쥐지 않는다 — 새로 설치된
+// 앱의 실행을 가로채지 않게. 아래에서 알리고 끝낸다.
+const strayUpdateCopy = isStrayUpdateCopy(process.execPath, { packaged: app.isPackaged });
+const hasSingleInstanceLock = !strayUpdateCopy && app.requestSingleInstanceLock();
 // 문제 보고에 싣는 진단 기록(userData/logs). console.warn/error 출력은 그대로 두고 함께 남긴다.
 // 잠금을 쥔 인스턴스만 기록을 이어 쓴다 — 곧 끝날 두 번째 인스턴스가 같은 파일을 돌리면 안 된다.
 const diagnosticLog = createDiagnosticLog({
@@ -2456,7 +2460,16 @@ ipcMain.on('desktop:browser-guest-focus', (event, payload) => {
   }
 });
 
-if (!hasSingleInstanceLock) {
+if (strayUpdateCopy) {
+  app.whenReady().then(() => handleStrayUpdateCopy({
+    app,
+    dialog,
+    shell,
+    documentPaths: pendingLaunches[0]?.openFiles ?? [],
+    productName: PRODUCT_NAME,
+    releasesUrl: RELEASES_URL,
+  })).catch(() => app.exit(0));
+} else if (!hasSingleInstanceLock) {
   app.quit();
 } else {
   updateLifecycle.start();
@@ -2547,6 +2560,15 @@ if (!hasSingleInstanceLock) {
     // 업데이트로 재시작했으면 그 전의 창을 다시 연다. 30분이 지난 기록은 버린다.
     const restartManifest = await consumeRestartManifest(updateRestartFile);
     configureAutoUpdater({ restartManifest });
+    // 업데이트 중에 연 바로가기가 임시 사본을 가리키게 됐으면 이 실행 파일로 되돌린다(작업 표시줄 고정 포함).
+    if (app.isPackaged && process.platform === 'win32') {
+      void repairStrayShortcuts({
+        shell,
+        folders: shortcutFolders({ appData: app.getPath('appData'), desktop: app.getPath('desktop') }),
+      }).then((repaired) => {
+        if (repaired.length > 0) console.warn('[hamaeditor] repaired shortcuts that pointed at an interrupted update copy:', repaired);
+      }, (error) => console.warn('[hamaeditor] shortcut repair failed:', error));
+    }
     await loadNativeBookmarks();
     await windowFrames.load();
     installMenu();
