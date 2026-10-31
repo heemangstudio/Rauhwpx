@@ -1,10 +1,10 @@
 /**
- * 문제 보고 흐름(데스크톱 전용). 시트를 띄우기 전에 창 전체를 찍고 문서 쪽을 흐린 뒤, 사용자가 쓴 글과
+ * 문제 보고 흐름(데스크톱 전용). 시트를 띄우기 전에 창 전체를 찍어 흐린 뒤, 사용자가 쓴 글과
  * 고른 첨부(대화·문서)를 메인에 넘긴다. 메인이 설치 id·진단 기록을 붙여 site-api 로 보낸다.
  */
 import { showToast } from '../toast.ts';
 import { focusOpenIssueReport, openIssueReportSheet } from './issue-report-sheet.ts';
-import { prepareScreenshot, screenshotForUpload, visibleDocumentRects, type PreparedScreenshot } from './screenshot.ts';
+import { prepareScreenshot, reportBlurRects, screenshotForUpload, type PreparedScreenshot } from './screenshot.ts';
 import type { DesktopIssueReportApi, IssueReportDraft } from './types.ts';
 
 export const REPORT_ISSUE_COMMAND = 'help:report-issue';
@@ -123,12 +123,12 @@ export async function startIssueReport(host: IssueReportHost): Promise<void> {
     };
 
     // 메인이 찍는 순간에 가깝게, 부르기 직전과 돌아온 직후에 잰다. 그 사이 스크롤했어도 두 자리를 모두 흐린다.
-    const rects = visibleDocumentRects();
+    const rects = reportBlurRects();
     const cssWidth = window.innerWidth;
     let prepared;
     try {
       prepared = await host.api.prepare();
-      rects.push(...visibleDocumentRects());
+      rects.push(...reportBlurRects());
     } catch (error) {
       console.warn('[issue-report] 준비 실패:', error);
       showToast({ message: '버그 제보를 열지 못했습니다.', durationMs: 4000 });

@@ -962,6 +962,8 @@ export function createVersionManagerPage(controller: VersionManagerController): 
     } catch (error) {
       // 사용자가 확인 창에서 취소한 것은 오류로 알리지 않는다.
       if (versionErrorCode(error) === 'CANCELLED') return;
+      // 알림 띠만으로는 문제 보고의 진단 기록에 남지 않는다.
+      console.error('[versions] 버전 작업 실패:', error);
       const message = error instanceof Error ? error.message : String(error);
       notice.textContent = message;
       notice.hidden = false;

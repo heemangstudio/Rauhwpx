@@ -118,6 +118,34 @@ test('a Windows home folder is hidden in stack frames, inspected errors, JSON an
   assert.equal(redactSecrets('Cannot open /Users/andy. See /Users/andy.kim/x', { home: '/Users/andy' }), 'Cannot open ~. See /Users/andy.kim/x');
 });
 
+test('a report tail hides user folders in lines an earlier version wrote without redacting them', () => withTempDir(async (dir) => {
+  const home = 'C:\\Users\\김하마';
+  const encoded = encodeURIComponent('김하마');
+  // 3.0.9 까지는 file:// URL 의 홈을 가리지 않았다. 그 기록이 업데이트 뒤에도 남아 있다.
+  const { mkdirSync, writeFileSync } = await import('node:fs');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(path.join(dir, 'diagnostic.log.1'), [
+    `2026-10-29T00:00:00.000Z warn  [main] [license] window failed to load: Error: ERR_FAILED (-2) loading 'file:///C:/Users/${encoded}/AppData/Local/Programs/HamaEditor/resources/app.asar/desktop/license-window.html'`,
+    `2026-10-29T00:00:01.000Z warn  [main] opened C:\\Users\\김하마\\Downloads\\a.hwpx`,
+    '',
+  ].join('\n'));
+  const log = createDiagnosticLog({ dir, home });
+  log.writeText('main', 'warn', 'after update');
+  const tail = log.tail();
+  assert.ok(!tail.includes('김하마'), tail);
+  assert.ok(!tail.includes(encoded), tail);
+  assert.match(tail, /file:\/\/\/~\/AppData\/Local\/Programs\/HamaEditor/);
+  assert.match(tail, /\[main\] after update/);
+}));
+
+test('percent-encoded drive and separators still hide another Windows user folder', () => {
+  const encoded = encodeURIComponent('김하마');
+  const out = redactSecrets(`open?path=C%3A%5CUsers%5C${encoded}%5CDocuments%5Ca.hwp and C%3A%2FUsers%2F${encoded}%2Fb`);
+  assert.ok(!out.includes(encoded), out);
+  assert.match(out, /C%3A%5CUsers%5C\[user\]%5CDocuments%5Ca\.hwp/);
+  assert.match(out, /C%3A%2FUsers%2F\[user\]%2Fb/);
+});
+
 test('cookie headers, URL user info and short explicit passwords are redacted', () => {
   const out = redactSecrets([
     'Cookie: sid=abcdef123456; session=zzz',

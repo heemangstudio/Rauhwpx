@@ -237,6 +237,26 @@ export function parseNativeCmdShimExecutable(cmdPath, contents, deps = {}) {
 }
 
 /**
+ * npm 이 만든 Windows `.cmd` 심인데 그 심이 띄울 JS 엔트리나 네이티브 exe 가 없으면 true. 다른 CLI 의
+ * `npm install` 이 패키지를 지우고(prune) `.bin` 의 심만 남긴 상태다. 알아보지 못한 배치 파일은 false.
+ *
+ * @param {string} cmdPath
+ * @param {{ existsSync?: typeof fsExistsSync, readFileSync?: typeof fsReadFileSync }} [deps]
+ */
+export function npmCmdShimTargetMissing(cmdPath, deps = {}) {
+  if (!BATCH_EXT.test(String(cmdPath))) return false;
+  let contents;
+  try {
+    contents = String((deps.readFileSync ?? fsReadFileSync)(cmdPath, 'utf8'));
+  } catch {
+    return false;
+  }
+  if (parseNpmCmdShimScript(cmdPath, contents, deps) || parseNativeCmdShimExecutable(cmdPath, contents, deps)) return false;
+  const anyTarget = { existsSync: () => true };
+  return Boolean(parseNpmCmdShimScript(cmdPath, contents, anyTarget) || parseNativeCmdShimExecutable(cmdPath, contents, anyTarget));
+}
+
+/**
  * npm `@openai/codex` 의 bin/codex.js 는 플랫폼 패키지의 codex.exe 를 stdio inherit 로 다시 띄우는
  * 래퍼다. 호스트가 Electron(GUI 서브시스템)이면 물려줄 콘솔이 없어 그 codex.exe 가 보이는 새 콘솔
  * 창을 연다. 래퍼가 하는 일(실행 파일 탐색과 패키지 env)을 여기서 하고 codex.exe 를 바로 띄운다.
@@ -331,8 +351,11 @@ export function resolveNpmCliLaunch(command, deps = {}) {
   const script = parseNpmCmdShimScript(resolved, contents, deps);
   if (!script) {
     // 네이티브 .exe 를 감싼 심은 exe 를 직접 띄운다. cmd.exe 를 거치면 8191 상한에 걸리고
-    // Agent SDK 는 .cmd 를 spawn 하지 못한다 (EINVAL).
-    const native = parseNativeCmdShimExecutable(resolved, contents, deps);
+    // Agent SDK 는 .cmd 를 spawn 하지 못한다 (EINVAL). 심이 가리키는 exe 가 지워졌어도(다른 CLI 설치의
+    // npm prune 등) .cmd 로 돌아가지 않는다 — 없는 exe 를 띄워 ENOENT(CLI 없음)로 끝나야 다시 설치하라고
+    // 알릴 수 있다. .cmd 로 띄우면 EINVAL 과 긴 인자의 ENAMETOOLONG 만 남는다.
+    const native = parseNativeCmdShimExecutable(resolved, contents, deps)
+      ?? parseNativeCmdShimExecutable(resolved, contents, { ...deps, existsSync: () => true });
     return { command: native ?? resolved, leadingArgs: [], env: {} };
   }
   const codex = resolveCodexWrapperLaunch(script, deps);
