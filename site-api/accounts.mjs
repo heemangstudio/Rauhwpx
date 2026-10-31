@@ -50,6 +50,8 @@ const DEFAULT_DEVICE_NAME = '이름 없는 기기';
 // Per account per hour: a key or order number is not something to guess at.
 const REDEEMS_PER_HOUR = 20;
 const CLAIMS_PER_HOUR = 10;
+// Every attempt counts, failed ones included: a code is not something to guess at either.
+const GIFT_CODE_REDEEMS_PER_HOUR = 10;
 const AVATARS_PER_HOUR = 30;
 const STATS_PER_HOUR = 120;
 export const MAX_AVATAR_BYTES = 1024 * 1024;
@@ -131,6 +133,8 @@ export function createAccountsService({
   avatarDir,
   // keyId → this billing period of its active Hama plan, or null (hama.usageSummary; null with HAMA_ENABLED off).
   hamaUsage = async () => null,
+  // Brings hama.json in line after a gift code created a Hama key (hama.syncSubscriptions; a no-op with HAMA_ENABLED off).
+  syncHamaPlans = async () => {},
   providers = ['email', 'google'],
   deviceLimit = DEVICE_LIMIT_PER_ACCOUNT,
   adminToken = '',
@@ -581,6 +585,21 @@ export function createAccountsService({
     return linkedAnswer(context, await licenses.claimForAccount(context.account.id, { orderId: body?.orderId, email: body?.email }));
   }
 
+  /**
+   * Redeems a gift code: answers like redeem, with `alreadyRedeemed` when this account redeemed the
+   * code before. A new Hama key gets its plan before the payload is built.
+   */
+  async function redeemGiftCode(bearer, body) {
+    const context = await sessionOf(bearer);
+    limitAccount('gift-code', context.account.id, GIFT_CODE_REDEEMS_PER_HOUR);
+    const { alreadyRedeemed, keyId, edition } = await licenses.redeemGiftCode(context.account.id, body?.code);
+    if (!alreadyRedeemed && edition === 'hama') {
+      await Promise.resolve().then(syncHamaPlans).catch((error) => log(`[site-api] hama plan sync after a gift code failed: ${error?.message ?? error}`));
+    }
+    const payload = await accountPayload(context.account.id, context.deviceId);
+    return { ...payload, alreadyRedeemed, license: payload.licenses.find((l) => l.keyId === keyId) ?? null };
+  }
+
   // ------------------------------------------------------------- profile
 
   /** 1–30 characters with no control characters, trimmed. */
@@ -853,6 +872,7 @@ export function createAccountsService({
     removeDevice: removeDeviceRoute,
     redeem,
     claim,
+    redeemGiftCode,
     updateProfile,
     setAvatar,
     getAvatar,

@@ -434,6 +434,10 @@ export function siteRequestListener({
             allowAccount('account', 300, TEN_MINUTES);
             send(200, await accounts.claim(bearerToken(req), await readAccountJson(req)));
             return;
+          case 'POST /v1/account/gift-codes/redeem':
+            allowAccount('account', 300, TEN_MINUTES);
+            send(200, await accounts.redeemGiftCode(bearerToken(req), await readAccountJson(req)));
+            return;
           case 'POST /v1/account/profile':
             allowAccount('account', 300, TEN_MINUTES);
             send(200, await accounts.updateProfile(bearerToken(req), await readAccountJson(req)));
@@ -701,6 +705,18 @@ export function siteRequestListener({
         case 'GET /v1/admin/webhooks':
           allow('admin', 120, TEN_MINUTES);
           send(200, await licenses.admin.webhooks(bearerToken(req), Object.fromEntries(searchParams)));
+          return;
+        case 'GET /v1/admin/gift-codes':
+          allow('admin', 120, TEN_MINUTES);
+          send(200, await licenses.admin.giftCodes(bearerToken(req), Object.fromEntries(searchParams)));
+          return;
+        case 'POST /v1/admin/gift-codes/issue':
+          allow('admin', 120, TEN_MINUTES);
+          send(200, await licenses.admin.issueGiftCodes(bearerToken(req), await readJson(req)));
+          return;
+        case 'POST /v1/admin/gift-codes/revoke':
+          allow('admin', 120, TEN_MINUTES);
+          send(200, await licenses.admin.revokeGiftCodes(bearerToken(req), await readJson(req)));
           return;
         case 'POST /v1/admin/licenses/issue':
         case 'POST /v1/admin/licenses/issue-beta':
@@ -971,6 +987,7 @@ export function createSiteServer(env = process.env, options = {}) {
     avatarDir: resolveAvatarDir(env),
     // Bound late like hamaPlanActive: the Hama service is created after this one.
     hamaUsage: async (keyId) => (hamaService ? hamaService.usageSummary(keyId) : null),
+    syncHamaPlans: async () => hamaService?.syncSubscriptions(),
     providers: accountConfig.providers,
     deviceLimit: accountConfig.deviceLimit,
     adminToken: licenseConfig.adminToken,
