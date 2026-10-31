@@ -23,7 +23,7 @@ import { createRetryEscalation } from '../autofix/autofix.ts';
 import type { AutofixButton, AutofixButtonOptions } from '../autofix/autofix-button.ts';
 
 export type FailureActionId = 'login' | 'settings' | 'usage' | 'retry' | 'resume' | 'cancel-resume' | 'autofix'
-  | 'hama-cheap' | 'byok';
+  | 'byok' | 'rau-upgrade';
 
 export interface FailureAction {
   id: FailureActionId;
@@ -58,10 +58,8 @@ export interface FailureViewContext {
   /** 같은 실패의 다시 시도가 두 번 실패했다 */
   escalated?: boolean;
   timeZone?: string;
-  /** Hama 한도에 걸렸을 때 이 채팅을 옮길 싼 모델 (Hama 안에서). 없으면 null. */
-  hamaCheapModel?: { id: string; name: string } | null;
-  /** 이 알림에서 싼 모델로 바꿨다 — 그 모델 이름. */
-  hamaSwitchedTo?: string | null;
+  /** 호스팅 Rau 를 체험으로 쓰는 중이다 — 크레딧이 떨어지면 다시 채워지지 않는다. */
+  rauTrial?: boolean;
 }
 
 export interface FailureView {
@@ -73,8 +71,6 @@ export interface FailureView {
   detail: string;
   /** 오래된 알림은 제목만 남긴다 */
   compact: boolean;
-  /** 둘째 줄이 이 시각까지 남은 시간을 센다 (Hama 한도). 알림이 화면에 있는 동안 스스로 고친다. */
-  countdownAt?: number | null;
 }
 
 const RUNNING_TITLE = '작업이 끝난 뒤 다시 시도할 수 있어요';
@@ -113,27 +109,25 @@ export function formatResetAt(at: number, now: number, timeZone?: string): strin
   }).format(at);
 }
 
-const HAMA_CAP_TITLES: Record<string, string> = {
-  hama_cap_5h: 'Hama 5시간 사용 한도에 도달했어요',
-  hama_cap_week: 'Hama 주간 사용 한도에 도달했어요',
-  hama_cap_month: 'Hama 이번 달 사용량을 모두 썼어요',
-};
+/** `[rau-credits:2026-11-30T15:00:00.000Z]` — 허브가 크레딧이 떨어진 턴 실패에 붙이는 꼬리표. */
+const RAU_CREDITS_TAG = /\[rau-credits:([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+(?:Z|[+-][0-9]{2}:[0-9]{2}))\]/;
 
-/** Hama 플랜의 한도 실패 (5시간·주간·이번 달). */
-export function isHamaCapFailure(failure: Pick<ProviderFailure, 'code'>): boolean {
-  return failure.code !== null && failure.code in HAMA_CAP_TITLES;
+/** 호스팅 Rau 의 크레딧을 다 쓴 실패. 코드가 없던 실패도 꼬리표로 알아본다. */
+export function isRauCreditsFailure(failure: Pick<ProviderFailure, 'code' | 'message'>): boolean {
+  return failure.code === 'rau_credits_exhausted' || RAU_CREDITS_TAG.test(failure.message);
 }
 
-/** 이 시각까지 남은 시간 — '3시간 12분 뒤 다시 쓸 수 있어요'. 이틀 넘게 남으면 날짜로 말한다. */
-export function hamaCountdownLine(at: number, now: number, timeZone?: string): string {
-  const left = at - now;
-  if (left <= 0) return '지금 다시 쓸 수 있어요';
-  if (left > 48 * 3_600_000) return `${formatResetAt(at, now, timeZone)}에 다시 쓸 수 있어요`;
-  const minutes = Math.ceil(left / 60_000);
-  const hours = Math.floor(minutes / 60);
-  const rest = minutes % 60;
-  const span = hours > 0 ? (rest > 0 ? `${hours}시간 ${rest}분` : `${hours}시간`) : `${minutes}분`;
-  return `${span} 뒤 다시 쓸 수 있어요`;
+/** 크레딧이 다시 채워지는 시각. 실패에 실린 값, 없으면 문구의 꼬리표. */
+export function rauCreditsResetAt(failure: Pick<ProviderFailure, 'message' | 'resetAt'>): number | null {
+  if (failure.resetAt !== null) return failure.resetAt;
+  const iso = RAU_CREDITS_TAG.exec(failure.message)?.[1];
+  const at = iso ? Date.parse(iso) : NaN;
+  return Number.isFinite(at) && at > 0 ? at : null;
+}
+
+/** 11월 30일 */
+function monthDay(at: number, timeZone?: string): string {
+  return new Intl.DateTimeFormat('ko-KR', { timeZone, month: 'long', day: 'numeric' }).format(at);
 }
 
 /** 내 OpenRouter 키의 크레딧 부족. own_credits 는 다음 요청이 선물 크레딧으로 간다. */
@@ -148,10 +142,10 @@ function isPiSetupFailure(failure: ProviderFailure): boolean {
 function titleFor(failure: ProviderFailure, label: string, origin: string): string {
   switch (failure.class) {
     case 'auth_required':
-      if (failure.code === 'HAMA_NOT_ACTIVE') return 'Hama 플랜이 활성화되어 있지 않아요';
+      if (failure.code === 'RAU_AGENT_NOT_ACTIVE') return 'Rau를 쓸 수 없어요';
       return isPiSetupFailure(failure) ? 'Pi 연결 설정이 필요해요' : `${label} 로그인이 필요해요`;
     case 'usage_limit':
-      if (failure.code !== null && HAMA_CAP_TITLES[failure.code]) return HAMA_CAP_TITLES[failure.code]!;
+      if (isRauCreditsFailure(failure)) return 'Rau 크레딧을 모두 썼어요';
       if (failure.code === 'gift_credits') return '무료 크레딧을 다 썼어요';
       return isOpenRouterCredits(failure) ? 'OpenRouter 크레딧이 부족해요' : `${label} 사용 한도에 도달했어요`;
     case 'provider_error':
@@ -198,26 +192,18 @@ export function failureView(failure: ProviderFailure, origin: string, ctx: Failu
   let retryAllowed = failure.retryable;
   const settingsCodes = failure.code === 'cli_missing' || failure.code === 'PI_MODEL_MISSING'
     || (failure.code !== null && MODEL_CODES.has(failure.code));
-  if (isHamaCapFailure(failure)) {
-    // 한도는 기다리면 풀린다. 그동안 Hama 안의 싼 모델로 잇거나(기본), BYOK 로 옮긴다.
-    const future = ctx.resetAt !== null && ctx.resetAt > ctx.now;
-    if (ctx.hamaSwitchedTo) {
-      line = `${ctx.hamaSwitchedTo}로 바꿨어요`;
-      if (ctx.hasRetry) actions.push(retryAction());
-      return { title, line, actions, detail, compact: false };
-    }
-    if (ctx.resetAt !== null) line = hamaCountdownLine(ctx.resetAt, ctx.now, ctx.timeZone);
-    if (failure.code !== 'hama_cap_month' && ctx.hamaCheapModel && future) {
-      actions.push({ id: 'hama-cheap', label: '저렴한 모델로 계속', title: ctx.hamaCheapModel.name });
-    }
-    actions.push({ id: 'byok', label: 'BYOK로 전환', quiet: actions.length > 0 });
-    if (!future && ctx.resetAt !== null && ctx.hasRetry) actions.unshift(retryAction());
-    return { title, line, actions, detail, compact: false, countdownAt: future ? ctx.resetAt : null };
+  if (isRauCreditsFailure(failure)) {
+    // 다시 보내도 같은 결과다. 다음 초기화를 기다리거나 내 AI 로 옮긴다. 체험은 다시 채워지지 않으니 업그레이드를 권한다.
+    const resetAt = rauCreditsResetAt(failure);
+    if (ctx.rauTrial) actions.push({ id: 'rau-upgrade', label: '업그레이드' });
+    else if (resetAt !== null && resetAt > ctx.now) line = `${monthDay(resetAt, ctx.timeZone)}에 다시 채워져요`;
+    actions.push({ id: 'byok', label: '내 AI로 전환', quiet: actions.length > 0 });
+    return { title, line, actions, detail, compact: false };
   }
   switch (failure.class) {
     case 'auth_required':
-      if (failure.code === 'HAMA_NOT_ACTIVE') {
-        actions.push({ id: 'byok', label: 'BYOK로 전환' });
+      if (failure.code === 'RAU_AGENT_NOT_ACTIVE') {
+        actions.push({ id: 'rau-upgrade', label: '업그레이드' }, { id: 'byok', label: '내 AI로 전환', quiet: true });
         break;
       }
       if (isPiSetupFailure(failure)) {
@@ -316,9 +302,7 @@ export function failureQueueHold(
       return { reason: 'failed', detail: isPiSetupFailure(failure) ? 'Pi 설정 필요' : `${label} 로그인 필요` };
     case 'usage_limit': {
       if (isOpenRouterCredits(failure)) return { reason: 'failed', detail: 'OpenRouter 크레딧 부족' };
-      if (isHamaCapFailure(failure) && ctx.resetAt !== null && ctx.resetAt > ctx.now) {
-        return { reason: 'failed', detail: `Hama 한도, ${hamaCountdownLine(ctx.resetAt, ctx.now, ctx.timeZone)}` };
-      }
+      if (isRauCreditsFailure(failure)) return { reason: 'failed', detail: 'Rau 크레딧 소진' };
       const future = ctx.resetAt !== null && ctx.resetAt > ctx.now;
       return {
         reason: 'failed',
@@ -420,26 +404,6 @@ export interface FailureNoticeHandlers {
   onReport?(): void;
   /** 이 알림의 자동 수정 단추. 다시 그려도 실행 상태가 남도록 같은 요소를 돌려준다. */
   autofixButton?(): HTMLElement | null;
-  /** 둘째 줄의 남은 시간이 0 이 됐다 — 조치를 다시 정한다. */
-  onCountdownDone?(): void;
-}
-
-/** 남은 시간 줄을 30초마다 고친다. 알림이 화면에서 빠지면 멈춘다. */
-const COUNTDOWN_TICK_MS = 30_000;
-
-function startCountdown(line: HTMLElement, at: number, done: (() => void) | undefined): void {
-  const timer = setInterval(() => {
-    if (!line.isConnected) {
-      clearInterval(timer);
-      return;
-    }
-    const now = Date.now();
-    line.textContent = hamaCountdownLine(at, now);
-    if (now >= at) {
-      clearInterval(timer);
-      done?.();
-    }
-  }, COUNTDOWN_TICK_MS);
 }
 
 export interface FailureNoticeOptions {
@@ -527,7 +491,6 @@ export function createFailureNotice(view: FailureView, options: FailureNoticeOpt
   if (view.line) {
     const line = el('div', 'ag-failure-line', view.line);
     root.append(line);
-    if (view.countdownAt) startCountdown(line, view.countdownAt, handlers.onCountdownDone);
   }
   return root;
 }
@@ -625,11 +588,9 @@ export interface FailureNoticeControllerDeps {
   resend(retry: ThreadRetryPayload, failure: ProviderFailure): boolean;
   /** 오류 제보를 연다(데스크톱). 없으면 제보 단추를 두지 않는다. */
   reportIssue?: () => void;
-  /** Hama 한도에 걸렸을 때 옮길 싼 모델 (지금 Hama 상태의 첫 싼 모델). */
-  hamaCheapModel?: () => { id: string; name: string } | null;
-  /** 이 채팅을 Hama 의 그 모델로 바꾼다. 바꾸지 못했으면 false. */
-  switchHamaModel?: (modelId: string) => boolean;
-  /** BYOK 로 옮긴다 (프로바이더 전환과 같은 길). 키가 없으면 BYOK 설정을 연다. */
+  /** 호스팅 Rau 를 체험으로 쓰는 중인지 (크레딧 알림의 조치가 달라진다). */
+  rauTrial?: () => boolean;
+  /** 내 AI(BYOK)로 옮긴다 (프로바이더 전환과 같은 길). 키가 없으면 BYOK 설정을 연다. */
   switchToByok?: () => void;
   /** 자동 수정(데스크톱). ready 는 지금 단추를 세워도 되는지(설정에서 켬). */
   autofix?: {
@@ -689,8 +650,6 @@ export function createFailureNoticeController(deps: FailureNoticeControllerDeps)
   const escalation = createRetryEscalation(2, 'provider-failure');
   const escalated = new WeakSet<ThreadFailureMessage>();
   const autofixButtons = new Map<ThreadFailureMessage, AutofixButton>();
-  /** 싼 모델로 바꾼 Hama 한도 알림 → 그 모델 이름 (창이 살아 있는 동안만). */
-  const hamaSwitched = new WeakMap<ThreadFailureMessage, string>();
   const escalationKey = (failure: ProviderFailure) => `${failure.agent}:${failure.class}:${failure.code ?? ''}`;
 
   function latestIn(thread: ChatThread): ThreadFailureMessage | null {
@@ -728,9 +687,7 @@ export function createFailureNoticeController(deps: FailureNoticeControllerDeps)
       resumeBlocked: blocked.has(message),
       autofix: deps.autofix?.ready() === true,
       escalated: escalated.has(message),
-      ...(isHamaCapFailure(message.failure)
-        ? { hamaCheapModel: deps.hamaCheapModel?.() ?? null, hamaSwitchedTo: hamaSwitched.get(message) ?? null }
-        : {}),
+      ...(isRauCreditsFailure(message.failure) ? { rauTrial: deps.rauTrial?.() === true } : {}),
     });
   }
 
@@ -771,7 +728,6 @@ export function createFailureNoticeController(deps: FailureNoticeControllerDeps)
       },
       ...(deps.reportIssue ? { onReport: deps.reportIssue } : {}),
       autofixButton: () => autofixButton(message, view)?.element ?? null,
-      onCountdownDone: () => rerender(message),
     });
   }
 
@@ -876,15 +832,12 @@ export function createFailureNoticeController(deps: FailureNoticeControllerDeps)
         cancelResume(deps.thread().id);
         refresh();
         break;
-      case 'hama-cheap': {
-        const cheap = deps.hamaCheapModel?.() ?? null;
-        if (!cheap || !deps.switchHamaModel?.(cheap.id)) break;
-        hamaSwitched.set(message, cheap.name);
-        refresh();
-        break;
-      }
       case 'byok':
         deps.switchToByok?.();
+        break;
+      case 'rau-upgrade':
+        // 요금제 카드는 앱 쪽이 이 이벤트로 띄운다.
+        window.dispatchEvent(new CustomEvent('rhwp:open-plan-card', { detail: { focus: 'rau' } }));
         break;
     }
   }

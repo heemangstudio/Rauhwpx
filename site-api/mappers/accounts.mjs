@@ -2,13 +2,22 @@ import { checkRoot, defineTable, isPlainObject, mapEntries, setOwn, storeMisfit 
 
 /**
  * accounts.json ↔ accounts, account_devices, account_sessions, account_logins, account_grants,
- * account_email_index, account_workos_index (migrations/001). The two indexes have their own rules
- * (byEmail holds verified emails only and the first account wins), so they are stored, not derived.
- * Profile pictures are not part of the state: avatars.mjs keeps them in account_avatars.
+ * account_email_index, account_workos_index (migrations/001), account_trial_emails and account_roots
+ * (migrations/003). The two indexes have their own rules (byEmail holds verified emails only and the
+ * first account wins), so they are stored, not derived. `trialEmails` outlives the accounts it names.
+ * account_roots says whether the state holds `trialEmails`: a file written before the Rau trial has
+ * none; without its row (a new database) it does. Profile pictures are not part of the state:
+ * avatars.mjs keeps them in account_avatars.
  */
 
 const DOMAIN = 'accounts';
-const ROOT = ['accounts', 'byWorkosUser', 'byEmail', 'sessions', 'logins', 'grants'];
+const ROOT = ['accounts', 'byWorkosUser', 'byEmail', 'sessions', 'logins', 'grants', 'trialEmails'];
+
+const ROOTS = defineTable('account_roots', {
+  key: ['id'],
+  given: { id: 'text', has_trial_emails: 'bool' },
+  extra: false,
+});
 
 const ACCOUNTS = defineTable('accounts', {
   key: ['id'],
@@ -26,6 +35,7 @@ const ACCOUNTS = defineTable('accounts', {
     stats: ['object', 'stats'],
     created_at: ['time', 'createdAt'],
     last_sign_in_at: ['time', 'lastSignInAt'],
+    rau_trial: ['object', 'rauTrial'],
   },
 });
 
@@ -95,9 +105,21 @@ const WORKOS_INDEX = defineTable('account_workos_index', {
   extra: false,
 });
 
+const TRIAL_EMAILS = defineTable('account_trial_emails', {
+  key: ['email_hash'],
+  secretKey: true,
+  given: { email_hash: 'text' },
+  fields: {
+    account_id: ['text', 'accountId'],
+    started_at: ['time', 'startedAt'],
+  },
+});
+
 function toRows(state) {
   checkRoot(DOMAIN, state, ROOT);
+  const hasTrialEmails = state.trialEmails !== undefined;
   const rows = {
+    account_roots: [ROOTS.pack(null, { id: DOMAIN, has_trial_emails: hasTrialEmails })],
     accounts: [],
     account_devices: [],
     account_sessions: [],
@@ -105,6 +127,7 @@ function toRows(state) {
     account_grants: [],
     account_email_index: [],
     account_workos_index: [],
+    account_trial_emails: [],
   };
   for (const [id, account] of mapEntries(DOMAIN, 'accounts', state.accounts)) {
     if (!isPlainObject(account) || account.id !== id) throw storeMisfit(`accounts (${id}): not an account with this id`);
@@ -136,11 +159,17 @@ function toRows(state) {
   for (const [workosUserId, accountId] of mapEntries(DOMAIN, 'byWorkosUser', state.byWorkosUser)) {
     rows.account_workos_index.push(WORKOS_INDEX.pack(null, { workos_user_id: workosUserId, account_id: accountId }));
   }
+  if (hasTrialEmails) {
+    for (const [hash, trial] of mapEntries(DOMAIN, 'trialEmails', state.trialEmails)) {
+      rows.account_trial_emails.push(TRIAL_EMAILS.pack(trial, { email_hash: hash }));
+    }
+  }
   return rows;
 }
 
 function fromRows(rows) {
   const state = { accounts: {}, byWorkosUser: {}, byEmail: {}, sessions: {}, logins: {}, grants: {} };
+  if (rows.account_roots[0]?.has_trial_emails ?? true) state.trialEmails = {};
   for (const row of rows.accounts) {
     const account = ACCOUNTS.unpack(row);
     if (!Object.hasOwn(account, 'devices')) account.devices = {};
@@ -156,12 +185,16 @@ function fromRows(rows) {
   for (const row of rows.account_grants) setOwn(state.grants, row.grant_hash, GRANTS.unpack(row));
   for (const row of rows.account_email_index) setOwn(state.byEmail, row.email_lower, row.account_id);
   for (const row of rows.account_workos_index) setOwn(state.byWorkosUser, row.workos_user_id, row.account_id);
+  for (const row of rows.account_trial_emails) {
+    if (!state.trialEmails) throw storeMisfit('account_trial_emails rows for a state without trialEmails');
+    setOwn(state.trialEmails, row.email_hash, TRIAL_EMAILS.unpack(row));
+  }
   return state;
 }
 
 export const accountsMapper = Object.freeze({
   domain: DOMAIN,
-  tables: [ACCOUNTS, DEVICES, SESSIONS, LOGINS, GRANTS, EMAIL_INDEX, WORKOS_INDEX],
+  tables: [ROOTS, ACCOUNTS, DEVICES, SESSIONS, LOGINS, GRANTS, EMAIL_INDEX, WORKOS_INDEX, TRIAL_EMAILS],
   toRows,
   fromRows,
 });

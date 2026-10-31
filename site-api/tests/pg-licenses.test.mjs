@@ -10,7 +10,7 @@ import { createPostgresStore } from '../pg-store.mjs';
 import { createMemoryStore } from '../store.mjs';
 import { uniqueInstallDigest } from '../unique-installs.mjs';
 import { createWebhookLog, emptyWebhookLogState, webhookLogEntry } from '../webhook-log.mjs';
-import { BASIC_ENV, basicPaid } from './fixtures/groble-basic.mjs';
+import { planPaid } from './fixtures/groble-plans.mjs';
 import { differential, seededRandom } from './helpers/differential.mjs';
 import { postgresSuite } from './helpers/postgres.mjs';
 
@@ -79,7 +79,7 @@ function subscriptionEvent(type, fields) {
 }
 
 function world(stores, clock) {
-  const config = resolveLicenseConfig({ ...BASIC_ENV, ADMIN_TOKEN: ADMIN });
+  const config = resolveLicenseConfig({ ADMIN_TOKEN: ADMIN });
   const sent = [];
   const ids = seededRandom('webhook-log');
   const webhookLog = createWebhookLog({ store: stores.webhookLog, now: () => clock.now, newId: () => `wh_${ids(4).toString('hex')}` });
@@ -132,10 +132,11 @@ test('licenses on Postgres answer and store exactly what the memory store does, 
   const event = (body, idempotencyKey) => (w) => w.licenses.handleGrobleEvent(structuredClone(body), { idempotencyKey });
   const admin = (name, body) => (w) => w.licenses.admin[name](ADMIN, body);
 
-  // Purchases: an annual subscription (and a retried delivery), a Pro monthly key linked to the buyer's account.
+  // Purchases: an annual subscription (and a retried delivery), a Hama monthly key linked to the buyer's account, a Rau yearly key.
   assert.equal((await step('annual purchase', event(annual({ merchantUid: 'sub_m1' }), 'idem-1'))).value.action, 'issued');
   assert.equal((await step('retried delivery', event(annual({ merchantUid: 'sub_m1' }), 'idem-1'))).value.duplicate, true);
-  await step('pro purchase', event(basicPaid({ merchantUid: 'pro_m1' }), 'idem-2'));
+  await step('pro purchase', event(planPaid({ sku: 'hamaMonthly', merchantUid: 'pro_m1', ref: 'hama-pro-1', email: 'pro@example.com' }), 'idem-2'));
+  await step('rau purchase', event(planPaid({ sku: 'rauYearly', merchantUid: 'rau_m1', ref: 'hama-rau-1', email: 'rau@example.com' }), 'idem-2r'));
   const { value: { key } } = await step('success page', (w) => w.licenses.statusByRef('hama-sub-1'));
   const { value: { key: proKey } } = await step('pro success page', (w) => w.licenses.statusByRef('hama-pro-1'));
 
@@ -147,7 +148,11 @@ test('licenses on Postgres answer and store exactly what the memory store does, 
   clock.now += DAY;
   await step('validate', (w) => w.licenses.validate(device(1)));
   await step('deactivate', (w) => w.licenses.deactivate(device(2)));
-  await step('lease', (w) => w.licenses.authenticateLease(activated.lease, { withRauPlan: true }));
+  await step('lease', (w) => w.licenses.authenticateLease(activated.lease, { withRau: true }));
+  const { value: { key: rauKey } } = await step('rau success page', (w) => w.licenses.statusByRef('hama-rau-1'));
+  const { value: rauActivated } = await step('activate rau', (w) => w.licenses.activate({ key: rauKey, deviceId: 'device-rau-0000', platform: 'darwin' }));
+  assert.equal(rauActivated.rau.eligible, true);
+  assert.equal((await step('rau lease', (w) => w.licenses.authenticateLease(rauActivated.lease, { withRau: true }))).value.rau.source, 'plan');
 
   // Renewal, a failed renewal payment, a cancel request, a refunded round.
   clock.now = Date.parse('2027-10-20T15:00:00+09:00');
@@ -208,12 +213,13 @@ test('licenses on Postgres answer and store exactly what the memory store does, 
   await step('grandfather again', (w) => w.licenses.grandfather({ installId: INSTALL_ID }));
 
   // Gift codes: two batches, a redeem and its repeat, another account, then revokes.
-  const { value: { codes: basicCodes, batch: basicBatch } } = await step('issue gift codes', admin('issueGiftCodes', { plan: 'basic', durationMonths: 3, count: 3, note: '선물' }));
-  const { value: { codes: hamaCodes } } = await step('issue gift codes in days', admin('issueGiftCodes', { plan: 'hama', durationDays: 14, count: 2, redeemBy: '2028-12-31' }));
+  const { value: { codes: basicCodes, batch: basicBatch } } = await step('issue gift codes', admin('issueGiftCodes', { plan: 'hama', durationMonths: 3, count: 3, note: '선물' }));
+  const { value: { codes: hamaCodes } } = await step('issue gift codes in days', admin('issueGiftCodes', { plan: 'rau', durationDays: 14, count: 2, redeemBy: '2028-12-31' }));
   await step('redeem gift code', (w) => w.licenses.redeemGiftCode('acct_00000000000000000e', basicCodes[0]));
   assert.equal((await step('redeem gift code again', (w) => w.licenses.redeemGiftCode('acct_00000000000000000e', basicCodes[0]))).value.alreadyRedeemed, true);
   assert.equal((await step('redeem gift code elsewhere', (w) => w.licenses.redeemGiftCode('acct_00000000000000000f', basicCodes[0]))).error.code, 'code_redeemed');
-  await step('redeem hama gift code', (w) => w.licenses.redeemGiftCode('acct_00000000000000000f', hamaCodes[0]));
+  await step('redeem rau gift code', (w) => w.licenses.redeemGiftCode('acct_00000000000000000f', hamaCodes[0]));
+  assert.equal((await step('rau gift entitlements', (w) => w.licenses.accountEntitlements('acct_00000000000000000f'))).value.tier, 'rau');
   await step('revoke gift code', admin('revokeGiftCodes', { code: basicCodes[1] }));
   await step('revoke gift batch', admin('revokeGiftCodes', { batchId: basicBatch.batchId }));
   await step('list gift codes', (w) => w.licenses.admin.giftCodes(ADMIN, {}));
@@ -228,7 +234,6 @@ test('licenses on Postgres answer and store exactly what the memory store does, 
   // Every admin read.
   for (const name of ['customers', 'betas', 'signatures', 'orders', 'attention']) await step(name, (w) => w.licenses.admin[name](ADMIN, {}));
   await step('lookup', admin('lookup', { email: 'subscriber@example.com' }));
-  await step('hama subscriptions', (w) => w.licenses.hamaSubscriptions());
   // Webhook deliveries older than 8 days are pruned on the next write.
   clock.now += 9 * DAY;
   await step('prune deliveries', event(oneTime({ merchantUid: 'ot_2' }), 'idem-13'));

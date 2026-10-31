@@ -3,7 +3,7 @@ import { sharedPlanStore } from './ui/plan/plan-store';
 import { mountAccountButton } from './ui/account/account-button';
 import { listenForAccountPageEvents } from './ui/account/account-page';
 import { accountStore, recordAccountActivity } from './ui/account/account-store';
-import { mountHamaHomeEntry } from './ui/plan/hama-home-entry';
+import { mountRauHomeEntry } from './ui/plan/rau-home-entry';
 import { openPlanCard } from './ui/plan/upgrade-card';
 import type { DesktopLicenseApi } from './ui/agent-sidebar/settings-license';
 import { WasmBridge, installDeclaredFontAvailabilityProbe, type PreparedWasmDocument } from '@/core/wasm-bridge';
@@ -3139,12 +3139,12 @@ function templateBridge() {
   return attachedSession.activeChat?.bridge ?? null;
 }
 
-/** 문서 홈의 Hama 입구(Basic·기존 라이선스). 데스크톱 요금제 API 가 없으면 두지 않는다. */
-function mountHomeHamaEntry(slot: HTMLElement): void {
+/** 문서 홈의 Rau 입구(Hama 요금제). 데스크톱 요금제 API 가 없으면 두지 않는다. */
+function mountHomeRauEntry(slot: HTMLElement): void {
   const store = sharedPlanStore();
   if (!store) return;
   const license = (globalThis as { rhwpDesktop?: { license?: DesktopLicenseApi } }).rhwpDesktop?.license ?? null;
-  mountHamaHomeEntry(slot, { store, open: () => { openPlanCard({ store, license, focus: 'hama' }); } });
+  mountRauHomeEntry(slot, { store, open: () => { openPlanCard({ store, license, focus: 'rau' }); } });
 }
 
 function installDocumentHome(): void {
@@ -3183,7 +3183,7 @@ function installDocumentHome(): void {
       return renderFirstPage(session.wasm).catch(() => null);
     },
     mountTopbarTrailing: (slot) => {
-      mountHomeHamaEntry(slot);
+      mountHomeRauEntry(slot);
       mountAccountButton(slot, { store: accountStore(), plan: sharedPlanStore() });
     },
     mountCorner: (slot) => mountUpdateHippo(slot, window, __APP_VERSION__, sharedPlanStore()),

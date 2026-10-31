@@ -195,12 +195,10 @@ const SHARED_CODES = Object.freeze({
   gift_retry: 'provider_error',
   // 내 키를 먼저 쓰다 크레딧이 떨어졌고 다음 요청은 선물 크레딧으로 간다.
   own_credits: 'usage_limit',
-  // Hama 플랜의 5시간·주간·이번 달 한도. 리셋 시각은 서버 꼬리표에서 온다(hint.resetAt).
-  hama_cap_5h: 'usage_limit',
-  hama_cap_week: 'usage_limit',
-  hama_cap_month: 'usage_limit',
-  // Hama 하네스를 골랐는데 살아 있는 Hama 플랜이 없다.
-  HAMA_NOT_ACTIVE: 'auth_required',
+  // Rau 크레딧을 다 썼다. 초기화 시각은 서버 꼬리표에서 온다(hint.resetAt).
+  rau_credits_exhausted: 'usage_limit',
+  // Rau 하네스를 골랐는데 살아 있는 Rau 플랜·체험이 없다.
+  RAU_AGENT_NOT_ACTIVE: 'auth_required',
   PI_MODEL_MISSING: 'invalid_request',
   // Pi 어댑터도 쓴다: 선물 크레딧이 떨어졌는데 내 키가 없을 때.
   PI_NOT_CONFIGURED: 'auth_required',

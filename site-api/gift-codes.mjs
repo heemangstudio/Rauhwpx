@@ -9,8 +9,22 @@ import { createHash, randomBytes } from 'node:crypto';
 
 const ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ'; // Crockford base32
 export const GIFT_CODE_RE = /^GIFT(?:-[0-9A-HJKMNP-TV-Z]{4}){4}$/;
-/** Editions a gift code can grant: the two the server sells on a billing cycle. */
-export const GIFT_CODE_PLANS = ['basic', 'hama'];
+/**
+ * The plans a gift code can grant, by the name admins use, and the edition its key is stored with
+ * (stored like a Groble key: `basic` reads as Hama, `rau` as Rau; see licenses.mjs editionOf). A
+ * batch keeps that stored edition as its `plan`, so batches issued before the 2026-10-31 rename
+ * (`basic`, and `hama` for the old hosted plan, now Rau) read the same way.
+ */
+export const GIFT_CODE_PLANS = Object.freeze({ hama: 'basic', rau: 'rau' });
+/** Names an admin may still type for the Hama plan. `hama` itself now means the Hama plan, never Rau. */
+const GIFT_CODE_PLAN_ALIASES = Object.freeze({ basic: 'hama', pro: 'hama' });
+
+/** The stored edition for a plan name an admin typed (`hama`, `rau`, or an old alias), else null. */
+export function giftCodeEdition(plan) {
+  if (typeof plan !== 'string') return null;
+  const name = Object.hasOwn(GIFT_CODE_PLAN_ALIASES, plan) ? GIFT_CODE_PLAN_ALIASES[plan] : plan;
+  return Object.hasOwn(GIFT_CODE_PLANS, name) ? GIFT_CODE_PLANS[name] : null;
+}
 export const MAX_GIFT_CODES_PER_BATCH = 1000;
 export const MAX_GIFT_DURATION_MONTHS = 120;
 export const MAX_GIFT_DURATION_DAYS = 3660;

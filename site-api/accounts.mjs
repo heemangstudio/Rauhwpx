@@ -12,6 +12,7 @@ import {
   verifyAccountLease,
 } from './license-lease.mjs';
 import { licenseError, tokenEquals } from './licenses.mjs';
+import { RAU_TRIAL_ALLOWANCE_USD, RAU_TRIAL_DAYS } from './rau-ledger.mjs';
 import { createRateLimiter } from './rate-limit.mjs';
 import { createMemoryStore } from './store.mjs';
 import { maskedEmail } from './workos.mjs';
@@ -20,11 +21,12 @@ import { maskedEmail } from './workos.mjs';
  * HamaEditor accounts: WorkOS AuthKit sign-in, devices, sessions and the account lease (v2). The
  * app-facing contract is in README.md, "Accounts".
  *
- * State = { accounts, byWorkosUser, byEmail (verified emails only), sessions, logins, grants }, in
- * accounts.json or the accounts tables. Sessions and grants are stored only as sha256 hex. The
- * license ↔ account link lives on the license record. Lock rule: this service never awaits the
- * licenses lock while it holds its own, and licenses.mjs only reads this store. Rate limits are in
- * memory, so it assumes ONE replica.
+ * State = { accounts, byWorkosUser, byEmail (verified emails only), sessions, logins, grants,
+ * trialEmails }, in accounts.json or the accounts tables. Sessions and grants are stored only as
+ * sha256 hex. `trialEmails` maps sha256(lowercased email) to the account that started a Rau trial with
+ * it, and outlives that account, so an email gets one trial. The license ↔ account link lives on the
+ * license record. Lock rule: this service never awaits the licenses lock while it holds its own, and
+ * licenses.mjs only reads this store. Rate limits are in memory, so it assumes ONE replica.
  */
 
 export const DEVICE_LIMIT_PER_ACCOUNT = 5;
@@ -54,6 +56,7 @@ const CLAIMS_PER_HOUR = 10;
 const GIFT_CODE_REDEEMS_PER_HOUR = 10;
 const AVATARS_PER_HOUR = 30;
 const STATS_PER_HOUR = 120;
+const RAU_TRIALS_PER_HOUR = 10;
 export const MAX_AVATAR_BYTES = 1024 * 1024;
 const BATCH_ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
 const MAX_STAT_COUNT = 1000;
@@ -61,7 +64,7 @@ const STATS_BATCHES_KEPT = 50;
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
 export function emptyAccountsState() {
-  return { accounts: {}, byWorkosUser: {}, byEmail: {}, sessions: {}, logins: {}, grants: {} };
+  return { accounts: {}, byWorkosUser: {}, byEmail: {}, sessions: {}, logins: {}, grants: {}, trialEmails: {} };
 }
 
 /** A license-style error; `extra` fields go into the `{ ok:false, error }` reply. */
@@ -129,10 +132,10 @@ export function createAccountsService({
   // Profile pictures live here as `<accountId>.<ext>` unless `avatars` (avatars.mjs) says otherwise.
   avatarDir,
   avatars = createFileAvatars(avatarDir),
-  // keyId → this billing period of its active Hama plan, or null (hama.usageSummary; null with HAMA_ENABLED off).
-  hamaUsage = async () => null,
-  // Brings hama.json in line after a gift code created a Hama key (hama.syncSubscriptions; a no-op with HAMA_ENABLED off).
-  syncHamaPlans = async () => {},
+  // Bound late to the Rau service: whether hosted Rau runs, and a principal's current period
+  // ({ allowanceUsd, usedUsd, remainingUsd, resetsAt }) or null (rau.usage).
+  rauConfigured = () => false,
+  rauUsage = async () => null,
   providers = ['email', 'google'],
   deviceLimit = DEVICE_LIMIT_PER_ACCOUNT,
   adminToken = '',
@@ -297,39 +300,94 @@ export function createAccountsService({
     };
   }
 
-  /** The Hama plan of the account's Hama key (or its primary), this billing period. Never fails the payload. */
-  async function hamaSummary(accountId) {
-    try {
-      const who = await licenses.authenticateAccount(accountId, { purpose: 'hama', allowInactive: true });
-      return who.keyId ? (await hamaUsage(who.keyId)) ?? null : null;
-    } catch (error) {
-      log(`[site-api] hama usage for ${accountId} unreadable: ${error?.message ?? error}`);
-      return null;
-    }
-  }
-
-  async function statsView(account) {
+  function statsView(account) {
     const stats = account.stats ?? {};
     return {
       agentSessions: stats.agentSessions ?? 0,
       documentsEdited: stats.documentsEdited ?? 0,
       since: ms(stats.since ?? account.createdAt),
-      hama: await hamaSummary(account.id),
     };
   }
 
-  /** Everything the app shows and keeps: account, plan, licenses, devices, stats and a fresh lease. */
+  const emailKey = (emailLower) => sha256hex(String(emailLower ?? ''));
+
+  /** The account's trial as a Rau principal while its 7 days run, else null. Spent credits are the Rau service's call. */
+  function trialPrincipal(account, at = now()) {
+    const startedAt = ms(account?.rauTrial?.startedAt);
+    const endsAt = ms(account?.rauTrial?.endsAt);
+    if (startedAt === null || endsAt === null || !(at >= startedAt && at < endsAt)) return null;
+    return { source: 'trial', ledgerId: account.id, startedAt: iso(startedAt), endsAt: iso(endsAt) };
+  }
+
+  /** A principal's current period, or null; a read that fails leaves the payload without numbers rather than failing it. */
+  async function usageOf(principal) {
+    try {
+      return (await rauUsage(principal)) ?? null;
+    } catch (error) {
+      log(`[site-api] rau usage of ${principal.ledgerId} unreadable: ${error?.message ?? error}`);
+      return null;
+    }
+  }
+
+  /**
+   * The trial view and whether it is active now: available until this account or its email started
+   * one, active while its 7 days run and credits remain, else ended. A trial started by a deleted
+   * account with the same email reads as ended here.
+   */
+  async function trialOf(state, account) {
+    const fixed = { days: RAU_TRIAL_DAYS, allowanceUsd: RAU_TRIAL_ALLOWANCE_USD };
+    const stored = account.rauTrial;
+    if (!stored) {
+      const byEmail = own(state.trialEmails, emailKey(account.emailLower));
+      if (!byEmail) return { active: null, view: { state: 'available', startedAt: null, endsAt: null, ...fixed } };
+      const startedAt = ms(byEmail.startedAt);
+      return {
+        active: null,
+        view: { state: 'ended', startedAt, endsAt: startedAt === null ? null : startedAt + RAU_TRIAL_DAYS * DAY, ...fixed },
+      };
+    }
+    const principal = trialPrincipal(account);
+    // A ledger that cannot be read leaves a running trial active.
+    const usage = principal ? await usageOf(principal) : null;
+    const active = principal && (!usage || usage.remainingUsd > 0) ? principal : null;
+    return {
+      active: active ? { principal: active, usage: usage ?? null } : null,
+      view: { state: active ? 'active' : 'ended', startedAt: ms(stored.startedAt), endsAt: ms(stored.endsAt), ...fixed },
+    };
+  }
+
+  const NO_RAU = Object.freeze({ eligible: false, source: null, allowanceUsd: null, usedUsd: null, remainingUsd: null, resetsAt: null });
+
+  function rauView(source, usage) {
+    return {
+      eligible: true,
+      source,
+      allowanceUsd: usage?.allowanceUsd ?? null,
+      usedUsd: usage?.usedUsd ?? null,
+      remainingUsd: usage?.remainingUsd ?? null,
+      resetsAt: usage?.resetsAt ?? null,
+    };
+  }
+
+  /** Everything the app shows and keeps: account, plan, trial, licenses, devices, stats and a fresh lease. */
   async function accountPayload(accountId, deviceId) {
-    const account = own((await read()).accounts, accountId);
+    const state = await read();
+    const account = own(state.accounts, accountId);
     if (!account) throw sessionInvalid();
     const entitlements = await licenses.accountEntitlements(accountId);
     const primary = entitlements.primary;
+    const trial = await trialOf(state, account);
+    // A live Rau key comes first; an active trial makes the account Rau while no Rau key is live.
+    let rau = { ...NO_RAU };
+    if (entitlements.rau) rau = rauView('plan', await usageOf(entitlements.rau));
+    else if (trial.active) rau = rauView('trial', trial.active.usage);
+    const tier = rau.eligible ? 'rau' : entitlements.tier;
     const { lease, payload } = signAccountLease({
       kid: leaseKid,
       accountId,
       deviceId,
       keyId: primary?.keyId ?? null,
-      tier: entitlements.tier,
+      tier,
       plan: primary?.plan ?? null,
       now: now(),
       ttlMs: primary?.beta ? BETA_LEASE_TTL_MS : LEASE_TTL_MS,
@@ -339,11 +397,12 @@ export function createAccountsService({
     return {
       ok: true,
       account: accountView(account),
-      plan: entitlements.plan,
+      plan: { ...entitlements.plan, tier, rau },
+      trial: trial.view,
       licenses: entitlements.licenses,
       devices: deviceViews(account, deviceId),
       deviceLimit,
-      stats: await statsView(account),
+      stats: statsView(account),
       lease,
       leaseExpiresAt: payload.expiresAt,
     };
@@ -576,15 +635,12 @@ export function createAccountsService({
 
   /**
    * Redeems a gift code: answers like redeem, with `alreadyRedeemed` when this account redeemed the
-   * code before. A new Hama key gets its plan before the payload is built.
+   * code before. A Rau key has hosted Rau at once: its ledger starts on its first call.
    */
   async function redeemGiftCode(bearer, body) {
     const context = await sessionOf(bearer);
     limitAccount('gift-code', context.account.id, GIFT_CODE_REDEEMS_PER_HOUR);
-    const { alreadyRedeemed, keyId, edition } = await licenses.redeemGiftCode(context.account.id, body?.code);
-    if (!alreadyRedeemed && edition === 'hama') {
-      await Promise.resolve().then(syncHamaPlans).catch((error) => log(`[site-api] hama plan sync after a gift code failed: ${error?.message ?? error}`));
-    }
+    const { alreadyRedeemed, keyId } = await licenses.redeemGiftCode(context.account.id, body?.code);
     const payload = await accountPayload(context.account.id, context.deviceId);
     return { ...payload, alreadyRedeemed, license: payload.licenses.find((l) => l.keyId === keyId) ?? null };
   }
@@ -704,7 +760,38 @@ export function createAccountsService({
       return { value: { ...found } };
     });
     if (!account) throw sessionInvalid();
-    return { ok: true, stats: await statsView(account) };
+    return { ok: true, stats: statsView(account) };
+  }
+
+  // ------------------------------------------------------------ Rau trial
+
+  /**
+   * Starts the account's Rau trial: 7 days and RAU_TRIAL_ALLOWANCE_USD of hosted Rau, once per account
+   * and once per email (also after the account is deleted). Answers the account payload.
+   * 503 rau_unavailable, 409 trial_used, 409 rau_active (a live Rau key), 429 rate_limited.
+   */
+  async function startRauTrial(bearer) {
+    const context = await sessionOf(bearer);
+    const accountId = context.account.id;
+    limitAccount('rau-trial', accountId, RAU_TRIALS_PER_HOUR);
+    if (!rauConfigured()) throw accountError('rau_unavailable', 503);
+    const hash = emailKey(context.account.emailLower);
+    const used = (state) => Boolean(own(state.accounts, accountId)?.rauTrial || own(state.trialEmails, hash));
+    if (used(await read())) throw accountError('trial_used', 409);
+    if ((await licenses.accountEntitlements(accountId)).rau) throw accountError('rau_active', 409);
+    const outcome = await mutate((state) => {
+      const account = own(state.accounts, accountId);
+      if (!account) return { dirty: false, value: 'gone' };
+      if (used(state)) return { dirty: false, value: 'used' };
+      const at = now();
+      account.rauTrial = { startedAt: iso(at), endsAt: iso(at + RAU_TRIAL_DAYS * DAY) };
+      state.trialEmails[hash] = { accountId, startedAt: iso(at) };
+      return { value: 'started' };
+    });
+    if (outcome === 'gone') throw sessionInvalid();
+    if (outcome === 'used') throw accountError('trial_used', 409);
+    log(`[site-api] account ${accountId} started the Rau trial`);
+    return accountPayload(accountId, context.deviceId);
   }
 
   // -------------------------------------------------------------- delete
@@ -713,7 +800,8 @@ export function createAccountsService({
    * Deletes the account after a typed confirmation (its email). In order, never holding both locks:
    * (1) the licenses are freed in the licenses lock, refused while a subscription renews on its own;
    * (2) the record, its devices, sessions, grants and indexes go in the accounts lock; (3) the picture;
-   * (4) the WorkOS user, best effort. Hama ledgers stay on their license keys.
+   * (4) the WorkOS user, best effort. Rau ledgers stay on their license keys, and the email's trial
+   * record stays in `trialEmails`, so a new account with that email gets no second trial.
    */
   async function deleteAccount(bearer, body) {
     const context = await sessionOf(bearer);
@@ -750,12 +838,14 @@ export function createAccountsService({
   let publicKeys;
 
   /**
-   * Bearer lease for gifts, Hama and Rau. A v1 (license) lease goes to licenses.authenticateLease
-   * unchanged. A v2 lease must verify, its account must exist and its device must still be on the
-   * account with a live session; the license is then chosen now by `purpose` (licenses.authenticateAccount).
+   * Bearer lease for gifts and Rau. A v1 (license) lease goes to licenses.authenticateLease unchanged
+   * (and never carries a trial). A v2 lease must verify, its account must exist and its device must
+   * still be on the account with a live session; the license is then chosen now by `purpose`
+   * (licenses.authenticateAccount). With `withRau`, an account without a live Rau key gets its trial
+   * while the 7 days run.
    */
-  async function authenticateLease(lease, { allowInactive = false, withRauPlan = false, purpose } = {}) {
-    if (leaseVersion(lease) !== ACCOUNT_LEASE_VERSION) return licenses.authenticateLease(lease, { allowInactive, withRauPlan });
+  async function authenticateLease(lease, { allowInactive = false, withRau = false, purpose } = {}) {
+    if (leaseVersion(lease) !== ACCOUNT_LEASE_VERSION) return licenses.authenticateLease(lease, { allowInactive, withRau });
     if (!signingKey) throw licenseError('unauthorized', 401);
     publicKeys ??= { [leaseKid]: publicKeyFromPrivate(signingKey) };
     const checked = verifyAccountLease(lease, publicKeys, { now: now() });
@@ -767,7 +857,9 @@ export function createAccountsService({
     if (!session || session.accountId !== accountId || session.deviceId !== deviceId || idle(session)) {
       throw licenseError('unauthorized', 401);
     }
-    return licenses.authenticateAccount(accountId, { deviceId, platform: device.platform, purpose, allowInactive, withRauPlan });
+    const who = await licenses.authenticateAccount(accountId, { deviceId, platform: device.platform, purpose, allowInactive, withRau });
+    if (withRau && !who.rau) who.rau = trialPrincipal(own(state.accounts, accountId));
+    return who;
   }
 
   // --------------------------------------------------------------- admin
@@ -792,6 +884,7 @@ export function createAccountsService({
         id, name: d.name, platform: d.platform, appVersion: d.appVersion ?? null, addedAt: d.addedAt, lastSeenAt: d.lastSeenAt,
       })),
       stats: { agentSessions: account.stats?.agentSessions ?? 0, documentsEdited: account.stats?.documentsEdited ?? 0, since: account.stats?.since ?? account.createdAt },
+      rauTrial: account.rauTrial ?? null,
       licenses: await licenses.accountLicensesView(account.id),
     };
   }
@@ -840,6 +933,7 @@ export function createAccountsService({
     removeAvatar,
     recordStats,
     deleteAccount,
+    startRauTrial,
     authenticateLease,
     admin,
   };

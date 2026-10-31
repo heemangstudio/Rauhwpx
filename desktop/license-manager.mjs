@@ -1,18 +1,18 @@
-// 라이선스 상태. 메인 프로세스가 하나 만들어 설정 화면과 Basic 기능(호스팅 Rau 등)에 상태를 준다.
+// 라이선스 상태. 메인 프로세스가 하나 만들어 설정 화면과 유료 기능에 상태를 준다.
 //
 // 규칙
 // - 편집기는 무료다. 키가 없거나, 해지·만료·확인 기한 지남·재활성화 필요여도 문서를 열고 편집하고 저장한다.
 //   이런 상태는 설정과 활성화 창에 문제로만 보인다.
-// - Basic 기능은 서명한 lease 로만 연다(paid). 키를 활성화하면 서버가 이 기기용 lease(7일, 베타 키는 3일)를 준다.
+// - 유료 기능은 서명한 lease 로만 연다(paid). 키를 활성화하면 서버가 이 기기용 lease(7일, 베타 키는 3일)를 준다.
 //   실행할 때와 24시간마다 다시 확인해 lease 를 늘린다. 인터넷이 없으면 가진 lease 가 끝날 때까지 그대로 쓴다.
-// - 서버 응답의 edition('basic' | 'hama', 예전 이름 'pro' 는 basic 으로 읽는다)·plan('monthly' | 'annual' | 'lifetime')·rau.eligible 은 표시와 안내에만 쓴다.
+// - 서버 응답의 edition('hama' | 'rau' | 'signature', 개발 중 이름 'basic'·'pro' 는 hama 로 읽는다)·plan('monthly' | 'annual' | 'lifetime')·rau.eligible 은 표시와 안내에만 쓴다.
 //   예전 서버는 보내지 않으므로 없으면 null 이다.
-// - 환불이나 베타 종료로 키가 해지되면(revoked) Basic 기능이 닫힌다.
+// - 환불이나 베타 종료로 키가 해지되면(revoked) 유료 기능이 닫힌다.
 // - 구독 키는 서명한 lease 에 키의 만료 시각(licenseExpiresAt)이 들어 있다. 만료가 지나면 expired 다.
 //   서버가 만료라고 답하면 바로, 서버에 닿지 못하면 만료 뒤 최대 7일(SUBSCRIPTION_OFFLINE_GRACE_MS, 가진 lease 가
-//   끝나면 그 전)까지 Basic 을 쓴다. 서버에서 갱신되면 다음 확인에서 새 만료와 함께 다시 열린다. 만료 뒤에는 1시간마다 다시 확인한다.
+//   끝나면 그 전)까지 유료 기능을 쓴다. 서버에서 갱신되면 다음 확인에서 새 만료와 함께 다시 열린다. 만료 뒤에는 1시간마다 다시 확인한다.
 // - 갱신 결제가 실패하면 lease 에 결제 유예 끝(paymentGraceEndsAt)이 들어온다. 그때까지는 만료가 지나도
-//   Basic 을 그대로 쓰고(payment_failed), 상태에 Groble 결제 수단 페이지(paymentFixUrl)를 함께 준다.
+//   유료 기능을 그대로 쓰고(payment_failed), 상태에 Groble 결제 수단 페이지(paymentFixUrl)를 함께 준다.
 // - 키 종류(tier: paid | beta)는 서버 응답에서 받아 표시에만 쓴다. 예전 상태 파일에 없으면 paid 다.
 // - 시계를 되돌려 lease 를 늘리지 못하게 본 적 있는 가장 늦은 시각(maxSeenAt)을 쓴다.
 // - 예전 상태 파일의 체험 기록(trial)은 읽지 않는다.
@@ -107,10 +107,15 @@ function sanitizeState(raw) {
 
 const PLANS = new Set(['monthly', 'annual', 'lifetime']);
 
-/** 클라이언트가 읽은 서버 응답(또는 상태 파일)의 Basic·Hama 표시 값. 예전 이름 'pro' 는 basic. 없거나 모르는 값은 null. */
+const EDITIONS = new Set(['hama', 'rau', 'signature']);
+/** 개발 중 이름. 내 AI 연결 요금제(Basic, 그 전 Pro)는 지금의 Hama 다. */
+const EDITION_ALIASES = Object.freeze({ basic: 'hama', pro: 'hama' });
+
+/** 클라이언트가 읽은 서버 응답(또는 상태 파일)의 요금제 표시 값. 없거나 모르는 값은 null. */
 function editionFrom(value) {
+  const edition = Object.hasOwn(EDITION_ALIASES, value?.edition ?? '') ? EDITION_ALIASES[value.edition] : value?.edition;
   return {
-    edition: value?.edition === 'basic' || value?.edition === 'pro' ? 'basic' : value?.edition === 'hama' ? 'hama' : null,
+    edition: EDITIONS.has(edition) ? edition : null,
     plan: PLANS.has(value?.plan) ? value.plan : null,
     rauEligible: typeof value?.rauEligible === 'boolean' ? value.rauEligible : null,
   };
@@ -233,8 +238,8 @@ export function createLicenseManager({
     else if (pastExpiry) value = 'expired';
     else if (lease.reason === 'expired') value = 'lease_expired';
     else value = 'needs_activation';
-    // Basic 은 서명한 lease 로만 정한다. 라이선스를 보지 않는 개발 빌드(unenforced)도 같다.
-    // edition 은 서버가 'basic'('pro')·'hama' 라고 답한 키만 그 값이다. 예전 키(GLJFC9·평생·Signature·베타 등)는 null 이다.
+    // 유료 기능은 서명한 lease 로만 정한다. 라이선스를 보지 않는 개발 빌드(unenforced)도 같다.
+    // edition 은 서버가 'hama'·'rau'·'signature' 라고 답한 키만 그 값이다. 서버가 보내지 않으면 null 이다.
     const paid = value === 'licensed';
     return {
       state: enforce ? value : 'unenforced',

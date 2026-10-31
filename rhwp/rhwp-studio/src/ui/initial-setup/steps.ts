@@ -23,7 +23,7 @@ import {
   isLocalFontAccessSupported,
 } from '../../core/local-fonts.ts';
 
-export type SetupStep = 'theme' | 'fonts' | 'welcome' | 'account' | 'plans' | 'models' | 'hama';
+export type SetupStep = 'theme' | 'fonts' | 'welcome' | 'account' | 'plans' | 'models' | 'rau';
 /** missing: 데스크톱에서 색인에 한컴 글꼴이 없다. discover: 브라우저에서 아직 못 찾았다. */
 export type FontStepKind = 'missing' | 'discover';
 
@@ -34,7 +34,7 @@ export const HIPPO_LINES = {
   welcome: '어떻게 시작할까요?',
   plans: '나에게 맞는 요금제를 골라 주세요.',
   models: '쓰고 있는 AI가 있으면 연결해 주세요.',
-  hama: 'Hama도 함께할 준비가 됐어요!',
+  rau: 'Rau도 함께할 준비가 됐어요!',
   modelConnected: '연결됐어요!',
   discover: '문서 글꼴을 찾아볼게요.',
   searching: '찾는 중이에요…',
@@ -97,7 +97,7 @@ export function planSteps(
   if (!options.signedIn) return steps;
   if (!options.tier || options.tier === 'free') return [...steps, 'plans'];
   steps.push('models');
-  if (options.tier === 'hama') steps.push('hama');
+  if (options.tier === 'rau') steps.push('rau');
   return steps;
 }
 

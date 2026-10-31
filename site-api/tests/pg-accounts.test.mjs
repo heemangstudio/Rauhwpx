@@ -16,8 +16,8 @@ import { createPostgresStore } from '../pg-store.mjs';
 import { createMemoryStore } from '../store.mjs';
 import { DEFAULT_WORKOS_CLIENT_ID, createWorkOSClient } from '../workos.mjs';
 import { createFakeWorkOS } from './fixtures/fake-workos.mjs';
-import { BASIC_ENV, basicPaid } from './fixtures/groble-basic.mjs';
-import { differential, seededRandom } from './helpers/differential.mjs';
+import { planPaid } from './fixtures/groble-plans.mjs';
+import { differential, seededRandom, storedAndReloaded } from './helpers/differential.mjs';
 import { postgresSuite } from './helpers/postgres.mjs';
 
 const pgSuite = postgresSuite();
@@ -35,7 +35,7 @@ const challenge = createHash('sha256').update(verifier, 'ascii').digest('base64u
 const device = (n) => ({ id: `device-${String(n).padStart(4, '0')}`, name: `기기 ${n}`, platform: 'darwin', appVersion: n === 3 ? '' : '2.1.0' });
 
 function world({ stores, avatars, workosBase, clock }) {
-  const config = resolveLicenseConfig({ ...BASIC_ENV, ADMIN_TOKEN: ADMIN });
+  const config = resolveLicenseConfig({ ADMIN_TOKEN: ADMIN });
   const signingKey = parseSigningPrivateKey(PAIR.privateKeyPem);
   const licenses = createLicensesService({
     store: stores.licenses,
@@ -53,6 +53,9 @@ function world({ stores, avatars, workosBase, clock }) {
     workos: createWorkOSClient({ apiKey: WORKOS_KEY, apiBase: workosBase, redirectUri: 'https://site.test/v1/account/auth/callback' }),
     signingKey,
     avatars,
+    rauConfigured: () => true,
+    // The Rau service's view of a trial's credits, fixed so both worlds answer alike.
+    rauUsage: async (principal) => ({ allowanceUsd: 2, usedUsd: 0.5, remainingUsd: 1.5, resetsAt: Date.parse(principal.endsAt) }),
     deviceLimit: 2,
     adminToken: ADMIN,
     now: () => clock.now,
@@ -69,6 +72,7 @@ function orderOf(name, state) {
     devices: Object.values(state.accounts).map((a) => Object.keys(a.devices)),
     sessions: Object.keys(state.sessions),
     byEmail: Object.keys(state.byEmail),
+    trialEmails: Object.keys(state.trialEmails),
   };
 }
 
@@ -116,13 +120,18 @@ test('accounts on Postgres answer and store exactly what the memory store does, 
 
   clock.now += 2 * HOUR;
   await step('refresh', (w) => w.accounts.refresh(session, { appVersion: '2.2.0' }));
-  await step('lease', (w) => w.accounts.authenticateLease(first.lease, { purpose: 'rau', allowInactive: true, withRauPlan: true }));
+  await step('lease', (w) => w.accounts.authenticateLease(first.lease, { purpose: 'rau', allowInactive: true, withRau: true }));
+
+  // The Rau trial: once per account, stored on the account and by email hash; the lease then carries it.
+  assert.equal((await step('rau trial', (w) => w.accounts.startRauTrial(session))).value.trial.state, 'active');
+  assert.equal((await step('rau trial again', (w) => w.accounts.startRauTrial(session))).error.code, 'trial_used');
+  assert.equal((await step('trial lease', (w) => w.accounts.authenticateLease(first.lease, { purpose: 'rau', allowInactive: true, withRau: true }))).value.rau.source, 'trial');
 
   // Licenses: a purchase with the verified email links at once; redeem a manual key; claim an order bought with another email.
-  await step('purchase', (w) => w.licenses.handleGrobleEvent(basicPaid({ merchantUid: 'pro_m1', email: 'buyer@example.com' }), { idempotencyKey: 'idem-1' }));
+  await step('purchase', (w) => w.licenses.handleGrobleEvent(planPaid({ sku: 'hamaMonthly', merchantUid: 'pro_m1', email: 'buyer@example.com' }), { idempotencyKey: 'idem-1' }));
   const { value: issued } = await step('issue', (w) => w.licenses.admin.issue(ADMIN, { email: 'other@example.com' }));
   await step('redeem', (w) => w.accounts.redeem(session, { key: issued.license.key.toLowerCase() }));
-  await step('other purchase', (w) => w.licenses.handleGrobleEvent(basicPaid({ merchantUid: 'pro_m2', ref: 'hama-pro-2', email: 'gift@example.com' }), { idempotencyKey: 'idem-2' }));
+  await step('other purchase', (w) => w.licenses.handleGrobleEvent(planPaid({ sku: 'rauYearly', merchantUid: 'pro_m2', ref: 'hama-pro-2', email: 'gift@example.com' }), { idempotencyKey: 'idem-2' }));
   await step('claim', (w) => w.accounts.claim(session, { orderId: 'pro_m2', email: 'GIFT@example.com' }));
   await step('claim unknown', (w) => w.accounts.claim(session, { orderId: 'nope', email: 'gift@example.com' }));
 
@@ -149,7 +158,7 @@ test('accounts on Postgres answer and store exactly what the memory store does, 
   await step('signout', (w) => w.accounts.signout(second.session));
   await step('signed out', (w) => w.accounts.refresh(second.session, {}));
 
-  // Delete: refused while the Pro key renews, then done once it is revoked; the picture goes with it.
+  // Delete: refused while the Hama and Rau keys renew, then done once they are revoked; the picture goes with it.
   await step('delete mismatch', (w) => w.accounts.deleteAccount(session, { confirm: 'someone@example.com' }));
   assert.equal((await step('delete renewing', (w) => w.accounts.deleteAccount(session, { confirm: 'BUYER@example.com' }))).error.code, 'subscription_active');
   for (const merchantUid of ['pro_m1', 'pro_m2']) await step(`revoke ${merchantUid}`, (w) => w.licenses.admin.revoke(ADMIN, { merchantUid }));
@@ -157,8 +166,50 @@ test('accounts on Postgres answer and store exactly what the memory store does, 
   await step('deleted', (w) => w.accounts.refresh(session, {}));
   assert.deepEqual((await db.query('SELECT account_id FROM account_avatars')).rows, []);
   assert.deepEqual(await fs.readdir(avatarDir), []);
+  // The email's trial outlives the account: a new account with that email gets none.
+  const { value: again } = await signIn(device(5));
+  assert.notEqual(again.account.id, first.account.id);
+  assert.equal((await step('trial after deletion', (w) => w.accounts.startRauTrial(again.session))).error.code, 'trial_used');
+  assert.equal((await db.query('SELECT count(*)::int AS n FROM account_trial_emails')).rows[0].n, 1);
 
   // A fresh process loads exactly the state the first one holds.
   assert.deepStrictEqual(await createPostgresStore({ db, mapper: accountsMapper }).read(), await worlds.postgres.stores.accounts.read());
   assert.deepStrictEqual(await createPostgresStore({ db, mapper: licensesMapper }).read(), await worlds.postgres.stores.licenses.read());
+});
+
+test('accounts mapper keeps a file from before the Rau trial and one with trials losslessly, also through Postgres', async (t) => {
+  const account = (id, extra = {}) => ({ id, workosUserId: `user_${id}`, email: `${id}@example.com`, emailLower: `${id}@example.com`, emailVerified: true, devices: {}, createdAt: '2026-10-31T00:00:00.000Z', ...extra });
+  const before = {
+    accounts: { acct_a: account('acct_a') },
+    byWorkosUser: { user_acct_a: 'acct_a' },
+    byEmail: { 'acct_a@example.com': 'acct_a' },
+    sessions: {},
+    logins: {},
+    grants: {},
+  };
+  const withTrials = {
+    ...structuredClone(before),
+    accounts: {
+      acct_a: account('acct_a', { rauTrial: { startedAt: '2026-10-31T00:00:00.000Z', endsAt: '2026-11-07T00:00:00.000Z' } }),
+      acct_b: account('acct_b', { rauTrial: null }),
+    },
+    trialEmails: {
+      [createHash('sha256').update('acct_a@example.com').digest('hex')]: { accountId: 'acct_a', startedAt: '2026-10-31T00:00:00.000Z' },
+      // The account that started this one was deleted; the record stays.
+      [createHash('sha256').update('gone@example.com').digest('hex')]: { accountId: 'acct_gone', startedAt: 'yesterday' },
+    },
+  };
+  for (const state of [before, withTrials, emptyAccountsState()]) {
+    assert.deepStrictEqual(accountsMapper.fromRows(JSON.parse(JSON.stringify(accountsMapper.toRows(state)))), state);
+  }
+  assert.deepStrictEqual(accountsMapper.fromRows(Object.fromEntries(accountsMapper.tables.map((table) => [table.name, []]))), emptyAccountsState());
+  assert.throws(() => accountsMapper.toRows({ ...before, trialEmails: [] }), { code: 'store_misfit' });
+
+  const db = pgSuite.db(t);
+  if (!db) return;
+  await pgSuite.reset();
+  assert.deepStrictEqual(await storedAndReloaded(db, accountsMapper, before), before);
+  const reloaded = await storedAndReloaded(db, accountsMapper, withTrials);
+  assert.deepStrictEqual(reloaded, withTrials);
+  assert.deepStrictEqual(Object.keys(reloaded.trialEmails), Object.keys(withTrials.trialEmails));
 });

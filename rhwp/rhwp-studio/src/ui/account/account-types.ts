@@ -20,7 +20,7 @@ export interface AccountLicense {
   keyId: string;
   maskedKey: string;
   tier: 'paid' | 'beta';
-  edition: 'basic' | 'hama' | 'signature' | null;
+  edition: 'hama' | 'rau' | 'signature' | null;
   plan: 'monthly' | 'annual' | 'lifetime' | null;
   status: 'active' | 'past_due' | 'expired' | 'revoked';
   expiresAt: number | null;
@@ -28,22 +28,43 @@ export interface AccountLicense {
   primary: boolean;
 }
 
+/** 호스팅 Rau(에이전트·Rau 모드)의 자격과 크레딧. source 'trial' 이면 resetsAt 은 체험이 끝나는 때다. */
+export interface AccountRau {
+  eligible: boolean;
+  source: 'plan' | 'trial' | null;
+  allowanceUsd: number | null;
+  usedUsd: number | null;
+  remainingUsd: number | null;
+  resetsAt: number | null;
+}
+
 export interface AccountPlan {
-  tier: 'free' | 'basic' | 'legacy' | 'hama';
-  edition: 'basic' | 'hama' | 'signature' | null;
+  tier: 'free' | 'hama' | 'rau';
+  keyId?: string | null;
+  edition: 'hama' | 'rau' | 'signature' | null;
   plan: 'monthly' | 'annual' | 'lifetime' | null;
   expiresAt: number | null;
   autoRenew: boolean | null;
   paymentFailed: boolean;
   paymentGraceEndsAt: number | null;
   manageUrl: string | null;
+  /** 예전 main 은 보내지 않는다. */
+  rau?: AccountRau | null;
+}
+
+/** 계정당 한 번인 Rau 7일 체험. available: 써 본 적 없음, active: 진행 중, ended: 기간이나 크레딧이 끝남. */
+export interface AccountTrial {
+  state: 'available' | 'active' | 'ended';
+  startedAt: number | null;
+  endsAt: number | null;
+  days: number;
+  allowanceUsd: number;
 }
 
 export interface AccountStats {
   agentSessions: number;
   documentsEdited: number;
   since: number | null;
-  hama: { usedUsd: number; allowanceUsd: number; periodEndsAt: number; calls: number } | null;
 }
 
 export interface AccountProfile {
@@ -74,6 +95,8 @@ export interface AccountStatus {
   devices: AccountDevice[];
   deviceLimit: number;
   stats: AccountStats | null;
+  /** 로그아웃이면 null. 예전 main 은 보내지 않는다. */
+  trial?: AccountTrial | null;
   /** error: 'session_unreadable'(저장된 세션을 못 읽음), 'bad_lease'(서버 lease 검증 실패), 아니면 null. */
   sync: { lastSyncAt: number | null; offline: boolean; error: string | null };
   localKey: { maskedKey: string; state: 'pending' | 'linked' | 'linked_elsewhere' | 'invalid' } | null;
@@ -114,6 +137,11 @@ export interface DesktopAccountApi {
   deleteAccount(confirm: string): Promise<AccountResult>;
   /** Groble 구매자 페이지를 브라우저로 연다. */
   openManage(): Promise<void>;
+  /**
+   * Rau 7일 체험을 시작한다. 성공하면 status.trial 이 active 이고 요금제가 rau 다.
+   * 실패 code: trial_used, rau_active, rau_unavailable, rate_limited, session_invalid (message 는 main 의 한국어).
+   */
+  startRauTrial?(): Promise<AccountResult>;
   /** 보내고 잊는다(ipcRenderer.send). */
   recordActivity(kind: AccountActivityKind, id: string): void;
 }

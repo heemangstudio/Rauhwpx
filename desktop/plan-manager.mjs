@@ -1,10 +1,10 @@
-// 앱 요금제(무료·Basic·예전 키·Hama)와 앱 안 결제. 메인 프로세스가 하나 만들어 Studio 의 업그레이드 카드와
+// 앱 요금제(무료·Hama·Rau)와 앱 안 결제. 메인 프로세스가 하나 만들어 Studio 의 업그레이드 카드와
 // 에이전트 잠금에 상태(PlanStatus)를 준다.
 //
 // 규칙
-// - 요금제는 계정에서 정한다(라이선스 관리자는 더 이상 정하지 않는다). Hama 가 켜져 있으면 hama, 확인한 계정
-//   lease 가 있으면 그 tier('free'·'basic'·'legacy'·'hama'), 로그인하지 않았으면 free. 라이선스를 보지 않는 개발
-//   빌드(enforce 끔)는 요금제와 상관없이 에이전트를 연다.
+// - 요금제는 계정에서 정한다(라이선스 관리자는 더 이상 정하지 않는다). 확인한 계정 lease 가 있으면 그
+//   tier('free'·'hama'·'rau'), 로그인하지 않았으면 free. 라이선스를 보지 않는 개발 빌드(enforce 끔)는 요금제와
+//   상관없이 에이전트를 연다.
 // - 오프라인 캐시: lease 로 정한 요금제를 그 계정 id 와 함께 userData/plan.json 에 적어 두고, 로그인한 채 lease 를
 //   확인할 수 없을 때만(오프라인으로 lease 가 끝남 등) 마지막 확인에서 7일까지 그 요금제를 보여 준다. 화면 표시용일
 //   뿐이고 호스팅 AI 는 서버가 늘 따로 확인한다. 로그아웃·무료 lease·다른 계정이면 캐시를 지운다. 시계를 되돌려
@@ -15,14 +15,17 @@
 //   묻는다. 키가 나오면 계정에 연결한다(accountManager.redeem). 진행 중인 결제는 plan.json 에 남겨 다시 실행해도
 //   이어서 묻는다.
 // - 키·ref·결제 주소는 렌더러에 보내지 않고 기록에도 남기지 않는다. plan.json 에는 ref 가 있어 0600 으로 쓴다.
+// - plan.json v2. 개발 중 쓴 v1 은 읽을 때 옮긴다: 요금제 basic·pro·legacy → hama, hama(예전 호스팅) → rau,
+//   결제 proMonthly·basicMonthly → hamaMonthly(연간도 같다), 예전 hamaMonthly·hamaYearly(호스팅) → rauMonthly·rauYearly.
 import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { DEFAULT_LICENSE_API_BASE, PLAN_NAMES_HEADERS } from './license-client.mjs';
+import { DEFAULT_LICENSE_API_BASE } from './license-client.mjs';
 import { PLAN_CHECKOUT } from './plan-config.mjs';
 
 export const PLAN_STATE_FILE = 'plan.json';
-export const PLAN_SKUS = Object.freeze(['basicMonthly', 'basicYearly', 'hamaMonthly', 'hamaYearly']);
+export const PLAN_SKUS = Object.freeze(['hamaMonthly', 'hamaYearly', 'rauMonthly', 'rauYearly']);
+export const PLAN_STATE_VERSION = 2;
 /** lease 를 확인할 수 없을 때 마지막 확인의 요금제를 보여 주는 기간. */
 export const PLAN_CACHE_MS = 7 * 24 * 60 * 60 * 1000;
 /** 결제 시작 뒤 이 시간 동안은 자주, 그 뒤로는 드물게 묻는다. */
@@ -38,9 +41,15 @@ const VERIFIED_PERSIST_MS = 60 * 60 * 1000;
 const BY_REF_TIMEOUT_MS = 10_000;
 /** Groble sellerReference 규칙. 서버(site-api/licenses.mjs REF_RE)와 같다. */
 const REF_RE = /^[A-Za-z0-9\-_.:=~]{1,128}$/;
-const CACHED_TIERS = new Set(['basic', 'hama', 'legacy']);
-/** 예전 앱이 'pro' 이름으로 적어 둔 결제. 읽을 때 basic 으로 바꾸고 새 이름으로만 쓴다. */
-const LEGACY_SKU_NAMES = Object.freeze({ proMonthly: 'basicMonthly', proYearly: 'basicYearly' });
+const CACHED_TIERS = new Set(['hama', 'rau']);
+/** v1 캐시의 요금제 이름 → v2. hama 는 예전 호스팅 요금제라 rau 다. */
+const V1_TIERS = Object.freeze({ basic: 'hama', pro: 'hama', legacy: 'hama', hama: 'rau' });
+/** v1 의 결제 이름 → v2. 예전 hamaMonthly·hamaYearly 는 호스팅 요금제(지금의 Rau) 결제다. */
+const V1_SKUS = Object.freeze({
+  proMonthly: 'hamaMonthly', proYearly: 'hamaYearly',
+  basicMonthly: 'hamaMonthly', basicYearly: 'hamaYearly',
+  hamaMonthly: 'rauMonthly', hamaYearly: 'rauYearly',
+});
 /** 다시 물어도 바뀌지 않는 키 연결 실패. 결제 확인을 끝내고 키를 직접 넣게 한다. 그 밖(네트워크·로그아웃 등)은 계속 묻는다. */
 const FINAL_REDEEM_CODES = new Set(['invalid_key', 'revoked', 'invalid_format', 'key_linked_elsewhere']);
 
@@ -65,14 +74,17 @@ function withRef(url, ref) {
 }
 
 function emptyState() {
-  return { v: 1, tier: null, accountId: null, verifiedAt: 0, pendingCheckout: null };
+  return { v: PLAN_STATE_VERSION, tier: null, accountId: null, verifiedAt: 0, pendingCheckout: null };
 }
+
+const renamed = (table, value) => (typeof value === 'string' && Object.hasOwn(table, value) ? table[value] : null);
 
 function sanitizeState(raw) {
   const state = emptyState();
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw) || raw.v !== 1) return state;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw) || (raw.v !== 1 && raw.v !== PLAN_STATE_VERSION)) return state;
+  const v1 = raw.v === 1;
   // 계정 id 가 없는 예전 캐시(라이선스로 정한 요금제)는 버린다.
-  const cachedTier = raw.tier === 'pro' ? 'basic' : raw.tier; // Basic 의 예전 이름
+  const cachedTier = v1 ? renamed(V1_TIERS, raw.tier) : raw.tier;
   if (CACHED_TIERS.has(cachedTier) && typeof raw.accountId === 'string' && raw.accountId
     && Number.isSafeInteger(raw.verifiedAt) && raw.verifiedAt > 0) {
     state.tier = cachedTier;
@@ -80,7 +92,7 @@ function sanitizeState(raw) {
     state.verifiedAt = raw.verifiedAt;
   }
   const pending = raw.pendingCheckout;
-  const sku = Object.hasOwn(LEGACY_SKU_NAMES, pending?.sku) ? LEGACY_SKU_NAMES[pending.sku] : pending?.sku;
+  const sku = v1 ? renamed(V1_SKUS, pending?.sku) : pending?.sku;
   if (pending && PLAN_SKUS.includes(sku) && typeof pending.ref === 'string' && REF_RE.test(pending.ref)
     && Number.isSafeInteger(pending.startedAt) && pending.startedAt > 0) {
     state.pendingCheckout = { sku, ref: pending.ref, startedAt: pending.startedAt };
@@ -96,7 +108,6 @@ export function createPlanManager({
   userDataDir,
   now = Date.now,
   config = PLAN_CHECKOUT,
-  hamaActive = () => null,
   openExternal = async () => {},
   onChange = () => {},
   timers = { setTimeout, clearTimeout, setInterval, clearInterval },
@@ -170,10 +181,7 @@ export function createPlanManager({
     let tier = 'free';
     let source = 'none';
     let cachedUntil = null;
-    if (hamaActive() === true) {
-      tier = 'hama';
-      source = 'live';
-    } else if (signedIn && entitlement.tier) {
+    if (signedIn && entitlement.tier) {
       tier = entitlement.tier;
       source = 'live';
       if (!CACHED_TIERS.has(tier)) clearCache();
@@ -255,7 +263,7 @@ export function createPlanManager({
   async function askByRef(ref) {
     const response = await fetchImpl(`${base}/v1/license/by-ref?ref=${encodeURIComponent(ref)}`, {
       method: 'GET',
-      headers: { Accept: 'application/json', ...PLAN_NAMES_HEADERS },
+      headers: { Accept: 'application/json' },
       signal: AbortSignal.timeout(BY_REF_TIMEOUT_MS),
     });
     if (!response.ok) return null;

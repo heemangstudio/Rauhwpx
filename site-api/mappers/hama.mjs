@@ -1,9 +1,11 @@
 import { checkRoot, defineTable, mapEntries, setOwn } from '../pg-store.mjs';
 
 /**
- * hama.json `{ plans, ledgers }` ↔ hama_plans, hama_ledgers (migrations/002). The two maps are
- * independent: record() keeps a ledger for any key it bills, enrolled or not. The ledger's buckets,
- * call ids and period stay json. The usage log is not part of the state (hama-usage.mjs).
+ * hama.json `{ plans, ledgers }` ↔ hama_plans, hama_ledgers (migrations/002). The file of the old
+ * hosted Hama plan is frozen: it is imported as it is and then only read (hama-legacy.mjs), never
+ * written. The two maps are independent: the old plan kept a ledger for any key it billed, enrolled or
+ * not. The ledger's buckets, call ids and period stay json. The old usage logs are not imported, and
+ * hama_usage (002) stays empty.
  */
 
 const DOMAIN = 'hama';

@@ -106,7 +106,7 @@ const portOf = (server) => callsTo(server, '/v1/account/auth/start').at(-1).body
 
 test('account leases v2 verify offline and never pass as v1 leases', () => {
   const payload = {
-    v: 2, kid: DEV_KEYPAIR.kid, accountId: 'acct_1', deviceId: 'dev-a', keyId: 'lic_1', tier: 'basic', plan: 'monthly',
+    v: 2, kid: DEV_KEYPAIR.kid, accountId: 'acct_1', deviceId: 'dev-a', keyId: 'lic_1', tier: 'hama', plan: 'monthly',
     issuedAt: T0, expiresAt: T0 + 7 * DAY,
   };
   const lease = signLease(payload);
@@ -117,9 +117,13 @@ test('account leases v2 verify offline and never pass as v1 leases', () => {
   assert.equal(verifyAccountLease(lease, { ...opts, publicKeys: {} }).reason, 'unknown_kid');
   assert.equal(verifyAccountLease(lease, { ...opts, now: T0 - HOUR }).reason, 'not_yet_valid');
   assert.deepEqual(verifyAccountLease(lease, { ...opts, now: T0 + 7 * DAY }), { ok: false, reason: 'expired', payload });
-  const forged = `${Buffer.from(JSON.stringify({ ...payload, tier: 'hama' })).toString('base64url')}.${lease.split('.')[1]}`;
+  const forged = `${Buffer.from(JSON.stringify({ ...payload, tier: 'rau' })).toString('base64url')}.${lease.split('.')[1]}`;
   assert.equal(verifyAccountLease(forged, opts).reason, 'bad_signature');
-  assert.equal(verifyAccountLease(signLease({ ...payload, tier: 'gold' }), opts).reason, 'malformed');
+  // 개발 중 이름(basic·pro·legacy)과 모르는 등급은 받지 않는다.
+  for (const tier of ['gold', 'basic', 'pro', 'legacy']) {
+    assert.equal(verifyAccountLease(signLease({ ...payload, tier }), opts).reason, 'malformed', tier);
+  }
+  assert.equal(verifyAccountLease(signLease({ ...payload, tier: 'rau' }), opts).ok, true);
   // v1 은 v2 를, v2 는 v1 을 받지 않는다.
   assert.equal(verifyLease(lease, { publicKeys: DEV_PUBLIC_KEYS, now: T0 + DAY }).reason, 'malformed');
   const v1 = signLease({ v: 1, kid: DEV_KEYPAIR.kid, keyId: 'lic_1', keyHash: 'x', deviceId: 'dev-a', issuedAt: T0, expiresAt: T0 + DAY });
@@ -164,11 +168,12 @@ test('sign-in goes through the browser and the loopback with PKCE, and only the 
   const code = new URL(location).searchParams.get('code');
   assert.ok(!file.includes(code) && !file.includes(tokenCall.verifier));
 
-  const key = server.issueKey({ edition: 'basic', plan: 'monthly' });
+  const key = server.issueKey({ edition: 'hama', plan: 'monthly' });
   const redeemed = await manager.redeem(key);
-  assert.deepEqual([redeemed.ok, redeemed.alreadyLinked, redeemed.status.plan.tier], [true, false, 'basic']);
+  assert.deepEqual([redeemed.ok, redeemed.alreadyLinked, redeemed.status.plan.tier], [true, false, 'hama']);
+  assert.equal(redeemed.status.plan.rau.eligible, false, 'Hama has no hosted AI');
   const lease = await manager.currentLease();
-  assert.equal(verifyAccountLease(lease, { publicKeys: DEV_PUBLIC_KEYS, deviceId: tokenCall.device.id, accountId: status.account.id, now: T0 }).payload.tier, 'basic');
+  assert.equal(verifyAccountLease(lease, { publicKeys: DEV_PUBLIC_KEYS, deviceId: tokenCall.device.id, accountId: status.account.id, now: T0 }).payload.tier, 'hama');
   assert.equal(leases.at(-1), lease);
   for (const shown of [started.status, status, redeemed.status]) {
     const text = JSON.stringify(shown);
@@ -289,17 +294,17 @@ test('a session the server no longer knows signs out this device but keeps its d
 test('offline refreshes keep the lease and the account view, also after a restart', async (t) => {
   const ctx = await setup(t);
   await signIn(ctx);
-  await ctx.manager.redeem(ctx.server.issueKey({ edition: 'hama', plan: 'annual' }));
+  await ctx.manager.redeem(ctx.server.issueKey({ edition: 'rau', plan: 'annual' }));
   const lease = await ctx.manager.currentLease();
   ctx.server.setOffline(true);
   ctx.clock.t += DAY;
   const result = await ctx.manager.refresh();
-  assert.deepEqual([result.ok, result.code, result.status.state, result.status.plan.tier, result.status.sync.offline], [false, 'network', 'signed_in', 'hama', true]);
+  assert.deepEqual([result.ok, result.code, result.status.state, result.status.plan.tier, result.status.sync.offline], [false, 'network', 'signed_in', 'rau', true]);
   assert.equal(await ctx.manager.currentLease(), lease);
 
   const restarted = ctx.make();
   const status = await restarted.getStatus();
-  assert.deepEqual([status.state, status.plan.tier, status.stats.hama.calls], ['signed_in', 'hama', 42]);
+  assert.deepEqual([status.state, status.plan.tier, status.plan.rau.source, status.plan.rau.allowanceUsd], ['signed_in', 'rau', 'plan', 8]);
   assert.equal(await restarted.currentLease(), lease);
   ctx.server.setOffline(false);
   const back = await restarted.refresh();
@@ -373,7 +378,7 @@ test('activity is counted once per id, sent in batches every 5 minutes, retried 
   const first = callsTo(server, '/v1/account/stats')[0].body;
   assert.deepEqual([first.agentSessions, first.documentsEdited], [1, 2]);
   assert.match(first.batchId, /^[A-Za-z0-9_-]{8,64}$/);
-  assert.deepEqual((await manager.getStatus()).stats, { agentSessions: 1, documentsEdited: 2, since: T0, hama: null });
+  assert.deepEqual((await manager.getStatus()).stats, { agentSessions: 1, documentsEdited: 2, since: T0 });
 
   server.script('/v1/account/stats', [503, { ok: false, error: 'server' }]);
   manager.recordActivity('document_edited', 'doc-3');
@@ -404,19 +409,19 @@ test('activity is counted once per id, sent in batches every 5 minutes, retried 
 test('the local license key links to the account once, and every outcome shows on the status', async (t) => {
   const ctx = await setup(t);
   const { server, local } = ctx;
-  local.key = server.issueKey({ edition: 'basic', plan: 'annual' });
+  local.key = server.issueKey({ edition: 'hama', plan: 'annual' });
   await signIn(ctx);
   let status = await waitFor(async () => {
     const current = await ctx.manager.getStatus();
     return current.localKey?.state === 'linked' ? current : null;
   }, 'linked key');
-  assert.deepEqual([status.plan.tier, status.localKey.maskedKey], ['basic', `${local.key.slice(0, 10)}-•••••-•••••-•••••-${local.key.slice(-5)}`]);
+  assert.deepEqual([status.plan.tier, status.localKey.maskedKey], ['hama', `${local.key.slice(0, 10)}-•••••-•••••-•••••-${local.key.slice(-5)}`]);
   assert.equal(JSON.parse(await readFile(join(ctx.dir, 'account.json'), 'utf8')).migratedKeyHash, licenseKeyHash(local.key));
   await ctx.manager.licenseChanged();
   assert.equal(callsTo(server, '/v1/account/redeem').length, 1, 'a linked key is not redeemed again');
 
   server.createSession({ email: 'other@example.com', deviceId: 'other-device-1' });
-  local.key = server.issueKey({ edition: 'basic', email: 'other@example.com' });
+  local.key = server.issueKey({ edition: 'hama', email: 'other@example.com' });
   await ctx.manager.licenseChanged();
   status = await ctx.manager.getStatus();
   assert.equal(status.localKey.state, 'linked_elsewhere');
@@ -425,7 +430,7 @@ test('the local license key links to the account once, and every outcome shows o
   await ctx.manager.licenseChanged();
   assert.equal((await ctx.manager.getStatus()).localKey.state, 'invalid');
 
-  local.key = server.issueKey({ edition: 'hama', plan: 'monthly' });
+  local.key = server.issueKey({ edition: 'rau', plan: 'monthly' });
   server.setOffline(true);
   await ctx.manager.licenseChanged();
   assert.equal((await ctx.manager.getStatus()).localKey.state, 'pending');
@@ -435,7 +440,7 @@ test('the local license key links to the account once, and every outcome shows o
   ctx.clock.t += ACCOUNT_OFFLINE_RETRY_MS;
   await ctx.manager.licenseChanged();
   status = await ctx.manager.getStatus();
-  assert.deepEqual([status.localKey.state, status.plan.tier], ['linked', 'hama']);
+  assert.deepEqual([status.localKey.state, status.plan.tier], ['linked', 'rau']);
 });
 
 test('the avatar is cached locally and downloaded again only when the server revision changes', async (t) => {
@@ -477,13 +482,13 @@ test('profile, devices, claims and account deletion follow the server rules', as
   assert.deepEqual([removed.ok, removed.status.devices.length], [true, 1]);
   assert.equal((await manager.removeDevice('other-device-3')).code, 'device_not_found');
 
-  const orderKey = server.issueKey({ edition: 'basic', plan: 'monthly' });
+  const orderKey = server.issueKey({ edition: 'hama', plan: 'monthly' });
   server.addOrder('ORDER-1', { email: 'buyer@groble.test', key: orderKey });
   server.addOrder('ORDER-2', { email: 'buyer@groble.test' });
   assert.equal((await manager.claim('ORDER-1', 'someone@else.test')).message, '주문을 찾지 못했어요. 주문번호와 Groble 이메일을 확인해 주세요.');
   assert.equal((await manager.claim('ORDER-2', 'buyer@groble.test')).code, 'order_not_ready');
   const claimed = await manager.claim('ORDER-1', 'BUYER@groble.test');
-  assert.deepEqual([claimed.ok, claimed.status.plan.tier, claimed.status.plan.manageUrl], [true, 'basic', 'https://groble.im/manage/purchase']);
+  assert.deepEqual([claimed.ok, claimed.status.plan.tier, claimed.status.plan.manageUrl], [true, 'hama', 'https://groble.im/manage/purchase']);
 
   assert.equal((await manager.deleteAccount('wrong@example.com')).code, 'confirm_mismatch');
   const refused = await manager.deleteAccount('Tester@Example.com');
@@ -543,7 +548,8 @@ test('the IPC host serves only trusted Studio senders and checks every argument'
   assert.deepEqual(host.channels.toSorted(), [
     'account:cancel-sign-in', 'account:claim', 'account:delete', 'account:get-avatar', 'account:open-manage',
     'account:record-activity', 'account:redeem', 'account:refresh', 'account:remove-avatar', 'account:remove-device',
-    'account:replace-device', 'account:set-avatar', 'account:sign-in', 'account:sign-out', 'account:status', 'account:update-name',
+    'account:replace-device', 'account:set-avatar', 'account:sign-in', 'account:sign-out', 'account:start-rau-trial',
+    'account:status', 'account:update-name',
   ]);
   const invoke = (channel, ...args) => handlers.get(channel)(trusted, ...args);
   assert.throws(() => handlers.get('account:status')({ sender: 'web page' }), /Untrusted/);
@@ -557,14 +563,71 @@ test('the IPC host serves only trusted Studio senders and checks every argument'
   await invoke('account:set-avatar', new Uint8Array(PNG).buffer, 'image/png');
   assert.equal((await invoke('account:replace-device', '../etc')).code, 'device_not_found');
   assert.equal((await invoke('account:redeem', 42)).code, 'invalid_format');
+  // 체험은 렌더러가 무엇을 넘겨도 세션의 계정으로만 시작한다.
+  await invoke('account:start-rau-trial', { accountId: 'someone-else' });
   listeners.get('account:record-activity')({ sender: 'web page' }, 'agent_session', 'chat-1');
   listeners.get('account:record-activity')(trusted, 'bogus', 'chat-1');
   listeners.get('account:record-activity')(trusted, 'agent_session', 'chat-1');
   assert.deepEqual(calls.filter(([name]) => name !== 'getStatus').map(([name, ...args]) => [name, args.map((arg) => (arg instanceof Uint8Array ? 'bytes' : arg))]), [
     ['signIn', ['email', 'me@example.com', undefined]],
     ['setAvatar', ['bytes', 'image/png']],
+    ['startRauTrial', []],
     ['recordActivity', ['agent_session', 'chat-1']],
   ]);
   host.broadcast(status);
   assert.deepEqual(sent, [['account:changed', status]]);
+});
+
+test('a Rau trial starts once per account after sign-in, makes the lease Rau, and maps every refusal to a message', async (t) => {
+  const ctx = await setup(t);
+  const { manager, server, leases } = ctx;
+  const signedOut = await manager.startRauTrial();
+  assert.deepEqual([signedOut.ok, signedOut.code, signedOut.message], [false, 'sign_in_required', '먼저 로그인해 주세요.']);
+  assert.equal(callsTo(server, '/v1/account/rau-trial').length, 0);
+
+  let status = await signIn(ctx);
+  assert.deepEqual([status.plan.tier, status.trial.state, status.trial.days, status.trial.allowanceUsd], ['free', 'available', 7, 2]);
+  assert.deepEqual(status.plan.rau, { eligible: false, source: null, allowanceUsd: null, usedUsd: null, remainingUsd: null, resetsAt: null });
+  assert.equal(await manager.currentLease(), null, 'a free lease never reaches hosted features');
+
+  const started = await manager.startRauTrial();
+  assert.equal(started.ok, true, started.code);
+  status = started.status;
+  assert.deepEqual([status.plan.tier, status.trial.state, status.trial.startedAt, status.trial.endsAt], ['rau', 'active', T0, T0 + 7 * DAY]);
+  assert.deepEqual(status.plan.rau, { eligible: true, source: 'trial', allowanceUsd: 2, usedUsd: 0, remainingUsd: 2, resetsAt: T0 + 7 * DAY });
+  const lease = await manager.currentLease();
+  assert.ok(lease);
+  assert.equal(verifyAccountLease(lease, { publicKeys: DEV_PUBLIC_KEYS, now: T0 }).payload.tier, 'rau');
+  assert.equal(leases.at(-1), lease, 'hosted features hear about the new lease');
+  assert.equal(JSON.stringify(status).includes(lease), false);
+  assert.deepEqual(callsTo(server, '/v1/account/rau-trial').at(-1).body, {});
+
+  const again = await manager.startRauTrial();
+  assert.deepEqual([again.ok, again.code, again.message], [false, 'trial_used', 'Rau 체험은 계정마다 한 번만 쓸 수 있어요.']);
+  assert.equal(again.status.lastError.code, 'trial_used');
+
+  // 체험이 끝나면 다시 무료이고 호스팅 lease 도 없다.
+  server.endRauTrial('tester@example.com');
+  ctx.clock.t += HOUR;
+  status = (await manager.refresh()).status;
+  assert.deepEqual([status.plan.tier, status.trial.state, status.plan.rau.eligible], ['free', 'ended', false]);
+  assert.equal(await manager.currentLease(), null);
+});
+
+test('a paid Rau plan, an unconfigured server and a dropped connection refuse the trial with their own messages', async (t) => {
+  const ctx = await setup(t);
+  const { manager, server } = ctx;
+  await signIn(ctx);
+  await manager.redeem(server.issueKey({ edition: 'rau', plan: 'monthly' }));
+  const active = await manager.startRauTrial();
+  assert.deepEqual([active.ok, active.code, active.message], [false, 'rau_active', '이미 Rau 요금제를 쓰고 있어요.']);
+
+  server.setRauConfigured(false);
+  const off = await manager.startRauTrial();
+  assert.deepEqual([off.code, off.message], ['rau_unavailable', 'Rau 체험을 지금은 시작할 수 없어요. 조금 뒤 다시 시도해 주세요.']);
+
+  server.setOffline(true);
+  const offline = await manager.startRauTrial();
+  assert.deepEqual([offline.code, offline.status.state], ['network', 'signed_in']);
+  assert.match(offline.message, /인터넷 연결/);
 });

@@ -2,11 +2,11 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 
 import { buildProductCatalog } from './config.mjs';
 import {
-  GIFT_CODE_PLANS,
   MAX_GIFT_CODES_PER_BATCH,
   MAX_GIFT_DURATION_DAYS,
   MAX_GIFT_DURATION_MONTHS,
   generateGiftCode,
+  giftCodeEdition,
   giftCodeHash,
   giftCodePrefix,
   maskGiftCode,
@@ -198,11 +198,15 @@ export function planOf(license) {
 }
 
 /**
- * A key's edition. Basic keys sold before the rename are stored as 'pro'; they read as 'basic' and are
- * never rewritten, so a rollback still finds the records it wrote.
+ * Stored edition → the name the app and admin views use. Stored records are never rewritten:
+ * `pro` (the first name of the BYOK plan) and `basic` (its second, and how new Hama keys are stored)
+ * read as 'hama'; `hama` (the old hosted plan) and `rau` read as 'rau'.
  */
+const WIRE_EDITIONS = Object.freeze({ pro: 'hama', basic: 'hama', hama: 'rau', rau: 'rau', signature: 'signature' });
+
 export function editionOf(license) {
-  return license?.edition === 'pro' ? 'basic' : license?.edition;
+  const stored = license?.edition;
+  return typeof stored === 'string' && Object.hasOwn(WIRE_EDITIONS, stored) ? WIRE_EDITIONS[stored] : undefined;
 }
 
 /** Null for a lifetime key, false for a gift key or a cancelled subscription, else true. */
@@ -213,21 +217,23 @@ function autoRenewOf(license) {
 
 /** Editions sold as a subscription on their own billing cycle. */
 function isPlanEdition(edition) {
-  return edition === 'basic' || edition === 'pro' || edition === 'hama';
+  return edition === 'basic' || edition === 'pro' || edition === 'hama' || edition === 'rau';
+}
+
+/** Active, and before its expiry or inside its payment grace (lifetime keys always). */
+function isLive(license, nowMs, graceMaxMs) {
+  if (!license || license.status !== 'active') return false;
+  const end = accessEndOf(license, graceMaxMs);
+  return end === null || nowMs < end;
 }
 
 /**
- * The plan hosted Rau-0.1 serves a license on, or null: 'hama' for a Hama subscription key or any live
- * key with an active Hama plan, 'basic' for a Basic subscription key. Live means not revoked, before its
- * expiry or inside its payment grace. A Hama key qualifies on its edition, so a paid key keeps Rau with
- * HAMA_ENABLED off. Without a Hama plan, lifetime, Signature, GLJFC9, beta, grandfathered and manual keys never qualify.
+ * Whether a license has hosted Rau: a live key whose edition reads as 'rau', or a live key with an
+ * active plan in the frozen hama.json (`legacyPlan`). Every other key (Hama, GLJFC9, lifetime,
+ * Signature, beta, grandfathered, manual) needs a Rau plan or the account's trial.
  */
-export function rauPlanOf(license, nowMs, graceMaxMs, hamaActive = false) {
-  if (!license || license.status !== 'active') return null;
-  const end = accessEndOf(license, graceMaxMs);
-  if (end !== null && nowMs >= end) return null;
-  if (hamaActive || license.edition === 'hama') return 'hama';
-  return editionOf(license) === 'basic' && end !== null ? 'basic' : null;
+export function rauEntitled(license, nowMs, graceMaxMs, legacyPlan = null) {
+  return isLive(license, nowMs, graceMaxMs) && (editionOf(license) === 'rau' || Boolean(legacyPlan));
 }
 
 /** `HAMA-ABCDE-•••••-•••••-•••••-VWXYZ`: the first and last groups only. */
@@ -238,8 +244,8 @@ export function maskLicenseKey(key) {
 }
 
 /** Account tier by the primary license's rank (see accountEntitlements). */
-const RANK_TIERS = { 1: 'legacy', 2: 'basic', 3: 'hama' };
-const ACCOUNT_EDITIONS = new Set(['basic', 'hama', 'signature']);
+const RANK_TIERS = { 1: 'hama', 2: 'rau' };
+const ACCOUNT_EDITIONS = new Set(['hama', 'rau', 'signature']);
 
 function normalizeState(state) {
   const base = emptyLicensesState();
@@ -377,14 +383,15 @@ export function createLicensesService({
   minAmount = expectedPrice,
   signatureExpectedPrice = 29000,
   signatureMinAmount = signatureExpectedPrice,
-  basicProducts = [],
   hamaProducts = [],
+  rauProducts = [],
   products,
   grandfatherCutoff = undefined,
   grandfatherPlatforms = ['darwin'],
   adminToken = '',
   downloadUrl = 'https://heemangstudios.com/',
-  hamaPlanActive = async () => false,
+  // keyId → `{ periodAnchor }` of an active plan in the frozen hama.json, else null. Read-only.
+  legacyRauPlan = async () => null,
   // A read of the accounts store (never its update lock): the account a verified buyer email belongs to, or null.
   accountForEmail = async () => null,
   webhookLog = createWebhookLog({ now }),
@@ -398,8 +405,8 @@ export function createLicensesService({
     minAmount,
     signatureExpectedPrice,
     signatureMinAmount,
-    basicProducts,
     hamaProducts,
+    rauProducts,
   })).map((product) => [product.id, product]));
   const graceEndOf = (license) => paymentGraceEndOf(license, paymentGraceMaxMs);
   const accessEnd = (license) => accessEndOf(license, paymentGraceMaxMs);
@@ -501,6 +508,21 @@ export function createLicensesService({
     return null;
   }
 
+  /**
+   * A Hama or Rau product sold through a Groble option must be paid as exactly that option: Groble's
+   * subscription events carry one option with quantity 1. Its list price, when present, must be the product's.
+   */
+  function optionProblem(object, product) {
+    if (!product.optionId) return null;
+    const options = Array.isArray(object?.options) ? object.options : [];
+    if (options.length === 0) return 'missing_option';
+    const ids = options.map((option) => str(option?.optionId, 64) ?? 'missing');
+    if (options.length !== 1 || ids[0] !== product.optionId) return `wrong_option:${ids.join(',')}`;
+    const listPrice = num(options[0]?.unitOriginalPrice);
+    if (listPrice !== undefined && listPrice !== product.expectedPrice) return `wrong_price:${listPrice}`;
+    return null;
+  }
+
   function checkPurchase(object, { subscription = false, renewal = false } = {}) {
     const contentId = str(object?.content?.id, 128);
     const paymentType = str(object?.content?.paymentType, 32);
@@ -509,20 +531,25 @@ export function createLicensesService({
     if (subscription !== (product.kind === 'subscription')) return `wrong_product:${contentId}`;
     const expectedType = product.kind === 'subscription' ? 'SUBSCRIPTION' : 'ONE_TIME';
     if (paymentType && paymentType !== expectedType) return `wrong_payment_type:${paymentType}`;
-    // A Basic or Hama product bills on its own cycle. An event that names another one is held instead of
+    // A Hama or Rau product bills on its own cycle. An event that names another one is held instead of
     // trusted, so a monthly buyer can never get a year; a missing or unreadable field uses the product's.
     const eventMonths = eventCycleMonths(object);
     if (product.cycleMonths && eventMonths !== undefined && eventMonths !== product.cycleMonths) return `cycle_mismatch:${eventMonths}`;
+    // A renewal checks product and currency only, so a later price or option change never holds old subscribers.
+    if (!renewal) {
+      const option = optionProblem(object, product);
+      if (option) return option;
+    }
     return priceProblem(object, product, { renewal });
   }
 
-  /** Months the round buys: a Basic or Hama product's own cycle, else the event's, else 12 (GLJFC9). */
+  /** Months the round buys: a Hama or Rau product's own cycle, else the event's, else 12 (GLJFC9). */
   function orderCycleMonths(object) {
     const product = catalog.get(str(object?.content?.id, 128) ?? '');
     return product?.cycleMonths ?? eventCycleMonths(object) ?? SUBSCRIPTION_CYCLE_MONTHS;
   }
 
-  /** Basic and Hama keys carry the edition, product and cycle on the record itself. */
+  /** Hama and Rau keys carry the stored edition ('basic' or 'rau'), product and cycle on the record itself. */
   function planEntitlement(product, months) {
     return isPlanEdition(product?.edition) ? { edition: product.edition, productId: product.id, billingCycleMonths: months } : {};
   }
@@ -675,7 +702,7 @@ export function createLicensesService({
     // A late renewal (a retry or re-payment after the key lapsed) starts the new year on the day it was paid.
     const paidMs = paidAtOf(order);
     const from = Math.max(expiryOf(license) ?? paidMs, paidMs);
-    // Each round buys the key's own cycle: a monthly Basic key gains a month, an annual key a year.
+    // Each round buys the key's own cycle: a monthly key gains a month, an annual key a year.
     const to = subscriptionEnd(from, keyCycleMonths(license));
     license.expiresAt = iso(to);
     order.status = 'renewed';
@@ -1021,20 +1048,30 @@ export function createLicensesService({
     return license;
   }
 
-  /** A Hama store that cannot be read leaves the key's other entitlements in place. */
-  async function hamaActiveOf(license) {
-    return Promise.resolve(hamaPlanActive(license.keyId)).catch((error) => {
-      log(`[site-api] hama plan of ${license.keyId} unreadable: ${error?.message ?? error}`);
-      return false;
-    });
+  /** The key's active plan in the frozen hama.json, or null. A store that cannot be read leaves the key's other entitlements in place. */
+  async function legacyPlanOf(license) {
+    return Promise.resolve().then(() => legacyRauPlan(license.keyId)).catch((error) => {
+      log(`[site-api] legacy hama plan of ${license.keyId} unreadable: ${error?.message ?? error}`);
+      return null;
+    }).then((plan) => plan ?? null);
   }
 
-  async function rauPlanFor(license) {
-    return rauPlanOf(license, now(), paymentGraceMaxMs, await hamaActiveOf(license));
+  /**
+   * The Rau principal of a license, or null: its ledger is the key's own, billed in monthly periods
+   * from the subscription's first payment, else the key's creation, else the legacy plan's anchor.
+   */
+  function rauPrincipalOf(license, legacyPlan) {
+    if (!rauEntitled(license, now(), paymentGraceMaxMs, legacyPlan)) return null;
+    const anchor = parseTime(license.subscription?.activatedAt) ?? parseTime(license.createdAt) ?? parseTime(legacyPlan?.periodAnchor) ?? now();
+    return { source: 'plan', ledgerId: license.keyId, anchor: iso(anchor) };
+  }
+
+  async function rauFor(license) {
+    return rauPrincipalOf(license, await legacyPlanOf(license));
   }
 
   /** `submittedKey` is what the app sent; the lease's keyHash is over the app's normalization of it. */
-  function leaseResponse(license, deviceId, submittedKey, rauPlan) {
+  function leaseResponse(license, deviceId, submittedKey, rau) {
     const licenseExpiresAt = expiryOf(license);
     const paymentGraceEndsAt = graceEndOf(license);
     const { lease, payload } = signLease({
@@ -1070,8 +1107,9 @@ export function createLicensesService({
       } : {}),
       ...(isPlanEdition(license.edition) ? { edition: editionOf(license) } : {}),
       plan: planOf(license),
-      // Hosted Rau-0.1 (POST /v1/rau/learn) answers only active Basic and Hama keys and active Hama plans.
-      rau: { eligible: rauPlan !== null },
+      // Hosted Rau (the agent and Rau-0.1) answers live Rau keys and keys with an active legacy plan.
+      // A license lease never carries the account's trial.
+      rau: { eligible: rau !== null },
     };
   }
 
@@ -1092,7 +1130,7 @@ export function createLicensesService({
         appVersion: str(body?.appVersion, 32),
         platform: str(body?.platform, 32),
       };
-      return { value: leaseResponse(license, deviceId, body.key, await rauPlanFor(license)) };
+      return { value: leaseResponse(license, deviceId, body.key, await rauFor(license)) };
     });
   }
 
@@ -1104,7 +1142,7 @@ export function createLicensesService({
       const device = license.devices?.[deviceId];
       if (!device) throw licenseError('not_activated', 404);
       device.lastSeenAt = new Date(now()).toISOString();
-      return { value: leaseResponse(license, deviceId, body.key, await rauPlanFor(license)) };
+      return { value: leaseResponse(license, deviceId, body.key, await rauFor(license)) };
     });
   }
 
@@ -1128,9 +1166,9 @@ export function createLicensesService({
    * Returns `{ keyId, deviceId, platform, source, tier, edition, active }`; anything else is
    * `unauthorized` (401). `allowInactive` also answers for a revoked or expired key (`active: false`),
    * so hosted Rau can tell such a key to upgrade; the lease itself must still be ours and unexpired.
-   * `withRauPlan` adds `rauPlan` ('hama', 'basic' or null).
+   * `withRau` adds `rau`: the key's Rau principal `{ source: 'plan', ledgerId, anchor }`, or null.
    */
-  async function authenticateLease(lease, { allowInactive = false, withRauPlan = false } = {}) {
+  async function authenticateLease(lease, { allowInactive = false, withRau = false } = {}) {
     if (!signingKey) throw licenseError('unauthorized', 401);
     leasePublicKeys ??= { [leaseKid]: publicKeyFromPrivate(signingKey) };
     const checked = verifyLease(lease, leasePublicKeys, { now: now() });
@@ -1151,7 +1189,7 @@ export function createLicensesService({
       tier: tierOf(license),
       edition: editionOf(license) ?? null,
       active,
-      ...(withRauPlan ? { rauPlan: await rauPlanFor(license) } : {}),
+      ...(withRau ? { rau: await rauFor(license) } : {}),
     };
   }
 
@@ -1159,30 +1197,27 @@ export function createLicensesService({
 
   /**
    * Licenses linked to an account, each with what ranks it: live = active and before its access end
-   * (lifetime keys always), rank 3 for a Hama key or a key with an active Hama plan, 2 for Pro, 1 for
-   * every other key (GLJFC9, lifetime, Signature, beta, grandfathered, manual).
+   * (lifetime keys always), rank 2 for a key with Rau, 1 for every other key (Hama, GLJFC9, lifetime,
+   * Signature, beta, grandfathered, manual).
    */
   async function linkedOf(state, accountId) {
     const nowMs = now();
     const linked = Object.values(state.licenses).filter((license) => license.accountId === accountId);
     return Promise.all(linked.map(async (license) => {
       const end = accessEnd(license);
-      const live = license.status === 'active' && (end === null || nowMs < end);
-      const hamaActive = live && await hamaActiveOf(license);
-      return {
-        license,
-        live,
-        end,
-        hamaActive,
-        rank: hamaActive || license.edition === 'hama' ? 3 : editionOf(license) === 'basic' ? 2 : 1,
-        rauPlan: live ? rauPlanOf(license, nowMs, paymentGraceMaxMs, hamaActive) : null,
-      };
+      const live = isLive(license, nowMs, paymentGraceMaxMs);
+      const rau = live ? rauPrincipalOf(license, await legacyPlanOf(license)) : null;
+      return { license, live, end, rau, rank: rau ? 2 : 1, subscribed: isPlanEdition(license.edition) };
     }));
   }
 
-  /** Primary first: highest rank, then latest access end (lifetime last forever), then oldest. */
+  /**
+   * Primary first: highest rank, then a Hama or Rau subscription (so the account shows the plan it pays
+   * for, not a beta or lifetime key), then latest access end (lifetime last forever), then oldest.
+   */
   function byPrimary(a, b) {
     if (a.rank !== b.rank) return b.rank - a.rank;
+    if (a.subscribed !== b.subscribed) return a.subscribed ? -1 : 1;
     const endA = a.end ?? Infinity;
     const endB = b.end ?? Infinity;
     if (endA !== endB) return endB > endA ? 1 : -1;
@@ -1227,8 +1262,9 @@ export function createLicensesService({
   }
 
   /**
-   * What an account is entitled to now. `plan` and `licenses` go to the app as they are; `primary`
-   * carries the fields the account lease signs.
+   * What an account's licenses entitle it to now. `plan` and `licenses` go to the app (accounts.mjs adds
+   * `plan.rau` and lifts the tier during a trial); `primary` carries the fields the account lease signs;
+   * `rau` is the best live Rau license's principal, or null.
    */
   async function accountEntitlements(accountId) {
     const entries = await linkedOf(await read(), accountId);
@@ -1257,9 +1293,9 @@ export function createLicensesService({
         paymentFailed: graceEnd !== null,
         paymentGraceEndsAt: graceEnd,
         manageUrl: license ? fixUrlOf(license) : null,
-        rau: { eligible: live.some((entry) => entry.rauPlan !== null) },
       },
       licenses: licensesListOf(entries, license?.keyId ?? null),
+      rau: live.find((entry) => entry.rau)?.rau ?? null,
     };
   }
 
@@ -1325,9 +1361,11 @@ export function createLicensesService({
   }
 
   /**
-   * Redeems a gift code for an account in one mutation: a new key of the batch's edition, running from
-   * now for the batch's term and linked to the account, and the code marked redeemed. The same account
-   * again gets the same key back (`alreadyRedeemed`). Resolves to `{ alreadyRedeemed, keyId, edition }`.
+   * Redeems a gift code for an account in one mutation: a new key with the batch's stored edition
+   * (`plan`), running from now for the batch's term and linked to the account, and the code marked
+   * redeemed. A Rau key's credits run monthly from its creation, like any Rau key without a
+   * subscription. The same account again gets the same key back (`alreadyRedeemed`). Resolves to
+   * `{ alreadyRedeemed, keyId, edition }`, the edition by its current name.
    */
   async function redeemGiftCode(accountId, rawCode) {
     const code = normalizeGiftCode(rawCode);
@@ -1339,7 +1377,7 @@ export function createLicensesService({
       if (!record || !batch) throw licenseError('invalid_code', 404);
       if (record.status === 'redeemed') {
         if (record.accountId !== accountId) throw licenseError('code_redeemed', 409);
-        return { dirty: false, value: { alreadyRedeemed: true, keyId: record.keyId, edition: batch.plan } };
+        return { dirty: false, value: { alreadyRedeemed: true, keyId: record.keyId, edition: giftPlanName(batch) } };
       }
       const nowMs = now();
       const status = giftCodeStatusOf(record, batch, nowMs);
@@ -1354,7 +1392,7 @@ export function createLicensesService({
       });
       linkLicense(license, accountId, 'gift_code');
       Object.assign(record, { status: 'redeemed', redeemedAt: iso(nowMs), accountId, keyId: license.keyId });
-      return { value: { alreadyRedeemed: false, keyId: license.keyId, edition: batch.plan } };
+      return { value: { alreadyRedeemed: false, keyId: license.keyId, edition: giftPlanName(batch) } };
     });
   }
 
@@ -1372,19 +1410,29 @@ export function createLicensesService({
     };
   }
 
-  /** A batch with its code counts by status and, filtered by `status`, its masked codes. */
+  /** A batch's plan by its current name: `hama` or `rau` (the batch stores the edition its keys get). */
+  function giftPlanName(batch) {
+    return editionOf({ edition: batch.plan }) ?? batch.plan;
+  }
+
+  /** A batch with its plan by name, its code counts by status and, filtered by `status`, its masked codes. */
   function giftBatchView(state, batch, nowMs, status) {
     const codes = Object.values(state.giftCodes)
       .filter((record) => record.batchId === batch.batchId)
       .map((record) => giftCodeView(record, batch, nowMs));
     const counts = Object.fromEntries(GIFT_CODE_STATUSES.map((name) => [name, codes.filter((c) => c.status === name).length]));
-    return { ...batch, counts, codes: status ? codes.filter((c) => c.status === status) : codes };
+    return { ...batch, plan: giftPlanName(batch), counts, codes: status ? codes.filter((c) => c.status === status) : codes };
   }
 
-  /** `{ plan, durationMonths | durationDays, count, note?, redeemBy? }` checked; plan and term have no defaults. */
+  /**
+   * `{ plan, durationMonths | durationDays, count, note?, redeemBy? }` checked; plan and term have no
+   * defaults. `plan` is `hama` or `rau` (`basic` and `pro` still mean Hama) and comes back as the
+   * edition to store.
+   */
   function parseGiftIssue(body) {
     if (body?.plan === undefined || body.plan === null || body.plan === '') throw licenseError('plan_required', 400);
-    if (!GIFT_CODE_PLANS.includes(body.plan)) throw licenseError('plan_invalid', 400);
+    const edition = giftCodeEdition(body.plan);
+    if (!edition) throw licenseError('plan_invalid', 400);
     const hasMonths = body?.durationMonths !== undefined && body.durationMonths !== null;
     const hasDays = body?.durationDays !== undefined && body.durationDays !== null;
     if (hasMonths && hasDays) throw licenseError('duration_conflict', 400);
@@ -1407,7 +1455,7 @@ export function createLicensesService({
       if (until === undefined || until <= now()) throw licenseError('redeem_by_invalid', 400);
       redeemBy = iso(until);
     }
-    return { plan: body.plan, ...term, count, note: str(body?.note, 500), redeemBy };
+    return { plan: edition, ...term, count, note: str(body?.note, 500), redeemBy };
   }
 
   /** A live subscription Groble will charge again: auto-renewal on and not terminated. */
@@ -1442,16 +1490,15 @@ export function createLicensesService({
 
   /**
    * The principal of an account lease for a hosted service, the same shape as authenticateLease plus
-   * `accountId`. The license is chosen now by purpose: `gift` a live beta key, `hama` a key with an
-   * active Hama plan or the Hama edition, `rau` the best Rau plan (hama over basic); else the primary.
-   * Without a live license, `allowInactive` answers `{ keyId: null, active: false }`; otherwise 401.
+   * `accountId`. The license is chosen now by purpose: `gift` a live beta key, `rau` the best live Rau
+   * key; else the primary. Without a live license, `allowInactive` answers `{ keyId: null, active: false }`;
+   * otherwise 401. `withRau` adds the chosen key's Rau principal (accounts.mjs adds the trial).
    */
-  async function authenticateAccount(accountId, { deviceId, platform, purpose, allowInactive = false, withRauPlan = false } = {}) {
+  async function authenticateAccount(accountId, { deviceId, platform, purpose, allowInactive = false, withRau = false } = {}) {
     const live = await liveLinked(accountId);
     const choices = {
       gift: () => live.find((entry) => tierOf(entry.license) === 'beta'),
-      hama: () => live.find((entry) => entry.hamaActive || entry.license.edition === 'hama'),
-      rau: () => live.find((entry) => entry.rauPlan === 'hama') ?? live.find((entry) => entry.rauPlan === 'basic'),
+      rau: () => live.find((entry) => entry.rau),
     };
     const chosen = (Object.hasOwn(choices, purpose) ? choices[purpose]() : undefined) ?? live[0];
     if (!chosen && !allowInactive) throw licenseError('unauthorized', 401);
@@ -1462,27 +1509,11 @@ export function createLicensesService({
       platform,
       source: license?.source ?? null,
       tier: license ? tierOf(license) : 'paid',
-      edition: license?.edition ?? null,
+      edition: license ? editionOf(license) ?? null : null,
       active: Boolean(chosen),
       accountId,
-      ...(withRauPlan ? { rauPlan: chosen?.rauPlan ?? null } : {}),
+      ...(withRau ? { rau: chosen?.rau ?? null } : {}),
     };
-  }
-
-  /**
-   * Every paid Hama key and whether it is live now, for hama.mjs to keep hama.json in line with.
-   * `periodAnchor` is the subscription's first payment, so billing months do not depend on when the plan was written.
-   */
-  async function hamaSubscriptions() {
-    const state = await read();
-    return Object.values(state.licenses).filter((license) => license.edition === 'hama').map((license) => {
-      const end = accessEnd(license);
-      return {
-        keyId: license.keyId,
-        live: license.status === 'active' && (end === null || now() < end),
-        periodAnchor: iso(parseTime(license.subscription?.activatedAt) ?? parseTime(license.createdAt) ?? now()),
-      };
-    });
   }
 
   // -------------------------------------------------------- grandfather
@@ -1960,7 +1991,7 @@ export function createLicensesService({
           state.giftCodes[codeHash] = { codeHash, batchId, prefix: giftCodePrefix(code), status: 'active', createdAt };
           codes.push(code);
         }
-        log(`[site-api] gift code batch ${batchId}: ${codes.length} ${batch.plan} codes issued`);
+        log(`[site-api] gift code batch ${batchId}: ${codes.length} ${giftPlanName(batch)} codes issued`);
         return { value: { ok: true, batch: giftBatchView(state, batch, now()), codes } };
       });
     },
@@ -2035,7 +2066,6 @@ export function createLicensesService({
     deactivate,
     grandfather,
     authenticateLease,
-    hamaSubscriptions,
     accountEntitlements,
     accountLicensesView,
     linkByEmail,

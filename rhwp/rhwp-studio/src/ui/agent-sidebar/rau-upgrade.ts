@@ -1,22 +1,43 @@
-// 호스팅 Rau-0.1(Basic·Hama) 업그레이드 안내. 허브가 자격이 없다는 답(rau_requires_basic)을 받으면 rau-upgrade 를 한 번
+// 호스팅 Rau-0.1(Rau 요금제·체험) 업그레이드 안내. 허브가 자격이 없다는 답(rau_plan_required)을 받으면 rau-upgrade 를 한 번
 // 보내고, 사이드바는 입력창 위에 칩을 띄운다. 닫거나 업그레이드 페이지를 열면 그 거절에는 다시 띄우지 않는다.
 // 서버 호출과 lease 는 데스크톱 main 이 가진다. 여기서는 데스크톱의 rau API 로 자격을 묻고 페이지를 연다.
 import { createIcon } from './icons.ts';
 
-export const RAU_UPGRADE_PRICE = '월 ₩3,900';
-export const RAU_PRICING_URL = 'https://heemangstudios.com/pricing.html';
+export const RAU_UPGRADE_PRICE = '월 ₩14,900';
+export const RAU_PRICE_LINE = '월 ₩14,900 · 연 ₩149,000';
+export const RAU_PRICING_URL = 'https://heemangstudios.com/pricing.html#rau';
 const DISMISSED_KEY = 'rhwp.rau-upgrade.dismissed';
 
-/** 데스크톱 main 의 rau:status 답. 라이선스가 없으면 reason 이 no_license 다. */
+/**
+ * 데스크톱 main 의 rau:status 답. 라이선스·계정이 없으면 reason 이 no_license 다.
+ * source 'trial' 이면 resetsAt 은 체험이 끝나는 때다. 크레딧 값은 자격이 없으면 null.
+ */
 export interface RauStatus {
   ok: boolean;
   eligible?: boolean;
-  reason?: 'rau_requires_basic' | 'no_license' | null;
+  source?: 'plan' | 'trial' | null;
+  reason?: 'rau_plan_required' | 'no_license' | null;
   upgradeUrl?: string;
-  capUsd?: number | null;
+  allowanceUsd?: number | null;
   usedUsd?: number | null;
   remainingUsd?: number | null;
   resetsAt?: number | null;
+}
+
+/** 설정의 Rau 줄 상태 글. 예: $5.20 남음 · 11월 30일 초기화, 크레딧을 다 쓰면 11월 30일까지 크레딧 소진. */
+export function rauStateLine(status: RauStatus, timeZone?: string): string {
+  const date = (ms: number): string => new Intl.DateTimeFormat('ko-KR', { month: 'long', day: 'numeric', ...(timeZone ? { timeZone } : {}) }).format(new Date(ms));
+  const remaining = typeof status.remainingUsd === 'number' && Number.isFinite(status.remainingUsd) ? Math.max(0, status.remainingUsd) : null;
+  const trial = status.source === 'trial';
+  const reset = typeof status.resetsAt === 'number' && status.resetsAt > 0 ? status.resetsAt : null;
+  if (remaining === 0) {
+    if (trial) return '체험 크레딧 소진';
+    return reset ? `${date(reset)}까지 크레딧 소진` : '크레딧 소진';
+  }
+  if (remaining === null) return trial ? '무료 체험' : '켜짐';
+  const left = `$${(Math.round(remaining * 100) / 100).toFixed(2)} 남음`;
+  if (trial) return reset ? `무료 체험 · ${left} · ${date(reset)}까지` : `무료 체험 · ${left}`;
+  return reset ? `${left} · ${date(reset)} 초기화` : left;
 }
 
 export interface DesktopRauApi {
@@ -46,8 +67,7 @@ function storage(): Storage | null {
 export function rauUpgradeDismissed(reason: string, store: Storage | null = storage()): boolean {
   try {
     const dismissed = store?.getItem(DISMISSED_KEY);
-    // 예전 이름(rau_requires_pro)으로 닫은 거절도 같은 거절이다.
-    return (dismissed === 'rau_requires_pro' ? 'rau_requires_basic' : dismissed) === reason;
+    return dismissed === reason;
   } catch { return false; }
 }
 
@@ -81,7 +101,7 @@ export function createRauUpgradeChip({
   open.className = 'ag-calibration-chip-open';
   const text = document.createElement('span');
   text.className = 'ag-calibration-chip-text';
-  text.textContent = 'Rau-0.1 호스팅은 Basic·Hama에서 써요';
+  text.textContent = 'Rau 모드는 Rau 요금제에서 써요';
   const action = document.createElement('span');
   action.className = 'ag-calibration-chip-action';
   action.textContent = RAU_UPGRADE_PRICE;

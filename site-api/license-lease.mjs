@@ -31,7 +31,8 @@ import {
 
 export const LEASE_VERSION = 1;
 export const ACCOUNT_LEASE_VERSION = 2;
-export const ACCOUNT_LEASE_TIERS = Object.freeze(['free', 'basic', 'pro', 'legacy', 'hama']);
+/** 'free' | 'hama' | 'rau' today; 'basic', 'pro' and 'legacy' are older names that unexpired leases may still carry. */
+export const ACCOUNT_LEASE_TIERS = Object.freeze(['free', 'hama', 'rau', 'basic', 'pro', 'legacy']);
 export const ACCOUNT_LEASE_PLANS = Object.freeze(['monthly', 'annual', 'lifetime']);
 export const LEASE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 /** Beta keys get a shorter lease so a revoked tester key stops working within 3 days offline. */

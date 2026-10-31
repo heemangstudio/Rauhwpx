@@ -1,6 +1,6 @@
 // 계정 서버(site-api /v1/account/*) HTTP 클라이언트. 계약은 /v1/account 라우트 설명(site-api README)과 같다.
 //   공개: GET auth/providers, POST auth/start, POST auth/token
-//   세션(Authorization: Bearer hes_…): refresh, signout, devices/remove, redeem, claim, profile,
+//   세션(Authorization: Bearer hes_…): refresh, signout, devices/remove, redeem, claim, rau-trial, profile,
 //   PUT·GET avatar, avatar/remove, stats, delete
 //   실패: { ok:false, error, ...extra } → AccountServerError(error, status, extra). 연결 실패·시간 초과는 network,
 //   코드가 없는 응답은 server.
@@ -83,6 +83,7 @@ export function createAccountClient({
     removeDevice: (session, deviceId) => call('/v1/account/devices/remove', { session, json: { deviceId } }),
     redeem: (session, key) => call('/v1/account/redeem', { session, json: { key } }),
     claim: (session, { orderId, email }) => call('/v1/account/claim', { session, json: { orderId, email } }),
+    rauTrial: (session) => call('/v1/account/rau-trial', { session, json: {} }),
     updateProfile: (session, { name }) => call('/v1/account/profile', { session, json: { name } }),
     uploadAvatar: (session, bytes, type) => call('/v1/account/avatar', { method: 'PUT', session, raw: bytes, type }),
     removeAvatar: (session) => call('/v1/account/avatar/remove', { session, json: {} }),

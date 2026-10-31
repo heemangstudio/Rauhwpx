@@ -178,7 +178,7 @@ test('admin page: gift code routes forward only their fields, with plan and term
   const calls = [
     ['GET', '/api/gift-codes?batchId=gcb_1&status=active&code=GIFT-0000-0000-0000-0000'],
     ['POST', '/api/gift-codes/issue', { plan: 'hama', durationDays: 14, count: 3, note: '베타', redeemBy: '2026-12-31', codes: ['GIFT-0000-0000-0000-0000'], durationMonths: '' }],
-    ['POST', '/api/gift-codes/issue', { plan: 'basic', durationMonths: 3, count: 1 }],
+    ['POST', '/api/gift-codes/issue', { plan: 'rau', durationMonths: 3, count: 1 }],
     ['POST', '/api/gift-codes/revoke', { codeHash: 'a'.repeat(64), reason: 'leaked', code: 'GIFT-0000-0000-0000-0000' }],
     ['POST', '/api/gift-codes/revoke', { batchId: 'gcb_1', keyId: 'lic_1' }],
   ];
@@ -186,7 +186,7 @@ test('admin page: gift code routes forward only their fields, with plan and term
   assert.deepEqual(upstream.calls.map((c) => [c.method, c.url, c.auth, c.body]), [
     ['GET', '/v1/admin/gift-codes?batchId=gcb_1&status=active', 'Bearer admin-secret', null],
     ['POST', '/v1/admin/gift-codes/issue', 'Bearer admin-secret', { plan: 'hama', durationDays: 14, count: 3, note: '베타', redeemBy: '2026-12-31' }],
-    ['POST', '/v1/admin/gift-codes/issue', 'Bearer admin-secret', { plan: 'basic', durationMonths: 3, count: 1 }],
+    ['POST', '/v1/admin/gift-codes/issue', 'Bearer admin-secret', { plan: 'rau', durationMonths: 3, count: 1 }],
     ['POST', '/v1/admin/gift-codes/revoke', 'Bearer admin-secret', { codeHash: 'a'.repeat(64), reason: 'leaked' }],
     ['POST', '/v1/admin/gift-codes/revoke', 'Bearer admin-secret', { batchId: 'gcb_1' }],
   ]);

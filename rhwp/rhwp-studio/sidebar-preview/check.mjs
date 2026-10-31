@@ -10,7 +10,7 @@ import { createServer } from 'vite';
 import puppeteer from 'puppeteer-core';
 import { checkChipAlignment } from './chip-alignment.check.mjs';
 import { checkPiModels } from './pi-models.check.mjs';
-import { checkHamaHarness } from './hama-harness.check.mjs';
+import { checkRauHarness } from './rau-harness.check.mjs';
 import { checkSelectMenu } from './select-menu.check.mjs';
 import { checkMarkdownEditor } from './markdown-editor.check.mjs';
 import { checkSetupTerminal } from './setup-terminal.check.mjs';
@@ -52,7 +52,7 @@ import { checkTypingGuard } from './typing-guard.check.mjs';
 import { checkDelayedStatus } from './delayed-status.check.mjs';
 import { checkRestoreTurnPreview } from './restore-turn.check.mjs';
 import { checkFailureNotices } from './failures.check.mjs';
-import { checkHamaCapNotices } from './hama.check.mjs';
+import { checkRauCreditNotices } from './rau-credits.check.mjs';
 import { checkAttention } from './attention.check.mjs';
 import { checkInterruptionPreview } from './interruption.check.mjs';
 import { checkAdoptionPreview } from './adoption.check.mjs';
@@ -117,7 +117,7 @@ const focusedChecks = {
   status: (h) => checkDelayedStatus(h.page, h.origin, h.artifacts),
   restore: (h) => checkRestoreTurnPreview(h.page, h.origin, h.artifacts),
   failures: (h) => checkFailureNotices(h.page, h.origin, h.artifacts),
-  hama: (h) => checkHamaCapNotices(h.page, h.origin, h.artifacts),
+  'rau-credits': (h) => checkRauCreditNotices(h.page, h.origin, h.artifacts),
   attention: (h) => checkAttention(h.page, h.origin, h.artifacts),
   interruption: (h) => checkInterruptionPreview(h.page, h.origin, h.artifacts),
   adoption: (h) => checkAdoptionPreview(h.page, h.origin, h.artifacts),
@@ -137,7 +137,7 @@ const focusedChecks = {
   resume: (h) => checkChatResume(h.page, h.origin, h.screenshot),
   chip: (h) => checkChipAlignment(h.page, h.origin),
   'pi-models': (h) => checkPiModels(h.page, h.origin),
-  'hama-harness': (h) => checkHamaHarness(h),
+  'rau-harness': (h) => checkRauHarness(h),
   'select-menu': (h) => checkSelectMenu(h.page, h.origin),
   'markdown-editor': (h) => checkMarkdownEditor(h.page, h.origin, h.artifacts),
   'setup-terminal': (h) => checkSetupTerminal(h.page, h.origin),

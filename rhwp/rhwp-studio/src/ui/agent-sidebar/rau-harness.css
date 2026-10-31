@@ -1,32 +1,32 @@
-/* Hama 하네스 — 앱 하마의 파랑. 라이트는 흰 바닥 위 글자 대비를 위해 한 단 진하게 둔다
+/* 호스팅 Rau 하네스 — 앱의 파랑. 라이트는 흰 바닥 위 글자 대비를 위해 한 단 진하게 둔다
    (--ag-on-accent 와의 대비는 다른 프로바이더 색과 같은 밝기대). */
 .ag-root {
-  --ag-hama: #3d9bd1;
-  --ag-hama-wash: rgba(61, 155, 209, 0.10);
+  --ag-rau: #3d9bd1;
+  --ag-rau-wash: rgba(61, 155, 209, 0.10);
 }
 
 :root[data-theme-effective='dark'] .ag-root {
-  --ag-hama: #62b3e2;
-  --ag-hama-wash: rgba(98, 179, 226, 0.16);
+  --ag-rau: #62b3e2;
+  --ag-rau-wash: rgba(98, 179, 226, 0.16);
 }
 
-.ag-root[data-agent='hama'] {
-  --ag-accent: var(--ag-hama);
+.ag-root[data-agent='rau'] {
+  --ag-accent: var(--ag-rau);
 }
 
-.ag-provider-icon-mask[data-agent='hama'] {
-  -webkit-mask-image: url('/icons/provider-hama.svg');
-  mask-image: url('/icons/provider-hama.svg');
+.ag-provider-icon-mask[data-agent='rau'] {
+  -webkit-mask-image: url('/icons/rau.png');
+  mask-image: url('/icons/rau.png');
 }
 
-.ag-root[data-agent='hama'] .ag-provider .ag-provider-icon-mask,
-.ag-provider-item[data-agent='hama'] .ag-provider-icon-mask {
-  color: var(--ag-hama);
+.ag-root[data-agent='rau'] .ag-provider .ag-provider-icon-mask,
+.ag-provider-item[data-agent='rau'] .ag-provider-icon-mask {
+  color: var(--ag-rau);
 }
 
-.ag-fleet.ag-hama { --ag-accent: var(--ag-hama); }
-.ag-skill-token[data-agent='hama'] { --ag-skill-color: var(--ag-hama); }
-.ag-plan-card.ag-hama { box-shadow: none; }
+.ag-fleet.ag-rau { --ag-accent: var(--ag-rau); }
+.ag-skill-token[data-agent='rau'] { --ag-skill-color: var(--ag-rau); }
+.ag-plan-card.ag-rau { box-shadow: none; }
 
 /* 피커는 언제나 한 줄이다. 좁아지면 먼저 여백을 줄이고, 그래도 모자라면 고르지 않은 항목은 마크만 남긴다. */
 .ag-config-panel .ag-provider-menu {
@@ -46,7 +46,7 @@
   }
 }
 
-/* 잠긴 Hama — 고를 수 없고, 누르면 플랜 안내를 연다. */
+/* 잠긴 Rau — 고를 수 없고, 누르면 요금제 카드의 Rau 칸을 연다. */
 .ag-provider-item[data-locked='true'] {
   color: var(--ag-text-secondary);
 }

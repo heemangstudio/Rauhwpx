@@ -17,6 +17,7 @@ const ADMIN = 'admin-token-for-pg-credits';
 const PROVISIONING = 'pk-test-pg-credits';
 const T0 = Date.parse('2026-10-31T09:00:00.000Z');
 const MINUTE = 60 * 1000;
+const DAY = 24 * 60 * MINUTE;
 
 /** One fake OpenRouter per world, handing out the same key hashes and keys. */
 async function fakeOpenRouter(t) {
@@ -31,75 +32,96 @@ const authenticateFrom = (leases) => async (lease) => {
   return structuredClone(leases[lease]);
 };
 
-test('hosted Rau on Postgres answers and stores exactly what the memory store does, and reloads to the same state', async (t) => {
+// rau.json as the earlier Rau-0.1 left it: per-license OpenRouter keys, never read or changed again.
+const LEGACY_RAU = {
+  allowances: {
+    lic_a: { keyId: 'lic_a', status: 'provisioning', name: 'hama-rau-lic_a', capUsd: 2, period: '2026-10', ledger: {}, startedAt: '2026-10-31T00:00:00.000Z' },
+    lic_b: { keyId: 'lic_b', status: 'active', capUsd: '2', ledger: { '2026-09': 0.5, '2026-10': 'x' }, createdAt: 'yesterday', lastUsedAt: null, openrouterKey: 'sk-or-v1-test' },
+  },
+};
+
+test('hosted Rau on Postgres answers and stores exactly what the memory store does, keeps an old allowances map untouched, and reloads to the same state', async (t) => {
   const db = pgSuite.db(t);
   if (!db) return;
   await pgSuite.reset();
   const clock = { now: T0 };
+  const iso = (ms) => new Date(ms).toISOString();
+  // lease → principal, as accounts.authenticateLease answers with withRau.
   const leases = {
-    basic: { keyId: 'lic_basic', deviceId: 'dev-a', rauPlan: 'basic' },
-    hama: { keyId: 'lic_hama', deviceId: 'dev-b', rauPlan: 'hama' },
-    lapsed: { keyId: 'lic_lapsed', deviceId: 'dev-c', rauPlan: null },
+    plan: { keyId: 'lic_rau', deviceId: 'dev-a', active: true, rau: { source: 'plan', ledgerId: 'lic_rau', anchor: '2026-10-20T05:22:11.000Z' } },
+    trial: { keyId: null, deviceId: 'dev-b', active: false, accountId: 'acct_trial', rau: { source: 'trial', ledgerId: 'acct_trial', startedAt: iso(T0 - DAY), endsAt: iso(T0 + 6 * DAY) } },
+    hama: { keyId: 'lic_hama', deviceId: 'dev-c', active: true, rau: null },
   };
-  async function world(store) {
-    const { upstream, apiBase } = await fakeOpenRouter(t);
-    upstream.setChatReply('{"ops":[]}');
-    upstream.setChatSpend({ credit: 0.0003 });
-    const rau = createRauService({
-      store,
-      authenticate: authenticateFrom(leases),
-      config: { provisioningKey: PROVISIONING, apiBase, monthlyCapsUsd: { basic: 0.001, hama: 0.005 } },
-      adminToken: ADMIN,
-      now: () => clock.now,
-      log: () => {},
-    });
-    return { stores: { rau: store }, rau, upstream };
+  const next = { costUsd: 0.25 };
+  function world(store) {
+    let n = 0;
+    const upstream = {
+      configured: true,
+      routes: [{ id: 'openrouter-haiku', model: 'haiku', via: 'openrouter' }],
+      async complete() {
+        n += 1;
+        return { text: '{"ops":[]}', call: { id: `msg_${n}`, model: 'haiku', route: 'openrouter', inputTokens: 1200, outputTokens: 80, cacheReadTokens: 3e9, cacheWriteTokens: 0, costUsd: next.costUsd } };
+      },
+    };
+    const rau = createRauService({ store, authenticate: authenticateFrom(leases), upstream, config: { allowanceUsd: 8 }, adminToken: ADMIN, now: () => clock.now, log: () => {} });
+    return { stores: { rau: store }, rau };
   }
+  await storedAndReloaded(db, rauMapper, LEGACY_RAU);
   const worlds = {
-    memory: await world(createMemoryStore(emptyRauState())),
-    postgres: await world(createPostgresStore({ db, mapper: rauMapper })),
+    memory: world(createMemoryStore(structuredClone(LEGACY_RAU))),
+    postgres: world(createPostgresStore({ db, mapper: rauMapper })),
   };
-  const step = differential(worlds, { orderOf: (_name, state) => Object.keys(state.allowances) });
-  const both = (fn) => { fn(worlds.memory.upstream); fn(worlds.postgres.upstream); };
+  const orderOf = (_name, state) => [Object.keys(state.allowances ?? {}), Object.keys(state.ledgers ?? {}), Object.keys(state.spend ?? {})];
+  const step = differential(worlds, { orderOf });
   const learn = (lease, prompt = 'Rau-0.1 prompt') => (w) => w.rau.learn(lease, Buffer.from(JSON.stringify({ prompt })));
+  /** One agent call as rau-proxy.mjs bills it: admitted, then recorded against the admitted period. */
+  const agentCall = (lease, call) => async (w) => {
+    const { principal, refusal } = await w.rau.admit(lease);
+    if (refusal) return { refusal };
+    return w.rau.record(principal, { model: 'haiku', route: 'anthropic', inputTokens: 10, outputTokens: 5, cacheReadTokens: 0, cacheWriteTokens: 2, ...call });
+  };
 
-  assert.equal((await step('status before any call', (w) => w.rau.status('basic'))).value.usedUsd, 0);
-  assert.equal((await step('not eligible', learn('lapsed'))).error.code, 'rau_requires_basic');
-  assert.equal((await step('bad prompt', (w) => w.rau.learn('basic', Buffer.from('{"prompt":""}')))).error.code, 'invalid');
-  // The first call provisions the license's key, then each call adds its cost to the month's ledger.
-  assert.equal((await step('first learn', learn('basic'))).value.text, '{"ops":[]}');
+  assert.deepEqual((await step('status before any call', (w) => w.rau.status('plan'))).value.usedUsd, 0);
+  assert.equal((await step('not eligible', (w) => w.rau.status('hama'))).value.eligible, false);
+  assert.equal((await step('learn without Rau', learn('hama'))).error.code, 'rau_plan_required');
+  assert.equal((await step('bad prompt', (w) => w.rau.learn('plan', Buffer.from('{"prompt":""}')))).error.code, 'invalid');
+  assert.equal((await step('first learn', learn('plan'))).value.text, '{"ops":[]}');
   clock.now += MINUTE;
-  await step('second learn', learn('basic'));
-  await step('status', (w) => w.rau.status('basic'));
-  // A provisioning failure OpenRouter certainly did not act on leaves no allowance behind.
-  both((u) => u.failNextCreate(400));
-  assert.equal((await step('create refused', learn('hama'))).error.code, 'upstream_unavailable');
-  await step('hama learn', learn('hama'));
-  // Past the cap the ledger refuses before calling upstream.
-  both((u) => u.setChatSpend({ credit: 0.0006 }));
-  clock.now += MINUTE;
-  await step('expensive learn', learn('basic'));
-  clock.now += 20 * 1000;
-  const { error } = await step('cap reached', learn('basic'));
-  assert.equal(error.code, 'rau_cap_reached');
-  // A new month sets the key's limit again and starts a new ledger month; old months are kept (last 3).
-  for (const month of ['2026-11-02', '2026-12-02', '2027-01-02']) {
-    clock.now = Date.parse(`${month}T00:00:00.000Z`);
-    both((u) => { for (const k of u.keys.values()) { k.usage = 0; k.byokUsage = 0; } });
-    both((u) => u.setChatSpend({ credit: 0.0001 }));
-    await step(`learn in ${month}`, learn('basic'));
+  await step('agent call', agentCall('plan', { id: 'msg_agent_1', costUsd: 0.4 }));
+  assert.equal((await step('agent call repeated', agentCall('plan', { id: 'msg_agent_1', costUsd: 0.4 }))).value.duplicate, true);
+  await step('agent call without id', agentCall('plan', { costUsd: 0.000000123, model: undefined, route: null }));
+  await step('status', (w) => w.rau.status('plan'));
+  await step('usage', (w) => w.rau.usage(leases.plan.rau));
+
+  // The trial spends its $2, then is refused for credits (not for its plan) until its end.
+  next.costUsd = 1.5;
+  await step('trial learn', learn('trial'));
+  next.costUsd = 0.6;
+  await step('trial learn over', learn('trial'));
+  assert.equal((await step('trial exhausted', learn('trial'))).error.code, 'rau_credits_exhausted');
+  assert.notEqual((await step('trial admit refused', agentCall('trial', { id: 'msg_t' }))).value.refusal, undefined);
+  clock.now = T0 + 7 * DAY;
+  assert.equal((await step('trial over', (w) => w.rau.status('trial'))).value.eligible, false);
+
+  // Weeks and months go by: a new billing month, one call a week until old weeks are pruned (26 kept).
+  next.costUsd = 0.01;
+  for (let week = 0; week < 28; week += 1) {
+    clock.now = T0 + 7 * DAY + week * 7 * DAY;
+    await step(`week ${week}`, agentCall('plan', { id: `msg_w${week}`, costUsd: 0.01, model: week % 3 ? 'haiku' : 'deepseek', route: week % 2 ? 'openrouter' : 'anthropic' }));
   }
-  // A license that gains the Hama plan gets the Hama cap on its key.
-  leases.basic.rauPlan = 'hama';
-  await step('cap raised', learn('basic'));
+  await step('learn later', learn('plan'));
   await step('admin list', (w) => w.rau.admin.list(ADMIN));
-  assert.equal(worlds.postgres.upstream.calls.filter((c) => c.method === 'PATCH').length, 4);
+  await step('admin spend', (w) => w.rau.admin.spend(ADMIN, { weeks: '26' }));
+  assert.equal((await step('admin spend invalid', (w) => w.rau.admin.spend(ADMIN, { weeks: 27 }))).error.code, 'weeks_invalid');
   assert.equal((await step('admin list forbidden', (w) => w.rau.admin.list('nope'))).error.code, 'forbidden');
-  assert.deepEqual(worlds.memory.upstream.calls.map((c) => `${c.method} ${c.path}`), worlds.postgres.upstream.calls.map((c) => `${c.method} ${c.path}`));
 
-  const fresh = createPostgresStore({ db, mapper: rauMapper });
-  assert.deepStrictEqual(await fresh.read(), await worlds.postgres.stores.rau.read());
-  assert.deepEqual(Object.keys((await fresh.read()).allowances.lic_basic.ledger), ['2026-11', '2026-12', '2027-01']);
+  const fresh = await createPostgresStore({ db, mapper: rauMapper }).read();
+  assert.deepStrictEqual(fresh, await worlds.postgres.stores.rau.read());
+  assert.deepStrictEqual(fresh.allowances, LEGACY_RAU.allowances, 'the old allowances are left as they were');
+  assert.equal(Object.keys(fresh.spend).length, 26);
+  assert.deepEqual(Object.keys(fresh.ledgers), ['lic_rau', 'acct_trial']);
+  const { rows } = await db.query('SELECT max(cache_read_tokens) AS most FROM rau_spend');
+  assert.ok(rows[0].most > 2 ** 31, 'token counts past int4 stay in their column');
 });
 
 test('gift credits on Postgres answer and store exactly what the memory store does, and reload to the same state', async (t) => {
@@ -178,14 +200,28 @@ test('gift and Rau mappers keep legacy shapes losslessly, also through Postgres,
   assert.throws(() => giftsMapper.toRows({ events: { e: { grants: { lic_a: { keyId: 'lic_b' } } } } }), { code: 'store_misfit' });
   assert.throws(() => giftsMapper.toRows({ events: { e: 'x' } }), { code: 'store_misfit' });
 
-  const rau = {
-    allowances: {
-      lic_a: { keyId: 'lic_a', status: 'provisioning', name: 'hama-rau-lic_a', capUsd: 2, period: '2026-10', ledger: {}, startedAt: '2026-10-31T00:00:00.000Z' },
-      lic_b: { keyId: 'lic_b', status: 'active', capUsd: '2', ledger: { '2026-09': 0.5, '2026-10': 'x' }, createdAt: 'yesterday', lastUsedAt: null },
+  const rau = structuredClone(LEGACY_RAU);
+  // What the current service writes over it, odd records included: a NUL, a time that is not canonical, a count past int4.
+  const current = {
+    ...structuredClone(LEGACY_RAU),
+    ledgers: {
+      lic_rau: { ids: { msg_1: T0 }, period: { start: '2026-10-20T05:22:11.000Z', end: '2026-11-20T05:22:11.000Z', usedUsd: 0.25, calls: 1 }, totalUsd: 0.25, calls: 1, lastCallAt: '2026-10-31T09:00:00.000Z', source: 'plan' },
+      acct_trial: { ids: {}, period: null, totalUsd: 0, calls: 0, lastCallAt: null, source: 'trial\u0000', note: 'kept' },
+    },
+    spend: {
+      '2026-10-26': { haiku: { usd: 0.25, calls: 1, inputTokens: 1200, outputTokens: 80, cacheReadTokens: 3e12, cacheWriteTokens: 0, routes: { openrouter: 0.25 } }, unknown: { usd: '1', calls: 2.5 } },
     },
   };
-  assert.deepStrictEqual(rauMapper.fromRows(JSON.parse(JSON.stringify(rauMapper.toRows(rau)))), rau);
+  const fresh = { ledgers: {}, spend: {} };
+  for (const state of [rau, current, fresh, { allowances: {} }]) {
+    assert.deepStrictEqual(rauMapper.fromRows(JSON.parse(JSON.stringify(rauMapper.toRows(state)))), state);
+  }
+  assert.deepStrictEqual(rauMapper.fromRows(Object.fromEntries(rauMapper.tables.map((table) => [table.name, []]))), fresh, 'a new database reads as the empty state');
   assert.throws(() => rauMapper.toRows({ allowances: { lic_a: { keyId: 'lic_z' } } }), { code: 'store_misfit' });
+  assert.throws(() => rauMapper.toRows({ ledgers: {}, spend: { '2026-10-26': {} } }), { code: 'store_misfit' });
+  assert.throws(() => rauMapper.toRows({ ledgers: {}, spend: { 'last week': { haiku: { usd: 1 } } } }), { code: 'store_misfit' });
+  assert.throws(() => rauMapper.toRows({ ledgers: { lic_a: 'x' }, spend: {} }), { code: 'store_misfit' });
+  assert.throws(() => rauMapper.toRows({ ledgers: {}, spend: {}, allowance: {} }), { code: 'store_misfit' });
 
   const db = pgSuite.db(t);
   if (!db) return;
@@ -197,6 +233,10 @@ test('gift and Rau mappers keep legacy shapes losslessly, also through Postgres,
   const rauBack = await storedAndReloaded(db, rauMapper, rau);
   assert.deepStrictEqual(rauBack, rau);
   assert.deepStrictEqual(Object.keys(rauBack.allowances.lic_b.ledger), ['2026-09', '2026-10']);
+  const currentBack = await storedAndReloaded(db, rauMapper, current);
+  assert.deepStrictEqual(currentBack, current);
+  assert.deepStrictEqual([Object.keys(currentBack.ledgers), Object.keys(currentBack.spend['2026-10-26'])], [['lic_rau', 'acct_trial'], ['haiku', 'unknown']]);
+  assert.deepStrictEqual(await storedAndReloaded(db, rauMapper, fresh), fresh);
 });
 
 const isMap = (value) => Boolean(value) && typeof value === 'object' && !Array.isArray(value);

@@ -742,7 +742,8 @@
   }
 
   // ─────────── 선물 코드 ───────────
-  const PLAN_TEXT = { basic: 'Basic', hama: 'Hama' };
+  // The server names batch plans by their current names; older batches read the same way.
+  const PLAN_TEXT = { hama: 'Hama', rau: 'Rau' };
   const CODE_STATUS = { active: '사용 전', redeemed: '사용함', revoked: '취소됨', expired: '기한 지남' };
   const planText = (plan) => PLAN_TEXT[plan] ?? plan;
   const termText = (batch) => (batch.durationMonths ? `${batch.durationMonths}개월` : `${batch.durationDays}일`);

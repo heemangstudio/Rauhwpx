@@ -7,13 +7,12 @@ import path from 'node:path';
 import test from 'node:test';
 import { promisify } from 'node:util';
 
-import { GIFT_CODE_RE, generateGiftCode, normalizeGiftCode } from '../gift-codes.mjs';
+import { GIFT_CODE_RE, generateGiftCode, giftCodeHash, giftCodePrefix, normalizeGiftCode } from '../gift-codes.mjs';
 import { generateLeaseKeyPair, verifyAccountLease } from '../license-lease.mjs';
-import { subscriptionEnd } from '../licenses.mjs';
+import { emptyLicensesState, subscriptionEnd } from '../licenses.mjs';
 import { createSiteServer } from '../server.mjs';
 import { DEFAULT_WORKOS_CLIENT_ID } from '../workos.mjs';
 import { createFakeWorkOS } from './fixtures/fake-workos.mjs';
-import { BASIC_ENV } from './fixtures/groble-basic.mjs';
 
 const ADMIN = 'admin-token-for-gift-code-tests';
 const WORKOS_KEY = 'sk_test_fake_gift_codes';
@@ -41,7 +40,6 @@ async function setup(t, env = {}) {
     WORKOS_API_KEY: WORKOS_KEY,
     WORKOS_API_BASE: workosBase,
     ACCOUNT_AUTH_REDIRECT_URI: 'https://site.test/v1/account/auth/callback',
-    ...BASIC_ENV,
     ...env,
   }, {
     log: (line) => lines.push(line),
@@ -107,12 +105,12 @@ test('codes: 80 random bits as GIFT-XXXX-XXXX-XXXX-XXXX, normalized like license
 
 test('issue: plan and term are required with no defaults, and every bound is checked before anything is stored', async (t) => {
   const s = await setup(t);
-  const valid = { plan: 'basic', durationMonths: 1, count: 1 };
+  const valid = { plan: 'hama', durationMonths: 1, count: 1 };
   const refused = (error) => ({ status: 400, body: { ok: false, error } });
   assert.equal((await s.post('/v1/admin/gift-codes/issue', valid)).status, 403);
   assert.deepEqual(await s.issue({ durationMonths: 1, count: 1 }), refused('plan_required'));
-  assert.deepEqual(await s.issue({ ...valid, plan: 'signature' }), refused('plan_invalid'));
-  assert.deepEqual(await s.issue({ plan: 'basic', count: 1 }), refused('duration_required'));
+  for (const plan of ['signature', 'free', 'Hama', 42]) assert.deepEqual(await s.issue({ ...valid, plan }), refused('plan_invalid'), String(plan));
+  assert.deepEqual(await s.issue({ plan: 'rau', count: 1 }), refused('duration_required'));
   assert.deepEqual(await s.issue({ ...valid, durationDays: 30 }), refused('duration_conflict'));
   for (const term of [{ durationMonths: 0 }, { durationMonths: 121 }, { durationMonths: 1.5 }, { durationMonths: '2개월' }, { durationDays: 0 }, { durationDays: 3661 }]) {
     assert.deepEqual(await s.issue({ plan: 'hama', count: 1, ...term }), refused('duration_invalid'), JSON.stringify(term));
@@ -125,7 +123,7 @@ test('issue: plan and term are required with no defaults, and every bound is che
 
 test('issue returns the codes once; storage, list and logs only ever hold a hash and a masked prefix', async (t) => {
   const s = await setup(t);
-  const issued = await s.issue({ plan: 'basic', durationMonths: '3', count: '3', note: '베타 감사', redeemBy: '2026-12-31' });
+  const issued = await s.issue({ plan: 'hama', durationMonths: '3', count: '3', note: '베타 감사', redeemBy: '2026-12-31' });
   assert.equal(issued.status, 200, JSON.stringify(issued.body));
   const { batch, codes } = issued.body;
   assert.equal(new Set(codes).size, 3);
@@ -133,13 +131,15 @@ test('issue returns the codes once; storage, list and logs only ever hold a hash
   assert.match(batch.batchId, /^gcb_[0-9a-f]{18}$/);
   assert.deepEqual(
     [batch.plan, batch.durationMonths, batch.durationDays, batch.count, batch.note, batch.redeemBy, batch.counts],
-    ['basic', 3, undefined, 3, '베타 감사', '2026-12-31T14:59:59.999Z', { active: 3, redeemed: 0, revoked: 0, expired: 0 }],
+    ['hama', 3, undefined, 3, '베타 감사', '2026-12-31T14:59:59.999Z', { active: 3, redeemed: 0, revoked: 0, expired: 0 }],
   );
   assert.deepEqual(batch.codes.map((c) => c.maskedCode).sort(), codes.map((c) => `${c.slice(0, 9)}-••••-••••-••••`).sort());
 
   const text = await s.licensesText();
   const state = JSON.parse(text);
   assert.deepEqual(Object.keys(state.giftCodeBatches), [batch.batchId]);
+  // The batch stores the edition its keys get: `basic` is how a Hama key is stored.
+  assert.equal(state.giftCodeBatches[batch.batchId].plan, 'basic');
   const hashes = codes.map((code) => createHash('sha256').update(code).digest('hex'));
   assert.deepEqual(Object.keys(state.giftCodes).sort(), [...hashes].sort());
   assert.deepEqual(state.giftCodes[hashes[0]], { codeHash: hashes[0], batchId: batch.batchId, prefix: codes[0].slice(0, 9), status: 'active', createdAt: new Date(T0).toISOString() });
@@ -159,9 +159,11 @@ test('issue returns the codes once; storage, list and logs only ever hold a hash
   assert.ok(s.lines.some((line) => line.includes(batch.batchId)), 'the issue is logged by batch id');
 });
 
-test('a Basic code: tier and Rau follow the key, it never renews, re-redeem is idempotent and another account gets 409', async (t) => {
+test('a Hama code: the tier follows the key, no hosted Rau, it never renews, re-redeem is idempotent and another account gets 409', async (t) => {
   const s = await setup(t);
-  const { codes: [code] } = (await s.issue({ plan: 'basic', durationMonths: 3, count: 1 })).body;
+  // `basic`, the plan's name before 2026-10-31, still issues Hama codes.
+  const { codes: [code], batch: issuedBatch } = (await s.issue({ plan: 'basic', durationMonths: 3, count: 1 })).body;
+  assert.equal(issuedBatch.plan, 'hama');
   const me = await s.signIn('me@example.com', device(1));
   const other = await s.signIn('other@example.com', device(2));
   assert.equal(me.plan.tier, 'free');
@@ -174,13 +176,13 @@ test('a Basic code: tier and Rau follow the key, it never renews, re-redeem is i
   const { license, plan } = first.body;
   assert.deepEqual(
     [first.body.ok, first.body.alreadyRedeemed, license.edition, license.plan, license.autoRenew, license.expiresAt, license.linkedBy, license.primary, license.status],
-    [true, false, 'basic', null, false, expiresAt, 'gift_code', true, 'active'],
+    [true, false, 'hama', null, false, expiresAt, 'gift_code', true, 'active'],
   );
   assert.deepEqual(
     [plan.tier, plan.edition, plan.plan, plan.autoRenew, plan.expiresAt, plan.manageUrl, plan.paymentFailed, plan.rau.eligible],
-    ['basic', 'basic', null, false, expiresAt, null, false, true],
+    ['hama', 'hama', null, false, expiresAt, null, false, false],
   );
-  assert.deepEqual([leaseOf(first.body).tier, leaseOf(first.body).plan, leaseOf(first.body).licenseExpiresAt], ['basic', null, expiresAt]);
+  assert.deepEqual([leaseOf(first.body).tier, leaseOf(first.body).plan, leaseOf(first.body).licenseExpiresAt], ['hama', null, expiresAt]);
 
   const again = await s.redeem(me.session, code);
   assert.deepEqual([again.status, again.body.alreadyRedeemed, again.body.license.keyId, again.body.licenses.length], [200, true, license.keyId, 1]);
@@ -199,8 +201,8 @@ test('a Basic code: tier and Rau follow the key, it never renews, re-redeem is i
   // The key itself activates like any key: no renewal, no Groble payment page, no key email.
   const activated = await s.post('/v1/license/activate', { key: viewed.key, deviceId: 'mac-gift-0001', platform: 'darwin' });
   assert.deepEqual(
-    [activated.status, activated.body.plan, activated.body.autoRenew, activated.body.paymentFixUrl, activated.body.licenseExpiresAt, activated.body.rau.eligible],
-    [200, null, false, undefined, expiresAt, true],
+    [activated.status, activated.body.plan, activated.body.autoRenew, activated.body.paymentFixUrl, activated.body.licenseExpiresAt, activated.body.edition, activated.body.rau.eligible],
+    [200, null, false, undefined, expiresAt, 'hama', false],
   );
   assert.deepEqual(s.emails, []);
 
@@ -212,28 +214,53 @@ test('a Basic code: tier and Rau follow the key, it never renews, re-redeem is i
   assert.deepEqual(expired, { status: 403, body: { ok: false, error: 'expired', tier: 'paid', licenseExpiresAt: expiresAt } });
 });
 
-test('a Hama code in days: the Hama plan starts with the key and the term ends on the KST day N days later', async (t) => {
-  const s = await setup(t, { HAMA_ENABLED: 'true' });
-  const { codes: [code] } = (await s.issue({ plan: 'hama', durationDays: 30, count: 1 })).body;
+test('a Rau code in days: hosted Rau and its monthly credits start at redemption, and the term ends on the KST day N days later', async (t) => {
+  const s = await setup(t, { RAU_OPENROUTER_KEY: 'sk-or-test-gift-codes' });
+  const { codes: [code], batch } = (await s.issue({ plan: 'rau', durationDays: 45, count: 1 })).body;
+  assert.equal(batch.plan, 'rau');
   const me = await s.signIn('me@example.com');
+  s.clock.now += MINUTE;
   const res = await s.redeem(me.session, code);
   assert.equal(res.status, 200, JSON.stringify(res.body));
   const { license, plan } = res.body;
+  // Months run from the key's creation (the redemption): Oct 31 01:01 UTC, then Nov 30 01:01 UTC.
+  const resetsAt = Date.parse('2026-11-30T01:01:00.000Z');
   assert.deepEqual(
-    [plan.tier, plan.edition, plan.plan, plan.autoRenew, plan.rau.eligible, new Date(license.expiresAt).toISOString()],
-    ['hama', 'hama', null, false, true, '2026-11-30T14:59:59.999Z'],
+    [plan.tier, plan.edition, plan.plan, plan.autoRenew, new Date(license.expiresAt).toISOString(), leaseOf(res.body).tier],
+    ['rau', 'rau', null, false, '2026-12-15T14:59:59.999Z', 'rau'],
   );
-  const hama = JSON.parse(await fs.readFile(path.join(s.directory, 'hama.json'), 'utf8'));
-  assert.deepEqual([hama.plans[license.keyId].status, hama.plans[license.keyId].periodAnchor], ['active', new Date(T0).toISOString()]);
-  assert.equal(res.body.stats.hama.usedUsd, 0);
-  const status = await fetch(`${s.origin}/v1/hama/status`, { headers: s.bearer(res.body.lease) });
-  assert.equal(status.status, 200);
+  assert.deepEqual(plan.rau, { eligible: true, source: 'plan', allowanceUsd: 8, usedUsd: 0, remainingUsd: 8, resetsAt });
+  assert.equal((await s.licensesFile()).licenses[license.keyId].edition, 'rau');
+  const status = await fetch(`${s.origin}/v1/rau/status`, { headers: s.bearer(res.body.lease) });
+  const body = await status.json();
+  assert.deepEqual([status.status, body.eligible, body.source, body.allowanceUsd, body.resetsAt], [200, true, 'plan', 8, new Date(resetsAt).toISOString()]);
+});
+
+test('batches issued before the rename keep their meaning: stored `basic` grants Hama, stored `hama` (the old hosted plan) grants Rau', async (t) => {
+  const s = await setup(t);
+  const codes = { basic: generateGiftCode(), hama: generateGiftCode() };
+  const state = emptyLicensesState();
+  for (const [plan, code] of Object.entries(codes)) {
+    const batchId = `gcb_old_${plan}`;
+    state.giftCodeBatches[batchId] = { batchId, plan, durationMonths: 1, count: 1, createdAt: '2026-10-31T00:00:00.000Z' };
+    state.giftCodes[giftCodeHash(code)] = { codeHash: giftCodeHash(code), batchId, prefix: giftCodePrefix(code), status: 'active', createdAt: '2026-10-31T00:00:00.000Z' };
+  }
+  await fs.writeFile(path.join(s.directory, 'licenses.json'), JSON.stringify(state));
+  const listed = (await s.adminGet('/v1/admin/gift-codes')).body.batches;
+  assert.deepEqual(Object.fromEntries(listed.map((b) => [b.batchId, b.plan])), { gcb_old_basic: 'hama', gcb_old_hama: 'rau' });
+  const hama = await s.signIn('hama@example.com', device(1));
+  const rau = await s.signIn('rau@example.com', device(2));
+  const [a, b] = [await s.redeem(hama.session, codes.basic), await s.redeem(rau.session, codes.hama)];
+  assert.deepEqual([a.body.plan.tier, a.body.license.edition, a.body.plan.rau.eligible], ['hama', 'hama', false]);
+  assert.deepEqual([b.body.plan.tier, b.body.license.edition, b.body.plan.rau.eligible], ['rau', 'rau', true]);
+  const stored = (await s.licensesFile()).licenses;
+  assert.deepEqual([stored[a.body.license.keyId].edition, stored[b.body.license.keyId].edition], ['basic', 'hama']);
 });
 
 test('revoked codes and codes past their redeem-by date answer 410; revoke never touches a redeemed code', async (t) => {
   const s = await setup(t);
-  const a = (await s.issue({ plan: 'basic', durationDays: 7, count: 3 })).body;
-  const b = (await s.issue({ plan: 'basic', durationDays: 7, count: 2, redeemBy: '2026-11-01' })).body;
+  const a = (await s.issue({ plan: 'hama', durationDays: 7, count: 3 })).body;
+  const b = (await s.issue({ plan: 'rau', durationDays: 7, count: 2, redeemBy: '2026-11-01' })).body;
   const me = await s.signIn('me@example.com');
   const used = await s.redeem(me.session, a.codes[0]);
   assert.equal(used.status, 200);
@@ -294,7 +321,7 @@ test('redeem refuses bad formats and unknown codes, and every attempt counts aga
   for (let i = 0; i < 8; i += 1) {
     assert.deepEqual(await s.redeem(me.session, 'GIFT-0000-0000-0000-0000'), { status: 404, body: { ok: false, error: 'invalid_code' } });
   }
-  const { codes: [code] } = (await s.issue({ plan: 'basic', durationDays: 7, count: 1 })).body;
+  const { codes: [code] } = (await s.issue({ plan: 'hama', durationDays: 7, count: 1 })).body;
   assert.deepEqual(await s.redeem(me.session, code), { status: 429, body: { ok: false, error: 'rate_limited' } });
   assert.equal((await s.redeem(other.session, 'GIFT-0000-0000-0000-0000')).body.error, 'invalid_code', 'another account has its own budget');
   s.clock.now += 61 * MINUTE;
@@ -309,7 +336,7 @@ test('without WORKOS_API_KEY redeem answers accounts_not_configured', async (t) 
 
 test('a gift key never blocks deleting the account', async (t) => {
   const s = await setup(t);
-  const { codes: [code] } = (await s.issue({ plan: 'basic', durationMonths: 12, count: 1 })).body;
+  const { codes: [code] } = (await s.issue({ plan: 'rau', durationMonths: 12, count: 1 })).body;
   const me = await s.signIn('leaving@example.com');
   const { license } = (await s.redeem(me.session, code)).body;
   assert.deepEqual(await s.post('/v1/account/delete', { confirm: 'leaving@example.com' }, s.bearer(me.session)), { status: 200, body: { ok: true } });
@@ -320,15 +347,15 @@ test('a gift key never blocks deleting the account', async (t) => {
 test('CLI: issue prints the codes once or writes them only to --out; list and revoke show masked codes', async (t) => {
   const s = await setup(t);
   await assert.rejects(s.cli('gift-codes', 'issue', '--count', '2', '--months', '1'), (error) => error.code === 2 && /usage/.test(error.stderr));
-  await assert.rejects(s.cli('gift-codes', 'issue', '--plan', 'basic', '--count', '2', '--months', '1', '--days', '7'), (error) => error.code === 2);
+  await assert.rejects(s.cli('gift-codes', 'issue', '--plan', 'hama', '--count', '2', '--months', '1', '--days', '7'), (error) => error.code === 2);
 
-  const printed = await s.cli('gift-codes', 'issue', '--plan', 'basic', '--months', '1', '--count', '2', '--note', 'printed');
+  const printed = await s.cli('gift-codes', 'issue', '--plan', 'hama', '--months', '1', '--count', '2', '--note', 'printed');
   const shown = printed.stdout.match(/GIFT(?:-[0-9A-Z]{4}){4}/g);
   assert.equal(new Set(shown).size, 2);
   assert.equal(printed.stdout.split(shown[0]).length, 2, 'each code once');
 
   const out = path.join(s.directory, 'codes.csv');
-  const written = await s.cli('gift-codes', 'issue', '--plan', 'hama', '--days', '14', '--count', '3', '--redeem-by', '2026-12-31', '--out', out);
+  const written = await s.cli('gift-codes', 'issue', '--plan', 'rau', '--days', '14', '--count', '3', '--redeem-by', '2026-12-31', '--out', out);
   assert.doesNotMatch(written.stdout, /GIFT(?:-[0-9A-Z]{4}){4}/);
   assert.match(written.stdout, /3 codes written to /);
   assert.equal((await fs.stat(out)).mode & 0o777, 0o600);
@@ -337,14 +364,14 @@ test('CLI: issue prints the codes once or writes them only to --out; list and re
   assert.equal(rows.length, 3);
   const [code, batchId, plan, months, days, redeemBy] = rows[0].split(',');
   assert.match(code, GIFT_CODE_RE);
-  assert.deepEqual([batchId.startsWith('gcb_'), plan, months, days, redeemBy], [true, 'hama', '', '14', '2026-12-31T14:59:59.999Z']);
+  assert.deepEqual([batchId.startsWith('gcb_'), plan, months, days, redeemBy], [true, 'rau', '', '14', '2026-12-31T14:59:59.999Z']);
 
-  await assert.rejects(s.cli('gift-codes', 'issue', '--plan', 'basic', '--months', '1', '--count', '1', '--out', out), (error) => error.code === 2 && /already exists/.test(error.stderr));
+  await assert.rejects(s.cli('gift-codes', 'issue', '--plan', 'hama', '--months', '1', '--count', '1', '--out', out), (error) => error.code === 2 && /already exists/.test(error.stderr));
   assert.equal((await s.adminGet('/v1/admin/gift-codes')).body.count, 2, 'a refused --out issues nothing');
 
   const listed = await s.cli('gift-codes', 'list');
   assert.doesNotMatch(listed.stdout, /GIFT(?:-[0-9A-Z]{4}){4}/);
-  assert.match(listed.stdout, new RegExp(`\\n${batchId} hama · 14일 · 미사용 3 · 사용 0 · 취소 0 · 기한 지남 0\\n`));
+  assert.match(listed.stdout, new RegExp(`\\n${batchId} rau · 14일 · 미사용 3 · 사용 0 · 취소 0 · 기한 지남 0\\n`));
   const revoked = await s.cli('gift-codes', 'revoke', '--batch-id', batchId);
   assert.match(revoked.stdout, /^200 [\s\S]*"changed": 3/);
   assert.doesNotMatch(revoked.stdout, /GIFT(?:-[0-9A-Z]{4}){4}/);

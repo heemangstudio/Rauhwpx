@@ -9,22 +9,30 @@
     // Signature is a separate button. PLAN does not select it.
     PLAN: 'annual',
     // Groble product checkout links. Each buy button appends ?ref=<random value> to its own link.
-    // An empty link keeps that buy button disabled as '곧 출시'.
+    // An empty link, or a sku set to false in ON_SALE, keeps that buy button disabled as '곧 출시'.
     CHECKOUT_URLS: {
       onetime: 'https://groble.im/payment/uRshdR',
       annual: 'https://groble.im/payment/GLJFC9',
       signature: 'https://groble.im/payment/8Xy27f',
-      // PLACEHOLDER: the Groble Basic products don't exist yet. Paste each checkout link here to open sales.
-      basicMonthly: '',
-      basicYearly: ''
+      hamaMonthly: 'https://groble.im/payment/SfYBy5',
+      hamaYearly: 'https://groble.im/payment/vdw3HN',
+      rauMonthly: 'https://groble.im/payment/R3n8zG',
+      rauYearly: 'https://groble.im/payment/atqjpJ'
+    },
+    // Plan products are off sale until launch. Flip a sku to true to open its buy button.
+    ON_SALE: {
+      hamaMonthly: false,
+      hamaYearly: false,
+      rauMonthly: false,
+      rauYearly: false
     },
     // Prices in won, VAT included. pricing.html fills every [data-price] from here, and
     // purchase.test.cjs fails when the page's static fallback text drifts from these numbers.
-    // null means the price isn't set yet.
     PRICES: {
-      basicMonthly: 3900,
-      basicYearly: 39000,
-      hama: null
+      hamaMonthly: 3900,
+      hamaYearly: 39000,
+      rauMonthly: 14900,
+      rauYearly: 149000
     },
     // License server. success.html queries GET {API_BASE}/v1/license/by-ref?ref= .
     API_BASE: 'https://rau-credits-production.up.railway.app',
@@ -134,7 +142,7 @@
   }
 
   // Renewal notice for subscription keys. Takes the expiry (epoch ms) the server sets to the end of the day in Korea time,
-  // and the key's plan from by-ref ('monthly' for Basic monthly; anything else renews yearly). Keys without a term (null) give an empty string.
+  // and the key's plan from by-ref ('monthly' for monthly plans; anything else renews yearly). Keys without a term (null) give an empty string.
   function renewalText(licenseExpiresAt, plan) {
     if (typeof licenseExpiresAt !== 'number' || !isFinite(licenseExpiresAt)) return '';
     var date = new Intl.DateTimeFormat('ko-KR', { dateStyle: 'long', timeZone: 'Asia/Seoul' }).format(new Date(licenseExpiresAt));
@@ -209,18 +217,26 @@
     return '₩' + String(amount).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
   }
 
-  // Text for each [data-price] key. Unknown keys give null and leave the element alone.
+  // Text for each [data-price] key: <plan>Monthly, <plan>Yearly, <plan>YearlyPerMonth, <plan>YearlySaving.
+  // Unknown keys give null and leave the element alone.
   function priceText(key, prices) {
     var p = prices || CONFIG.PRICES;
-    var monthly = p.basicMonthly, yearly = p.basicYearly;
-    switch (key) {
-      case 'basicMonthly': return formatWon(monthly);
-      case 'basicYearly': return formatWon(yearly);
-      case 'basicYearlyPerMonth': return formatWon(Math.round(yearly / 12));
-      case 'basicYearlySaving': return formatWon(monthly * 12 - yearly);
-      case 'hama': return typeof p.hama === 'number' ? formatWon(p.hama) : '미정';
-      default: return null;
+    var m = /^([a-z]+)(Monthly|Yearly|YearlyPerMonth|YearlySaving)$/.exec(key || '');
+    if (!m) return null;
+    var monthly = p[m[1] + 'Monthly'], yearly = p[m[1] + 'Yearly'];
+    if (typeof monthly !== 'number' || typeof yearly !== 'number') return null;
+    switch (m[2]) {
+      case 'Monthly': return formatWon(monthly);
+      case 'Yearly': return formatWon(yearly);
+      case 'YearlyPerMonth': return formatWon(Math.round(yearly / 12));
+      default: return formatWon(monthly * 12 - yearly);
     }
+  }
+
+  // Checkout link for a sku, or '' while it has no link or is off sale.
+  function saleUrl(sku) {
+    if (CONFIG.ON_SALE[sku] === false) return '';
+    return CONFIG.CHECKOUT_URLS[sku] || '';
   }
 
   function renderPrices(doc, prices) {
@@ -233,7 +249,7 @@
   }
 
   // Each [data-buy] uses the consent and note inside its own article, then opens that sku's checkout.
-  // A sku without a checkout link stays a disabled '곧 출시' button, and its consent box stays hidden.
+  // A sku without a checkout link, or off sale, stays a disabled '곧 출시' button, and its consent box stays hidden.
   function bindBuyButtons(doc) {
     var scope = doc && typeof doc.querySelectorAll === 'function' ? doc : (root && root.document);
     if (!scope || typeof scope.querySelectorAll !== 'function') return;
@@ -244,7 +260,8 @@
       var note = article && article.querySelector('[data-buy-note]');
       if (!consent) return;
       var sku = buy.getAttribute('data-buy-sku');
-      if (!CONFIG.CHECKOUT_URLS[sku]) {
+      var url = saleUrl(sku);
+      if (!url) {
         buy.setAttribute('aria-disabled', 'true');
         buy.textContent = '곧 출시';
         buy.addEventListener('click', function (event) {
@@ -274,7 +291,7 @@
         var storage = null;
         try { storage = view && view.localStorage; } catch (_) {}
         if (storage) saveRef(storage, ref);
-        if (view && view.location) view.location.href = checkoutUrl(ref, CONFIG.CHECKOUT_URLS[sku]);
+        if (view && view.location) view.location.href = checkoutUrl(ref, url);
       });
     });
   }
@@ -293,6 +310,7 @@
     renewalText: renewalText,
     formatWon: formatWon,
     priceText: priceText,
+    saleUrl: saleUrl,
     renderPrices: renderPrices,
     trackDownload: trackDownload,
     trackDownloadOnce: trackDownloadOnce,

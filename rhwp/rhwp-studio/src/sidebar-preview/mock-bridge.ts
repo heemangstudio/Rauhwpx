@@ -1,6 +1,6 @@
 import type { ChatStartContextProvider, SidebarBridge } from '../agent/bridge.ts';
 import type * as T from '../agent/types.ts';
-import { inactiveHamaStatus } from '../agent/hama-status.ts';
+import { inactiveRauAgentStatus } from '../agent/rau-agent-status.ts';
 import { deriveAgentEditingLease } from '../agent/editing-lease.ts';
 import { isChatPermissionCapability, readChatPermissionRequest } from '../agent/chat-permissions.ts';
 import { linkError } from '../agent/document-link.ts';
@@ -8,7 +8,7 @@ import {
   defaultModelForAgent,
   setModelCatalog,
   setPiModels,
-  setHamaModels,
+  setRauModels,
 } from '../agent/models.ts';
 import type { CatalogAgent, ModelCatalogEntry } from '../agent/models.ts';
 import { loadAgentPrefs } from '../agent/agent-prefs.ts';
@@ -53,8 +53,7 @@ export const failureKinds = [
   'pi-setup',
   'usage',
   'usage-soon',
-  'hama-cap',
-  'hama-month',
+  'rau-credits',
   'credits',
   'provider',
   'exited',
@@ -89,17 +88,14 @@ function previewFailure(kind: FailureKind, agent: T.AgentName, now: number): T.P
       return failure('usage_limit', "You've hit your limit · resets 3pm (UTC)", `${agent}:rate_limit`, false);
     case 'usage-soon':
       return failure('usage_limit', "You've hit your limit · resets soon", `${agent}:rate_limit`, false, now + 3_000);
-    case 'hama-cap':
-      // 허브가 [hama-cap:…] 꼬리표로 분류한 Hama 5시간 한도. 리셋 시각은 3시간 12분 뒤.
+    case 'rau-credits': {
+      // 허브가 [rau-credits:…] 꼬리표를 붙인 호스팅 Rau 크레딧 소진. 다시 채워지는 날은 12일 뒤.
+      const resetsAt = new Date(now + 12 * 24 * 3_600_000).toISOString();
       return {
-        ...failure('usage_limit', 'Hama 5시간 사용 한도에 도달했어요.\n429 Hama quota exceeded (cap_5h)', 'hama_cap_5h', false, now + 3 * 3_600_000 + 12 * 60_000),
-        agent: 'hama',
+        ...failure('usage_limit', `Rau 크레딧을 모두 썼어요.\n429 Rau quota exceeded [rau-credits:${resetsAt}]`, 'rau_credits_exhausted', false, Date.parse(resetsAt)),
+        agent: 'rau',
       };
-    case 'hama-month':
-      return {
-        ...failure('usage_limit', 'Hama 이번 달 사용량을 모두 썼어요.\n429 Hama quota exceeded (cap_month)', 'hama_cap_month', false, now + 9 * 24 * 3_600_000),
-        agent: 'hama',
-      };
+    }
     case 'credits':
       return failure('usage_limit', 'OpenRouter 크레딧이 부족합니다.\n402 This request requires more credits, or fewer max_tokens. To increase, visit https://openrouter.ai/settings/credits?[redacted]', 'openrouter_credits', false);
     case 'provider':
@@ -273,8 +269,8 @@ export interface MockBridgeOptions {
   liveChat?: MockLiveChat;
   /** Pi 가 선물 크레딧을 쓰는 중인지(mock-gift). 허브처럼 내 키보다 먼저 쓴다. */
   piGift?: () => boolean;
-  /** Hama 플랜 상태(mock-hama). 없으면 플랜이 없다. */
-  hama?: T.HamaStatus;
+  /** 호스팅 Rau 상태(mock-rau-agent). 없으면 쓸 수 없다. */
+  rauAgent?: T.RauAgentStatus;
 }
 
 /** Implements the actual UI contract: new bridge methods produce a type error here. */
@@ -529,19 +525,18 @@ export function createMockBridge(
     setPiModels(status.models);
     emit({ type: 'pi-status', status });
   };
-  let hamaStatus: T.HamaStatus = options.hama ?? inactiveHamaStatus();
-  setHamaModels(hamaStatus.models);
-  // 허브처럼 서버가 살아 있는 플랜이라고 답했을 때만 Hama 가 연결이다.
-  data.setups.hama = {
-    ...data.setups.hama,
-    connected: hamaStatus.availability === 'active',
-    authenticated: hamaStatus.availability === 'active',
-    setupComplete: hamaStatus.availability === 'active',
-    authMethod: null,
+  let rauAgentStatus: T.RauAgentStatus = options.rauAgent ?? inactiveRauAgentStatus();
+  setRauModels(rauAgentStatus.models);
+  // 허브처럼 서버가 쓸 수 있다고(Rau 플랜·체험) 답했을 때만 Rau 가 연결이다.
+  const syncRauSetup = () => {
+    const active = rauAgentStatus.availability === 'active';
+    data.setups.rau = { ...data.setups.rau, connected: active, authenticated: active, setupComplete: active, authMethod: null };
   };
-  const emitHama = () => {
-    setHamaModels(hamaStatus.models);
-    emit({ type: 'hama-status', status: hamaStatus });
+  syncRauSetup();
+  const emitRauAgent = () => {
+    syncRauSetup();
+    setRauModels(rauAgentStatus.models);
+    emit({ type: 'rau-agent-status', status: rauAgentStatus });
   };
   let tokenUsageScanned = false;
   const later = (fn: () => void, delay = 20) => {
@@ -1213,11 +1208,11 @@ export function createMockBridge(
       return data.usage;
     },
     requestPiStatus: async () => syncPi(),
-    requestHamaStatus: async () => {
-      emitHama();
-      return hamaStatus;
+    requestRauAgentStatus: async () => {
+      emitRauAgent();
+      return rauAgentStatus;
     },
-    hamaStatus: () => hamaStatus,
+    rauAgentStatus: () => rauAgentStatus,
     installPi: async () => {
       await bridge.installAgent('pi');
       emitPi();
@@ -1608,6 +1603,11 @@ export function createMockBridge(
           }
           if (reply === 'error') {
             failTurn(failureKind, `turn-${turnGeneration}`);
+            return;
+          }
+          if (agent === 'rau' && rauAgentStatus.exhausted) {
+            // 허브처럼 크레딧을 다 쓴 Rau 턴은 크레딧 실패로 끝난다.
+            failTurn('rau-credits', `turn-${turnGeneration}`);
             return;
           }
           if (reply === 'plan') {
@@ -2431,10 +2431,10 @@ export function createMockBridge(
     deliverWelcome,
     /** 선물 상태가 바뀌면 허브처럼 Pi 상태를 다시 보낸다. */
     syncPiStatus: emitPi,
-    /** Hama 플랜 상태를 바꾸고 허브처럼 hama-status 를 보낸다. */
-    setHamaStatus: (status: T.HamaStatus) => {
-      hamaStatus = status;
-      emitHama();
+    /** 호스팅 Rau 상태를 바꾸고 허브처럼 rau-agent-status 를 보낸다. */
+    setRauAgentStatus: (status: T.RauAgentStatus) => {
+      rauAgentStatus = status;
+      emitRauAgent();
     },
     snapshot: () => ({
       chatStarts: chatStarts.map((start) => ({ ...start, history: [...start.history] })),

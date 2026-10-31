@@ -18,7 +18,7 @@ import {
 import { createSiteServer } from '../server.mjs';
 import { DEFAULT_WORKOS_CLIENT_ID } from '../workos.mjs';
 import { createFakeWorkOS } from './fixtures/fake-workos.mjs';
-import { BASIC_ENV, basicPaid, signedGroblePost } from './fixtures/groble-basic.mjs';
+import { planPaid, signedGroblePost } from './fixtures/groble-plans.mjs';
 
 const ADMIN = 'admin-token-for-account-tests';
 const SECRET = 'whsec_test_accounts';
@@ -28,7 +28,11 @@ const T0 = Date.parse('2026-10-31T10:00:00+09:00');
 const MINUTE = 60 * 1000;
 const DAY = 24 * 60 * MINUTE;
 const REDIRECT = 'https://site.test/v1/account/auth/callback';
-const HAMA_MONTHLY = 'R3n8zG';
+// Hosted Rau needs an upstream key to count as configured; nothing here calls it (the base is a closed port).
+const RAU_KEY = ['test', 'openrouter', 'placeholder'].join('-');
+// A key bought at planPaid's default time bills monthly from then.
+const RAU_RESETS_AT = Date.parse('2026-11-20T05:22:11.000Z');
+const NO_RAU = { eligible: false, source: null, allowanceUsd: null, usedUsd: null, remainingUsd: null, resetsAt: null };
 
 function pkce() {
   const verifier = randomBytes(32).toString('base64url');
@@ -54,7 +58,8 @@ async function setup(t, env = {}, { clock = { now: T0 } } = {}) {
     WORKOS_API_KEY: WORKOS_KEY,
     WORKOS_API_BASE: workosBase,
     ACCOUNT_AUTH_REDIRECT_URI: REDIRECT,
-    ...BASIC_ENV,
+    RAU_OPENROUTER_KEY: RAU_KEY,
+    OPENROUTER_API_BASE: 'http://127.0.0.1:9/api/v1',
     ...env,
   }, {
     log: (line) => lines.push(line),
@@ -117,7 +122,7 @@ async function setup(t, env = {}, { clock = { now: T0 } } = {}) {
     stored: async () => JSON.parse(await fs.readFile(path.join(directory, 'accounts.json'), 'utf8')),
     licensesFile: async () => JSON.parse(await fs.readFile(path.join(directory, 'licenses.json'), 'utf8')),
     rauStatus: (lease) => fetch(`${origin}/v1/rau/status`, { headers: bearer(lease) }).then(json),
-    hamaStatus: (lease) => fetch(`${origin}/v1/hama/status`, { headers: bearer(lease) }).then(json),
+    startTrial: (session) => post('/v1/account/rau-trial', {}, bearer(session)).then(json),
     giftStatus: (lease) => fetch(`${origin}/v1/gift/status`, { headers: bearer(lease) }).then(json),
   };
 }
@@ -293,11 +298,12 @@ test('the token answer is the whole account payload with a v2 lease', async (t) 
     ok: true,
     session: body.session,
     account: { id: body.account.id, email: 'new@example.com', name: 'new', avatar: null, provider: 'google', createdAt: new Date(T0).toISOString() },
-    plan: { tier: 'free', keyId: null, edition: null, plan: null, expiresAt: null, autoRenew: null, paymentFailed: false, paymentGraceEndsAt: null, manageUrl: null, rau: { eligible: false } },
+    plan: { tier: 'free', keyId: null, edition: null, plan: null, expiresAt: null, autoRenew: null, paymentFailed: false, paymentGraceEndsAt: null, manageUrl: null, rau: NO_RAU },
+    trial: { state: 'available', startedAt: null, endsAt: null, days: 7, allowanceUsd: 2 },
     licenses: [],
     devices: [{ id: 'device-0001', name: '맥북 에어', platform: 'darwin', appVersion: '2.1.0', addedAt: T0, lastSeenAt: T0, current: true }],
     deviceLimit: 5,
-    stats: { agentSessions: 0, documentsEdited: 0, since: T0, hama: null },
+    stats: { agentSessions: 0, documentsEdited: 0, since: T0 },
     lease: body.lease,
     leaseExpiresAt: T0 + 7 * DAY,
   });
@@ -386,21 +392,21 @@ test('licenses link by verified email only, and a webhook purchase attaches to t
   assert.deepEqual([unverified.licenses, unverified.plan.tier], [[], 'free']);
   assert.deepEqual((await s.stored()).byEmail, {});
   // A purchase with an unverified account's email is not attached either.
-  await s.buy(basicPaid({ merchantUid: 'pro_u', ref: 'ref-u', email: 'owner@example.com' }));
+  await s.buy(planPaid({ merchantUid: 'pro_u', ref: 'ref-u', email: 'owner@example.com' }));
   assert.equal(Object.values((await s.licensesFile()).licenses).filter((l) => l.accountId).length, 0);
 
-  // The same WorkOS user verifies the email: the next sign-in links the manual key and the Pro key.
+  // The same WorkOS user verifies the email: the next sign-in links the manual key and the Hama key.
   const verified = await s.signIn({ id: 'user_u', email: 'owner@example.com', verified: true }, device(1));
   assert.equal(verified.account.id, unverified.account.id);
-  assert.deepEqual(verified.licenses.map((l) => [l.linkedBy, l.edition, l.primary]), [['email', 'basic', true], ['email', null, false]]);
-  assert.deepEqual([verified.plan.tier, verified.plan.edition, verified.plan.plan, verified.plan.rau, verified.plan.manageUrl], ['basic', 'basic', 'monthly', { eligible: true }, 'https://groble.im/manage/purchase']);
+  assert.deepEqual(verified.licenses.map((l) => [l.linkedBy, l.edition, l.primary]), [['email', 'hama', true], ['email', null, false]]);
+  assert.deepEqual([verified.plan.tier, verified.plan.edition, verified.plan.plan, verified.plan.rau, verified.plan.manageUrl], ['hama', 'hama', 'monthly', NO_RAU, 'https://groble.im/manage/purchase']);
   assert.match(verified.licenses[1].maskedKey, /^HAMA-[0-9A-Z]{5}-•••••-•••••-•••••-[0-9A-Z]{5}$/);
   assert.equal(verified.licenses[1].keyId, manual.license.keyId);
   const file = await s.licensesFile();
   assert.equal(file.licenses[revoked.license.keyId].accountId, undefined, 'revoked keys stay out');
 
   // A later purchase with the verified email attaches at once.
-  await s.buy(basicPaid({ merchantUid: 'pro_2', ref: 'ref-2', email: 'OWNER@example.com' }));
+  await s.buy(planPaid({ merchantUid: 'pro_2', ref: 'ref-2', email: 'OWNER@example.com' }));
   const after = await s.refresh(verified.session);
   assert.deepEqual(after.body.licenses.map((l) => l.linkedBy).sort(), ['email', 'email', 'purchase']);
   const purchased = Object.values((await s.licensesFile()).licenses).find((l) => l.merchantUid === 'pro_2');
@@ -412,52 +418,59 @@ test('licenses link by verified email only, and a webhook purchase attaches to t
   assert.equal((await s.stored()).byWorkosUser.user_other, verified.account.id);
 });
 
-test('a v2 lease reaches gift, Hama and Rau with the license each purpose needs, and stops after its device is removed', async (t) => {
-  const s = await setup(t, { HAMA_ENABLED: 'true' });
+test('a v2 lease reaches the gift and Rau with the license each purpose needs, and stops after its device is removed', async (t) => {
+  const s = await setup(t);
   await s.admin('/v1/admin/licenses/issue-beta', { name: '테스터', email: 'mixed@example.com' });
-  await s.buy(basicPaid({ merchantUid: 'pro_mix', ref: 'ref-mix', email: 'mixed@example.com' }));
+  await s.buy(planPaid({ merchantUid: 'hama_mix', ref: 'ref-mix', email: 'mixed@example.com' }));
   const mixed = await s.signIn({ email: 'mixed@example.com' }, device(1));
-  assert.equal(mixed.plan.tier, 'basic', 'Basic outranks the beta key');
+  assert.deepEqual([mixed.plan.tier, mixed.plan.edition, mixed.plan.rau], ['hama', 'hama', NO_RAU], 'the Hama subscription is primary over the beta key');
   const gift = await s.giftStatus(mixed.lease);
   assert.deepEqual([gift.status, gift.body.eligible], [200, true], 'the gift picks the beta key');
-  const rau = await s.rauStatus(mixed.lease);
-  assert.deepEqual([rau.body.eligible, rau.body.capUsd], [true, 2]);
-  assert.deepEqual(await s.hamaStatus(mixed.lease), { status: 403, body: { ok: false, error: 'hama_not_enrolled' } });
+  const notRau = (await s.rauStatus(mixed.lease)).body;
+  assert.deepEqual([notRau.eligible, notRau.reason, notRau.usedUsd], [false, 'rau_plan_required', null]);
 
-  const hamaUser = await s.signIn({ email: 'hama@example.com' }, device(2));
-  await s.buy(basicPaid({ merchantUid: 'hama_1', ref: 'ref-hama', email: 'hama@example.com', contentId: HAMA_MONTHLY, price: 12900, cycle: 1 }));
-  const refreshed = (await s.refresh(hamaUser.session)).body;
-  assert.deepEqual([refreshed.plan.tier, refreshed.plan.edition], ['hama', 'hama']);
-  const hama = await s.hamaStatus(refreshed.lease);
-  assert.deepEqual([hama.status, hama.body.plan.status], [200, 'active']);
-  assert.deepEqual([(await s.rauStatus(refreshed.lease)).body.capUsd, (await s.giftStatus(refreshed.lease)).body.eligible], [5, false]);
+  const rauUser = await s.signIn({ email: 'rau@example.com' }, device(2));
+  await s.buy(planPaid({ sku: 'rauMonthly', merchantUid: 'rau_1', ref: 'ref-rau', email: 'rau@example.com' }));
+  const refreshed = (await s.refresh(rauUser.session)).body;
+  assert.deepEqual([refreshed.plan.tier, refreshed.plan.edition, refreshed.plan.rau], ['rau', 'rau', { eligible: true, source: 'plan', allowanceUsd: 8, usedUsd: 0, remainingUsd: 8, resetsAt: RAU_RESETS_AT }]);
+  const rau = (await s.rauStatus(refreshed.lease)).body;
+  assert.deepEqual([rau.eligible, rau.source, rau.allowanceUsd], [true, 'plan', 8]);
+  assert.equal((await s.giftStatus(refreshed.lease)).body.eligible, false);
 
-  // A free account: Rau hears rau_requires_pro, the others refuse the lease.
+  // A free account: Rau answers rau_plan_required, the gift refuses the lease.
   const free = await s.signIn({ email: 'free@example.com' }, device(3));
-  assert.deepEqual([(await s.rauStatus(free.lease)).body.eligible, (await s.rauStatus(free.lease)).body.reason], [false, 'rau_requires_pro']);
+  assert.deepEqual([(await s.rauStatus(free.lease)).body.eligible, (await s.rauStatus(free.lease)).body.reason], [false, 'rau_plan_required']);
   assert.equal((await s.giftStatus(free.lease)).status, 401);
-  assert.equal((await s.hamaStatus(free.lease)).status, 401);
 
   await s.post('/v1/account/devices/remove', { deviceId: 'device-0001' }, s.bearer(mixed.session));
-  for (const check of [s.giftStatus, s.rauStatus, s.hamaStatus]) assert.equal((await check(mixed.lease)).status, 401);
+  for (const check of [s.giftStatus, s.rauStatus]) assert.equal((await check(mixed.lease)).status, 401);
   s.clock.now += 8 * DAY;
   assert.equal((await s.rauStatus(refreshed.lease)).status, 401, 'an expired v2 lease');
 });
 
-test('v1 license leases keep working unchanged', async (t) => {
+test('v1 license leases keep working unchanged, and never carry a trial', async (t) => {
   const s = await setup(t);
-  await s.buy(basicPaid({ merchantUid: 'pro_v1', ref: 'ref-v1', email: 'v1@example.com' }));
-  const { key } = await (await fetch(`${s.origin}/v1/license/by-ref?ref=ref-v1`)).json();
-  const activated = await (await s.post('/v1/license/activate', { key, deviceId: 'mac-v1-0001', platform: 'darwin' })).json();
-  assert.equal(JSON.parse(Buffer.from(activated.lease.split('.')[0], 'base64url')).v, 1);
-  const rau = await s.rauStatus(activated.lease);
-  assert.deepEqual([rau.status, rau.body.eligible, rau.body.capUsd], [200, true, 2]);
-  assert.equal((await s.giftStatus(activated.lease)).body.eligible, false);
+  for (const [sku, eligible] of [['hamaMonthly', false], ['rauMonthly', true]]) {
+    await s.buy(planPaid({ sku, merchantUid: `v1_${sku}`, ref: `ref-v1-${sku}`, email: 'v1@example.com' }));
+    const { key } = await (await fetch(`${s.origin}/v1/license/by-ref?ref=ref-v1-${sku}`)).json();
+    const activated = await (await s.post('/v1/license/activate', { key, deviceId: `mac-v1-${sku}`, platform: 'darwin' })).json();
+    assert.equal(JSON.parse(Buffer.from(activated.lease.split('.')[0], 'base64url')).v, 1);
+    const rau = await s.rauStatus(activated.lease);
+    assert.deepEqual([rau.status, rau.body.eligible, rau.body.allowanceUsd], [200, eligible, eligible ? 8 : null], sku);
+    assert.equal((await s.giftStatus(activated.lease)).body.eligible, false);
+  }
+  // The account's trial belongs to its account lease only.
+  const me = await s.signIn({ email: 'v1@example.com' }, device(1));
+  await s.startTrial(me.session);
+  await s.buy(planPaid({ merchantUid: 'v1_more', ref: 'ref-v1-more', email: 'other-v1@example.com' }));
+  const { key } = await (await fetch(`${s.origin}/v1/license/by-ref?ref=ref-v1-more`)).json();
+  const lease = (await (await s.post('/v1/license/activate', { key, deviceId: 'mac-v1-more', platform: 'darwin' })).json()).lease;
+  assert.equal((await s.rauStatus(lease)).body.eligible, false);
 });
 
 test('admin lookup by email, id and key shows the account without sessions or grants', async (t) => {
   const s = await setup(t);
-  await s.buy(basicPaid({ merchantUid: 'pro_adm', ref: 'ref-adm', email: 'admin-view@example.com' }));
+  await s.buy(planPaid({ merchantUid: 'pro_adm', ref: 'ref-adm', email: 'admin-view@example.com' }));
   const body = await s.signIn({ id: 'user_adm', email: 'admin-view@example.com' }, device(1));
   const byEmail = await s.adminGet('/v1/admin/accounts?email=ADMIN-VIEW@example.com');
   const keyId = body.licenses[0].keyId;
@@ -473,9 +486,9 @@ test('admin lookup by email, id and key shows the account without sessions or gr
 
 // ------------------------------------------------------------ licenses
 
-/** A Pro (or Hama) purchase with its own email; resolves to the raw key and its key id. */
-async function bought(s, { n, email = `buyer${n}@groble.example`, contentId, price, cycle } = {}) {
-  const event = basicPaid({ merchantUid: `order_${n}`, ref: `ref-${n}`, email, ...(contentId ? { contentId, price, cycle } : {}) });
+/** A Hama (or Rau) purchase with its own email; resolves to the raw key and its key id. */
+async function bought(s, { n, email = `buyer${n}@groble.example`, sku = 'hamaMonthly' } = {}) {
+  const event = planPaid({ sku, merchantUid: `order_${n}`, ref: `ref-${n}`, email });
   await s.buy(event);
   const [license] = (await s.adminGet(`/v1/admin/licenses?ref=ref-${n}`)).licenses;
   return { key: license.key, keyId: license.keyId, merchantUid: `order_${n}`, email };
@@ -490,7 +503,7 @@ test('redeem links a typed key once, and refuses bad formats, unknown, revoked a
 
   const first = await redeem(me.session, ` ${pro.key.toLowerCase().replace(/-/g, ' ')} `);
   assert.equal(first.status, 200, JSON.stringify(first.body));
-  assert.deepEqual([first.body.alreadyLinked, first.body.license.keyId, first.body.license.linkedBy, first.body.license.primary, first.body.plan.tier], [false, pro.keyId, 'redeem', true, 'basic']);
+  assert.deepEqual([first.body.alreadyLinked, first.body.license.keyId, first.body.license.linkedBy, first.body.license.primary, first.body.plan.tier], [false, pro.keyId, 'redeem', true, 'hama']);
   assert.equal(first.body.license.maskedKey, `${pro.key.slice(0, 10)}-•••••-•••••-•••••-${pro.key.slice(-5)}`);
   assert.ok(!JSON.stringify(first.body).includes(pro.key), 'the full key never comes back');
   assert.equal(typeof first.body.lease, 'string');
@@ -520,12 +533,12 @@ test('claim links an order bought with another email by order number and Groble 
   assert.deepEqual(await claim(me.session, '', ''), notFound);
   const ok = await claim(me.session, pro.merchantUid, ' GROBLE.BUYER@example.com ');
   assert.equal(ok.status, 200, JSON.stringify(ok.body));
-  assert.deepEqual([ok.body.alreadyLinked, ok.body.license.keyId, ok.body.license.linkedBy, ok.body.plan.tier], [false, pro.keyId, 'claim', 'basic']);
+  assert.deepEqual([ok.body.alreadyLinked, ok.body.license.keyId, ok.body.license.linkedBy, ok.body.plan.tier], [false, pro.keyId, 'claim', 'hama']);
   assert.equal((await claim(me.session, pro.merchantUid, 'groble.buyer@example.com')).body.alreadyLinked, true);
   assert.deepEqual(await claim(other.session, pro.merchantUid, 'groble.buyer@example.com'), { status: 409, body: { ok: false, error: 'key_linked_elsewhere' } });
 
   // A held order (wrong price) has no key yet.
-  const held = basicPaid({ merchantUid: 'order_held', ref: 'ref-held', email: 'held@example.com', price: 1000 });
+  const held = planPaid({ merchantUid: 'order_held', ref: 'ref-held', email: 'held@example.com', price: 1000 });
   assert.equal((await (await signedGroblePost(s.origin, SECRET, held)).json()).action, 'held');
   assert.deepEqual(await claim(me.session, 'order_held', 'held@example.com'), { status: 409, body: { ok: false, error: 'order_not_ready' } });
   assert.deepEqual(await claim(me.session, 'order_held', 'someone@example.com'), notFound, 'a held order needs the right email too');
@@ -547,28 +560,28 @@ test('redeem and claim are limited per account per hour', async (t) => {
   assert.equal((await claim(me.session)).body.error, 'order_not_found');
 });
 
-test('redeeming a Basic and then a Hama key moves the tier, the primary license and the lease with them', async (t) => {
-  const s = await setup(t, { HAMA_ENABLED: 'true' });
+test('redeeming a Hama and then a Rau key moves the tier, the primary license and the lease with them', async (t) => {
+  const s = await setup(t);
   await s.admin('/v1/admin/licenses/issue', { email: 'me@example.com', note: 'lifetime' });
   const me = await s.signIn({ email: 'me@example.com' }, device(1));
   const keys = { 'hama-prod-1': PAIR.publicKeyRawBase64 };
   const leaseOf = (body) => verifyAccountLease(body.lease, keys, { now: s.clock.now }).payload;
-  assert.deepEqual([me.plan.tier, leaseOf(me).tier, leaseOf(me).plan, me.plan.autoRenew], ['legacy', 'legacy', 'lifetime', null]);
+  assert.deepEqual([me.plan.tier, leaseOf(me).tier, leaseOf(me).plan, me.plan.autoRenew], ['hama', 'hama', 'lifetime', null], 'every live key is at least Hama');
   const redeem = (key) => s.post('/v1/account/redeem', { key }, s.bearer(me.session)).then(s.json);
 
   s.clock.now += MINUTE;
-  const pro = await bought(s, { n: 1 });
-  const withPro = (await redeem(pro.key)).body;
-  assert.deepEqual([withPro.plan.tier, withPro.plan.keyId, withPro.plan.autoRenew, leaseOf(withPro).tier, leaseOf(withPro).keyId], ['basic', pro.keyId, true, 'basic', pro.keyId]);
-  assert.equal(leaseOf(withPro).licenseExpiresAt, withPro.plan.expiresAt);
-  assert.deepEqual(withPro.licenses.map((l) => [l.keyId === pro.keyId, l.primary]), [[true, true], [false, false]]);
+  const hama = await bought(s, { n: 1 });
+  const withHama = (await redeem(hama.key)).body;
+  assert.deepEqual([withHama.plan.tier, withHama.plan.keyId, withHama.plan.autoRenew, leaseOf(withHama).tier, leaseOf(withHama).keyId], ['hama', hama.keyId, true, 'hama', hama.keyId]);
+  assert.equal(leaseOf(withHama).licenseExpiresAt, withHama.plan.expiresAt);
+  assert.deepEqual(withHama.licenses.map((l) => [l.keyId === hama.keyId, l.primary]), [[true, true], [false, false]]);
 
   s.clock.now += MINUTE;
-  const hama = await bought(s, { n: 2, contentId: HAMA_MONTHLY, price: 12900, cycle: 1 });
-  const withHama = (await redeem(hama.key)).body;
-  assert.deepEqual([withHama.plan.tier, withHama.plan.edition, leaseOf(withHama).tier, leaseOf(withHama).keyId], ['hama', 'hama', 'hama', hama.keyId]);
-  assert.deepEqual(withHama.licenses.map((l) => l.keyId), [hama.keyId, pro.keyId, me.licenses[0].keyId], 'primary first, then newest');
-  assert.equal((await s.hamaStatus(withHama.lease)).status, 200);
+  const rau = await bought(s, { n: 2, sku: 'rauMonthly' });
+  const withRau = (await redeem(rau.key)).body;
+  assert.deepEqual([withRau.plan.tier, withRau.plan.edition, withRau.plan.rau.source, leaseOf(withRau).tier, leaseOf(withRau).keyId], ['rau', 'rau', 'plan', 'rau', rau.keyId]);
+  assert.deepEqual(withRau.licenses.map((l) => l.keyId), [rau.keyId, hama.keyId, me.licenses[0].keyId], 'primary first, then newest');
+  assert.equal((await s.rauStatus(withRau.lease)).body.eligible, true);
 });
 
 test('admin unlink frees a key for good, admin link moves it, and the CLI wraps both', async (t) => {
@@ -681,13 +694,13 @@ test('stats add up per batch, a repeated batch id is a no-op, and bad counts are
   const me = await s.signIn({ email: 'stats@example.com' }, device(1));
   const stats = (body) => s.post('/v1/account/stats', body, s.bearer(me.session)).then(s.json);
   assert.deepEqual(await stats({ batchId: 'batch-0001', agentSessions: 2, documentsEdited: 5 }), {
-    status: 200, body: { ok: true, stats: { agentSessions: 2, documentsEdited: 5, since: T0, hama: null } },
+    status: 200, body: { ok: true, stats: { agentSessions: 2, documentsEdited: 5, since: T0 } },
   });
   assert.equal((await stats({ batchId: 'batch-0001', agentSessions: 2, documentsEdited: 5 })).body.stats.agentSessions, 2, 'a retried flush counts once');
   for (let i = 2; i <= 52; i += 1) await stats({ batchId: `batch-${String(i).padStart(4, '0')}`, agentSessions: 1, documentsEdited: 0 });
   const stored = (await s.stored()).accounts[me.account.id].stats;
   assert.deepEqual([stored.agentSessions, stored.batches.length, stored.batches[0]], [53, 50, 'batch-0003']);
-  assert.deepEqual((await s.refresh(me.session)).body.stats, { agentSessions: 53, documentsEdited: 5, since: T0, hama: null });
+  assert.deepEqual((await s.refresh(me.session)).body.stats, { agentSessions: 53, documentsEdited: 5, since: T0 });
   for (const [body, field] of [
     [{ batchId: 'short', agentSessions: 1, documentsEdited: 1 }, 'batchId'],
     [{ batchId: 'batch-x001', agentSessions: 1001, documentsEdited: 1 }, 'agentSessions'],
@@ -696,28 +709,119 @@ test('stats add up per batch, a repeated batch id is a no-op, and bad counts are
   ]) assert.deepEqual(await stats(body), { status: 400, body: { ok: false, error: 'invalid', field } });
 });
 
-test('stats.hama is the Hama key\'s current billing period, and null without a plan or with HAMA_ENABLED off', async (t) => {
-  const { billingPeriod } = await import('../hama-ledger.mjs');
-  for (const enabled of [true, false]) {
-    const s = await setup(t, enabled ? { HAMA_ENABLED: 'true' } : {});
-    await s.buy(basicPaid({ merchantUid: 'pro_h', ref: 'ref-pro-h', email: 'hama@example.com' }));
-    const me = await s.signIn({ email: 'hama@example.com' }, device(1));
-    assert.equal(me.stats.hama, null, 'a Pro key has no Hama plan');
-    await s.buy(basicPaid({ merchantUid: 'hama_h', ref: 'ref-hama-h', email: 'hama@example.com', contentId: HAMA_MONTHLY, price: 12900, cycle: 1 }));
-    const hamaFile = path.join(s.directory, 'hama.json');
-    if (!enabled) {
-      assert.equal((await s.refresh(me.session)).body.stats.hama, null);
-      continue;
-    }
-    const state = JSON.parse(await fs.readFile(hamaFile, 'utf8'));
-    const [keyId] = Object.keys(state.plans);
-    const period = billingPeriod(state.plans[keyId].periodAnchor, s.clock.now);
-    state.ledgers[keyId] = { period: { start: new Date(period.start).toISOString(), usedUsd: 1.25, calls: 3 }, minutes: {}, hours: {}, ids: {}, totalUsd: 4, calls: 9 };
-    await fs.writeFile(hamaFile, JSON.stringify(state));
-    assert.deepEqual((await s.refresh(me.session)).body.stats.hama, { usedUsd: 1.25, allowanceUsd: 15, periodEndsAt: period.end, calls: 3 });
-    s.clock.now = period.end + MINUTE;
-    assert.deepEqual((await s.refresh(me.session)).body.stats.hama.usedUsd, 0, 'a new period starts at zero');
-  }
+// ------------------------------------------------------------ Rau trial
+
+const TRIAL_END = T0 + 7 * DAY;
+
+/** Sets a principal's spend in the given period of rau.json on disk. */
+async function seedRauSpend(s, principalId, usedUsd, { start, end, source }) {
+  const file = path.join(s.directory, 'rau.json');
+  const state = JSON.parse(await fs.readFile(file, 'utf8').catch(() => '{}'));
+  state.ledgers ??= {};
+  state.ledgers[principalId] = { source, period: { start: new Date(start).toISOString(), end: new Date(end).toISOString(), usedUsd, calls: 1 }, ids: {}, totalUsd: usedUsd, calls: 1, lastCallAt: new Date(start).toISOString() };
+  await fs.writeFile(file, JSON.stringify(state));
+}
+
+test('a trial gives a signed-in account Rau for 7 days with $2, once, and a Hama key stays its primary', async (t) => {
+  const s = await setup(t);
+  await s.buy(planPaid({ merchantUid: 'hama_t', ref: 'ref-hama-t', email: 'trial@example.com' }));
+  const me = await s.signIn({ email: 'trial@example.com' }, device(1));
+  assert.deepEqual([me.plan.tier, me.trial.state], ['hama', 'available']);
+  const keys = { 'hama-prod-1': PAIR.publicKeyRawBase64 };
+
+  const started = await s.startTrial(me.session);
+  assert.equal(started.status, 200, JSON.stringify(started.body));
+  const body = started.body;
+  assert.deepEqual(body.trial, { state: 'active', startedAt: T0, endsAt: TRIAL_END, days: 7, allowanceUsd: 2 });
+  assert.deepEqual([body.plan.tier, body.plan.edition, body.plan.keyId], ['rau', 'hama', body.licenses[0].keyId], 'the trial lifts the tier, the Hama key stays primary');
+  assert.deepEqual(body.plan.rau, { eligible: true, source: 'trial', allowanceUsd: 2, usedUsd: 0, remainingUsd: 2, resetsAt: TRIAL_END });
+  assert.equal(verifyAccountLease(body.lease, keys, { now: T0 }).payload.tier, 'rau');
+  const status = (await s.rauStatus(body.lease)).body;
+  assert.deepEqual([status.eligible, status.source, status.allowanceUsd, status.resetsAt], [true, 'trial', 2, new Date(TRIAL_END).toISOString()]);
+  assert.equal((await s.stored()).accounts[me.account.id].rauTrial.endsAt, new Date(TRIAL_END).toISOString());
+
+  assert.deepEqual(await s.startTrial(me.session), { status: 409, body: { ok: false, error: 'trial_used' } });
+  s.clock.now = TRIAL_END - MINUTE;
+  assert.equal((await s.refresh(me.session)).body.trial.state, 'active');
+  s.clock.now = TRIAL_END;
+  const after = (await s.refresh(me.session)).body;
+  assert.deepEqual([after.trial.state, after.plan.tier, after.plan.rau], ['ended', 'hama', NO_RAU]);
+  assert.equal(verifyAccountLease(after.lease, keys, { now: TRIAL_END }).payload.tier, 'hama');
+  assert.deepEqual([(await s.rauStatus(after.lease)).body.eligible, (await s.rauStatus(after.lease)).body.reason], [false, 'rau_plan_required']);
+  assert.deepEqual(await s.startTrial(me.session), { status: 409, body: { ok: false, error: 'trial_used' } });
+});
+
+test('a trial ends once its $2 is spent: just under it Rau still runs, at it Rau refuses for credits until the trial end, then for the plan', async (t) => {
+  const s = await setup(t);
+  const me = await s.signIn({ email: 'spender@example.com' }, device(1));
+  const { body } = await s.startTrial(me.session);
+  assert.deepEqual([body.plan.tier, body.plan.keyId, body.trial.state], ['rau', null, 'active'], 'a free account gets Rau from the trial alone');
+  const period = { start: T0, end: TRIAL_END, source: 'trial' };
+  await seedRauSpend(s, me.account.id, 1.99, period);
+  const under = (await s.refresh(me.session)).body;
+  assert.deepEqual([under.trial.state, under.plan.rau.usedUsd, under.plan.rau.remainingUsd], ['active', 1.99, 0.01]);
+  assert.equal((await s.rauStatus(under.lease)).body.remainingUsd, 0.01);
+  await seedRauSpend(s, me.account.id, 2, period);
+  const spent = (await s.refresh(me.session)).body;
+  assert.deepEqual([spent.trial.state, spent.plan.tier, spent.plan.rau], ['ended', 'free', NO_RAU]);
+  const status = (await s.rauStatus(spent.lease)).body;
+  assert.deepEqual([status.eligible, status.source, status.remainingUsd, status.resetsAt], [true, 'trial', 0, new Date(TRIAL_END).toISOString()]);
+  const ask = { model: 'rau', max_tokens: 10, messages: [{ role: 'user', content: 'x' }] };
+  const agent = await s.post('/v1/rau/agent/v1/messages', ask, { 'x-api-key': spent.lease });
+  const refused = await agent.json();
+  assert.deepEqual([agent.status, refused.error.type, agent.headers.get('x-rau-resets-at')], [429, 'rau_credits_exhausted', new Date(TRIAL_END).toISOString()]);
+  assert.ok(refused.error.message.includes(`[rau-credits:${new Date(TRIAL_END).toISOString()}]`));
+  const learn = await s.post('/v1/rau/learn', { prompt: 'x' }, { authorization: `Bearer ${spent.lease}` });
+  assert.deepEqual([learn.status, (await learn.json()).error], [402, 'rau_credits_exhausted']);
+
+  s.clock.now = TRIAL_END;
+  const over = (await s.refresh(me.session)).body;
+  assert.deepEqual([(await s.rauStatus(over.lease)).body.eligible, (await s.rauStatus(over.lease)).body.reason], [false, 'rau_plan_required']);
+  const late = await s.post('/v1/rau/agent/v1/messages', ask, { 'x-api-key': over.lease });
+  assert.deepEqual([late.status, (await late.json()).error.type], [403, 'rau_plan_required']);
+  const lateLearn = await s.post('/v1/rau/learn', { prompt: 'x' }, { authorization: `Bearer ${over.lease}` });
+  assert.deepEqual([lateLearn.status, (await lateLearn.json()).error], [403, 'rau_plan_required']);
+});
+
+test('an email gets one trial, also after its account is deleted', async (t) => {
+  const s = await setup(t);
+  const first = await s.signIn({ id: 'user_first', email: 'Once@example.com' }, device(1));
+  assert.equal((await s.startTrial(first.session)).status, 200);
+  assert.deepEqual(await s.post('/v1/account/delete', { confirm: 'once@example.com' }, s.bearer(first.session)).then(s.json), { status: 200, body: { ok: true } });
+  const stored = await s.stored();
+  assert.equal(Object.keys(stored.trialEmails).length, 1, 'the email record outlives the account');
+  assert.ok(!JSON.stringify(stored.trialEmails).includes('once@example.com'), 'stored only as a hash');
+
+  const again = await s.signIn({ id: 'user_second', email: 'once@example.com' }, device(1));
+  assert.notEqual(again.account.id, first.account.id);
+  assert.deepEqual([again.trial.state, again.trial.startedAt, again.trial.endsAt, again.plan.tier], ['ended', T0, TRIAL_END, 'free']);
+  assert.deepEqual(await s.startTrial(again.session), { status: 409, body: { ok: false, error: 'trial_used' } });
+});
+
+test('the trial is refused on a live Rau plan, without hosted Rau, and past 10 tries an hour', async (t) => {
+  const s = await setup(t);
+  await s.buy(planPaid({ sku: 'rauYearly', merchantUid: 'rau_y', ref: 'ref-rau-y', email: 'payer@example.com' }));
+  const payer = await s.signIn({ email: 'payer@example.com' }, device(1));
+  assert.deepEqual([payer.plan.tier, payer.trial.state], ['rau', 'available']);
+  assert.deepEqual(await s.startTrial(payer.session), { status: 409, body: { ok: false, error: 'rau_active' } });
+  for (let i = 1; i < 10; i += 1) assert.equal((await s.startTrial(payer.session)).body.error, 'rau_active');
+  assert.deepEqual(await s.startTrial(payer.session), { status: 429, body: { ok: false, error: 'rate_limited' } });
+  assert.deepEqual(await s.startTrial('hes_nope'), { status: 401, body: { ok: false, error: 'session_invalid' } });
+
+  const off = await setup(t, { RAU_ENABLED: 'false' });
+  const me = await off.signIn({ email: 'off@example.com' }, device(1));
+  assert.deepEqual(await off.startTrial(me.session), { status: 503, body: { ok: false, error: 'rau_unavailable' } });
+  assert.equal((await off.stored()).accounts[me.account.id].rauTrial, undefined);
+});
+
+test('a beta key and every other live key put an account on Hama', async (t) => {
+  const s = await setup(t);
+  await s.admin('/v1/admin/licenses/issue-beta', { name: '테스터', email: 'beta@example.com' });
+  const beta = await s.signIn({ email: 'beta@example.com' }, device(1));
+  assert.deepEqual([beta.plan.tier, beta.plan.edition, beta.plan.plan, beta.plan.rau], ['hama', null, 'lifetime', NO_RAU]);
+  await s.admin('/v1/admin/licenses/issue', { email: 'signature@example.com', edition: 'signature' });
+  const signature = await s.signIn({ email: 'signature@example.com' }, device(2));
+  assert.deepEqual([signature.plan.tier, signature.plan.edition], ['hama', 'signature']);
 });
 
 /** A Groble subscription event for the key bought under `ref`. */
@@ -733,8 +837,8 @@ function subscriptionEvent(type, ref, object = {}) {
 test('delete: typed email, refused while a subscription renews, then everything goes and the keys link to the next account', async (t) => {
   const s = await setup(t);
   await s.admin('/v1/admin/licenses/issue', { email: 'leaving@example.com', note: 'lifetime' });
-  await s.buy(basicPaid({ merchantUid: 'pro_a', ref: 'ref-a', email: 'leaving@example.com' }));
-  await s.buy(basicPaid({ merchantUid: 'pro_b', ref: 'ref-b', email: 'leaving@example.com' }));
+  await s.buy(planPaid({ merchantUid: 'pro_a', ref: 'ref-a', email: 'leaving@example.com' }));
+  await s.buy(planPaid({ sku: 'rauMonthly', merchantUid: 'pro_b', ref: 'ref-b', email: 'leaving@example.com' }));
   const me = await s.signIn({ id: 'user_leaving', email: 'Leaving@example.com' }, device(1));
   const pc = await s.signIn({ id: 'user_leaving', email: 'Leaving@example.com' }, device(2));
   assert.equal(me.licenses.length, 3);

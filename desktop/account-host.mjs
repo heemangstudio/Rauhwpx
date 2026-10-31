@@ -66,6 +66,8 @@ export function installAccountHost({
       const address = shortText(email, 254);
       return order === null || address === null ? rejected('order_not_found') : manager.claim(order, address);
     },
+    // 렌더러는 아무것도 넘기지 않는다. 계정은 메인이 가진 세션으로 정한다.
+    'account:start-rau-trial': () => manager.startRauTrial(),
     'account:delete': (_event, confirm) => {
       const value = shortText(confirm, 320);
       return value === null ? rejected('confirm_mismatch') : manager.deleteAccount(value);

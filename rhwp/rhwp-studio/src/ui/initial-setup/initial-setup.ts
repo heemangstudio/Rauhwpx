@@ -380,11 +380,19 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
 
   const plansPanel = el('div', 'rhwp-setup-panel rhwp-setup-plans');
   const planSummary = el('div', 'rhwp-setup-plan-summary');
-  for (const [name, copy] of [['Basic', '내 Codex·Claude 계정으로 문서 작업'], ['Hama', '기본 제공 AI 크레딧으로 바로 시작']]) {
-    const row = el('div', 'rhwp-setup-plan-row');
-    row.append(el('strong', '', name), el('span', '', copy));
-    planSummary.append(row);
+  /** 체험을 쓸 수 있는 계정이면 Rau 줄이 체험을 알린다. 로그인한 뒤라 그릴 때마다 다시 본다. */
+  function renderPlanSummary(): void {
+    const trial = account?.status()?.trial?.state === 'available' && !!accountApi?.startRauTrial;
+    planSummary.replaceChildren(...([
+      ['Hama', '쓰던 AI 계정으로 문서 작업'],
+      ['Rau', trial ? 'AI 포함 · 7일 무료 체험' : 'AI 포함 · Rau 모드'],
+    ] as const).map(([name, copy]) => {
+      const row = el('div', 'rhwp-setup-plan-row');
+      row.append(el('strong', '', name), el('span', '', copy));
+      return row;
+    }));
   }
+  renderPlanSummary();
   const planAction = button('rhwp-setup-upgrade-action', '요금제 선택');
   const planError = el('p', 'rhwp-setup-notice');
   planError.setAttribute('role', 'status');
@@ -392,19 +400,19 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   planAction.addEventListener('click', () => { void choosePlan(); });
   plansPanel.append(planSummary, planAction, planError);
 
-  const hamaPanel = el('div', 'rhwp-setup-panel rhwp-setup-upgrade');
-  hamaPanel.append(
+  const rauPanel = el('div', 'rhwp-setup-panel rhwp-setup-upgrade');
+  rauPanel.append(
     createPartyHama(),
-    el('h2', 'rhwp-setup-upgrade-title', '이제 Hama와 함께해요'),
-    el('p', 'rhwp-setup-upgrade-copy', 'Hama 에이전트는 추가 연결 없이 바로 쓸 수 있어요. 기본 제공 AI 크레딧과 Rau-0.1도 준비됐어요.'),
-    el('p', 'rhwp-setup-hint', 'Codex·Claude도 설정에서 언제든 연결할 수 있어요.'),
+    el('h2', 'rhwp-setup-upgrade-title', '이제 Rau와 함께해요'),
+    el('p', 'rhwp-setup-upgrade-copy', 'Rau 에이전트는 연결 없이 바로 쓸 수 있어요. 매달 크레딧과 Rau 모드도 준비됐어요.'),
+    el('p', 'rhwp-setup-hint', '쓰던 AI 계정도 설정에서 언제든 연결할 수 있어요.'),
   );
   const modelsHint = el('p', 'rhwp-setup-hint', '연결은 나중에 설정에서도 할 수 있어요.');
   modelsPanel.append(modelsHint);
-  body.append(themePanel, fontsPanel, welcomePanel, accountElement, plansPanel, modelsPanel, hamaPanel);
+  body.append(themePanel, fontsPanel, welcomePanel, accountElement, plansPanel, modelsPanel, rauPanel);
   const panels: Record<SetupStep, HTMLElement> = {
     theme: themePanel, fonts: fontsPanel, welcome: welcomePanel,
-    account: accountElement, plans: plansPanel, models: modelsPanel, hama: hamaPanel,
+    account: accountElement, plans: plansPanel, models: modelsPanel, rau: rauPanel,
   };
 
   async function choosePlan(): Promise<void> {
@@ -500,7 +508,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     }
     if (step === 'welcome') return HIPPO_LINES.welcome;
     if (step === 'plans') return HIPPO_LINES.plans;
-    if (step === 'hama') return HIPPO_LINES.hama;
+    if (step === 'rau') return HIPPO_LINES.rau;
     if (step === 'account') return accountPanel?.signedIn() ? HIPPO_LINES.signedIn : HIPPO_LINES.account;
     if (fontSearch === 'found') return HIPPO_LINES.found;
     if (fontSearch === 'missing') return offerFolder() ? HIPPO_LINES.missingWithFolder : HIPPO_LINES.missing;
@@ -510,13 +518,14 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   let spokenStep: SetupStep | null = null;
   function renderStep(): void {
     const step = currentStep();
+    if (step === 'plans') renderPlanSummary();
     for (const [name, panel] of Object.entries(panels) as Array<[SetupStep, HTMLElement]>) {
       panel.hidden = name !== step;
     }
     dialog.dataset.step = step;
     const labels: Record<SetupStep, string> = {
       theme: '화면 테마', models: 'AI 연결', fonts: '글꼴', account: '계정',
-      welcome: '시작 방법', plans: '요금제', hama: 'Hama 소개',
+      welcome: '시작 방법', plans: '요금제', rau: 'Rau 소개',
     };
     dots.replaceChildren(...steps.map((name, index) => {
       const dot = button('rhwp-setup-dot');
@@ -562,7 +571,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     if (saved) return;
     saved = true;
     const connected = configuredAgents();
-    const defaults = connected.length === 0 && deps.plan?.status()?.tier === 'hama' ? ['hama' as const] : connected;
+    const defaults = connected.length === 0 && deps.plan?.status()?.tier === 'rau' ? ['rau' as const] : connected;
     applyFirstRunDefaultAgent(defaults, storage ?? null);
     record = completeInitialSetup({
       themeStep: themeStep === 'done' ? 'done' : 'skipped',

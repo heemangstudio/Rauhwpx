@@ -1,0 +1,74 @@
+/* ─── 문서 홈의 Rau 입구 ──────────────────────────────
+   위 막대 오른쪽의 한 줄. 잉크색 Rau 마크와 아주 옅은 면만 둔다. */
+
+.plan-rau-entry {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 28px;
+  margin-right: 4px;
+  padding: 0 10px 0 9px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--n-ink-fill-soft, color-mix(in oklab, currentColor 5%, transparent));
+  color: var(--dh-text, var(--n-ink));
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1;
+  letter-spacing: -0.005em;
+  white-space: nowrap;
+  cursor: default;
+  transition:
+    background-color var(--ag-dur-fast, 120ms) var(--ag-ease-out, ease-out);
+}
+
+.plan-rau-entry[hidden] {
+  display: none;
+}
+
+.plan-rau-entry:hover {
+  background: var(--n-ink-fill-hover, color-mix(in oklab, currentColor 9%, transparent));
+}
+
+.plan-rau-entry:active {
+  background: var(--n-ink-fill-pressed, color-mix(in oklab, currentColor 13%, transparent));
+}
+
+.plan-rau-entry:focus-visible {
+  outline: 2px solid var(--focus-ring, currentColor);
+  outline-offset: 2px;
+}
+
+.plan-rau-mark {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  background-color: currentColor;
+  -webkit-mask: url('/icons/rau.png') center / contain no-repeat;
+  mask: url('/icons/rau.png') center / contain no-repeat;
+}
+
+.plan-rau-name {
+  font-weight: 600;
+}
+
+.plan-rau-line {
+  color: var(--dh-text-secondary, var(--n-ink-secondary));
+}
+
+.plan-rau-soon {
+  margin-left: 3px;
+  color: var(--dh-text-secondary, var(--n-ink-secondary));
+  font-size: 11.5px;
+  font-weight: 500;
+}
+
+.plan-rau-soon[hidden] {
+  display: none;
+}
+
+@media (max-width: 720px) {
+  .plan-rau-line {
+    display: none;
+  }
+}

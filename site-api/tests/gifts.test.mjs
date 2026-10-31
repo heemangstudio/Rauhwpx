@@ -541,3 +541,22 @@ test('issue-beta takes giftUsd, checked before the key is created', async (t) =>
   const offBetas = await fetch(`${off.origin}/v1/admin/licenses/betas`, { headers: { Authorization: `Bearer ${ADMIN}` } }).then((r) => r.json());
   assert.deepEqual([offBetas.count, offBetas.giftEvent], [0, null]);
 });
+
+test('gift grants never expose their OpenRouter key in admin or app answers', async (t) => {
+  const s = await setup(t);
+  const lic = await s.license();
+  const lease = await lic.activate(MAC_A);
+  const claimed = await (await s.claim(lease)).text();
+  const [stored] = [...s.upstream.keys.values()];
+  const get = async (route, token) => (await fetch(`${s.origin}${route}`, { headers: s.auth(token) })).text();
+  const answers = [
+    claimed,
+    await get('/v1/gift/status', lease),
+    await get('/v1/gift/openrouter/key', lease),
+    await get('/v1/admin/gifts', ADMIN),
+    await get('/v1/admin/licenses/betas', ADMIN),
+    JSON.stringify(await s.admin('/v1/admin/gifts/amount', { keyId: lic.keyId, amountUsd: 5 })),
+    JSON.stringify(await s.admin('/v1/admin/gifts/disable', { keyId: lic.keyId, reason: 'test' })),
+  ];
+  for (const text of answers) assert.ok(!text.includes(stored.key), text.slice(0, 120));
+});
