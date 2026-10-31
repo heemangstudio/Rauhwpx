@@ -49,7 +49,7 @@ export interface AutofixProviderSettings {
 }
 
 export interface AutofixSettings {
-  /** 켜야만 단추가 선다(기본 꺼짐). */
+  /** 켜야만 단추가 선다(기본 켜짐). */
   enabled: boolean;
   /** 사용자가 켤지 말지 답했다. */
   decided: boolean;

@@ -1,6 +1,17 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 
 import { buildProductCatalog } from './config.mjs';
+import {
+  MAX_GIFT_CODES_PER_BATCH,
+  MAX_GIFT_DURATION_DAYS,
+  MAX_GIFT_DURATION_MONTHS,
+  generateGiftCode,
+  giftCodeEdition,
+  giftCodeHash,
+  giftCodePrefix,
+  maskGiftCode,
+  normalizeGiftCode,
+} from './gift-codes.mjs';
 import { heldReasonText } from './held-alert.mjs';
 import { licenseEmail, licenseEmailKind, maskEmail } from './license-email.mjs';
 import {
@@ -35,7 +46,7 @@ const MAX_EXTEND_YEARS = 10;
 const DEFAULT_PAYMENT_GRACE_MAX_MS = 14 * 24 * 60 * 60 * 1000;
 
 export function emptyLicensesState() {
-  return { licenses: {}, keyIndex: {}, orders: {}, refs: {}, webhookEvents: {}, grandfathered: {} };
+  return { licenses: {}, keyIndex: {}, orders: {}, refs: {}, webhookEvents: {}, grandfathered: {}, giftCodeBatches: {}, giftCodes: {} };
 }
 
 export function licenseError(code, status, message = code) {
@@ -118,6 +129,26 @@ function parseUntil(value) {
   return /^\d{4}-\d{2}-\d{2}T/.test(text) ? parseTime(text) : undefined;
 }
 
+/** End of the KST day `days` days after `ms`, like subscriptionEnd for a term counted in days. */
+function daysEnd(ms, days) {
+  const kst = new Date(ms + KST_OFFSET_MS);
+  return Date.UTC(kst.getUTCFullYear(), kst.getUTCMonth(), kst.getUTCDate() + days, 23, 59, 59, 999) - KST_OFFSET_MS;
+}
+
+/** A whole number from a JSON number or a digit string (the CLI sends strings), else undefined. */
+function wholeNumber(value) {
+  if (typeof value === 'string' && /^\d{1,6}$/.test(value.trim())) return Number(value.trim());
+  return Number.isSafeInteger(value) ? value : undefined;
+}
+
+/** `active` (redeemable), `redeemed`, `revoked`, or `expired` for an unredeemed code past its batch's redeemBy. */
+function giftCodeStatusOf(code, batch, nowMs) {
+  if (code.status === 'active' && nowMs > (parseTime(batch?.redeemBy) ?? Infinity)) return 'expired';
+  return code.status;
+}
+
+const GIFT_CODE_STATUSES = ['active', 'redeemed', 'revoked', 'expired'];
+
 /** Subscription keys carry `expiresAt`; every record without it (paid one-time, grandfathered, beta, manual) is lifetime. */
 function expiryOf(license) {
   return parseTime(license?.expiresAt) ?? null;
@@ -154,21 +185,67 @@ function keyCycleMonths(license) {
   return Number.isInteger(months) && months >= 1 && months <= 12 ? months : SUBSCRIPTION_CYCLE_MONTHS;
 }
 
-/** `lifetime` without an expiry, `monthly` for a 1-month key, else `annual`. */
+/** A key created by redeeming a gift code: a fixed term that never renews. */
+function isGiftKey(license) {
+  return license?.source === 'gift_code';
+}
+
+/** `lifetime` without an expiry, `monthly` for a 1-month key, else `annual`. A gift key has no billing plan (null). */
 export function planOf(license) {
+  if (isGiftKey(license)) return null;
   if (expiryOf(license) === null) return 'lifetime';
   return keyCycleMonths(license) === 1 ? 'monthly' : 'annual';
 }
 
 /**
- * Hosted Rau-0.1 is for active Pro keys only: a Pro subscription key, not revoked, before its
- * expiry or inside its payment grace. Lifetime, Signature, GLJFC9, beta, grandfathered and manual keys never qualify.
+ * Stored edition → the name the app and admin views use. Stored records are never rewritten:
+ * `pro` (the first name of the BYOK plan) and `basic` (its second, and how new Hama keys are stored)
+ * read as 'hama'; `hama` (the old hosted plan) and `rau` read as 'rau'.
  */
-export function rauEligible(license, nowMs, graceMaxMs) {
-  if (!license || license.status !== 'active' || license.edition !== 'pro') return false;
-  const end = accessEndOf(license, graceMaxMs);
-  return end !== null && nowMs < end;
+const WIRE_EDITIONS = Object.freeze({ pro: 'hama', basic: 'hama', hama: 'rau', rau: 'rau', signature: 'signature' });
+
+export function editionOf(license) {
+  const stored = license?.edition;
+  return typeof stored === 'string' && Object.hasOwn(WIRE_EDITIONS, stored) ? WIRE_EDITIONS[stored] : undefined;
 }
+
+/** Null for a lifetime key, false for a gift key or a cancelled subscription, else true. */
+function autoRenewOf(license) {
+  if (expiryOf(license) === null) return null;
+  return !isGiftKey(license) && license.subscription?.autoRenew !== false;
+}
+
+/** Editions sold as a subscription on their own billing cycle. */
+function isPlanEdition(edition) {
+  return edition === 'basic' || edition === 'pro' || edition === 'hama' || edition === 'rau';
+}
+
+/** Active, and before its expiry or inside its payment grace (lifetime keys always). */
+function isLive(license, nowMs, graceMaxMs) {
+  if (!license || license.status !== 'active') return false;
+  const end = accessEndOf(license, graceMaxMs);
+  return end === null || nowMs < end;
+}
+
+/**
+ * Whether a license has hosted Rau: a live key whose edition reads as 'rau', or a live key with an
+ * active plan in the frozen hama.json (`legacyPlan`). Every other key (Hama, GLJFC9, lifetime,
+ * Signature, beta, grandfathered, manual) needs a Rau plan or the account's trial.
+ */
+export function rauEntitled(license, nowMs, graceMaxMs, legacyPlan = null) {
+  return isLive(license, nowMs, graceMaxMs) && (editionOf(license) === 'rau' || Boolean(legacyPlan));
+}
+
+/** `HAMA-ABCDE-•••••-•••••-•••••-VWXYZ`: the first and last groups only. */
+export function maskLicenseKey(key) {
+  const groups = String(key ?? '').split('-');
+  if (groups.length !== 6) return 'HAMA-•••••';
+  return [groups[0], groups[1], '•••••', '•••••', '•••••', groups[5]].join('-');
+}
+
+/** Account tier by the primary license's rank (see accountEntitlements). */
+const RANK_TIERS = { 1: 'hama', 2: 'rau' };
+const ACCOUNT_EDITIONS = new Set(['hama', 'rau', 'signature']);
 
 function normalizeState(state) {
   const base = emptyLicensesState();
@@ -192,8 +269,8 @@ function signatureView(license) {
   const prioritySupport = license.edition === 'signature' && license.status === 'active';
   return {
     prioritySupport,
-    ...(license.edition ? { edition: license.edition } : {}),
-    ...(license.productId && (license.edition === 'signature' || license.edition === 'pro') ? { productId: license.productId } : {}),
+    ...(license.edition ? { edition: editionOf(license) } : {}),
+    ...(license.productId && (license.edition === 'signature' || isPlanEdition(license.edition)) ? { productId: license.productId } : {}),
     ...(license.updatesUntil ? { updatesUntil: license.updatesUntil } : {}),
     ...(license.support ? { support: license.support } : {}),
     ...(prioritySupport ? { supportSlaLabel: '1영업일 내 첫 답변' } : {}),
@@ -230,13 +307,18 @@ function licenseView(license, { includeKey = true } = {}) {
     revokeReason: license.revokeReason,
     plan: planOf(license),
     ...signatureView(license),
-    ...(license.edition === 'pro' ? { billingCycleMonths: keyCycleMonths(license) } : {}),
+    ...(isPlanEdition(license.edition) && !isGiftKey(license) ? { billingCycleMonths: keyCycleMonths(license) } : {}),
     expiresAt: license.expiresAt ?? null,
     subscription: license.subscription,
+    giftBatchId: license.giftBatchId,
     extensions: license.extensions,
     note: license.note,
     devices: Object.entries(license.devices ?? {}).map(([deviceId, d]) => ({ deviceId, ...d })),
     emailDelivery: license.emailDelivery,
+    accountId: license.accountId ?? null,
+    linkedBy: license.linkedBy,
+    linkedAt: license.linkedAt,
+    unlinkedAt: license.unlinkedAt,
   };
 }
 
@@ -250,7 +332,6 @@ function subscriptionStatusOf(license, nowMs, graceMaxMs) {
 /** One paid key for the admin customer list. */
 function customerView(license, nowMs, graceMaxMs) {
   const delivery = license.emailDelivery ?? {};
-  const expiry = expiryOf(license);
   const graceEnd = paymentGraceEndOf(license, graceMaxMs);
   return {
     keyId: license.keyId,
@@ -262,7 +343,7 @@ function customerView(license, nowMs, graceMaxMs) {
     plan: planOf(license),
     ...signatureView(license),
     expiresAt: license.expiresAt ?? null,
-    autoRenew: expiry === null ? null : license.subscription?.autoRenew !== false,
+    autoRenew: autoRenewOf(license),
     paymentGraceEndsAt: graceEnd === null ? null : iso(graceEnd),
     deviceLimit: deviceLimitOf(license),
     devices: Object.entries(license.devices ?? {}).map(([deviceId, d]) => ({ deviceId, platform: d.platform, lastSeenAt: d.lastSeenAt })),
@@ -280,9 +361,9 @@ function customerView(license, nowMs, graceMaxMs) {
 }
 
 /**
- * License key service. Every mutation runs under one in-process lock and saves
- * the whole state through the atomic file store, so concurrent requests never
- * interleave read-modify-write cycles. Assumes ONE Railway replica.
+ * License key service. Every mutation runs exclusively through `store.update` (the atomic file
+ * store, or Postgres with a per-domain advisory lock), so concurrent requests never interleave
+ * read-modify-write cycles.
  */
 export function createLicensesService({
   store = createMemoryStore(emptyLicensesState()),
@@ -302,12 +383,17 @@ export function createLicensesService({
   minAmount = expectedPrice,
   signatureExpectedPrice = 29000,
   signatureMinAmount = signatureExpectedPrice,
-  proProducts = [],
+  hamaProducts = [],
+  rauProducts = [],
   products,
   grandfatherCutoff = undefined,
   grandfatherPlatforms = ['darwin'],
   adminToken = '',
   downloadUrl = 'https://heemangstudios.com/',
+  // keyId → `{ periodAnchor }` of an active plan in the frozen hama.json, else null. Read-only.
+  legacyRauPlan = async () => null,
+  // A read of the accounts store (never its update lock): the account a verified buyer email belongs to, or null.
+  accountForEmail = async () => null,
   webhookLog = createWebhookLog({ now }),
   log = (line) => process.stderr.write(`${line}\n`),
 } = {}) {
@@ -319,30 +405,22 @@ export function createLicensesService({
     minAmount,
     signatureExpectedPrice,
     signatureMinAmount,
-    proProducts,
+    hamaProducts,
+    rauProducts,
   })).map((product) => [product.id, product]));
   const graceEndOf = (license) => paymentGraceEndOf(license, paymentGraceMaxMs);
   const accessEnd = (license) => accessEndOf(license, paymentGraceMaxMs);
+  // Groble's buyer page, for a key that renews or lapses there. Lifetime and gift keys have none.
+  const fixUrlOf = (license) => (expiryOf(license) === null || isGiftKey(license) ? null : paymentFixUrl);
 
-  let mutation = Promise.resolve();
-  function withLock(fn) {
-    const result = mutation.then(fn, fn);
-    mutation = result.then(() => undefined, () => undefined);
-    return result;
-  }
-
+  /** `fn` runs alone on the store and returns `{ value, dirty }`; the state is saved unless `dirty` is false. */
   async function mutate(fn) {
-    return withLock(async () => {
-      const state = normalizeState(await store.load());
-      const result = await fn(state);
-      if (result?.dirty !== false) await store.save(state);
-      return result?.value ?? result;
-    });
+    const result = await store.update((state) => fn(normalizeState(state)));
+    return result?.value ?? result;
   }
 
   async function read() {
-    await mutation.catch(() => {});
-    return normalizeState(await store.load());
+    return normalizeState(await store.read());
   }
 
   function createLicense(state, fields) {
@@ -378,6 +456,15 @@ export function createLicensesService({
     license.revokedAt = new Date(now()).toISOString();
     license.revokeReason = reason;
     return true;
+  }
+
+  /** The license ↔ account link lives on the license record. */
+  function linkLicense(license, accountId, linkedBy) {
+    license.accountId = accountId;
+    license.linkedAt = new Date(now()).toISOString();
+    license.linkedBy = linkedBy;
+    delete license.unlinkedAt;
+    delete license.unlinkedBy;
   }
 
   function findLicense(state, { key, keyId, merchantUid, ref } = {}) {
@@ -421,6 +508,21 @@ export function createLicensesService({
     return null;
   }
 
+  /**
+   * A Hama or Rau product sold through a Groble option must be paid as exactly that option: Groble's
+   * subscription events carry one option with quantity 1. Its list price, when present, must be the product's.
+   */
+  function optionProblem(object, product) {
+    if (!product.optionId) return null;
+    const options = Array.isArray(object?.options) ? object.options : [];
+    if (options.length === 0) return 'missing_option';
+    const ids = options.map((option) => str(option?.optionId, 64) ?? 'missing');
+    if (options.length !== 1 || ids[0] !== product.optionId) return `wrong_option:${ids.join(',')}`;
+    const listPrice = num(options[0]?.unitOriginalPrice);
+    if (listPrice !== undefined && listPrice !== product.expectedPrice) return `wrong_price:${listPrice}`;
+    return null;
+  }
+
   function checkPurchase(object, { subscription = false, renewal = false } = {}) {
     const contentId = str(object?.content?.id, 128);
     const paymentType = str(object?.content?.paymentType, 32);
@@ -429,22 +531,27 @@ export function createLicensesService({
     if (subscription !== (product.kind === 'subscription')) return `wrong_product:${contentId}`;
     const expectedType = product.kind === 'subscription' ? 'SUBSCRIPTION' : 'ONE_TIME';
     if (paymentType && paymentType !== expectedType) return `wrong_payment_type:${paymentType}`;
-    // A Pro product bills on its own cycle. An event that names another one is held instead of
+    // A Hama or Rau product bills on its own cycle. An event that names another one is held instead of
     // trusted, so a monthly buyer can never get a year; a missing or unreadable field uses the product's.
     const eventMonths = eventCycleMonths(object);
     if (product.cycleMonths && eventMonths !== undefined && eventMonths !== product.cycleMonths) return `cycle_mismatch:${eventMonths}`;
+    // A renewal checks product and currency only, so a later price or option change never holds old subscribers.
+    if (!renewal) {
+      const option = optionProblem(object, product);
+      if (option) return option;
+    }
     return priceProblem(object, product, { renewal });
   }
 
-  /** Months the round buys: a Pro product's own cycle, else the event's, else 12 (GLJFC9). */
+  /** Months the round buys: a Hama or Rau product's own cycle, else the event's, else 12 (GLJFC9). */
   function orderCycleMonths(object) {
     const product = catalog.get(str(object?.content?.id, 128) ?? '');
     return product?.cycleMonths ?? eventCycleMonths(object) ?? SUBSCRIPTION_CYCLE_MONTHS;
   }
 
-  /** Pro keys carry the edition, product and cycle on the record itself. */
-  function proEntitlement(product, months) {
-    return product?.edition === 'pro' ? { edition: 'pro', productId: product.id, billingCycleMonths: months } : {};
+  /** Hama and Rau keys carry the stored edition ('basic' or 'rau'), product and cycle on the record itself. */
+  function planEntitlement(product, months) {
+    return isPlanEdition(product?.edition) ? { edition: product.edition, productId: product.id, billingCycleMonths: months } : {};
   }
 
   /** Create or update the order record of one paid round. */
@@ -529,23 +636,27 @@ export function createLicensesService({
     return matches.length === 1 ? matches[0] : undefined;
   }
 
-  function attachToIssued(state, order, email, event) {
+  function attachToIssued(state, order, email, event, buyerAccountId) {
     const license = state.licenses[order.keyId];
     if (license) {
       license.ref = license.ref ?? order.ref;
       license.email = license.email ?? email;
       license.amount = license.amount ?? order.amount;
       license.occurredAt = license.occurredAt ?? event.occurredAt;
+      if (buyerAccountId && !license.accountId && license.status !== 'revoked') linkLicense(license, buyerAccountId, 'purchase');
     }
     return { action: 'already_issued', keyId: order.keyId };
   }
 
-  /** One-time `payment.completed` or the INITIAL round of a subscription: one key per merchantUid. */
-  function onCompleted(state, event, object, { subscription = false } = {}) {
+  /**
+   * One-time `payment.completed` or the INITIAL round of a subscription: one key per merchantUid.
+   * `buyerAccountId` is the verified account of the buyer's email; the new key is linked to it.
+   */
+  function onCompleted(state, event, object, { subscription = false, buyerAccountId = null } = {}) {
     const order = recordOrder(state, event, object, subscription ? 'subscription' : undefined);
     const email = str(object?.buyer?.email, 254);
     // Already issued (webhook retry with a new delivery key, or a manual backfill). Attach data only.
-    if (order.keyId) return attachToIssued(state, order, email, event);
+    if (order.keyId) return attachToIssued(state, order, email, event, buyerAccountId);
     // Refund arrived before the completion (Groble does not guarantee order). Never issue.
     if (order.status === 'refunded') return { action: 'refunded_before_completed' };
     const problem = checkPurchase(object, { subscription });
@@ -559,9 +670,10 @@ export function createLicensesService({
       amount: order.amount,
       occurredAt: event.occurredAt,
       ...(subscription ? subscriptionStart(order, object) : {}),
-      ...(subscription ? proEntitlement(product, order.billingCycleMonths) : {}),
+      ...(subscription ? planEntitlement(product, order.billingCycleMonths) : {}),
       ...(product?.kind === 'signature' ? signatureEntitlement(product.id, paidAtOf(order)) : {}),
     });
+    if (buyerAccountId) linkLicense(license, buyerAccountId, 'purchase');
     queueEmail(license);
     order.status = 'issued';
     order.keyId = license.keyId;
@@ -590,7 +702,7 @@ export function createLicensesService({
     // A late renewal (a retry or re-payment after the key lapsed) starts the new year on the day it was paid.
     const paidMs = paidAtOf(order);
     const from = Math.max(expiryOf(license) ?? paidMs, paidMs);
-    // Each round buys the key's own cycle: a monthly Pro key gains a month, an annual key a year.
+    // Each round buys the key's own cycle: a monthly key gains a month, an annual key a year.
     const to = subscriptionEnd(from, keyCycleMonths(license));
     license.expiresAt = iso(to);
     order.status = 'renewed';
@@ -746,17 +858,33 @@ export function createLicensesService({
   }
 
   const GROBLE_HANDLERS = {
-    'payment.completed': (state, event, object) => onCompleted(state, event, object),
+    'payment.completed': (state, event, object, context) => onCompleted(state, event, object, context),
     'payment.cancel_requested': onCancelRequested,
     'payment.refunded': onRefunded,
-    'subscription_payment.completed': (state, event, object) => (object?.subscription?.billingReason === 'RENEWAL'
+    'subscription_payment.completed': (state, event, object, context) => (object?.subscription?.billingReason === 'RENEWAL'
       ? onRenewal(state, event, object)
-      : onCompleted(state, event, object, { subscription: true })),
+      : onCompleted(state, event, object, { ...context, subscription: true })),
     'subscription_payment.refunded': onRefunded,
     'subscription_payment.failed': onPaymentFailed,
     'subscription.cancel_requested': onSubscriptionCancelRequested,
     'subscription.terminated': onSubscriptionTerminated,
   };
+
+  function issuesKey(type, object) {
+    return type === 'payment.completed'
+      || (type === 'subscription_payment.completed' && object?.subscription?.billingReason !== 'RENEWAL');
+  }
+
+  /** The verified account of the buyer's email, or null. Never fails the webhook. */
+  async function buyerAccount(object) {
+    const email = str(object?.buyer?.email, 254)?.toLowerCase();
+    if (!email) return null;
+    const accountId = await Promise.resolve().then(() => accountForEmail(email)).catch((error) => {
+      log(`[site-api] account lookup for a purchase failed: ${error?.message ?? error}`);
+      return null;
+    });
+    return accountId ?? null;
+  }
 
   /**
    * Process one verified Groble event. Returns a small summary (never buyer data). An event we
@@ -769,6 +897,8 @@ export function createLicensesService({
     }
     const type = str(event.type, 64);
     const object = event?.data?.object;
+    // Read before the lock: the accounts store belongs to another service.
+    const buyerAccountId = issuesKey(type, object) ? await buyerAccount(object) : null;
     return mutate(async (state) => {
       pruneWebhookEvents(state);
       const dedupeKey = idempotencyKey || (event.id ? `event:${event.id}` : '');
@@ -785,7 +915,7 @@ export function createLicensesService({
       } else {
         object.merchantUid = str(object.merchantUid, 128);
         const occurredMs = parseTime(event.occurredAt) ?? now();
-        result = handler(state, event, object);
+        result = handler(state, event, object, { buyerAccountId });
         const order = state.orders[object.merchantUid];
         const last = parseTime(order?.lastEventAt);
         if (order && (last === undefined || occurredMs > last)) order.lastEventAt = new Date(occurredMs).toISOString();
@@ -838,7 +968,7 @@ export function createLicensesService({
         kind: licenseEmailKind(license),
         downloadUrl,
         expiresAt: expiryOf(license),
-        autoRenew: license.subscription?.autoRenew !== false,
+        autoRenew: autoRenewOf(license) !== false,
         cycleMonths: keyCycleMonths(license),
         updatesUntil: parseTime(license.updatesUntil) ?? null,
       });
@@ -882,7 +1012,7 @@ export function createLicensesService({
         status: 'issued',
         key: license.key,
         licenseExpiresAt: expiryOf(license),
-        ...(license.edition === 'pro' ? { edition: 'pro', plan: planOf(license) } : {}),
+        ...(isPlanEdition(license.edition) ? { edition: editionOf(license), plan: planOf(license) } : {}),
         ...(license.edition === 'signature' ? {
           edition: 'signature',
           prioritySupport: true,
@@ -913,13 +1043,35 @@ export function createLicensesService({
     if (license.status === 'revoked') throw Object.assign(licenseError('revoked', 403), { tier: tierOf(license) });
     const end = accessEnd(license);
     if (end !== null && now() >= end) {
-      throw Object.assign(licenseError('expired', 403), { tier: tierOf(license), licenseExpiresAt: expiryOf(license), paymentFixUrl });
+      throw Object.assign(licenseError('expired', 403), { tier: tierOf(license), licenseExpiresAt: expiryOf(license), paymentFixUrl: fixUrlOf(license) ?? undefined });
     }
     return license;
   }
 
+  /** The key's active plan in the frozen hama.json, or null. A store that cannot be read leaves the key's other entitlements in place. */
+  async function legacyPlanOf(license) {
+    return Promise.resolve().then(() => legacyRauPlan(license.keyId)).catch((error) => {
+      log(`[site-api] legacy hama plan of ${license.keyId} unreadable: ${error?.message ?? error}`);
+      return null;
+    }).then((plan) => plan ?? null);
+  }
+
+  /**
+   * The Rau principal of a license, or null: its ledger is the key's own, billed in monthly periods
+   * from the subscription's first payment, else the key's creation, else the legacy plan's anchor.
+   */
+  function rauPrincipalOf(license, legacyPlan) {
+    if (!rauEntitled(license, now(), paymentGraceMaxMs, legacyPlan)) return null;
+    const anchor = parseTime(license.subscription?.activatedAt) ?? parseTime(license.createdAt) ?? parseTime(legacyPlan?.periodAnchor) ?? now();
+    return { source: 'plan', ledgerId: license.keyId, anchor: iso(anchor) };
+  }
+
+  async function rauFor(license) {
+    return rauPrincipalOf(license, await legacyPlanOf(license));
+  }
+
   /** `submittedKey` is what the app sent; the lease's keyHash is over the app's normalization of it. */
-  function leaseResponse(license, deviceId, submittedKey) {
+  function leaseResponse(license, deviceId, submittedKey, rau) {
     const licenseExpiresAt = expiryOf(license);
     const paymentGraceEndsAt = graceEndOf(license);
     const { lease, payload } = signLease({
@@ -940,12 +1092,12 @@ export function createLicensesService({
       expiresAt: payload.expiresAt,
       // The key's own end (null = lifetime). The lease's `expiresAt` above is only the offline window.
       licenseExpiresAt,
-      autoRenew: licenseExpiresAt === null ? null : license.subscription?.autoRenew !== false,
+      autoRenew: autoRenewOf(license),
       // `payment_failed`: Groble could not charge the renewal. The key works until `paymentGraceEndsAt`;
       // the buyer fixes the payment on `paymentFixUrl`.
       licenseState: paymentGraceEndsAt === null ? 'active' : 'payment_failed',
       paymentGraceEndsAt,
-      ...(licenseExpiresAt === null ? {} : { paymentFixUrl }),
+      ...(fixUrlOf(license) ? { paymentFixUrl } : {}),
       devicesUsed: Object.keys(license.devices).length,
       deviceLimit: deviceLimitOf(license),
       ...(license.edition === 'signature' ? {
@@ -953,10 +1105,11 @@ export function createLicensesService({
         prioritySupport: license.status === 'active',
         updatesUntil: parseTime(license.updatesUntil) ?? null,
       } : {}),
-      ...(license.edition === 'pro' ? { edition: 'pro' } : {}),
+      ...(isPlanEdition(license.edition) ? { edition: editionOf(license) } : {}),
       plan: planOf(license),
-      // Hosted Rau-0.1 (POST /v1/rau/learn) answers only active Pro keys.
-      rau: { eligible: rauEligible(license, now(), paymentGraceMaxMs) },
+      // Hosted Rau (Rau-0.1) answers live Rau keys and keys with an active legacy plan.
+      // A license lease never carries the account's trial.
+      rau: { eligible: rau !== null },
     };
   }
 
@@ -977,7 +1130,7 @@ export function createLicensesService({
         appVersion: str(body?.appVersion, 32),
         platform: str(body?.platform, 32),
       };
-      return { value: leaseResponse(license, deviceId, body.key) };
+      return { value: leaseResponse(license, deviceId, body.key, await rauFor(license)) };
     });
   }
 
@@ -989,7 +1142,7 @@ export function createLicensesService({
       const device = license.devices?.[deviceId];
       if (!device) throw licenseError('not_activated', 404);
       device.lastSeenAt = new Date(now()).toISOString();
-      return { value: leaseResponse(license, deviceId, body.key) };
+      return { value: leaseResponse(license, deviceId, body.key, await rauFor(license)) };
     });
   }
 
@@ -1010,11 +1163,12 @@ export function createLicensesService({
   /**
    * Check a lease the app presents as a bearer token: our own signature, not expired, the
    * license still active, the device still activated and the key unchanged. Read-only.
-   * Returns `{ keyId, deviceId, platform, source, tier, edition, active, rauEligible }`; anything else is
+   * Returns `{ keyId, deviceId, platform, source, tier, edition, active }`; anything else is
    * `unauthorized` (401). `allowInactive` also answers for a revoked or expired key (`active: false`),
    * so hosted Rau can tell such a key to upgrade; the lease itself must still be ours and unexpired.
+   * `withRau` adds `rau`: the key's Rau principal `{ source: 'plan', ledgerId, anchor }`, or null.
    */
-  async function authenticateLease(lease, { allowInactive = false } = {}) {
+  async function authenticateLease(lease, { allowInactive = false, withRau = false } = {}) {
     if (!signingKey) throw licenseError('unauthorized', 401);
     leasePublicKeys ??= { [leaseKid]: publicKeyFromPrivate(signingKey) };
     const checked = verifyLease(lease, leasePublicKeys, { now: now() });
@@ -1033,9 +1187,332 @@ export function createLicensesService({
       platform: device.platform,
       source: license.source,
       tier: tierOf(license),
-      edition: license.edition ?? null,
+      edition: editionOf(license) ?? null,
       active,
-      rauEligible: rauEligible(license, now(), paymentGraceMaxMs),
+      ...(withRau ? { rau: await rauFor(license) } : {}),
+    };
+  }
+
+  // ------------------------------------------------------------ accounts
+
+  /**
+   * Licenses linked to an account, each with what ranks it: live = active and before its access end
+   * (lifetime keys always), rank 2 for a key with Rau, 1 for every other key (Hama, GLJFC9, lifetime,
+   * Signature, beta, grandfathered, manual).
+   */
+  async function linkedOf(state, accountId) {
+    const nowMs = now();
+    const linked = Object.values(state.licenses).filter((license) => license.accountId === accountId);
+    return Promise.all(linked.map(async (license) => {
+      const end = accessEnd(license);
+      const live = isLive(license, nowMs, paymentGraceMaxMs);
+      const rau = live ? rauPrincipalOf(license, await legacyPlanOf(license)) : null;
+      return { license, live, end, rau, rank: rau ? 2 : 1, subscribed: isPlanEdition(license.edition) };
+    }));
+  }
+
+  /**
+   * Primary first: highest rank, then a Hama or Rau subscription (so the account shows the plan it pays
+   * for, not a beta or lifetime key), then latest access end (lifetime last forever), then oldest.
+   */
+  function byPrimary(a, b) {
+    if (a.rank !== b.rank) return b.rank - a.rank;
+    if (a.subscribed !== b.subscribed) return a.subscribed ? -1 : 1;
+    const endA = a.end ?? Infinity;
+    const endB = b.end ?? Infinity;
+    if (endA !== endB) return endB > endA ? 1 : -1;
+    return String(a.license.createdAt).localeCompare(String(b.license.createdAt));
+  }
+
+  async function liveLinked(accountId) {
+    return (await linkedOf(await read(), accountId)).filter((entry) => entry.live).sort(byPrimary);
+  }
+
+  function accountEditionOf(license) {
+    const edition = editionOf(license);
+    return ACCOUNT_EDITIONS.has(edition) ? edition : null;
+  }
+
+  function accountLicenseView({ license, live }, primaryKeyId) {
+    const expiry = expiryOf(license);
+    let status = 'active';
+    if (license.status === 'revoked') status = 'revoked';
+    else if (!live) status = 'expired';
+    else if (graceEndOf(license) !== null) status = 'past_due';
+    return {
+      keyId: license.keyId,
+      maskedKey: maskLicenseKey(license.key),
+      tier: tierOf(license),
+      edition: accountEditionOf(license),
+      plan: planOf(license),
+      status,
+      expiresAt: expiry,
+      autoRenew: autoRenewOf(license),
+      primary: license.keyId === primaryKeyId,
+      linkedBy: license.linkedBy ?? null,
+      linkedAt: parseTime(license.linkedAt) ?? null,
+    };
+  }
+
+  function licensesListOf(entries, primaryKeyId) {
+    return [...entries]
+      .sort((a, b) => (b.license.keyId === primaryKeyId) - (a.license.keyId === primaryKeyId)
+        || String(b.license.createdAt).localeCompare(String(a.license.createdAt)))
+      .map((entry) => accountLicenseView(entry, primaryKeyId));
+  }
+
+  /**
+   * What an account's licenses entitle it to now. `plan` and `licenses` go to the app (accounts.mjs adds
+   * `plan.rau` and lifts the tier during a trial); `primary` carries the fields the account lease signs;
+   * `rau` is the best live Rau license's principal, or null.
+   */
+  async function accountEntitlements(accountId) {
+    const entries = await linkedOf(await read(), accountId);
+    const live = entries.filter((entry) => entry.live).sort(byPrimary);
+    const top = live[0];
+    const license = top?.license;
+    const expiry = license ? expiryOf(license) : null;
+    const graceEnd = license ? graceEndOf(license) : null;
+    const tier = top ? RANK_TIERS[top.rank] : 'free';
+    return {
+      tier,
+      primary: license ? {
+        keyId: license.keyId,
+        beta: tierOf(license) === 'beta',
+        plan: planOf(license),
+        licenseExpiresAt: expiry,
+        paymentGraceEndsAt: graceEnd,
+      } : null,
+      plan: {
+        tier,
+        keyId: license?.keyId ?? null,
+        edition: license ? accountEditionOf(license) : null,
+        plan: license ? planOf(license) : null,
+        expiresAt: expiry,
+        autoRenew: license ? autoRenewOf(license) : null,
+        paymentFailed: graceEnd !== null,
+        paymentGraceEndsAt: graceEnd,
+        manageUrl: license ? fixUrlOf(license) : null,
+      },
+      licenses: licensesListOf(entries, license?.keyId ?? null),
+      rau: live.find((entry) => entry.rau)?.rau ?? null,
+    };
+  }
+
+  /** Every license linked to the account, primary first, then newest. */
+  async function accountLicensesView(accountId) {
+    return (await accountEntitlements(accountId)).licenses;
+  }
+
+  /**
+   * Links every license bought with this (verified) email that has no account yet. Revoked keys and
+   * keys an admin unlinked stay out. Returns how many were linked.
+   */
+  async function linkByEmail(emailLower, accountId) {
+    const email = typeof emailLower === 'string' ? emailLower.trim().toLowerCase() : '';
+    if (!email || !accountId) return 0;
+    return mutate((state) => {
+      let count = 0;
+      for (const license of Object.values(state.licenses)) {
+        if (license.accountId || license.status === 'revoked' || license.unlinkedBy === 'admin') continue;
+        if (license.email?.toLowerCase() !== email) continue;
+        linkLicense(license, accountId, 'email');
+        count += 1;
+      }
+      return { dirty: count > 0, value: count };
+    });
+  }
+
+  /** The shared checks of redeem and claim: a revoked key or another account's key is refused. */
+  function linkForAccount(license, accountId, linkedBy) {
+    if (license.status === 'revoked') throw licenseError('revoked', 403);
+    if (license.accountId && license.accountId !== accountId) throw licenseError('key_linked_elsewhere', 409);
+    const alreadyLinked = license.accountId === accountId;
+    if (!alreadyLinked) linkLicense(license, accountId, linkedBy);
+    return { dirty: !alreadyLinked, value: { alreadyLinked, keyId: license.keyId } };
+  }
+
+  /** Links a key the user typed. Resolves to `{ alreadyLinked, keyId }`. */
+  async function redeemForAccount(accountId, rawKey) {
+    const key = normalizeLicenseKey(rawKey);
+    if (!key) throw licenseError('invalid_format', 400);
+    return mutate((state) => {
+      const license = Object.hasOwn(state.keyIndex, key) ? state.licenses[state.keyIndex[key]] : undefined;
+      if (!license) throw licenseError('invalid_key', 404);
+      return linkForAccount(license, accountId, 'redeem');
+    });
+  }
+
+  /**
+   * Links the key of a Groble order bought with another email: the order number and the buyer email
+   * must both match, and anything else is order_not_found so neither can be probed. A held order has
+   * no key yet (order_not_ready).
+   */
+  async function claimForAccount(accountId, { orderId, email } = {}) {
+    const merchantUid = str(orderId, 128);
+    const buyer = str(email, 254)?.toLowerCase();
+    return mutate((state) => {
+      const order = merchantUid && Object.hasOwn(state.orders, merchantUid) ? state.orders[merchantUid] : undefined;
+      if (!order || !buyer || order.email?.toLowerCase() !== buyer) throw licenseError('order_not_found', 404);
+      const license = order.keyId ? state.licenses[order.keyId] : undefined;
+      if (!license) throw order.status === 'held' ? licenseError('order_not_ready', 409) : licenseError('order_not_found', 404);
+      return linkForAccount(license, accountId, 'claim');
+    });
+  }
+
+  /**
+   * Redeems a gift code for an account in one mutation: a new key with the batch's stored edition
+   * (`plan`), running from now for the batch's term and linked to the account, and the code marked
+   * redeemed. A Rau key's credits run monthly from its creation, like any Rau key without a
+   * subscription. The same account again gets the same key back (`alreadyRedeemed`). Resolves to
+   * `{ alreadyRedeemed, keyId, edition }`, the edition by its current name.
+   */
+  async function redeemGiftCode(accountId, rawCode) {
+    const code = normalizeGiftCode(rawCode);
+    if (!code) throw licenseError('invalid_format', 400);
+    const hash = giftCodeHash(code);
+    return mutate((state) => {
+      const record = Object.hasOwn(state.giftCodes, hash) ? state.giftCodes[hash] : undefined;
+      const batch = record && Object.hasOwn(state.giftCodeBatches, record.batchId) ? state.giftCodeBatches[record.batchId] : undefined;
+      if (!record || !batch) throw licenseError('invalid_code', 404);
+      if (record.status === 'redeemed') {
+        if (record.accountId !== accountId) throw licenseError('code_redeemed', 409);
+        return { dirty: false, value: { alreadyRedeemed: true, keyId: record.keyId, edition: giftPlanName(batch) } };
+      }
+      const nowMs = now();
+      const status = giftCodeStatusOf(record, batch, nowMs);
+      if (status === 'revoked') throw licenseError('code_revoked', 410);
+      if (status === 'expired') throw licenseError('code_expired', 410);
+      const expiresMs = batch.durationMonths ? subscriptionEnd(nowMs, batch.durationMonths) : daysEnd(nowMs, batch.durationDays);
+      const license = createLicense(state, {
+        source: 'gift_code',
+        edition: batch.plan,
+        expiresAt: iso(expiresMs),
+        giftBatchId: batch.batchId,
+      });
+      linkLicense(license, accountId, 'gift_code');
+      Object.assign(record, { status: 'redeemed', redeemedAt: iso(nowMs), accountId, keyId: license.keyId });
+      return { value: { alreadyRedeemed: false, keyId: license.keyId, edition: giftPlanName(batch) } };
+    });
+  }
+
+  function giftCodeView(record, batch, nowMs) {
+    return {
+      // An opaque id for admin views and revoke: the SHA-256 cannot give the code back.
+      codeHash: record.codeHash,
+      maskedCode: maskGiftCode(record.prefix),
+      status: giftCodeStatusOf(record, batch, nowMs),
+      createdAt: record.createdAt,
+      redeemedAt: record.redeemedAt ?? null,
+      accountId: record.accountId ?? null,
+      keyId: record.keyId ?? null,
+      revokedAt: record.revokedAt ?? null,
+    };
+  }
+
+  /** A batch's plan by its current name: `hama` or `rau` (the batch stores the edition its keys get). */
+  function giftPlanName(batch) {
+    return editionOf({ edition: batch.plan }) ?? batch.plan;
+  }
+
+  /** A batch with its plan by name, its code counts by status and, filtered by `status`, its masked codes. */
+  function giftBatchView(state, batch, nowMs, status) {
+    const codes = Object.values(state.giftCodes)
+      .filter((record) => record.batchId === batch.batchId)
+      .map((record) => giftCodeView(record, batch, nowMs));
+    const counts = Object.fromEntries(GIFT_CODE_STATUSES.map((name) => [name, codes.filter((c) => c.status === name).length]));
+    return { ...batch, plan: giftPlanName(batch), counts, codes: status ? codes.filter((c) => c.status === status) : codes };
+  }
+
+  /**
+   * `{ plan, durationMonths | durationDays, count, note?, redeemBy? }` checked; plan and term have no
+   * defaults. `plan` is `hama` or `rau` (`basic` and `pro` still mean Hama) and comes back as the
+   * edition to store.
+   */
+  function parseGiftIssue(body) {
+    if (body?.plan === undefined || body.plan === null || body.plan === '') throw licenseError('plan_required', 400);
+    const edition = giftCodeEdition(body.plan);
+    if (!edition) throw licenseError('plan_invalid', 400);
+    const hasMonths = body?.durationMonths !== undefined && body.durationMonths !== null;
+    const hasDays = body?.durationDays !== undefined && body.durationDays !== null;
+    if (hasMonths && hasDays) throw licenseError('duration_conflict', 400);
+    if (!hasMonths && !hasDays) throw licenseError('duration_required', 400);
+    const term = {};
+    if (hasMonths) {
+      const months = wholeNumber(body.durationMonths);
+      if (!(months >= 1 && months <= MAX_GIFT_DURATION_MONTHS)) throw licenseError('duration_invalid', 400);
+      term.durationMonths = months;
+    } else {
+      const days = wholeNumber(body.durationDays);
+      if (!(days >= 1 && days <= MAX_GIFT_DURATION_DAYS)) throw licenseError('duration_invalid', 400);
+      term.durationDays = days;
+    }
+    const count = wholeNumber(body?.count);
+    if (!(count >= 1 && count <= MAX_GIFT_CODES_PER_BATCH)) throw licenseError('count_invalid', 400);
+    let redeemBy;
+    if (body?.redeemBy !== undefined && body.redeemBy !== null && body.redeemBy !== '') {
+      const until = parseUntil(body.redeemBy);
+      if (until === undefined || until <= now()) throw licenseError('redeem_by_invalid', 400);
+      redeemBy = iso(until);
+    }
+    return { plan: edition, ...term, count, note: str(body?.note, 500), redeemBy };
+  }
+
+  /** A live subscription Groble will charge again: auto-renewal on and not terminated. */
+  function renewsAutomatically(license) {
+    const end = accessEnd(license);
+    if (license.status !== 'active' || end === null || now() >= end) return false;
+    return autoRenewOf(license) === true && license.subscription?.status !== 'terminated';
+  }
+
+  /**
+   * Frees every license of a deleted account; its email links them to the next account again.
+   * `refuseActiveSubscription` checks first, in the same lock: an auto-renewing live subscription
+   * is 409 subscription_active with Groble's buyer page, and nothing changes.
+   */
+  async function unlinkAccount(accountId, { refuseActiveSubscription = false } = {}) {
+    return mutate((state) => {
+      const linked = Object.values(state.licenses).filter((license) => license.accountId === accountId);
+      if (refuseActiveSubscription && linked.some(renewsAutomatically)) {
+        throw Object.assign(licenseError('subscription_active', 409), { extra: { manageUrl: paymentFixUrl } });
+      }
+      const at = new Date(now()).toISOString();
+      for (const license of linked) {
+        delete license.accountId;
+        delete license.linkedAt;
+        delete license.linkedBy;
+        license.unlinkedAt = at;
+        license.unlinkedBy = 'delete';
+      }
+      return { dirty: linked.length > 0, value: linked.length };
+    });
+  }
+
+  /**
+   * The principal of an account lease for a hosted service, the same shape as authenticateLease plus
+   * `accountId`. The license is chosen now by purpose: `gift` a live beta key, `rau` the best live Rau
+   * key; else the primary. Without a live license, `allowInactive` answers `{ keyId: null, active: false }`;
+   * otherwise 401. `withRau` adds the chosen key's Rau principal (accounts.mjs adds the trial).
+   */
+  async function authenticateAccount(accountId, { deviceId, platform, purpose, allowInactive = false, withRau = false } = {}) {
+    const live = await liveLinked(accountId);
+    const choices = {
+      gift: () => live.find((entry) => tierOf(entry.license) === 'beta'),
+      rau: () => live.find((entry) => entry.rau),
+    };
+    const chosen = (Object.hasOwn(choices, purpose) ? choices[purpose]() : undefined) ?? live[0];
+    if (!chosen && !allowInactive) throw licenseError('unauthorized', 401);
+    const license = chosen?.license;
+    return {
+      keyId: license?.keyId ?? null,
+      deviceId,
+      platform,
+      source: license?.source ?? null,
+      tier: license ? tierOf(license) : 'paid',
+      edition: license ? editionOf(license) ?? null : null,
+      active: Boolean(chosen),
+      accountId,
+      ...(withRau ? { rau: chosen?.rau ?? null } : {}),
     };
   }
 
@@ -1046,7 +1523,7 @@ export function createLicensesService({
     const installId = typeof body?.installId === 'string' ? body.installId.trim().toLowerCase() : '';
     if (!INSTALL_ID_RE.test(installId)) throw licenseError('install_id_invalid', 400);
     const digest = uniqueInstallDigest(installId);
-    const installs = (await uniqueInstallsStore?.load())?.installs ?? {};
+    const installs = (await uniqueInstallsStore?.read())?.installs ?? {};
     const install = installs[digest];
     const firstSeen = parseTime(install?.firstSeenAt);
     const eligible = install && firstSeen !== undefined && firstSeen < grandfatherCutoff
@@ -1283,7 +1760,7 @@ export function createLicensesService({
           occurredAt: order.completedAt,
           note: `released from hold: ${order.holdReason ?? ''}`.trim(),
           ...(order.kind === 'subscription' ? subscriptionStart(order) : {}),
-          ...(order.kind === 'subscription' ? proEntitlement(catalog.get(order.contentId), order.billingCycleMonths ?? SUBSCRIPTION_CYCLE_MONTHS) : {}),
+          ...(order.kind === 'subscription' ? planEntitlement(catalog.get(order.contentId), order.billingCycleMonths ?? SUBSCRIPTION_CYCLE_MONTHS) : {}),
           ...(catalog.get(order.contentId)?.kind === 'signature'
             ? signatureEntitlement(order.contentId, paidAtOf(order))
             : {}),
@@ -1352,6 +1829,36 @@ export function createLicensesService({
           note: str(body?.note, 200),
         });
         return { value: { ok: true, previousExpiresAt: iso(before), license: licenseView(license) } };
+      });
+    },
+    /** Frees a key from its account. The owner's email no longer links it back on its own; `linkAccount` or a redeem does. */
+    async unlinkAccount(token, body) {
+      requireAdmin(token);
+      return mutate(async (state) => {
+        const license = findLicense(state, { keyId: str(body?.keyId, 64), key: body?.key });
+        if (!license) throw licenseError('invalid_key', 404);
+        const changed = Boolean(license.accountId);
+        if (changed) {
+          delete license.accountId;
+          delete license.linkedAt;
+          delete license.linkedBy;
+          license.unlinkedAt = new Date(now()).toISOString();
+          license.unlinkedBy = 'admin';
+        }
+        return { dirty: changed, value: { ok: true, changed, license: licenseView(license) } };
+      });
+    },
+    /** Links a key to an account the caller checked exists, moving it from any other account. */
+    async linkAccount(token, body) {
+      requireAdmin(token);
+      const accountId = str(body?.accountId, 64);
+      if (!accountId) throw licenseError('account_not_found', 404);
+      return mutate(async (state) => {
+        const license = findLicense(state, { keyId: str(body?.keyId, 64), key: body?.key });
+        if (!license) throw licenseError('invalid_key', 404);
+        const previousAccountId = license.accountId ?? null;
+        linkLicense(license, accountId, 'admin');
+        return { value: { ok: true, previousAccountId, license: licenseView(license) } };
       });
     },
     /** Free one device slot without touching the key's other devices. */
@@ -1462,6 +1969,76 @@ export function createLicensesService({
         return { value: { ok: true, changed: true, previousExpiresAt: iso(before), license: licenseView(license) } };
       });
     },
+    /**
+     * Issues one batch of gift codes. The answer is the only place the plaintext codes ever appear;
+     * the state keeps their SHA-256 and display prefix.
+     */
+    async issueGiftCodes(token, body) {
+      requireAdmin(token);
+      const fields = parseGiftIssue(body);
+      return mutate(async (state) => {
+        let batchId;
+        do batchId = `gcb_${random(9).toString('hex')}`; while (Object.hasOwn(state.giftCodeBatches, batchId));
+        const createdAt = new Date(now()).toISOString();
+        const batch = { batchId, ...fields, createdAt };
+        for (const k of Object.keys(batch)) if (batch[k] === undefined) delete batch[k];
+        state.giftCodeBatches[batchId] = batch;
+        const codes = [];
+        while (codes.length < fields.count) {
+          const code = generateGiftCode(random);
+          const codeHash = giftCodeHash(code);
+          if (Object.hasOwn(state.giftCodes, codeHash)) continue;
+          state.giftCodes[codeHash] = { codeHash, batchId, prefix: giftCodePrefix(code), status: 'active', createdAt };
+          codes.push(code);
+        }
+        log(`[site-api] gift code batch ${batchId}: ${codes.length} ${giftPlanName(batch)} codes issued`);
+        return { value: { ok: true, batch: giftBatchView(state, batch, now()), codes } };
+      });
+    },
+    /** Batches newest first with counts and masked codes; `batchId` picks one, `status` filters the codes. */
+    async giftCodes(token, { batchId, status } = {}) {
+      requireAdmin(token);
+      if (status && !GIFT_CODE_STATUSES.includes(status)) throw licenseError('status_invalid', 400);
+      const state = await read();
+      const nowMs = now();
+      const batches = Object.values(state.giftCodeBatches)
+        .filter((batch) => !batchId || batch.batchId === batchId)
+        .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+        .map((batch) => giftBatchView(state, batch, nowMs, status));
+      return { ok: true, count: batches.length, batches };
+    },
+    /**
+     * `{ batchId }` revokes every unredeemed code of a batch, `{ code }` or `{ codeHash }` one code. A
+     * redeemed code is 409 code_redeemed with its keyId: revoke that key instead.
+     */
+    async revokeGiftCodes(token, body) {
+      requireAdmin(token);
+      const batchId = str(body?.batchId, 64);
+      const hasCode = body?.code !== undefined && body.code !== null && body.code !== '';
+      const hasHash = body?.codeHash !== undefined && body.codeHash !== null && body.codeHash !== '';
+      if ([Boolean(batchId), hasCode, hasHash].filter(Boolean).length !== 1) throw licenseError('target_required', 400);
+      const code = hasCode ? normalizeGiftCode(body.code) : '';
+      if (hasCode && !code) throw licenseError('invalid_format', 400);
+      if (hasHash && !(typeof body.codeHash === 'string' && /^[0-9a-f]{64}$/.test(body.codeHash))) throw licenseError('invalid_format', 400);
+      const hash = code ? giftCodeHash(code) : hasHash ? body.codeHash : null;
+      const reason = str(body?.reason, 200);
+      return mutate(async (state) => {
+        let targets;
+        if (batchId) {
+          if (!Object.hasOwn(state.giftCodeBatches, batchId)) throw licenseError('batch_not_found', 404);
+          targets = Object.values(state.giftCodes).filter((record) => record.batchId === batchId && record.status === 'active');
+        } else {
+          const record = Object.hasOwn(state.giftCodes, hash) ? state.giftCodes[hash] : undefined;
+          if (!record) throw licenseError('invalid_code', 404);
+          if (record.status === 'redeemed') throw Object.assign(licenseError('code_redeemed', 409), { extra: { keyId: record.keyId } });
+          targets = record.status === 'active' ? [record] : [];
+        }
+        const at = new Date(now()).toISOString();
+        for (const record of targets) Object.assign(record, { status: 'revoked', revokedAt: at, ...(reason ? { revokeReason: reason } : {}) });
+        const batch = state.giftCodeBatches[batchId ?? state.giftCodes[hash].batchId];
+        return { dirty: targets.length > 0, value: { ok: true, changed: targets.length, batch: giftBatchView(state, batch, now()) } };
+      });
+    },
     async resendEmail(token, body) {
       requireAdmin(token);
       const result = await mutate(async (state) => {
@@ -1489,6 +2066,14 @@ export function createLicensesService({
     deactivate,
     grandfather,
     authenticateLease,
+    accountEntitlements,
+    accountLicensesView,
+    linkByEmail,
+    redeemForAccount,
+    claimForAccount,
+    redeemGiftCode,
+    unlinkAccount,
+    authenticateAccount,
     admin,
   };
 }

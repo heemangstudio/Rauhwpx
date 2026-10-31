@@ -15,14 +15,23 @@ export function desktopPlanApi(host: { rhwpDesktop?: { plan?: DesktopPlanApi } }
   return host?.rhwpDesktop?.plan ?? null;
 }
 
+/** 홈과 계정 화면이 함께 쓰는 창 단위 요금제 상태. */
+let windowPlanStore: PlanStore | null = null;
+export function sharedPlanStore(): PlanStore | null {
+  const api = desktopPlanApi();
+  if (!api) return null;
+  windowPlanStore ??= createPlanStore(api);
+  return windowPlanStore;
+}
+
 /** 무료 요금제에서 에이전트를 잠그는지. 상태를 모르면 잠그지 않는다. */
 export function planLocksAgent(status: PlanStatus | null): boolean {
   return status !== null && status.tier === 'free' && !status.agentUnlocked;
 }
 
-/** 문서 홈의 Hama 입구. Hama 로 올라갈 수 있는 유료 등급(Pro·기존 라이선스)에만. */
-export function showsHamaHomeEntry(status: PlanStatus | null): boolean {
-  return status?.tier === 'pro' || status?.tier === 'legacy';
+/** 문서 홈의 Rau 입구. Rau 로 올라갈 수 있는 유료 등급(Hama)에만. */
+export function showsRauHomeEntry(status: PlanStatus | null): boolean {
+  return status?.tier === 'hama';
 }
 
 export function createPlanStore(api: DesktopPlanApi | null): PlanStore {

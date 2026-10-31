@@ -58,17 +58,25 @@ import { typingActivity, type TypingActivity } from '../ui/agent-sidebar/typing-
 import { provideLocalPasswordsApi } from '../ui/agent-sidebar/browser-local-passwords.ts';
 import { createPreviewLocalPasswords } from './mock-local-passwords.ts';
 import { createMockGift, mockGiftMode } from './mock-gift.ts';
-import { mockHamaMode, mockHamaModes, mockHamaStatus, type MockHamaMode } from './mock-hama.ts';
 import { createMockAutofix, mockAutofixOutcomes } from './mock-autofix.ts';
 import { setAutofixApi, type AutofixStatus } from '../ui/autofix/autofix.ts';
 import { createMockLicense, mockLicenseMode } from './mock-license.ts';
 import { createMockRau, mockRauMode, MOCK_RAU_UPGRADE_URL } from './mock-rau.ts';
 import { createMockPlan, mockCheckoutMode, mockCheckoutModes, mockPlanTier, mockPlanTiers, type MockCheckoutMode } from './mock-plan.ts';
+import {
+  createMockAccount,
+  mockAccountScenario,
+  mockAccountScenarios,
+  mockAccountSignedIn,
+  mockAccountTier,
+  type MockAccountScenario,
+} from './mock-account.ts';
+import { accountStore, setAccountApi } from '../ui/account/account-store.ts';
+import { listenForAccountPageEvents } from '../ui/account/account-page.ts';
 import type { PlanTier } from '../ui/plan/plan-types.ts';
 import { createPlanStore } from '../ui/plan/plan-store.ts';
 import { mountHomeScene } from './home-scene.ts';
 import { startSpecialEvent } from '../ui/special-event/special-event-trigger.ts';
-import { startAutofixIntro } from '../ui/autofix/autofix-intro.ts';
 import { installManualAutofix } from '../ui/autofix/autofix-manual.ts';
 import { isInitialSetupActive, onInitialSetupInactive, wasLicensedHere } from '../ui/initial-setup/active.ts';
 
@@ -210,20 +218,46 @@ const liveChat = reload === 'running' || reload === 'question' || reload === 'en
  * 앱처럼 키를 활성화한 뒤에야 선물이 보이고, 처음 설정 위에 선물 창이 뜬다.
  */
 /*
- * 앱 요금제. `plan=free|pro|legacy|hama` 면 데스크톱 요금제 API 가 생긴다(없으면 웹처럼 잠금·↑ 단추 없음).
- * 요금제 카드의 '키 직접 입력'이 쓰도록 라이선스 대역도 무료 상태로 함께 둔다(HAMA- 키가 Pro 를 연다).
+ * 앱 요금제. `plan=free|hama|rau` 면 데스크톱 요금제 API 가 생긴다(없으면 웹처럼 잠금·↑ 단추 없음).
+ * 요금제 카드의 '키 직접 입력'이 쓰도록 라이선스 대역도 무료 상태로 함께 둔다(HAMA- 키가 Hama 를 연다).
  */
-const mockPlan = createMockPlan(mockPlanTier(params), {
+/*
+ * 계정. `account=signed-out|signing-in|choose-device|free|hama|rau|rau-trial|trial-ended|payment-failed|offline` 이면
+ * 데스크톱 계정 API 가 생기고, `plan=` 이 없으면 요금제 대역도 계정의 등급과 로그인 여부를 따라 함께 생긴다.
+ * `open=plans`(`&focus=hama|rau`)는 요금제 카드를, `open=account`(`&section=plan|devices|licenses|sign-in`)는 계정 페이지를
+ * 띄운 채로 연다(스크린숏용).
+ */
+const accountScenario = mockAccountScenario(params);
+const mockPlan = createMockPlan(mockPlanTier(params) ?? (accountScenario ? mockAccountTier(accountScenario) : null), {
   checkout: mockCheckoutMode(params),
   hold: params.get('checkoutHold') === '1',
+  signedIn: accountScenario ? mockAccountSignedIn(accountScenario) : true,
   report,
 });
+const mockAccount = createMockAccount(accountScenario, {
+  report,
+  hold: params.get('accountHold') === '1',
+  trialFailure: params.get('trialFail'),
+});
+if (mockAccount) {
+  setAccountApi(mockAccount.api);
+  // 로그인 여부와 등급은 계정이 정하고, 결제로 바뀐 등급은 계정에도 남는다.
+  mockAccount.api.onChange((status) => {
+    mockPlan?.setSignedIn(status.state === 'signed_in');
+    if (mockPlan && mockPlan.status().tier !== status.plan.tier) mockPlan.setTier(status.plan.tier);
+  });
+  mockPlan?.api.onChange((status) => {
+    // 체험 중에 Rau 를 사면 등급은 그대로라 결제 확인으로도 계정을 고친다.
+    if (status.tier !== mockAccount.status().plan.tier || status.lastCheckout?.ok) mockAccount.setTier(status.tier);
+  });
+  listenForAccountPageEvents({ plan: mockPlan ? createPlanStore(mockPlan.api) : null });
+}
 const mockLicense = createMockLicense(
   mockPlan && mockLicenseMode(params) === 'off' ? 'free' : mockLicenseMode(params), report);
 mockLicense?.onLicensed(() => {
-  if (mockPlan && mockPlan.status().tier === 'free') mockPlan.setTier('pro');
+  if (mockPlan && mockPlan.status().tier === 'free') mockPlan.setTier('hama');
 });
-/* 호스팅 Rau(Pro). `rau=free|pro` 가 설정 → Rau-0.1 의 Pro 줄을, `rau=upgrade` 는 입력창 위 업그레이드 칩도 띄운다. */
+/* 호스팅 Rau. `rau=free|rau|trial|exhausted` 가 설정 → Rau-0.1 의 Rau 줄을, `rau=upgrade` 는 입력창 위 업그레이드 칩도 띄운다. */
 const mockRau = createMockRau(mockRauMode(params), report);
 const mockGift = createMockGift(mockGiftMode(params), {
   failClaim: params.get('claim') === 'fail',
@@ -236,20 +270,12 @@ const mock = createMockBridge(report, () => {
     restoreState.ready.add(restoreState.turnKey);
     notifyRestore();
   }
-}, { liveChat, piGift: () => mockGift?.active() === true, hama: mockHamaStatus(mockHamaMode(params)) });
+}, { liveChat, piGift: () => mockGift?.active() === true });
 mockGift?.api.onChange(() => mock.syncPiStatus());
-const hamaDesktop = params.has('hama');
-/** 잠긴 Hama 를 누르면 앱이 띄울 플랜 안내 요청 — 미리보기는 기록만 한다. */
-const planCardRequests: unknown[] = [];
-window.addEventListener('rhwp:open-plan-card', (event) => {
-  planCardRequests.push((event as CustomEvent).detail);
-  report('Plan card placeholder');
+/** 업그레이드 단추가 앱에 띄워 달라는 요금제 카드. 요금제 대역이 있으면 진짜 카드가 뜨므로 기록만 한다. */
+window.addEventListener('rhwp:open-plan-card', () => {
+  if (!mockPlan) report('Plan card placeholder');
 });
-/** `sidebarPreview.setHama('cap5h')` — Hama 플랜 상태를 바꿔 hama-status 를 다시 보낸다. */
-function setHama(mode: MockHamaMode): void {
-  if (!mockHamaModes.includes(mode)) throw new Error(`hama mode: ${mockHamaModes.join(', ')}`);
-  mock.setHamaStatus(mockHamaStatus(mode));
-}
 /** 자동 수정(데스크톱). `autofix=fixed|failed|unavailable|off|undecided`, 없으면 웹 빌드처럼 단추가 없다. */
 const mockAutofix = createMockAutofix(params);
 setAutofixApi(mockAutofix?.api ?? null);
@@ -368,8 +394,6 @@ if (params.get('editor') === '1') {
   // 앱과 같이 명령 검색 왼쪽에 자동 수정 단추를 단다(`autofix=` 가 있고 켠 상태일 때).
   installManualAutofix({ reportIssue: () => report('버그 제보 · issue report fixture') });
 }
-// 앱과 같은 트리거로 자동 버그 수정 소개를 띄운다. `autofix=undecided` 일 때만 뜬다.
-if (mockAutofix) startAutofixIntro({ whenReady: async () => {} });
 if ((params.get('event') === 'special' || mockLicense) && mockGift) {
   // 앱과 같은 트리거로 띄운다. 기록은 메모리에만 남겨 새로고침하면 다시 뜬다.
   const records = new Map<string, string>();
@@ -626,8 +650,6 @@ const sidebar = initAgentSidebar({
   turnRestore,
   gift: mockGift?.api ?? null,
   license: mockLicense?.api ?? null,
-  // `hama=` 를 주면 데스크톱 앱이다 — `off`(unavailable, Free)면 잠긴 Hama 항목이 보인다. 생략하면 웹 Studio 라 항목이 없다.
-  desktopApp: hamaDesktop,
   rau: mockRau,
   plan: mockPlan?.api ?? null,
   // 웹 빌드처럼 창 세션만 안다(앱 실행 id 는 데스크톱만). 이 사이드바가 창의 기본 허브 세션을 쓴다.
@@ -647,9 +669,14 @@ const sidebar = initAgentSidebar({
 });
 mock.boot();
 if (params.get('hub') === 'down') mock.setConnection('disconnected');
-/* `home=1`: 문서 홈(표본 최근 문서). Pro·기존 라이선스면 위 막대에 Hama 입구가 선다. */
+/* `home=1`: 문서 홈(표본 최근 문서). Hama 요금제면 위 막대에 Rau 입구가 선다. */
 const home = params.get('home') === '1'
-  ? mountHomeScene({ plan: mockPlan ? createPlanStore(mockPlan.api) : null, license: mockLicense?.api ?? null, report })
+  ? mountHomeScene({
+    plan: mockPlan ? createPlanStore(mockPlan.api) : null,
+    license: mockLicense?.api ?? null,
+    account: mockAccount ? accountStore() : null,
+    report,
+  })
   : null;
 const projectScene = createProjectScene(sidebar);
 sessions.push({ sidebar, mock, documentId: () => documentId });
@@ -759,6 +786,11 @@ if (mockPlan) {
   mockPlan.api.onChange((status) => { planSelect.value = status.tier; });
 }
 planSelect.addEventListener('change', () => mockPlan?.setTier(planSelect.value as PlanTier));
+const accountSelect = document.querySelector<HTMLSelectElement>('#account')!;
+for (const scenario of mockAccountScenarios) accountSelect.add(new Option(scenario, scenario));
+accountSelect.closest('label')!.hidden = !mockAccount;
+if (accountScenario) accountSelect.value = accountScenario;
+accountSelect.addEventListener('change', () => mockAccount?.setScenario(accountSelect.value as MockAccountScenario));
 checkoutSelect.addEventListener('change', () => mockPlan?.setCheckout(checkoutSelect.value as MockCheckoutMode));
 const theme = document.querySelector<HTMLSelectElement>('#theme')!;
 theme.value = userSettings.getThemeSettings().mode;
@@ -854,6 +886,19 @@ if (params.get('page') === 'settings') {
   eventBus.emit('settings:open', { destination: isSettingsDestination(requestedDestination) ? requestedDestination : 'editing' });
 }
 if (params.get('page') === 'versions') sidebar.openVersions();
+// `open=plans` / `open=account`: 요금제 카드나 계정 페이지를 띄운 채로 시작한다.
+if (params.get('open') === 'plans' && mockPlan) {
+  await sidebar.startupChatSettled();
+  const focus = params.get('focus');
+  window.dispatchEvent(new CustomEvent('rhwp:open-plan-card', { detail: focus === 'hama' || focus === 'rau' ? { focus } : {} }));
+}
+if (params.get('open') === 'account' && mockAccount) {
+  await sidebar.startupChatSettled();
+  const section = params.get('section');
+  window.dispatchEvent(new CustomEvent('rhwp:open-account', {
+    detail: section === 'plan' || section === 'devices' || section === 'licenses' || section === 'sign-in' ? { section } : {},
+  }));
+}
 // `memory=sample` / `memory=empty`: the 문서 기억 sheet of the shown document (mock store in mock-document-memory.ts).
 if (params.has('memory')) {
   await sidebar.startupChatSettled();
@@ -895,10 +940,9 @@ if (parallel === 'locked') {
 // Typed hooks for browser checks and custom scenario scripts.
 const preview = { ...mock, sidebar, versions, eventBus, enterFocusMode, undoState, restoreState, navigation, typingHold, linkCalls, detachCalls,
   gift: mockGift,
-  setHama,
-  planCardRequests,
   autofix: mockAutofix,
   plan: mockPlan,
+  account: mockAccount,
   home,
   sessions, attachSession, chats, showChat, openChatCalls, attention, attentionNotices, attentionCounts,
   openFromAttention,

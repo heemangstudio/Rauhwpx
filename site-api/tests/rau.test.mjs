@@ -10,328 +10,448 @@ import { promisify } from 'node:util';
 import { resolveRauConfig } from '../config.mjs';
 import { generateLeaseKeyPair } from '../license-lease.mjs';
 import { MAX_RAU_PROMPT_BYTES } from '../rau.mjs';
+import {
+  RAU_PRICES,
+  addSpend,
+  billingPeriod,
+  normalizeLedger,
+  periodOf,
+  periodUsed,
+  recordCall,
+  spendReport,
+  weekOf,
+} from '../rau-ledger.mjs';
+import { billCall, createRauUpstream, meterReply } from '../rau-upstream.mjs';
 import { createSiteServer } from '../server.mjs';
-import { createFakeOpenRouter } from './fixtures/fake-openrouter.mjs';
-import { PRO_ENV, PRO_YEARLY_ID, proPaid, signedGroblePost } from './fixtures/groble-pro.mjs';
+import { HAIKU_CALL_USD, createFakeAnthropic, createFakeOpenRouter } from './fixtures/fake-rau-upstreams.mjs';
+import { planPaid, signedGroblePost } from './fixtures/groble-plans.mjs';
 
 const ADMIN = 'admin-token-for-rau-tests';
 const SECRET = 'whsec_test_rau';
-const PROVISIONING = 'pk-test-rau-provisioning';
 const PAIR = generateLeaseKeyPair();
+// Placeholders built at runtime: never a real key, never key-shaped.
+const ANTHROPIC_KEY = ['test', 'anthropic', 'placeholder'].join('-');
+const OPENROUTER_KEY = ['test', 'openrouter', 'placeholder'].join('-');
 const T0 = Date.parse('2026-10-20T14:22:11+09:00');
-const UPGRADE = 'https://heemangstudios.com/pricing.html#pro';
-const PINNED = 'deepseek/deepseek-v4.1-flash';
+// A Rau key bought at T0 bills monthly from its first payment.
+const PERIOD_START = '2026-10-20T05:22:11.000Z';
+const PERIOD_END = '2026-11-20T05:22:11.000Z';
+const UPGRADE = 'https://heemangstudios.com/pricing.html#rau';
+const HAIKU_OR = 'anthropic/claude-haiku-4.5';
+const HAIKU_API = 'claude-haiku-4-5';
+const DEEPSEEK = 'deepseek/deepseek-v4.1-flash';
 const CLI = fileURLToPath(new URL('../scripts/license-admin.mjs', import.meta.url));
-// Rau-0.1 answers JSON-ish text; the server returns it as is.
-const REPLY = '```json\n{"ops":[{"op":"add","text":"표는 가운데 정렬"}]}\n```';
 
-async function setup(t, env = {}, { dir, clock = { now: T0 } } = {}) {
-  const directory = dir ?? await fs.mkdtemp(path.join(os.tmpdir(), 'site-api-rau-'));
-  if (!dir) t.after(() => fs.rm(directory, { recursive: true, force: true, maxRetries: 5 }));
-  const upstream = createFakeOpenRouter({ provisioningKey: PROVISIONING });
-  const apiBase = await upstream.listen();
-  t.after(() => upstream.close());
-  upstream.setChatReply(REPLY);
-  upstream.setChatSpend({ credit: 0.0003 });
+async function setup(t, env = {}, { clock = { now: T0 }, seed } = {}) {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'site-api-rau-'));
+  t.after(() => fs.rm(directory, { recursive: true, force: true, maxRetries: 5 }));
+  if (seed) for (const [file, value] of Object.entries(seed)) await fs.writeFile(path.join(directory, file), JSON.stringify(value));
+  const anthropic = createFakeAnthropic();
+  const openrouter = createFakeOpenRouter();
+  const anthropicBase = await anthropic.listen();
+  const openrouterBase = await openrouter.listen('/api/v1');
+  t.after(() => anthropic.close());
+  t.after(() => openrouter.close());
+  const logs = [];
   const server = createSiteServer({
     RAU_SITE_DATA: directory,
     GROBLE_WEBHOOK_SECRET: SECRET,
     LICENSE_SIGNING_PRIVATE_KEY: PAIR.privateKeyDerBase64,
     ADMIN_TOKEN: ADMIN,
-    OPENROUTER_PROVISIONING_KEY: PROVISIONING,
-    OPENROUTER_API_BASE: apiBase,
-    ...PRO_ENV,
+    ANTHROPIC_API_BASE: anthropicBase,
+    OPENROUTER_API_BASE: openrouterBase,
+    ANTHROPIC_API_KEY: ANTHROPIC_KEY,
+    RAU_OPENROUTER_KEY: OPENROUTER_KEY,
     ...env,
-  }, { log: () => {}, emailProvider: null, alertProvider: null, now: () => clock.now });
+  }, { log: (line) => logs.push(line), emailProvider: null, alertProvider: null, now: () => clock.now });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   t.after(() => { server.closeAllConnections?.(); return new Promise((resolve) => server.close(resolve)); });
   const origin = `http://127.0.0.1:${server.address().port}`;
 
-  const post = (route, body, headers = {}) => fetch(`${origin}${route}`, {
+  const post = (route, body, headers = {}, init = {}) => fetch(`${origin}${route}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...headers },
     body: typeof body === 'string' ? body : JSON.stringify(body),
+    ...init,
   });
   const admin = (route, body) => post(route, body, { Authorization: `Bearer ${ADMIN}` }).then((r) => r.json());
-  const licensesFile = path.join(directory, 'licenses.json');
-  /** Activate `key` on a device; the lease to use as the bearer. */
-  async function activate(key, deviceId = `mac-${Math.random().toString(36).slice(2, 10)}`) {
+  const adminGet = (route) => fetch(`${origin}${route}`, { headers: { Authorization: `Bearer ${ADMIN}` } }).then((r) => r.json());
+  async function activate(key) {
+    const deviceId = `mac-${Math.random().toString(36).slice(2, 10)}`;
     const res = await (await post('/v1/license/activate', { key, deviceId, platform: 'darwin' })).json();
     assert.equal(res.ok, true, JSON.stringify(res));
-    return { lease: res.lease, deviceId, keyId: res.keyId, key };
+    return { lease: res.lease, keyId: res.keyId, key, deviceId, answer: res };
   }
-  async function pro({ n = 1, contentId } = {}) {
-    const event = proPaid({ merchantUid: `pro_${n}`, ref: `hama-pro-${n}`, email: `pro${n}@example.com`, ...(contentId ? { contentId } : {}) });
+  /** A fresh lease for an activated key (leases last 7 days). */
+  async function renew({ key, deviceId }) {
+    const res = await (await post('/v1/license/validate', { key, deviceId })).json();
+    assert.equal(res.ok, true, JSON.stringify(res));
+    return res.lease;
+  }
+  /** Buys `sku` through the signed webhook and activates the key. */
+  async function buy(sku = 'rauMonthly', n = 1) {
+    const event = planPaid({ sku, merchantUid: `m_${sku}_${n}`, ref: `ref-${sku}-${n}`, email: `buyer${n}@example.com` });
     assert.equal((await (await signedGroblePost(origin, SECRET, event)).json()).action, 'issued');
-    const { key } = await (await fetch(`${origin}/v1/license/by-ref?ref=hama-pro-${n}`)).json();
+    const { key } = await (await fetch(`${origin}/v1/license/by-ref?ref=ref-${sku}-${n}`)).json();
     return activate(key);
   }
-  const auth = (lease) => ({ Authorization: `Bearer ${lease}` });
-  const learn = (lease, body = { prompt: 'Rau-0.1 prompt' }) => post('/v1/rau/learn', body, auth(lease));
-  const status = (lease) => fetch(`${origin}/v1/rau/status`, { headers: auth(lease) });
-  const chats = () => upstream.calls.filter((c) => c.path === '/api/v1/chat/completions');
-  const creates = () => upstream.calls.filter((c) => c.method === 'POST' && c.path === '/api/v1/keys');
-  const patches = () => upstream.calls.filter((c) => c.method === 'PATCH');
-  return { origin, directory, upstream, clock, post, admin, licensesFile, activate, pro, auth, learn, status, chats, creates, patches };
+  const status = async (lease) => {
+    const res = await fetch(`${origin}/v1/rau/status`, { headers: { Authorization: `Bearer ${lease}` } });
+    return { status: res.status, body: await res.json() };
+  };
+  const learn = (lease, body = { prompt: 'Rau-0.1 prompt' }) => post('/v1/rau/learn', body, { Authorization: `Bearer ${lease}` });
+  const ledgerOf = async (principalId) => (await adminGet('/v1/admin/rau')).ledgers.find((l) => l.principalId === principalId);
+  /** A learn call is billed before it answers: the ledger already has `calls` calls. */
+  async function billed(principalId, calls) {
+    const ledger = await ledgerOf(principalId);
+    assert.equal(ledger?.calls ?? 0, calls, `ledger of ${principalId}`);
+    return ledger;
+  }
+  const rauFile = path.join(directory, 'rau.json');
+  /** Sets the current period's spend of a plan ledger on disk. */
+  async function seedSpend(principalId, usedUsd, { start = PERIOD_START, end = PERIOD_END, source = 'plan' } = {}) {
+    const state = JSON.parse(await fs.readFile(rauFile, 'utf8').catch(() => '{}'));
+    state.ledgers ??= {};
+    state.ledgers[principalId] = { source, period: { start, end, usedUsd, calls: 1 }, ids: {}, totalUsd: usedUsd, calls: 1, lastCallAt: start };
+    await fs.writeFile(rauFile, JSON.stringify(state));
+  }
+  return { origin, directory, clock, logs, anthropic, openrouter, post, admin, adminGet, activate, renew, buy, status, learn, ledgerOf, billed, rauFile, seedSpend };
 }
 
-test('config: pinned model and reasoning effort by default, overrides honored, aliases and bad efforts refused at startup', () => {
+test('config: RAU_MODEL lists haiku and deepseek in order; an old model id warns; a typo fails startup', () => {
   const defaults = resolveRauConfig({});
-  assert.deepEqual([defaults.model, defaults.reasoningEffort, defaults.maxOutputTokens, defaults.monthlyCapUsd, defaults.enabled], [PINNED, 'low', 2000, 1, true]);
-  const custom = resolveRauConfig({ RAU_MODEL: 'deepseek/deepseek-v4.2-flash', RAU_REASONING_EFFORT: 'Minimal', RAU_MONTHLY_CAP_USD: '2.5', RAU_ENABLED: 'false' });
-  assert.deepEqual([custom.model, custom.reasoningEffort, custom.monthlyCapUsd, custom.enabled], ['deepseek/deepseek-v4.2-flash', 'minimal', 2.5, false]);
-  assert.throws(() => resolveRauConfig({ RAU_MODEL: '~deepseek/deepseek-flash-latest' }), /pinned/);
-  assert.throws(() => resolveRauConfig({ RAU_REASONING_EFFORT: 'max' }), /RAU_REASONING_EFFORT must be one of/);
+  assert.deepEqual([defaults.models, defaults.allowanceUsd, defaults.deepseekProvider, defaults.enabled, defaults.openrouterKey, defaults.warnings], [['haiku'], 8, 'deepinfra', true, '', []]);
+  assert.deepEqual(resolveRauConfig({ RAU_MODEL: 'Deepseek' }).models, ['deepseek']);
+  assert.deepEqual(resolveRauConfig({ RAU_MODEL: 'haiku, deepseek, haiku' }).models, ['haiku', 'deepseek']);
+  const old = resolveRauConfig({ RAU_MODEL: 'deepseek/deepseek-v4.1-flash' });
+  assert.deepEqual([old.models, old.warnings.length], [['haiku'], 1]);
+  for (const bad of ['sonnet', 'haiku,gpt', ',']) assert.throws(() => resolveRauConfig({ RAU_MODEL: bad }), /RAU_MODEL must be/, bad);
+  assert.equal(resolveRauConfig({ RAU_DEEPSEEK_PROVIDER: 'Novita' }).deepseekProvider, 'novita');
+  assert.throws(() => resolveRauConfig({ RAU_DEEPSEEK_PROVIDER: 'two words' }), /RAU_DEEPSEEK_PROVIDER/);
+  assert.equal(resolveRauConfig({ RAU_MONTHLY_ALLOWANCE_USD: '12.5' }).allowanceUsd, 12.5);
+  assert.throws(() => resolveRauConfig({ RAU_MONTHLY_ALLOWANCE_USD: '0' }), /positive/);
   assert.throws(() => resolveRauConfig({ RAU_ENABLED: 'maybe' }), /RAU_ENABLED/);
-  assert.throws(() => resolveRauConfig({ RAU_MONTHLY_CAP_USD: '0' }), /positive/);
+  assert.equal(resolveRauConfig({ HAMA_OPENROUTER_KEY: 'old' }).openrouterKey, 'old');
+  assert.equal(resolveRauConfig({ HAMA_OPENROUTER_KEY: 'old', RAU_OPENROUTER_KEY: 'new' }).openrouterKey, 'new');
 });
 
-test('a Pro key learns through the server: one capped monthly key, the pinned model with low reasoning, text verbatim, the key never sent', async (t) => {
+test('ledger: monthly periods follow the anchor day, a trial is one period, a call id bills once, a new period starts at zero', () => {
+  const at = (iso) => Date.parse(iso);
+  assert.deepEqual(billingPeriod('2026-01-31T10:00:00Z', at('2026-02-15T00:00:00Z')), { start: at('2026-01-31T10:00:00Z'), end: at('2026-02-28T10:00:00Z') });
+  assert.deepEqual(billingPeriod('2026-01-31T10:00:00Z', at('2026-03-01T00:00:00Z')), { start: at('2026-02-28T10:00:00Z'), end: at('2026-03-31T10:00:00Z') });
+  assert.deepEqual(billingPeriod('2027-12-29T00:00:00Z', at('2028-02-29T12:00:00Z')), { start: at('2028-02-29T00:00:00Z'), end: at('2028-03-29T00:00:00Z') });
+  const trial = { source: 'trial', startedAt: '2026-10-31T00:00:00.000Z', endsAt: '2026-11-07T00:00:00.000Z' };
+  assert.deepEqual(periodOf(trial, at('2026-11-03T00:00:00Z')), { start: at(trial.startedAt), end: at(trial.endsAt) });
+
+  const ledger = normalizeLedger({});
+  const october = billingPeriod(PERIOD_START, T0);
+  assert.equal(recordCall(ledger, { id: 'msg_1', costUsd: 0.5, at: T0, source: 'plan' }, october).duplicate, false);
+  assert.deepEqual(recordCall(ledger, { id: 'msg_1', costUsd: 0.5, at: T0 + 1000 }, october), { duplicate: true });
+  recordCall(ledger, { id: 'msg_2', costUsd: 0.25, at: T0 + 2000 }, october);
+  assert.equal(periodUsed(ledger, october), 0.75);
+  const november = billingPeriod(PERIOD_START, at(PERIOD_END));
+  assert.equal(periodUsed(ledger, november), 0, 'nothing spent yet in the new period');
+  recordCall(ledger, { id: 'msg_3', costUsd: 0.1, at: at(PERIOD_END) + 1 }, november);
+  // A call admitted in October that finishes after November started counts toward the totals only.
+  recordCall(ledger, { id: 'msg_4', costUsd: 0.2, at: at(PERIOD_END) + 2 }, october);
+  assert.deepEqual([periodUsed(ledger, november), ledger.totalUsd, ledger.calls, ledger.source], [0.1, 1.05, 4, 'plan']);
+});
+
+test('weekly spend groups calls by UTC week, model and route, and the report lists empty weeks and totals', () => {
+  assert.equal(weekOf(Date.parse('2026-11-01T23:00:00Z')), '2026-10-26', 'a Sunday belongs to the Monday before');
+  assert.equal(weekOf(Date.parse('2026-10-26T00:00:00Z')), '2026-10-26');
+  const spend = {};
+  const now = Date.parse('2026-11-04T12:00:00Z');
+  addSpend(spend, { at: now, model: 'haiku', route: 'openrouter', costUsd: 0.01, inputTokens: 100, outputTokens: 10, cacheReadTokens: 5, cacheWriteTokens: 1 });
+  addSpend(spend, { at: now, model: 'haiku', route: 'anthropic', costUsd: 0.02, inputTokens: 100 });
+  addSpend(spend, { at: now - 14 * 86400000, model: 'deepseek', route: 'openrouter', costUsd: 0.001, outputTokens: 7 });
+  const report = spendReport(spend, { weeks: 3, now });
+  assert.deepEqual(report.weeks.map((w) => [w.week, w.usd, w.calls]), [['2026-11-02', 0.03, 2], ['2026-10-26', 0, 0], ['2026-10-19', 0.001, 1]]);
+  assert.deepEqual(report.weeks[0].models.haiku, { usd: 0.03, calls: 2, inputTokens: 200, outputTokens: 10, cacheReadTokens: 5, cacheWriteTokens: 1, routes: { openrouter: 0.01, anthropic: 0.02 } });
+  assert.deepEqual([report.totals.usd, report.totals.calls, Object.keys(report.totals.models).sort()], [0.031, 3, ['deepseek', 'haiku']]);
+  for (let week = 0; week < 40; week += 1) addSpend(spend, { at: now + week * 7 * 86400000, model: 'haiku', costUsd: 0 });
+  assert.equal(Object.keys(spend).length, 26, 'only the newest 26 weeks are kept');
+});
+
+test('billing: Haiku at its list price on both routes, DeepSeek by OpenRouter\'s reported cost or its price row, a reply without usage estimated high', () => {
+  const upstream = createRauUpstream({ config: { models: ['haiku', 'deepseek'], openrouterKey: 'k', anthropicKey: 'a', deepseekProvider: 'novita' } });
+  assert.deepEqual(upstream.routes.map((r) => r.id), ['openrouter-haiku', 'anthropic-haiku', 'openrouter-deepseek']);
+  const [orHaiku, apiHaiku, deepseek] = upstream.routes;
+  const finished = (cost) => meterReply({ type: 'message', id: 'msg', content: [], usage: { input_tokens: 1000, output_tokens: 300, cache_read_input_tokens: 2000, cache_creation_input_tokens: 500, ...(cost !== undefined ? { cost } : {}) } });
+  assert.deepEqual([billCall(orHaiku, finished(0.0004), 10).costUsd, billCall(orHaiku, finished(0.0004), 10).costSource], [HAIKU_CALL_USD, 'price_table']);
+  assert.equal(billCall(apiHaiku, finished(), 10).costUsd, HAIKU_CALL_USD);
+  assert.deepEqual([billCall(deepseek, finished(0.0004), 10).costUsd, billCall(deepseek, finished(0.0004), 10).costSource], [0.0004, 'upstream']);
+  const p = RAU_PRICES.deepseek;
+  assert.equal(billCall(deepseek, finished(), 10).costUsd, Math.round((1000 * p.inputPerMTok + 300 * p.outputPerMTok + 2000 * p.cacheReadPerMTok + 500 * p.cacheWrite5mPerMTok) * 1e3) / 1e9);
+  // 30 bytes of text and no usage: ~3 request bytes a token of input, ~3 text bytes a token of output.
+  const cut = billCall(orHaiku, meterReply({ type: 'message', id: 'msg', content: [{ type: 'text', text: 'x'.repeat(30) }] }), 3000);
+  assert.deepEqual([cut.inputTokens, cut.outputTokens, cut.costSource], [1000, 10, 'estimate']);
+});
+
+test('a Rau key learns on OpenRouter Haiku first, with the owner\'s key and never the lease, billed at Haiku prices', async (t) => {
   const s = await setup(t);
-  const { lease, keyId } = await s.pro();
-  assert.deepEqual(await (await s.status(lease)).json(), {
-    ok: true, eligible: true, reason: null, upgradeUrl: UPGRADE, capUsd: 1, usedUsd: 0, remainingUsd: 1, resetsAt: '2026-11-01T00:00:00.000Z',
-  });
-  assert.equal(s.creates().length, 0, 'status never creates a key');
+  const rau = await s.buy('rauMonthly');
+  assert.deepEqual(await s.status(rau.lease), { status: 200, body: {
+    ok: true, eligible: true, source: 'plan', reason: null, upgradeUrl: UPGRADE,
+    allowanceUsd: 8, usedUsd: 0, remainingUsd: 8, resetsAt: PERIOD_END,
+  } });
 
-  const res = await s.learn(lease, { prompt: '문서 기억 프롬프트' });
-  const text = await res.text();
-  assert.equal(res.status, 200, text);
-  assert.deepEqual(JSON.parse(text), {
-    ok: true, text: REPLY, model: PINNED,
-    usage: { usedUsd: 0.0003, capUsd: 1, remainingUsd: 0.9997, resetsAt: '2026-11-01T00:00:00.000Z' },
-  });
-  assert.deepEqual(s.creates().map((c) => c.body), [{ name: `hama-rau-${keyId}`, limit: 1, limit_reset: 'monthly', include_byok_in_limit: true }]);
-  const [stored] = [...s.upstream.keys.values()];
-  const [chat] = s.chats();
-  assert.equal(chat.auth, `Bearer ${stored.key}`, 'the per-license key, not the management key');
-  assert.deepEqual([chat.body.model, chat.body.reasoning, chat.body.max_tokens, chat.body.stream, chat.body.messages], [PINNED, { effort: 'low' }, 2000, false, [{ role: 'user', content: '문서 기억 프롬프트' }]]);
-
-  await s.learn(lease);
-  assert.equal(s.creates().length, 1, 'one key per license');
-  const statusText = await (await s.status(lease)).text();
-  const adminText = await (await fetch(`${s.origin}/v1/admin/rau`, { headers: { Authorization: `Bearer ${ADMIN}` } })).text();
-  for (const body of [text, statusText, adminText]) assert.ok(!body.includes(stored.key));
-  assert.ok(!adminText.includes(PROVISIONING) && !text.includes(PROVISIONING));
-  const listed = JSON.parse(adminText);
-  assert.deepEqual([listed.count, listed.allowances[0].keyId, listed.allowances[0].usedUsd, listed.allowances[0].capUsd, listed.allowances[0].openrouterKey], [1, keyId, 0.0006, 1, undefined]);
-  const file = JSON.parse(await fs.readFile(path.join(s.directory, 'rau.json'), 'utf8'));
-  assert.equal(file.allowances[keyId].openrouterKey, stored.key, 'the key stays in rau.json');
-  assert.deepEqual(file.allowances[keyId].ledger, { '2026-10': 0.0006 });
-
-  const cli = await promisify(execFile)(process.execPath, [CLI, 'rau'], { env: { ...process.env, SITE_API_BASE: s.origin, ADMIN_TOKEN: ADMIN } });
-  assert.match(cli.stdout, new RegExp(`${keyId} active · \\$0.0006 / \\$1\n$`));
-  assert.ok(!cli.stdout.includes(stored.key));
+  assert.equal((await s.learn(rau.lease)).status, 200);
+  const [call] = s.openrouter.calls;
+  assert.deepEqual([call.path, call.body.model, call.body.max_tokens, call.body.stream], ['/api/v1/messages', HAIKU_OR, 2000, false]);
+  assert.equal(call.headers.authorization, `Bearer ${OPENROUTER_KEY}`);
+  assert.equal(call.headers['x-api-key'], undefined);
+  assert.ok(!JSON.stringify(call.headers).includes(rau.lease));
+  assert.equal(s.anthropic.calls.length, 0);
+  // OpenRouter reported $0.0004; Haiku bills at its own list price.
+  assert.equal((await s.billed(rau.keyId, 1)).usedUsd, HAIKU_CALL_USD);
+  assert.deepEqual([(await s.status(rau.lease)).body.usedUsd, (await s.status(rau.lease)).body.remainingUsd], [HAIKU_CALL_USD, 8 - HAIKU_CALL_USD]);
 });
 
-test('RAU_MODEL and RAU_REASONING_EFFORT reach the upstream body', async (t) => {
-  const s = await setup(t, { RAU_MODEL: 'deepseek/deepseek-v4.2-flash', RAU_REASONING_EFFORT: 'medium', RAU_MAX_OUTPUT_TOKENS: '800' });
-  const { lease } = await s.pro();
-  assert.equal((await s.learn(lease)).status, 200);
-  const [chat] = s.chats();
-  assert.deepEqual([chat.body.model, chat.body.reasoning, chat.body.max_tokens], ['deepseek/deepseek-v4.2-flash', { effort: 'medium' }, 800]);
-});
-
-test('every key that is not an active Pro key gets rau_requires_pro with the upgrade page, and nothing reaches OpenRouter', async (t) => {
+test('without Rau, hosted Rau refuses before any upstream call, and the old agent and Hama routes are gone', async (t) => {
   const s = await setup(t);
-  const kinds = {};
-  // GLJFC9 ₩9,900/yr subscription.
-  const annual = proPaid({ merchantUid: 'gl_1', ref: 'hama-sub-1', contentId: 'GLJFC9', price: 9900, cycle: 12 });
-  await signedGroblePost(s.origin, SECRET, annual);
-  kinds.annual = (await (await fetch(`${s.origin}/v1/license/by-ref?ref=hama-sub-1`)).json()).key;
-  kinds.lifetime = (await s.admin('/v1/admin/licenses/issue', {})).license.key;
-  kinds.signature = (await s.admin('/v1/admin/licenses/issue', { edition: 'signature' })).license.key;
-  kinds.beta = (await s.admin('/v1/admin/licenses/issue-beta', { name: 'Beta tester' })).license.key;
-  kinds.manual = (await s.admin('/v1/admin/licenses/issue', { years: 1 })).license.key;
-  const grandfathered = await s.admin('/v1/admin/licenses/issue', {});
-  const state = JSON.parse(await fs.readFile(s.licensesFile, 'utf8'));
-  Object.assign(state.licenses[grandfathered.license.keyId], { source: 'grandfather', amount: 0 });
-  await fs.writeFile(s.licensesFile, JSON.stringify(state));
-  kinds.grandfathered = grandfathered.license.key;
-
-  const leases = {};
-  for (const [kind, key] of Object.entries(kinds)) leases[kind] = (await s.activate(key)).lease;
-  // A Pro key revoked by an admin, while its lease is still valid.
-  const revoked = await s.pro({ n: 2 });
-  await s.admin('/v1/admin/licenses/revoke', { key: revoked.key, reason: 'test' });
-  leases.revokedPro = revoked.lease;
-  const check = async (kind, lease) => {
-    const res = await s.learn(lease);
-    assert.equal(res.status, 403, kind);
-    assert.deepEqual(await res.json(), { ok: false, error: 'rau_requires_pro', upgradeUrl: UPGRADE }, kind);
-    const st = await (await s.status(lease)).json();
-    assert.deepEqual([st.eligible, st.reason, st.upgradeUrl, st.usedUsd], [false, 'rau_requires_pro', UPGRADE, null], kind);
-  };
-  for (const [kind, lease] of Object.entries(leases)) await check(kind, lease);
-
-  // A Pro key past its expiry (no payment grace) with a lease from two days before.
-  const lapsed = await s.pro({ n: 3 });
-  s.clock.now = Date.parse('2026-11-19T12:00:00+09:00');
-  const lapsedLease = (await (await s.post('/v1/license/validate', { key: lapsed.key, deviceId: lapsed.deviceId })).json()).lease;
-  s.clock.now = Date.parse('2026-11-21T12:00:00+09:00');
-  await check('expiredPro', lapsedLease);
-  assert.equal(s.upstream.calls.length, 0);
-
-  // Not a lease at all.
+  const hama = await s.buy('hamaMonthly');
+  assert.deepEqual(await s.status(hama.lease), { status: 200, body: {
+    ok: true, eligible: false, source: null, reason: 'rau_plan_required', upgradeUrl: UPGRADE,
+    allowanceUsd: null, usedUsd: null, remainingUsd: null, resetsAt: null,
+  } });
+  const learned = await s.learn(hama.lease);
+  assert.deepEqual([learned.status, await learned.json()], [403, { ok: false, error: 'rau_plan_required', upgradeUrl: UPGRADE }]);
   const bad = await s.learn('not-a-lease');
-  assert.deepEqual([bad.status, await bad.json()], [401, { ok: false, error: 'unauthorized' }]);
+  assert.deepEqual([bad.status, (await bad.json()).error], [401, 'unauthorized']);
+  assert.equal(s.openrouter.calls.length + s.anthropic.calls.length, 0);
+
+  const rau = await s.buy('rauMonthly', 2);
+  const message = { model: 'rau', max_tokens: 10, messages: [{ role: 'user', content: 'x' }] };
+  assert.equal((await s.post('/v1/rau/agent/v1/messages', message, { 'x-api-key': rau.lease })).status, 404);
+  assert.equal((await fetch(`${s.origin}/v1/hama/status`, { headers: { 'x-api-key': rau.lease } })).status, 404);
+  assert.equal((await s.post('/v1/hama/anthropic/v1/messages', message, { 'x-api-key': rau.lease })).status, 404);
+  assert.equal((await fetch(`${s.origin}/v1/admin/hama`, { headers: { Authorization: `Bearer ${ADMIN}` } })).status, 404);
+  assert.equal(s.openrouter.calls.length + s.anthropic.calls.length, 0);
 });
 
-test('the cap is enforced from our own ledger even when OpenRouter undercounts, without calling upstream', async (t) => {
+test('Haiku fails over to Anthropic on outages, rate limits, credentials, billing or an empty answer, but not on a plain 400', async (t) => {
   const s = await setup(t);
-  const { lease } = await s.pro();
-  s.upstream.setChatSpend({ credit: 0.6 });
-  assert.equal((await (await s.learn(lease)).json()).usage.usedUsd, 0.6);
-  // OpenRouter reports nothing spent (a lagging count); the ledger alone says 0.6, still under $1.
-  const [stored] = [...s.upstream.keys.values()];
-  const undercount = () => { stored.usage = 0; stored.byokUsage = 0; };
-  undercount();
-  s.clock.now += 20 * 1000;
-  const second = await (await s.learn(lease)).json();
-  assert.deepEqual([second.usage.usedUsd, second.usage.remainingUsd], [1.2, 0]);
-  undercount();
-  s.clock.now += 20 * 1000;
-  const before = s.chats().length;
-  const refused = await s.learn(lease);
-  assert.equal(refused.status, 402);
-  assert.deepEqual(await refused.json(), { ok: false, error: 'rau_cap_reached', capUsd: 1, usedUsd: 1.2, resetsAt: '2026-11-01T00:00:00.000Z' });
-  assert.equal(s.chats().length, before, 'refused before upstream');
-  const st = await (await s.status(lease)).json();
-  assert.deepEqual([st.eligible, st.usedUsd, st.remainingUsd], [true, 1.2, 0]);
+  const rau = await s.buy('rauMonthly');
+  const failures = [
+    ['network', { network: true }],
+    ['408', { status: 408, json: { error: { code: 408, message: 'Timeout' } } }],
+    ['429', { status: 429, json: { error: { code: 429, message: 'Rate limited' } } }],
+    ['500', { status: 500, json: { error: { code: 500, message: 'Internal' } } }],
+    ['529', { status: 529, json: { type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } } }],
+    ['401', { status: 401, json: { error: { code: 401, message: 'No auth' } } }],
+    ['402', { status: 402, json: { error: { code: 402, message: 'Insufficient credits' } } }],
+    ['billing', { status: 400, json: { type: 'error', error: { type: 'invalid_request_error', message: 'Your credit balance is too low.' } } }],
+    ['no message', { status: 200, json: {} }],
+  ];
+  for (const [index, [name, failure]] of failures.entries()) {
+    s.openrouter.next(failure);
+    const res = await s.learn(rau.lease, { prompt: `failover ${name}` });
+    assert.deepEqual([res.status, (await res.json()).text], [200, 'Hello there!'], name);
+    const call = s.anthropic.calls[index];
+    assert.deepEqual([call.body.model, call.body.max_tokens], [HAIKU_API, 2000], name);
+    assert.equal(call.headers['x-api-key'], ANTHROPIC_KEY, name);
+    assert.equal(call.headers.authorization, undefined, name);
+  }
+  assert.equal((await s.billed(rau.keyId, failures.length)).usedUsd, Math.round(failures.length * HAIKU_CALL_USD * 1e9) / 1e9);
+
+  // A plain 400 is not the route's fault: no backup, nothing billed.
+  s.openrouter.next({ status: 400, json: { type: 'error', error: { type: 'invalid_request_error', message: `messages.0: field required (${OPENROUTER_KEY})` } } });
+  const mistake = await s.learn(rau.lease, { prompt: 'bad request' });
+  assert.deepEqual([mistake.status, await mistake.json()], [502, { ok: false, error: 'upstream_unavailable' }]);
+  assert.equal(s.anthropic.calls.length, failures.length);
+  // Both routes refusing the owner's credentials.
+  s.openrouter.next({ status: 401, json: {} });
+  s.anthropic.next({ status: 401, json: {} });
+  const down = await s.learn(rau.lease, { prompt: 'both down' });
+  assert.deepEqual([down.status, await down.json()], [502, { ok: false, error: 'upstream_unavailable' }]);
+  await s.billed(rau.keyId, failures.length);
+  for (const line of s.logs) for (const secret of [OPENROUTER_KEY, ANTHROPIC_KEY, rau.lease]) assert.ok(!line.includes(secret), line);
 });
 
-test('the cap is enforced from OpenRouter usage, and an upstream key-limit refusal answers rau_cap_reached', async (t) => {
+test('the same message id is billed once', async (t) => {
   const s = await setup(t);
-  const { lease } = await s.pro();
-  assert.equal((await s.learn(lease)).status, 200);
-  // Usage OpenRouter counted that our ledger missed (e.g. a call that timed out after it was billed).
-  const [stored] = [...s.upstream.keys.values()];
-  stored.usage = 1.05;
-  s.clock.now += 20 * 1000; // past the 15 s balance cache
-  const before = s.chats().length;
-  const refused = await s.learn(lease);
-  assert.equal(refused.status, 402);
-  assert.equal((await refused.json()).usedUsd, 1.05);
-  assert.equal(s.chats().length, before, 'refused before upstream');
-
-  const other = await s.pro({ n: 2 });
-  assert.equal((await s.learn(other.lease)).status, 200);
-  s.upstream.failNextChat(403, { error: { code: 403, message: 'Key limit exceeded (monthly limit).', metadata: { limit_source: 'openrouter_key_limit' } } });
-  const limited = await s.learn(other.lease);
-  assert.equal(limited.status, 402);
-  assert.equal((await limited.json()).error, 'rau_cap_reached');
-  const chatsAfter = s.chats().length;
-  assert.equal((await s.learn(other.lease)).status, 402, 'the next call stops before upstream');
-  assert.equal(s.chats().length, chatsAfter);
-
-  s.upstream.failNextChat(500, { error: { code: 500, message: 'boom' } });
-  const third = await s.pro({ n: 3 });
-  const failed = await s.learn(third.lease);
-  assert.deepEqual([failed.status, await failed.json()], [502, { ok: false, error: 'upstream_unavailable' }]);
+  const rau = await s.buy('rauMonthly');
+  s.openrouter.next({ id: 'gen-same' }, { id: 'gen-same' });
+  for (const prompt of ['one', 'two', 'three']) assert.equal((await s.learn(rau.lease, { prompt })).status, 200);
+  const ledger = await s.billed(rau.keyId, 2);
+  assert.equal(ledger.usedUsd, 2 * HAIKU_CALL_USD);
 });
 
-test('a new month sets the key limit again exactly once and starts a fresh ledger', async (t) => {
-  const s = await setup(t);
-  const first = await s.pro();
-  s.upstream.setChatSpend({ credit: 0.6 });
-  await s.learn(first.lease);
-  await s.learn(first.lease);
-  assert.equal((await s.learn(first.lease)).status, 402);
-  assert.equal(s.patches().length, 0);
-
-  // November: OpenRouter's monthly reset clears the key's usage; our ledger starts a new period.
-  s.clock.now = Date.parse('2026-11-02T09:00:00Z');
-  const [stored] = [...s.upstream.keys.values()];
-  stored.usage = 0;
-  stored.byokUsage = 0;
-  const { lease } = await (await s.post('/v1/license/validate', { key: first.key, deviceId: first.deviceId })).json();
-  // Two at once each see an empty month, so both run; the third stops at the cap.
-  const results = await Promise.all([s.learn(lease), s.learn(lease)].map(async (p) => (await p).json()));
-  assert.deepEqual(results.map((r) => r.ok), [true, true]);
-  assert.equal((await s.learn(lease)).status, 402);
-  assert.deepEqual(s.patches().map((c) => c.body), [{ limit: 1, limit_reset: 'monthly', include_byok_in_limit: true }]);
-  const st = await (await s.status(lease)).json();
-  assert.deepEqual([st.resetsAt, st.usedUsd], ['2026-12-01T00:00:00.000Z', 1.2]);
-  const file = JSON.parse(await fs.readFile(path.join(s.directory, 'rau.json'), 'utf8'));
-  assert.deepEqual(file.allowances[first.keyId].ledger, { '2026-10': 1.2, '2026-11': 1.2 });
-  assert.equal(file.allowances[first.keyId].period, '2026-11');
+test('RAU_MODEL=deepseek runs DeepSeek on OpenRouter pinned to one provider and bills its reported cost', async (t) => {
+  const s = await setup(t, { RAU_MODEL: 'deepseek' });
+  const rau = await s.buy('rauMonthly');
+  assert.equal((await s.learn(rau.lease)).status, 200);
+  const [call] = s.openrouter.calls;
+  assert.deepEqual([call.path, call.body.model, call.body.provider], ['/api/v1/messages', DEEPSEEK, { only: ['deepinfra'], allow_fallbacks: false }]);
+  assert.equal(s.anthropic.calls.length, 0, 'Haiku is not in the chain');
+  assert.equal((await s.billed(rau.keyId, 1)).usedUsd, 0.0004);
+  s.openrouter.next({ status: 503, json: {} });
+  const alone = await s.learn(rau.lease, { prompt: 'no backup' });
+  assert.deepEqual([alone.status, await alone.json()], [502, { ok: false, error: 'upstream_unavailable' }], 'DeepSeek alone has no backup');
+  const spend = await s.adminGet('/v1/admin/rau/spend?weeks=1');
+  assert.deepEqual(spend.weeks[0].models.deepseek.routes, { openrouter: 0.0004 });
 });
 
-test('RAU_MONTHLY_CAP_USD sets new keys and re-limits existing ones once after a restart', async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'site-api-rau-cap-'));
-  t.after(() => fs.rm(dir, { recursive: true, force: true, maxRetries: 5 }));
+test('RAU_MODEL=haiku,deepseek keeps DeepSeek as the last fallback after both Haiku routes', async (t) => {
+  const s = await setup(t, { RAU_MODEL: 'haiku,deepseek' });
+  const rau = await s.buy('rauMonthly');
+  s.openrouter.next({ status: 500, json: {} });
+  s.anthropic.next({ status: 529, json: { type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } } });
+  assert.equal((await s.learn(rau.lease, { prompt: 'everything busy' })).status, 200);
+  assert.deepEqual(s.openrouter.calls.map((c) => c.body.model), [HAIKU_OR, DEEPSEEK]);
+  assert.deepEqual(s.openrouter.calls[1].body.provider, { only: ['deepinfra'], allow_fallbacks: false });
+  assert.equal(s.anthropic.calls.length, 1);
+  assert.equal((await s.billed(rau.keyId, 1)).usedUsd, 0.0004);
+});
+
+test('credits: a call is refused before upstream once the month is spent, and the month resets on the anchor day', async (t) => {
   const clock = { now: T0 };
-  const before = await setup(t, {}, { dir, clock });
-  const { key, deviceId, lease } = await before.pro({ contentId: PRO_YEARLY_ID });
-  assert.equal((await before.learn(lease)).status, 200);
-  const keyHash = [...before.upstream.keys.keys()][0];
+  const s = await setup(t, { RAU_MONTHLY_ALLOWANCE_USD: '0.005' }, { clock });
+  const rau = await s.buy('rauMonthly');
+  for (const prompt of ['one', 'two']) assert.equal((await s.learn(rau.lease, { prompt })).status, 200);
+  // The second call was admitted under the allowance and overshot it by its own cost.
+  await s.billed(rau.keyId, 2);
+  const calls = s.openrouter.calls.length;
+  const learned = await s.learn(rau.lease, { prompt: 'three' });
+  assert.deepEqual([learned.status, await learned.json()], [402, { ok: false, error: 'rau_credits_exhausted', allowanceUsd: 0.005, usedUsd: 2 * HAIKU_CALL_USD, resetsAt: PERIOD_END }]);
+  assert.equal(s.openrouter.calls.length, calls, 'nothing reached upstream');
+  assert.deepEqual((await s.status(rau.lease)).body.remainingUsd, 0);
 
-  // Same data, new cap. The restarted server talks to a fresh fake, so seed it with the existing key.
-  const after = await setup(t, { RAU_MONTHLY_CAP_USD: '2.5' }, { dir, clock });
-  after.upstream.keys.set(keyHash, { ...before.upstream.keys.get(keyHash) });
-  const fresh = (await (await after.post('/v1/license/validate', { key, deviceId })).json()).lease;
-  assert.equal((await (await after.status(fresh)).json()).capUsd, 2.5);
-  const res = await (await after.learn(fresh)).json();
-  assert.equal(res.usage.capUsd, 2.5);
-  await after.learn(fresh);
-  assert.deepEqual(after.patches().map((c) => [c.path, c.body.limit]), [[`/api/v1/keys/${keyHash}`, 2.5]]);
-  assert.equal(after.creates().length, 0);
-
-  const other = await after.pro({ n: 2 });
-  await after.learn(other.lease);
-  assert.equal(after.creates()[0].body.limit, 2.5);
+  clock.now = Date.parse(PERIOD_END);
+  const lease = await s.renew(rau);
+  const next = (await s.status(lease)).body;
+  assert.deepEqual([next.usedUsd, next.remainingUsd, next.resetsAt], [0, 0.005, '2026-12-20T05:22:11.000Z']);
+  assert.equal((await s.learn(lease, { prompt: 'new month' })).status, 200);
 });
 
-test('prompt limits: at most 48 KB of UTF-8, a non-empty string, a JSON object; none reaches upstream', async (t) => {
+test('a plan gets $8 a month by default: spend just under it is admitted, at it refused', async (t) => {
   const s = await setup(t);
-  const { lease } = await s.pro();
+  const rau = await s.buy('rauMonthly');
+  await s.seedSpend(rau.keyId, 7.99);
+  assert.equal((await s.learn(rau.lease, { prompt: 'under' })).status, 200);
+  assert.equal((await s.billed(rau.keyId, 2)).usedUsd, 7.993325);
+  await s.seedSpend(rau.keyId, 8);
+  assert.equal((await s.learn(rau.lease, { prompt: 'at' })).status, 402);
+  assert.deepEqual([(await s.status(rau.lease)).body.allowanceUsd, (await s.status(rau.lease)).body.remainingUsd], [8, 0]);
+});
+
+test('Rau-0.1 learns with one user message, 2000 tokens, no thinking, and answers the joined text and its credits', async (t) => {
+  const s = await setup(t);
+  const rau = await s.buy('rauMonthly');
+  const res = await s.learn(rau.lease, { prompt: '문서 기억 프롬프트' });
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), {
+    ok: true, text: 'Hello there!', model: 'rau-0.1',
+    usage: { allowanceUsd: 8, usedUsd: HAIKU_CALL_USD, remainingUsd: 8 - HAIKU_CALL_USD, resetsAt: PERIOD_END },
+  });
+  const [call] = s.openrouter.calls;
+  assert.deepEqual(call.body, { max_tokens: 2000, messages: [{ role: 'user', content: '문서 기억 프롬프트' }], stream: false, model: HAIKU_OR });
+  // A failing first route moves the call to the backup.
+  s.openrouter.next({ status: 502, json: {} });
+  const backup = await s.learn(rau.lease);
+  assert.equal(backup.status, 200);
+  assert.equal(s.anthropic.calls[0].body.model, HAIKU_API);
+  // Both failing is 502 upstream_unavailable.
+  s.openrouter.next({ network: true });
+  s.anthropic.next({ status: 500, json: {} });
+  const failed = await s.learn(rau.lease);
+  assert.deepEqual([failed.status, await failed.json()], [502, { ok: false, error: 'upstream_unavailable' }]);
+  assert.equal((await s.billed(rau.keyId, 2)).calls, 2);
+});
+
+test('prompt limits: at most 48 KB of UTF-8, a non-empty string, a JSON object; none reaches upstream; 20 a minute', async (t) => {
+  const s = await setup(t);
+  const { lease } = await s.buy('rauMonthly');
   const korean = '가'.repeat(MAX_RAU_PROMPT_BYTES / 3 - 1); // 3 bytes each, just under the cap
   assert.equal((await s.learn(lease, { prompt: `${korean}abc` })).status, 200, 'exactly 48 KB is fine');
-  const calls = s.chats().length;
+  const calls = s.openrouter.calls.length;
   for (const body of [{ prompt: `${korean}abcd` }, { prompt: '' }, { prompt: 42 }, {}, { prompt: 'x'.repeat(400 * 1024) }]) {
     const res = await s.learn(lease, body);
-    assert.equal(res.status, 400);
-    assert.deepEqual(await res.json(), { ok: false, error: 'invalid', field: 'prompt' });
+    assert.deepEqual([res.status, await res.json()], [400, { ok: false, error: 'invalid', field: 'prompt' }]);
   }
   const notJson = await s.learn(lease, 'not json');
   assert.deepEqual([notJson.status, await notJson.json()], [400, { ok: false, error: 'invalid', field: 'body' }]);
-  assert.equal(s.chats().length, calls);
-});
-
-test('per-license rate limit answers 429 rate_limited with Retry-After', async (t) => {
-  const s = await setup(t);
-  const { lease } = await s.pro();
-  for (let i = 0; i < 20; i += 1) assert.equal((await s.learn(lease)).status, 200);
+  assert.equal(s.openrouter.calls.length, calls);
+  for (let i = 0; i < 19; i += 1) assert.equal((await s.learn(lease)).status, 200);
   const limited = await s.learn(lease);
-  assert.equal(limited.status, 429);
-  assert.equal(limited.headers.get('retry-after'), '60');
-  assert.deepEqual(await limited.json(), { ok: false, error: 'rate_limited' });
+  assert.deepEqual([limited.status, limited.headers.get('retry-after'), await limited.json()], [429, '60', { ok: false, error: 'rate_limited' }]);
 });
 
-test('rau_not_configured without the management key or with RAU_ENABLED=false', async (t) => {
-  for (const env of [{ OPENROUTER_PROVISIONING_KEY: '' }, { RAU_ENABLED: 'false' }]) {
+test('hosted Rau answers rau_not_configured with RAU_ENABLED=false or without an upstream key for its models', async (t) => {
+  for (const env of [{ RAU_ENABLED: 'false' }, { RAU_OPENROUTER_KEY: '', ANTHROPIC_API_KEY: '' }, { RAU_MODEL: 'deepseek', RAU_OPENROUTER_KEY: '' }]) {
     const s = await setup(t, env);
-    const { lease } = await s.pro();
-    for (const res of [await s.learn(lease), await s.status(lease)]) {
-      assert.deepEqual([res.status, await res.json()], [503, { ok: false, error: 'rau_not_configured' }]);
-    }
+    const { lease } = await s.buy('rauMonthly');
+    const status = await s.status(lease);
+    const learned = await s.learn(lease);
+    assert.deepEqual([status.status, status.body], [503, { ok: false, error: 'rau_not_configured' }], JSON.stringify(env));
+    assert.deepEqual([learned.status, await learned.json()], [503, { ok: false, error: 'rau_not_configured' }]);
   }
+  // HAMA_OPENROUTER_KEY alone still configures the OpenRouter route.
+  const s = await setup(t, { RAU_OPENROUTER_KEY: '', ANTHROPIC_API_KEY: '', HAMA_OPENROUTER_KEY: OPENROUTER_KEY });
+  const { lease } = await s.buy('rauMonthly');
+  assert.equal((await s.status(lease)).status, 200);
 });
 
-test('gift grants never expose their OpenRouter key in admin or app answers', async (t) => {
-  const s = await setup(t, { GIFT_EVENT_ID: 'special-test' });
-  const beta = await s.admin('/v1/admin/licenses/issue-beta', { name: 'Beta tester' });
-  const { lease } = await s.activate(beta.license.key);
-  const claimed = await (await s.post('/v1/gift/claim', {}, s.auth(lease))).text();
-  const [stored] = [...s.upstream.keys.values()];
-  const answers = [
-    claimed,
-    await (await fetch(`${s.origin}/v1/gift/status`, { headers: s.auth(lease) })).text(),
-    await (await fetch(`${s.origin}/v1/gift/openrouter/key`, { headers: s.auth(lease) })).text(),
-    await (await fetch(`${s.origin}/v1/admin/gifts`, { headers: { Authorization: `Bearer ${ADMIN}` } })).text(),
-    await (await fetch(`${s.origin}/v1/admin/licenses/betas`, { headers: { Authorization: `Bearer ${ADMIN}` } })).text(),
-    JSON.stringify(await s.admin('/v1/admin/gifts/amount', { keyId: beta.license.keyId, amountUsd: 5 })),
-    JSON.stringify(await s.admin('/v1/admin/gifts/disable', { keyId: beta.license.keyId, reason: 'test' })),
-  ];
-  for (const text of answers) assert.ok(!text.includes(stored.key), text.slice(0, 120));
+test('a key with an active plan in the frozen hama.json keeps Rau; the file is never written', async (t) => {
+  const s = await setup(t);
+  const enrolled = (await s.admin('/v1/admin/licenses/issue', {})).license;
+  const disabled = (await s.admin('/v1/admin/licenses/issue', {})).license;
+  const hamaFile = path.join(s.directory, 'hama.json');
+  const legacy = {
+    plans: {
+      [enrolled.keyId]: { status: 'active', allowanceUsd: null, periodAnchor: '2026-09-05T00:00:00.000Z', enrolledAt: '2026-09-05T00:00:00.000Z' },
+      [disabled.keyId]: { status: 'disabled', disabledReason: 'admin', periodAnchor: '2026-09-05T00:00:00.000Z' },
+    },
+    ledgers: { [enrolled.keyId]: { period: { start: '2026-10-05T00:00:00.000Z', usedUsd: 3, calls: 2 } } },
+  };
+  await fs.writeFile(hamaFile, JSON.stringify(legacy));
+  const on = await s.activate(enrolled.key);
+  const off = await s.activate(disabled.key);
+  assert.deepEqual([on.answer.rau, off.answer.rau], [{ eligible: true }, { eligible: false }]);
+  assert.deepEqual([(await s.status(on.lease)).body.eligible, (await s.status(off.lease)).body.eligible], [true, false]);
+  assert.equal((await s.learn(on.lease, { prompt: 'legacy' })).status, 200);
+  await s.billed(enrolled.keyId, 1);
+  assert.deepEqual(JSON.parse(await fs.readFile(hamaFile, 'utf8')), legacy);
+});
+
+test('admin: ledgers and weekly spend without keys or emails, an old allowances field left alone, and the CLI tables', async (t) => {
+  const OLD_KEY = ['sk', 'or', 'old', 'placeholder'].join('-');
+  const s = await setup(t, {}, { seed: { 'rau.json': { allowances: { lic_old: { status: 'active', openrouterKey: OLD_KEY, capUsd: 2 } } } } });
+  const rau = await s.buy('rauMonthly');
+  assert.equal((await s.learn(rau.lease, { prompt: 'one' })).status, 200);
+  s.openrouter.next({ status: 500, json: {} });
+  assert.equal((await s.learn(rau.lease, { prompt: 'two' })).status, 200);
+  await s.billed(rau.keyId, 2);
+
+  const list = await s.adminGet('/v1/admin/rau');
+  assert.deepEqual([list.configured, list.allowanceUsd, list.trialAllowanceUsd, list.count], [true, 8, 2, 1]);
+  assert.deepEqual(list.models.map((m) => m.id), ['openrouter-haiku', 'anthropic-haiku']);
+  assert.deepEqual(list.ledgers[0], {
+    principalId: rau.keyId, source: 'plan', allowanceUsd: 8, usedUsd: 2 * HAIKU_CALL_USD, remainingUsd: 8 - 2 * HAIKU_CALL_USD,
+    periodCalls: 2, periodEnd: PERIOD_END, totalUsd: 2 * HAIKU_CALL_USD, calls: 2, lastCallAt: new Date(T0).toISOString(),
+  });
+  const spend = await s.adminGet('/v1/admin/rau/spend?weeks=2');
+  assert.deepEqual(spend.weeks.map((w) => w.week), [weekOf(T0), weekOf(T0 - 7 * 86400000)]);
+  assert.deepEqual(spend.weeks[0].models.haiku, {
+    usd: 2 * HAIKU_CALL_USD, calls: 2, inputTokens: 2000, outputTokens: 600, cacheReadTokens: 4000, cacheWriteTokens: 1000,
+    routes: { openrouter: HAIKU_CALL_USD, anthropic: HAIKU_CALL_USD },
+  });
+  assert.deepEqual([spend.totals.usd, spend.totals.calls], [2 * HAIKU_CALL_USD, 2]);
+  assert.equal((await s.adminGet('/v1/admin/rau/spend?weeks=0')).error, 'weeks_invalid');
+  assert.equal((await fetch(`${s.origin}/v1/admin/rau`)).status, 403);
+  const stored = JSON.parse(await fs.readFile(s.rauFile, 'utf8'));
+  assert.equal(stored.allowances.lic_old.openrouterKey, OLD_KEY, 'the old field is never touched');
+
+  const run = (...args) => promisify(execFile)(process.execPath, [CLI, ...args], { env: { ...process.env, SITE_API_BASE: s.origin, ADMIN_TOKEN: ADMIN } });
+  const ledgers = (await run('rau')).stdout;
+  const money = (usd) => `\\$${usd.toFixed(4).replace('.', '\\.')}`;
+  const two = money(2 * HAIKU_CALL_USD);
+  assert.match(ledgers, new RegExp(`${rau.keyId}\\s+plan\\s+${two}\\s+\\$8\\s+${money(8 - 2 * HAIKU_CALL_USD)}\\s+2026-11-20\\s+2\\s+${two}`));
+  const weekly = (await run('rau-spend', '--weeks', '2')).stdout;
+  assert.match(weekly, new RegExp(`${weekOf(T0)}\\s+haiku\\s+2\\s+${two}\\s+2000\\s+600\\s+4000\\s+1000\\s+openrouter ${money(HAIKU_CALL_USD)}, anthropic ${money(HAIKU_CALL_USD)}`));
+  assert.match(weekly, new RegExp(`2 weeks · 2 calls · ${two}`));
+  for (const text of [JSON.stringify(list), JSON.stringify(spend), ledgers, weekly]) {
+    for (const secret of [OLD_KEY, OPENROUTER_KEY, ANTHROPIC_KEY, rau.lease, 'buyer1@example.com', rau.key]) assert.ok(!text.includes(secret), secret);
+  }
 });

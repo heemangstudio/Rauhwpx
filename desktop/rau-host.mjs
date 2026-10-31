@@ -1,20 +1,20 @@
-// 호스팅 Rau-0.1 을 Electron 에 연결한다: Studio IPC(상태·업그레이드 페이지)와 허브 자식 프로세스 요청.
+// 호스팅 Rau 를 Electron 에 연결한다: Studio IPC(자격·크레딧·업그레이드 페이지)와 허브의 Rau-0.1 학습 요청.
 // lease 는 여기서만 쓰고 Studio·허브로 보내지 않는다.
-import { PRICING_URL } from './license-manager.mjs';
-import { RauServerError, upgradeUrlFrom } from './rau-client.mjs';
+import { RAU_UPGRADE_URL, RauServerError, upgradeUrlFrom } from './rau-client.mjs';
 
-/** 키가 없거나 lease 가 지금 검증되지 않을 때. 서버에 묻지 않는다. */
+/** 키가 없거나 lease 가 지금 검증되지 않을 때(무료 lease 포함). 서버에 묻지 않는다. */
 const NO_LICENSE = 'no_license';
+const NO_USAGE = Object.freeze({ allowanceUsd: null, usedUsd: null, remainingUsd: null, resetsAt: null });
 
-/** Studio 의 rau:status 답. 라이선스가 없으면 서버에 묻지 않고 Pro 전용이라고 답한다. */
+/** Studio 의 rau:status 답(RauStatus). 호스팅 기능에 줄 lease 가 없으면 서버에 묻지 않고 자격이 없다고 답한다. */
 async function statusFor({ client, currentLease }) {
   const lease = await currentLease();
-  if (!lease) return { ok: true, eligible: false, reason: NO_LICENSE, upgradeUrl: PRICING_URL };
+  if (!lease) return { ok: true, eligible: false, source: null, reason: NO_LICENSE, upgradeUrl: RAU_UPGRADE_URL, ...NO_USAGE };
   try {
     return { ok: true, ...(await client.status(lease)) };
   } catch (error) {
-    if (error?.code === 'rau_requires_pro') {
-      return { ok: true, eligible: false, reason: 'rau_requires_pro', upgradeUrl: upgradeUrlFrom(error.upgradeUrl) };
+    if (error?.code === 'rau_plan_required') {
+      return { ok: true, eligible: false, source: null, reason: 'rau_plan_required', upgradeUrl: upgradeUrlFrom(error.upgradeUrl), ...NO_USAGE };
     }
     return { ok: false, code: error?.code ?? 'server' };
   }
@@ -41,8 +41,10 @@ function errorFields(error) {
   const code = error instanceof RauServerError || typeof error?.code === 'string' ? error.code : 'server';
   return {
     code,
-    ...(code === 'rau_requires_pro' ? { upgradeUrl: upgradeUrlFrom(error.upgradeUrl) } : {}),
-    ...(code === 'rau_cap_reached' ? { capUsd: error.capUsd, usedUsd: error.usedUsd, resetsAt: error.resetsAt } : {}),
+    ...(code === 'rau_plan_required' ? { upgradeUrl: upgradeUrlFrom(error.upgradeUrl) } : {}),
+    ...(code === 'rau_credits_exhausted'
+      ? { allowanceUsd: error.allowanceUsd, usedUsd: error.usedUsd, resetsAt: error.resetsAt }
+      : {}),
   };
 }
 

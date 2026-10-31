@@ -79,8 +79,8 @@ test('주석 안 수식의 속성을 바꾸고 두 저장 형식으로 다시 �
   const { wasm, adapter } = await openHeemangAgent(t, FIXTURES.blankHwpx);
   const note = wasm.insertFootnote(0, 0, 0);
   const at = { section: 0, steps: [{ para: note.paraIdx, control: note.controlIdx, index: 0 }], para: 0, offset: 8 };
-  adapter.hmDoc().transact(JSON.stringify({ ops: [{ op: 'insertEquation', at, script: 'x+1', size: 1000 }] }));
-  adapter.refreshLayout();
+  // 코어를 거쳐야 문단 캐시가 새 수식을 본다.
+  (wasm as any).core.transact([{ op: 'insertEquation', at, script: 'x+1', size: 1000 }]);
   const paragraphs = JSON.parse(adapter.hmDoc().query(JSON.stringify({ kind: 'paragraphs', list: { section: 0, steps: at.steps }, count: 1 })));
   const equation = paragraphs[0].controls.find((c: any) => c.kind === 'equation');
   const ref = { kind: 'footnote' as const, sectionIdx: 0, paraIdx: note.paraIdx, controlIdx: note.controlIdx, noteParaIdx: 0, innerControlIdx: equation.index };

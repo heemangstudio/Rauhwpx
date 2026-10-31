@@ -1,9 +1,10 @@
 import { ModalDialog } from './dialog';
 import type { EventBus } from '@/core/event-bus';
-import type { EndnoteShapeSettings } from '@/core/types';
+import type { NoteShapeSettings } from '@/core/types';
 import { HWPUNIT_PER_MM } from '@/core/hwp-constants';
 import type { WasmBridge } from '@/core/wasm-bridge';
 import type { CommandServices } from '@/command/types';
+import { SymbolsDialog } from './symbols-dialog';
 
 type LineTypeChoice = {
   value: string;
@@ -18,17 +19,19 @@ type LineWidthChoice = {
   px: number;
 };
 
+/** 한컴 구분선 종류 11개와 저장값(c11c). 한컴은 DOT(2)를 파선, DASH(3)를 점선이라 부른다. */
 const LINE_TYPE_CHOICES: LineTypeChoice[] = [
   { value: '1', label: '실선', css: 'solid' },
   { value: '2', label: '파선', css: 'dashed', dash: '9 4' },
   { value: '3', label: '점선', css: 'dotted', dash: '1 4' },
-  { value: '4', label: '쇄선', css: 'dashed', dash: '9 4 2 4' },
-  { value: '5', label: '이점 쇄선', css: 'dashed', dash: '9 4 2 4 2 4' },
+  { value: '4', label: '일점쇄선', css: 'dashed', dash: '9 4 2 4' },
+  { value: '5', label: '이점쇄선', css: 'dashed', dash: '9 4 2 4 2 4' },
   { value: '6', label: '긴 파선', css: 'dashed', dash: '14 5' },
-  { value: '8', label: '이중선', css: 'double' },
+  { value: '7', label: '원형 점선', css: 'dotted', dash: '1 3' },
+  { value: '8', label: '이중 실선', css: 'double' },
   { value: '9', label: '얇고 굵은 이중선', css: 'double' },
   { value: '10', label: '굵고 얇은 이중선', css: 'double' },
-  { value: '11', label: '삼중선', css: 'double' },
+  { value: '11', label: '얇고 굵고 얇은 삼중선', css: 'double' },
 ];
 
 const LINE_WIDTH_CHOICES: LineWidthChoice[] = [
@@ -59,6 +62,33 @@ const COLOR_SWATCHES = [
 
 let dialogInstanceSeq = 0;
 
+export type NoteKind = 'footnote' | 'endnote';
+const KIND_LABEL: Record<NoteKind, string> = { footnote: '각주', endnote: '미주' };
+
+/** 한컴 주석 모양의 번호 모양 목록(c11a). 미주는 앞 17개, 각주는 기호 항목 5개가 더 있다. */
+const COMMON_NUMBER_FORMATS: [string, string][] = [
+  ['digit', '1,2,3'], ['circledDigit', '①,②,③'], ['upperRoman', 'I,II,III'], ['lowerRoman', 'i,ii,iii'],
+  ['upperAlpha', 'A,B,C'], ['lowerAlpha', 'a,b,c'], ['circledUpperAlpha', 'Ⓐ,Ⓑ,Ⓒ'], ['circledLowerAlpha', 'ⓐ,ⓑ,ⓒ'],
+  ['hangulSyllable', '가,나,다'], ['circledHangulSyllable', '㉮,㉯,㉰'], ['hangulJamo', 'ㄱ,ㄴ,ㄷ'], ['circledHangulJamo', '㉠,㉡,㉢'],
+  ['hangulDigit', '일,이,삼'], ['hanjaDigit', '一,二,三'], ['circledHanjaDigit', '㊀,㊁,㊂'],
+  ['decagonCircle', '갑,을,병'], ['decagonCircleHanja', '甲,乙,丙'],
+];
+/** 사용자 기호 번호(USER_CHAR)는 기호 글자로 항목을 가른다. 목록에 없는 글자는 "기호" 다. */
+const FOOTNOTE_SYMBOL_FORMATS: [string, string][] = [
+  ['symbol', '*, †, ‡, §'], ['userChar:*', '*, **, ***'], ['userChar:#', '#, ##, ###'], ['userChar:+', '+, ++, +++'], ['userChar', '기호'],
+];
+const NUMBER_FORMAT_CHOICES: Record<NoteKind, [string, string][]> = {
+  footnote: [...COMMON_NUMBER_FORMATS, ...FOOTNOTE_SYMBOL_FORMATS],
+  endnote: COMMON_NUMBER_FORMATS,
+};
+const NUMBER_FORMAT_LABELS = new Map([...COMMON_NUMBER_FORMATS, ...FOOTNOTE_SYMBOL_FORMATS]);
+
+/** 구분선 길이 항목: 음수는 한컴이 저장하는 기호 값이다 (c11c). */
+const LENGTH_CHOICES: [string, string][] = [['-1', '5 cm'], ['-2', '2 cm'], ['-3', '단 너비의 1/3'], ['-4', '단 너비'], ['custom', '사용자']];
+
+/** 한컴 여백·길이 칸: 저장값은 mm × 283.46 을 버림한 HWPUNIT 이다 (c11c·c11d). */
+const HWPUNIT_PER_MM_HANCOM = 283.46;
+
 function normalizeColor(value: string | undefined | null): string {
   const text = (value || '').trim();
   if (/^#[0-9a-fA-F]{6}$/.test(text)) {
@@ -67,53 +97,47 @@ function normalizeColor(value: string | undefined | null): string {
   return '#000000';
 }
 
-function normalizeEndnotePlacement(value: string | undefined | null): 'documentEnd' | 'sectionEnd' {
-  switch ((value || '').trim()) {
-    case 'sectionEnd':
-    case 'belowText':
-    case 'END_OF_SECTION':
-    case 'BELOW_TEXT':
-      return 'sectionEnd';
-    case 'documentEnd':
-    case 'eachColumn':
-    case 'rightColumn':
-    case 'END_OF_DOCUMENT':
-    case 'EACH_COLUMN':
-    case 'RIGHT_COLUMN':
-    default:
-      return 'documentEnd';
-  }
-}
-
-function normalizeEndnoteNumbering(value: string | undefined | null): 'continue' | 'restartSection' {
-  switch ((value || '').trim()) {
-    case 'restartSection':
-    case 'restartPage':
-    case 'ON_SECTION':
-    case 'ON_PAGE':
-    case 'RESTART_SECTION':
-    case 'RESTART_PAGE':
-      return 'restartSection';
-    case 'continue':
-    case 'CONTINUOUS':
-    default:
-      return 'continue';
-  }
-}
-
-function hwpToMm(value: number): number {
-  return Math.round(value / HWPUNIT_PER_MM * 10) / 10;
+function hwpToMm(value: number): string {
+  return (Math.round(value / HWPUNIT_PER_MM * 10) / 10).toFixed(1);
 }
 
 function mmToHwp(value: number, max = 300): number {
   if (!Number.isFinite(value)) return 0;
-  return Math.round(Math.min(max, Math.max(0, value)) * HWPUNIT_PER_MM);
+  return Math.trunc(Math.min(max, Math.max(0, value)) * HWPUNIT_PER_MM_HANCOM + 1e-9);
 }
 
-export class EndnoteShapeDialog extends ModalDialog {
+function formatOption(settings: NoteShapeSettings): string {
+  if (settings.numberFormat !== 'userChar') return settings.numberFormat;
+  return ['*', '#', '+'].includes(settings.userChar) ? `userChar:${settings.userChar}` : 'userChar';
+}
+
+/** 초안에서 저장값과 다른 항목만. 문서 전체에 적용할 때 이 항목만 구역마다 덮어쓴다. */
+function changedFields(draft: NoteShapeSettings, stored: NoteShapeSettings): Partial<NoteShapeSettings> {
+  const out: Record<string, unknown> = {};
+  for (const key of Object.keys(draft) as (keyof NoteShapeSettings)[]) {
+    if (key !== 'ok' && draft[key] !== stored[key]) out[key] = draft[key];
+  }
+  return out as Partial<NoteShapeSettings>;
+}
+
+/**
+ * 한컴 "주석 모양" 대화상자. 본문에서 열면 각주·미주 두 탭, 주석 안에서 열면 그 주석의 탭 하나다.
+ * 두 탭이 같은 컨트롤을 쓰고 탭마다 초안을 따로 든다. 확인하면 사용자가 바꾼 항목만 문서의 모든 구역에
+ * 한 편집으로 쓴다(한컴 적용 범위 "문서 전체"). 손대지 않은 컨트롤은 저장값을 그대로 남긴다.
+ */
+export class NoteShapeDialog extends ModalDialog {
   private readonly radioNameSuffix = ++dialogInstanceSeq;
-  private settings!: EndnoteShapeSettings;
+  private stored: Partial<Record<NoteKind, NoteShapeSettings>> = {};
+  private drafts: Partial<Record<NoteKind, NoteShapeSettings>> = {};
+  private kind: NoteKind;
+  /** 단 너비(HWPUNIT). 단 너비 길이 항목과 사용자 길이 표시에 쓴다. */
+  private columnWidth = 0;
+  /** 지금 탭을 채운 직후의 컨트롤 값. 확인할 때 이와 다른 컨트롤만 읽는다. */
+  private shown: Record<string, string> = {};
+  private tabButtons = new Map<NoteKind, HTMLButtonElement>();
   private numberFormatSelect!: HTMLSelectElement;
+  private userCharInput!: HTMLInputElement;
+  private symbolButton!: HTMLButtonElement;
   private prefixInput!: HTMLInputElement;
   private suffixInput!: HTMLInputElement;
   private separatorCheck!: HTMLInputElement;
@@ -130,28 +154,43 @@ export class EndnoteShapeDialog extends ModalDialog {
   private separatorLengthInput!: HTMLInputElement;
   private marginTopInput!: HTMLInputElement;
   private noteSpacingInput!: HTMLInputElement;
+  private noteSpacingLabel!: HTMLSpanElement;
   private marginBottomInput!: HTMLInputElement;
-  private numberingContinue!: HTMLInputElement;
-  private numberingRestart!: HTMLInputElement;
-  private placementDocument!: HTMLInputElement;
-  private placementSection!: HTMLInputElement;
+  private startNumberInput!: HTMLInputElement;
+  private numberingRadios: HTMLInputElement[] = [];
+  private numberingPageRow!: HTMLElement;
+  private superscriptRadios: HTMLInputElement[] = [];
+  private contentNumberLegend!: HTMLLegendElement;
+  private footnoteGroups: HTMLElement[] = [];
+  private endnoteGroups: HTMLElement[] = [];
+  private footnotePlacementRadios: HTMLInputElement[] = [];
+  private beneathTextRadios: HTMLInputElement[] = [];
+  private endnotePlacementRadios: HTMLInputElement[] = [];
   private popupDismissPointerHandler: ((event: PointerEvent) => void) | null = null;
   private popupDismissFocusHandler: ((event: FocusEvent) => void) | null = null;
 
+  /** `kinds`: 보일 탭. 본문은 ['footnote', 'endnote'], 주석 안은 그 주석의 종류 하나. */
   constructor(
     private wasm: WasmBridge,
     private eventBus: EventBus,
     private sectionIdx: number,
     private services?: CommandServices,
+    private kinds: NoteKind[] = ['footnote', 'endnote'],
   ) {
-    super('미주', 520);
+    super('주석 모양', 520);
+    this.kind = kinds[0];
   }
 
   show(): void {
-    this.settings = this.wasm.getEndnoteShape(this.sectionIdx);
+    for (const kind of this.kinds) {
+      this.stored[kind] = kind === 'footnote' ? this.wasm.getFootnoteShape(this.sectionIdx) : this.wasm.getEndnoteShape(this.sectionIdx);
+      this.drafts[kind] = { ...this.stored[kind]! };
+    }
+    this.columnWidth = this.readColumnWidth();
     super.show();
+    for (const [kind, tab] of this.tabButtons) tab.style.display = this.kinds.includes(kind) ? '' : 'none';
     this.attachPopupDismissHandlers();
-    this.populate();
+    this.selectTab(this.kind);
   }
 
   hide(): void {
@@ -160,54 +199,65 @@ export class EndnoteShapeDialog extends ModalDialog {
     super.hide();
   }
 
+  private readColumnWidth(): number {
+    try {
+      const page = this.wasm.getPageDef(this.sectionIdx);
+      const columns = this.wasm.getColumnDef(this.sectionIdx);
+      const body = page.width - page.marginLeft - page.marginRight - page.marginGutter;
+      const count = Math.max(1, columns.columnCount || 1);
+      return Math.max(0, (body - (count - 1) * (columns.spacing || 0)) / count);
+    } catch {
+      return 0;
+    }
+  }
+
   protected createBody(): HTMLElement {
     const body = document.createElement('div');
     body.style.cssText = 'display:flex;flex-direction:column;gap:8px;';
 
     const tabs = document.createElement('div');
     tabs.className = 'dialog-tabs';
-    const tab = document.createElement('button');
-    tab.type = 'button';
-    tab.className = 'dialog-tab active';
-    tab.textContent = '미주 모양';
-    tabs.appendChild(tab);
+    tabs.setAttribute('role', 'tablist');
+    for (const kind of ['footnote', 'endnote'] as NoteKind[]) {
+      const tab = document.createElement('button');
+      tab.type = 'button';
+      tab.className = 'dialog-tab';
+      tab.setAttribute('role', 'tab');
+      tab.textContent = `${KIND_LABEL[kind]} 모양`;
+      tab.addEventListener('click', () => this.switchTab(kind));
+      this.tabButtons.set(kind, tab);
+      tabs.appendChild(tab);
+    }
 
-    body.append(
-      tabs,
-      this.numberGroup(),
-      this.spacingGroup(),
-      this.numberingGroup(),
-      this.contentNumberGroup(),
-      this.placementGroup(),
-    );
+    const pair = document.createElement('div');
+    pair.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:8px;';
+    pair.append(this.spacingGroup(), this.numberingGroup());
+    const vertical = this.footnoteVerticalGroup();
+    const columns = this.footnoteColumnGroup();
+    const endnotePlace = this.endnotePlacementGroup();
+    this.footnoteGroups = [vertical, columns];
+    this.endnoteGroups = [endnotePlace];
+    body.append(tabs, this.numberGroup(), pair, this.contentNumberGroup(), vertical, columns, endnotePlace);
     return body;
   }
 
   protected onConfirm(): void {
-    const next: EndnoteShapeSettings = {
-      ...this.settings,
-      numberFormat: this.numberFormatSelect.value,
-      prefixChar: this.prefixInput.value.slice(0, 1),
-      suffixChar: this.suffixInput.value.slice(0, 1),
-      separatorEnabled: this.separatorCheck.checked,
-      separatorLineType: this.separatorCheck.checked ? parseInt(this.lineTypeSelect.value, 10) : 0,
-      separatorLineWidth: this.separatorCheck.checked ? parseInt(this.lineWidthSelect.value, 10) : 0,
-      separatorColor: this.lineColorInput.value,
-      separatorLength: this.separatorCheck.checked ? mmToHwp(parseFloat(this.separatorLengthInput.value) || 0) : 0,
-      separatorMarginTop: mmToHwp(parseFloat(this.marginTopInput.value) || 0),
-      noteSpacing: mmToHwp(parseFloat(this.noteSpacingInput.value) || 0),
-      separatorMarginBottom: mmToHwp(parseFloat(this.marginBottomInput.value) || 0),
-      numbering: this.numberingRestart.checked ? 'restartSection' : 'continue',
-      placement: this.placementSection.checked ? 'sectionEnd' : 'documentEnd',
+    this.drafts[this.kind] = this.collect();
+    const changes = this.kinds
+      .map(kind => ({ kind, fields: changedFields(this.drafts[kind]!, this.stored[kind]!) }))
+      .filter(change => Object.keys(change.fields).length > 0);
+    if (!changes.length) return;
+    const apply = () => {
+      for (const change of changes) this.wasm.applyNoteShapeToDocument(change.kind, change.fields);
     };
-
-    // [미주 모양 이관] snapshot 으로 라우팅(#2077 동형). services 미주입 시 직접 적용 fallback.
-    const apply = () => this.wasm.applyEndnoteShape(this.sectionIdx, next);
+    // 두 탭을 함께 고쳐도 확인 한 번이 되돌리기 한 칸이다. 주석 안에서 고쳤으면 되돌려도 주석 편집과 캐럿이 그대로다.
     const ih = this.services?.getInputHandler();
     if (ih) {
+      const editContext = ih.getCurrentEditContext();
       ih.executeOperation({
         kind: 'snapshot',
-        operationType: 'endnoteShape',
+        operationType: 'noteShape',
+        ...(editContext ? { editContext, editContextAfter: editContext } : {}),
         operation: () => { apply(); return ih.getCursorPosition(); },
       });
     } else {
@@ -216,48 +266,164 @@ export class EndnoteShapeDialog extends ModalDialog {
     }
   }
 
-  private populate(): void {
-    this.numberFormatSelect.value = this.settings.numberFormat || 'digit';
-    this.prefixInput.value = this.settings.prefixChar || '';
-    this.suffixInput.value = this.settings.suffixChar || ')';
-    this.separatorCheck.checked = this.settings.separatorEnabled !== false;
-    this.setLineTypeValue(this.settings.separatorLineType ?? 1);
-    this.setLineWidthValue(this.settings.separatorLineWidth ?? 1);
-    this.setSeparatorColor(this.settings.separatorColor);
+  private switchTab(kind: NoteKind): void {
+    if (kind === this.kind || !this.kinds.includes(kind)) return;
+    this.drafts[this.kind] = this.collect();
+    this.selectTab(kind);
+  }
+
+  private selectTab(kind: NoteKind): void {
+    this.kind = kind;
+    for (const [tabKind, tab] of this.tabButtons) {
+      const active = tabKind === kind;
+      tab.classList.toggle('active', active);
+      tab.setAttribute('aria-selected', String(active));
+    }
+    const label = KIND_LABEL[kind];
+    this.noteSpacingLabel.textContent = `${label} 사이`;
+    this.contentNumberLegend.textContent = `${label} 내용 번호 속성`;
+    const footnote = kind === 'footnote';
+    this.numberingPageRow.style.display = footnote ? 'flex' : 'none';
+    for (const group of this.footnoteGroups) group.style.display = footnote ? '' : 'none';
+    for (const group of this.endnoteGroups) group.style.display = footnote ? 'none' : '';
+    this.userCharInput.parentElement!.style.visibility = footnote ? 'visible' : 'hidden';
+    this.populate(this.drafts[kind]!);
+  }
+
+  private populate(settings: NoteShapeSettings): void {
+    this.fillNumberFormats(formatOption(settings));
+    this.userCharInput.value = settings.userChar || '';
+    this.prefixInput.value = settings.prefixChar || '';
+    this.suffixInput.value = settings.suffixChar || '';
+    this.startNumberInput.value = String(settings.startNumber ?? 1);
+    this.separatorCheck.checked = settings.separatorEnabled !== false;
+    this.setLineTypeValue(settings.separatorLineType || 1);
+    this.setLineWidthValue(settings.separatorLineWidth ?? 1);
+    this.setSeparatorColor(settings.separatorColor);
     this.updateLineTypePreview();
     this.updateLineWidthPreview();
-    this.separatorLengthModeSelect.value = 'custom';
-    this.separatorLengthInput.value = String(hwpToMm(this.settings.separatorLength || mmToHwp(50)));
-    this.marginTopInput.value = String(hwpToMm(this.settings.separatorMarginTop || 0));
-    this.noteSpacingInput.value = String(hwpToMm(this.settings.noteSpacing || 0));
-    this.marginBottomInput.value = String(hwpToMm(this.settings.separatorMarginBottom || 0));
-    this.setNumberingRadio(normalizeEndnoteNumbering(this.settings.numbering));
-    this.setPlacementRadio(normalizeEndnotePlacement(this.settings.placement));
+    const length = settings.separatorLength;
+    if (length >= -4 && length <= -1) this.separatorLengthModeSelect.value = String(length);
+    else if (length > 0) this.separatorLengthModeSelect.value = 'custom';
+    else this.separatorLengthModeSelect.value = '-1';
+    // 한컴처럼 사용자 길이는 단 너비를 넘지 않게 보인다. 칸을 고치지 않으면 저장값은 그대로다.
+    this.separatorLengthInput.value = hwpToMm(length > 0 ? Math.min(length, this.columnWidth || length) : this.lengthOf(this.separatorLengthModeSelect.value));
+    this.marginTopInput.value = hwpToMm(settings.separatorMarginTop || 0);
+    this.noteSpacingInput.value = hwpToMm(settings.noteSpacing || 0);
+    this.marginBottomInput.value = hwpToMm(settings.separatorMarginBottom || 0);
+    for (const radio of this.numberingRadios) radio.checked = radio.value === settings.numbering;
+    for (const radio of this.superscriptRadios) radio.checked = radio.value === String(!!settings.superscript);
+    for (const radio of [...this.footnotePlacementRadios, ...this.endnotePlacementRadios]) radio.checked = radio.value === settings.placement;
+    for (const radio of this.beneathTextRadios) radio.checked = radio.value === String(!!settings.beneathText);
     this.updateSeparatorEnabled();
+    this.updateUserCharEnabled();
+    this.updateStartNumberEnabled();
+    this.shown = this.controlValues();
+  }
+
+  /** 길이 항목이 그리는 길이(HWPUNIT). 단 너비를 모르면 5 cm 로 본다. */
+  private lengthOf(mode: string): number {
+    const column = this.columnWidth || mmToHwp(150);
+    switch (mode) {
+      case '-2': return 20 * HWPUNIT_PER_MM;
+      case '-3': return column / 3;
+      case '-4': return column;
+      default: return 50 * HWPUNIT_PER_MM;
+    }
+  }
+
+  /** 열 때 있던 저장값이 목록 밖이면 그 값을 덧붙여 그대로 고를 수 있게 한다. */
+  private fillNumberFormats(current: string): void {
+    const choices = [...NUMBER_FORMAT_CHOICES[this.kind]];
+    if (!choices.some(([value]) => value === current)) choices.push([current, NUMBER_FORMAT_LABELS.get(current) ?? `번호 모양 ${current}`]);
+    this.numberFormatSelect.replaceChildren(...choices.map(([value, label]) => {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = label;
+      return option;
+    }));
+    this.numberFormatSelect.value = current;
+  }
+
+  private checkedValue(radios: HTMLInputElement[]): string {
+    return radios.find(radio => radio.checked)?.value ?? '';
+  }
+
+  private controlValues(): Record<string, string> {
+    return {
+      numberFormat: this.numberFormatSelect.value,
+      userChar: this.userCharInput.value,
+      prefixChar: this.prefixInput.value,
+      suffixChar: this.suffixInput.value,
+      startNumber: this.startNumberInput.value,
+      separatorEnabled: String(this.separatorCheck.checked),
+      separatorLineType: this.lineTypeSelect.value,
+      separatorLineWidth: this.lineWidthSelect.value,
+      separatorColor: normalizeColor(this.lineColorInput.value),
+      separatorLength: `${this.separatorLengthModeSelect.value}:${this.separatorLengthInput.value}`,
+      separatorMarginTop: this.marginTopInput.value,
+      noteSpacing: this.noteSpacingInput.value,
+      separatorMarginBottom: this.marginBottomInput.value,
+      numbering: this.checkedValue(this.numberingRadios),
+      superscript: this.checkedValue(this.superscriptRadios),
+      placement: this.checkedValue(this.kind === 'footnote' ? this.footnotePlacementRadios : this.endnotePlacementRadios),
+      beneathText: this.checkedValue(this.beneathTextRadios),
+    };
+  }
+
+  /** 지금 탭의 초안에 사용자가 바꾼 컨트롤만 덮어쓴다. */
+  private collect(): NoteShapeSettings {
+    const next = { ...this.drafts[this.kind]! };
+    const now = this.controlValues();
+    const changed = (key: string) => now[key] !== this.shown[key];
+    const mm = (input: HTMLInputElement, fallback: number) => {
+      const value = parseFloat(input.value);
+      return Number.isFinite(value) ? mmToHwp(value) : fallback;
+    };
+    if (changed('numberFormat')) {
+      const [format, symbol] = now.numberFormat.split(':');
+      next.numberFormat = format;
+      if (symbol) next.userChar = symbol;
+      else if (format === 'userChar') next.userChar = now.userChar.slice(0, 1);
+    }
+    if (changed('userChar') && now.numberFormat === 'userChar') next.userChar = now.userChar.slice(0, 1);
+    if (changed('prefixChar')) next.prefixChar = now.prefixChar.slice(0, 1);
+    if (changed('suffixChar')) next.suffixChar = now.suffixChar.slice(0, 1);
+    if (changed('startNumber')) {
+      const start = parseInt(now.startNumber, 10);
+      if (Number.isInteger(start) && start >= 1 && start <= 0xffff) next.startNumber = start;
+    }
+    if (changed('separatorEnabled')) next.separatorEnabled = this.separatorCheck.checked;
+    if (changed('separatorLineType')) next.separatorLineType = parseInt(now.separatorLineType, 10);
+    if (changed('separatorLineWidth')) next.separatorLineWidth = parseInt(now.separatorLineWidth, 10);
+    if (changed('separatorColor')) next.separatorColor = now.separatorColor;
+    if (changed('separatorLength')) {
+      const mode = this.separatorLengthModeSelect.value;
+      next.separatorLength = mode === 'custom' ? mm(this.separatorLengthInput, next.separatorLength) : Number(mode);
+    }
+    if (changed('separatorMarginTop')) next.separatorMarginTop = mm(this.marginTopInput, next.separatorMarginTop);
+    if (changed('noteSpacing')) next.noteSpacing = mm(this.noteSpacingInput, next.noteSpacing);
+    if (changed('separatorMarginBottom')) next.separatorMarginBottom = mm(this.marginBottomInput, next.separatorMarginBottom);
+    if (changed('numbering') && now.numbering) next.numbering = now.numbering;
+    if (changed('superscript') && now.superscript) next.superscript = now.superscript === 'true';
+    if (changed('placement') && now.placement) next.placement = now.placement;
+    if (changed('beneathText') && now.beneathText) next.beneathText = now.beneathText === 'true';
+    return next;
   }
 
   private numberGroup(): HTMLElement {
     const group = this.group('번호 서식');
     this.numberFormatSelect = document.createElement('select');
     this.numberFormatSelect.className = 'dialog-select';
-    for (const [value, label] of [
-      ['digit', '1,2,3'],
-      ['circledDigit', '①,②,③'],
-      ['upperRoman', 'I,II,III'],
-      ['lowerRoman', 'i,ii,iii'],
-      ['upperAlpha', 'A,B,C'],
-      ['lowerAlpha', 'a,b,c'],
-      ['hangulSyllable', '가,나,다'],
-      ['hangulJamo', 'ㄱ,ㄴ,ㄷ'],
-      ['hangulDigit', '일,이,삼'],
-      ['hanjaDigit', '一,二,三'],
-    ]) {
-      const option = document.createElement('option');
-      option.value = value;
-      option.textContent = label;
-      this.numberFormatSelect.appendChild(option);
-    }
+    this.numberFormatSelect.addEventListener('change', () => this.updateUserCharEnabled());
+    this.numberFormatSelect.append(new Option('1,2,3', 'digit'));
 
+    this.userCharInput = this.charInput();
+    this.symbolButton = document.createElement('button');
+    this.symbolButton.type = 'button';
+    this.symbolButton.className = 'dialog-btn';
+    this.symbolButton.textContent = '문자표...';
+    this.symbolButton.addEventListener('click', () => this.pickSymbol());
     this.prefixInput = this.charInput();
     this.suffixInput = this.charInput();
     this.separatorCheck = document.createElement('input');
@@ -265,14 +431,20 @@ export class EndnoteShapeDialog extends ModalDialog {
     this.separatorCheck.addEventListener('change', () => this.updateSeparatorEnabled());
     this.buildLineTypeControl();
     this.buildLineWidthControl();
-    this.separatorLengthModeSelect = this.select([['custom', '사용자']]);
-    this.separatorLengthModeSelect.style.width = '86px';
+    this.separatorLengthModeSelect = this.select(LENGTH_CHOICES);
+    this.separatorLengthModeSelect.style.width = '112px';
+    this.separatorLengthModeSelect.addEventListener('change', () => {
+      const mode = this.separatorLengthModeSelect.value;
+      if (mode !== 'custom') this.separatorLengthInput.value = hwpToMm(this.lengthOf(mode));
+      this.updateSeparatorEnabled();
+    });
     this.separatorLengthInput = this.numberInput(50, 0, 300, 0.5);
     this.buildColorControl();
 
+    const symbol = this.inlineControls(this.label('기호 모양'), this.userCharInput, this.symbolButton);
     group.append(
-      this.row(this.label('번호 모양'), this.numberFormatSelect),
-      this.row(this.label('앞 장식 문자'), this.prefixInput, this.label('뒤 장식 문자'), this.suffixInput),
+      this.row(this.label('번호 모양'), this.numberFormatSelect, symbol),
+      this.row(this.label('앞 장식 문자'), this.prefixInput, this.label('뒷 장식 문자'), this.suffixInput),
       this.checkboxRow(this.separatorCheck, '구분선 넣기'),
       this.pairRow(
         '종류',
@@ -288,14 +460,25 @@ export class EndnoteShapeDialog extends ModalDialog {
     return group;
   }
 
+  /** 문자표에서 고른 글자를 기호 모양 칸에 넣는다. 한 UTF-16 글자만 저장할 수 있다. */
+  private pickSymbol(): void {
+    if (!this.services) return;
+    new SymbolsDialog(this.services, (char) => {
+      if (char.length !== 1) return;
+      this.userCharInput.value = char;
+      this.userCharInput.dispatchEvent(new Event('input', { bubbles: true }));
+    }).show();
+  }
+
   private spacingGroup(): HTMLElement {
     const group = this.group('여백');
-    this.marginTopInput = this.numberInput(0, 0, 100, 0.5);
-    this.noteSpacingInput = this.numberInput(7, 0, 100, 0.5);
-    this.marginBottomInput = this.numberInput(2, 0, 100, 0.5);
+    this.marginTopInput = this.numberInput(3, 0, 100, 0.1);
+    this.noteSpacingInput = this.numberInput(1, 0, 100, 0.1);
+    this.marginBottomInput = this.numberInput(2, 0, 100, 0.1);
+    this.noteSpacingLabel = this.label('각주 사이');
     group.append(
       this.row(this.label('구분선 위'), this.withUnit(this.marginTopInput, 'mm')),
-      this.row(this.label('미주 사이'), this.withUnit(this.noteSpacingInput, 'mm')),
+      this.row(this.noteSpacingLabel, this.withUnit(this.noteSpacingInput, 'mm')),
       this.row(this.label('구분선 아래'), this.withUnit(this.marginBottomInput, 'mm')),
     );
     return group;
@@ -303,37 +486,57 @@ export class EndnoteShapeDialog extends ModalDialog {
 
   private numberingGroup(): HTMLElement {
     const group = this.group('번호 매기기');
-    this.numberingContinue = this.radio(`endnote-numbering-${this.radioNameSuffix}`, 'continue');
-    this.numberingRestart = this.radio(`endnote-numbering-${this.radioNameSuffix}`, 'restartSection');
-    this.numberingContinue.checked = true;
-    this.numberingContinue.defaultChecked = true;
+    const name = `note-numbering-${this.radioNameSuffix}`;
+    this.numberingRadios = ['continue', 'restartSection', 'restartPage'].map(value => this.radio(name, value));
+    for (const radio of this.numberingRadios) radio.addEventListener('change', () => this.updateStartNumberEnabled());
+    const [cont, section, page] = this.numberingRadios;
+    this.startNumberInput = this.numberInput(1, 1, 65535, 1);
+    const start = this.row(this.label('시작 번호'), this.startNumberInput);
+    start.style.paddingLeft = '22px';
+    this.numberingPageRow = this.radioRow(page, '쪽마다 새로 시작');
     group.append(
-      this.radioRow(this.numberingContinue, '앞 구역에 이어서'),
-      this.radioRow(this.numberingRestart, '현재 구역부터 새로 시작'),
+      this.radioRow(cont, '앞 구역에 이어서'),
+      this.radioRow(section, '현재 구역부터 새로 시작'),
+      start,
+      this.numberingPageRow,
     );
+    for (const row of group.querySelectorAll('label')) (row as HTMLElement).style.display = 'flex';
     return group;
   }
 
   private contentNumberGroup(): HTMLElement {
-    const group = this.group('미주 내용 번호 속성');
-    const normal = this.radio(`endnote-content-number-${this.radioNameSuffix}`, 'normal');
-    const small = this.radio(`endnote-content-number-${this.radioNameSuffix}`, 'small');
-    normal.checked = true;
-    normal.defaultChecked = true;
-    small.disabled = true;
-    group.append(this.radioRow(normal, '보통'), this.radioRow(small, '작게'));
+    const group = this.group('각주 내용 번호 속성');
+    this.contentNumberLegend = group.querySelector('legend')!;
+    const name = `note-content-number-${this.radioNameSuffix}`;
+    this.superscriptRadios = ['false', 'true'].map(value => this.radio(name, value));
+    group.append(this.radioRow(this.superscriptRadios[0], '보통'), this.radioRow(this.superscriptRadios[1], '작게'));
     return group;
   }
 
-  private placementGroup(): HTMLElement {
+  private footnoteVerticalGroup(): HTMLElement {
+    const group = this.group('각주 세로 위치');
+    const name = `footnote-beneath-${this.radioNameSuffix}`;
+    this.beneathTextRadios = ['false', 'true'].map(value => this.radio(name, value));
+    group.append(this.radioRow(this.beneathTextRadios[0], '꼬리말 바로 위'), this.radioRow(this.beneathTextRadios[1], '본문 아래'));
+    return group;
+  }
+
+  private footnoteColumnGroup(): HTMLElement {
+    const group = this.group('다단 각주 위치');
+    const name = `footnote-placement-${this.radioNameSuffix}`;
+    this.footnotePlacementRadios = ['eachColumn', 'mergedColumn', 'rightMostColumn'].map(value => this.radio(name, value));
+    const [each, merged, right] = this.footnotePlacementRadios;
+    group.append(this.radioRow(each, '각 단 아래'), this.radioRow(merged, '전단'), this.radioRow(right, '오른쪽 단 아래'));
+    return group;
+  }
+
+  private endnotePlacementGroup(): HTMLElement {
     const group = this.group('미주 위치');
-    this.placementDocument = this.radio(`endnote-placement-${this.radioNameSuffix}`, 'documentEnd');
-    this.placementSection = this.radio(`endnote-placement-${this.radioNameSuffix}`, 'sectionEnd');
-    this.placementDocument.checked = true;
-    this.placementDocument.defaultChecked = true;
+    const name = `endnote-placement-${this.radioNameSuffix}`;
+    this.endnotePlacementRadios = ['documentEnd', 'sectionEnd'].map(value => this.radio(name, value));
     group.append(
-      this.radioRow(this.placementDocument, '문서의 끝'),
-      this.radioRow(this.placementSection, '구역의 끝'),
+      this.radioRow(this.endnotePlacementRadios[0], '문서의 끝'),
+      this.radioRow(this.endnotePlacementRadios[1], '구역의 끝'),
     );
     return group;
   }
@@ -346,28 +549,22 @@ export class EndnoteShapeDialog extends ModalDialog {
       this.lineWidthSelect,
       this.lineWidthButton,
       this.separatorLengthModeSelect,
-      this.separatorLengthInput,
       this.lineColorInput,
       this.lineColorButton,
     ]) {
       el.disabled = !enabled;
     }
+    this.separatorLengthInput.disabled = !enabled || this.separatorLengthModeSelect.value !== 'custom';
   }
 
-  private setNumberingRadio(numbering: 'continue' | 'restartSection'): void {
-    this.numberingContinue.checked = numbering === 'continue';
-    this.numberingRestart.checked = numbering === 'restartSection';
-    if (!this.numberingContinue.checked && !this.numberingRestart.checked) {
-      this.numberingContinue.checked = true;
-    }
+  private updateUserCharEnabled(): void {
+    const custom = this.numberFormatSelect.value === 'userChar';
+    this.userCharInput.disabled = !custom;
+    this.symbolButton.disabled = !custom || !this.services;
   }
 
-  private setPlacementRadio(placement: 'documentEnd' | 'sectionEnd'): void {
-    this.placementDocument.checked = placement === 'documentEnd';
-    this.placementSection.checked = placement === 'sectionEnd';
-    if (!this.placementDocument.checked && !this.placementSection.checked) {
-      this.placementDocument.checked = true;
-    }
+  private updateStartNumberEnabled(): void {
+    this.startNumberInput.disabled = this.checkedValue(this.numberingRadios) !== 'restartSection';
   }
 
   private group(title: string): HTMLFieldSetElement {

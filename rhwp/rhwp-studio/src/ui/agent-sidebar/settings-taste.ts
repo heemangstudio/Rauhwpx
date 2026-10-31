@@ -1,8 +1,8 @@
-// 설정 → AI 의 호스팅 Rau-0.1. 대화에서 배우기와 Pro 자격만 보여 준다.
+// 설정 → AI 의 호스팅 Rau-0.1. 대화에서 배우기와 Rau 요금제 자격(크레딧)만 보여 준다.
 import type { SidebarBridge } from '../../agent/bridge.ts';
 import { RAU_TASTE_NAME } from '../../agent/taste.ts';
 import type { TasteSettings } from '../../agent/types.ts';
-import { openRauUpgrade, type DesktopRauApi, type RauStatus } from './rau-upgrade.ts';
+import { openRauUpgrade, RAU_PRICE_LINE, rauStateLine, type DesktopRauApi, type RauStatus } from './rau-upgrade.ts';
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className = '', text?: string): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
@@ -14,8 +14,10 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, className = '', text?
 export interface TasteSettingsSectionDeps {
   bridge: Pick<SidebarBridge, 'requestTasteSettings' | 'setTasteSettings'>;
   isDisposed(): boolean;
-  /** 데스크톱의 호스팅 Rau 자격. 없으면 Pro 줄이 없다. */
+  /** 데스크톱의 호스팅 Rau 자격. 없으면 Rau 줄이 없다. */
   rau?: DesktopRauApi | null;
+  /** 앱 요금제 카드. 있으면 업그레이드가 웹 대신 카드를 Rau 칸에 맞춰 연다. */
+  openPlans?: (() => void) | null;
 }
 
 export interface TasteSettingsSection {
@@ -45,42 +47,39 @@ export function createTasteSettingsSection(deps: TasteSettingsSectionDeps): Tast
   learningTrack.setAttribute('aria-hidden', 'true');
   learning.append(learningCopy, learningInput, learningTrack);
 
-  const pro = el('div', 'ag-settings-control-row ag-taste-setting-row ag-taste-pro-row');
-  pro.dataset.tasteField = 'pro';
-  const proCopy = el('span', 'ag-settings-control-copy');
-  const proDetail = el('span', 'ag-settings-control-description');
-  proCopy.append(el('span', 'ag-settings-control-label', 'Pro 호스팅'), proDetail);
-  const proState = el('span', 'ag-settings-control-description ag-taste-pro-state');
+  const basic = el('div', 'ag-settings-control-row ag-taste-setting-row ag-taste-rau-row');
+  basic.dataset.tasteField = 'rau';
+  const basicCopy = el('span', 'ag-settings-control-copy');
+  const basicDetail = el('span', 'ag-settings-control-description');
+  basicCopy.append(el('span', 'ag-settings-control-label', 'Rau'), basicDetail);
+  const basicState = el('span', 'ag-settings-control-description ag-taste-rau-state');
   const upgrade = el('button', 'ag-settings-btn', '업그레이드');
   upgrade.type = 'button';
-  pro.append(proCopy, proState, upgrade);
-  pro.hidden = true;
+  basic.append(basicCopy, basicState, upgrade);
+  basic.hidden = true;
   let rauStatus: RauStatus | null = null;
 
-  body.append(learning, pro);
+  body.append(learning, basic);
 
   // 허브가 답하기 전에는 기본값(켜짐, 자동)을 보이고 잠가 둔다.
   let settings: TasteSettings | null = null;
   let shown: TasteSettings = { enabled: true, provider: 'auto', model: null, effort: null };
   let saving = false;
   let request = 0;
-  function renderPro(): void {
+  function renderBasic(): void {
     const status = rauStatus;
-    pro.hidden = !status?.ok || !shown.enabled;
+    basic.hidden = !status?.ok || !shown.enabled;
     if (!status?.ok) return;
     const eligible = status.eligible === true;
-    const capped = eligible && status.remainingUsd === 0;
     upgrade.hidden = eligible;
-    proState.hidden = !eligible;
-    proState.textContent = capped
-      ? `${status.resetsAt ? new Intl.DateTimeFormat('ko-KR', { month: 'long', day: 'numeric' }).format(new Date(status.resetsAt)) : '다음 달'}까지 한도 도달`
-      : '켜짐';
-    proDetail.hidden = eligible;
-    proDetail.textContent = '월 ₩3,900 · 연 ₩39,000';
+    basicState.hidden = !eligible;
+    basicState.textContent = eligible ? rauStateLine(status) : '';
+    basicDetail.hidden = eligible;
+    basicDetail.textContent = RAU_PRICE_LINE;
   }
 
   function render(): void {
-    renderPro();
+    renderBasic();
     const locked = settings === null || saving;
     learningInput.checked = shown.enabled;
     learningInput.disabled = locked;
@@ -99,7 +98,7 @@ export function createTasteSettingsSection(deps: TasteSettingsSectionDeps): Tast
       void deps.rau.getStatus().then((status) => {
         if (deps.isDisposed()) return;
         rauStatus = status;
-        renderPro();
+        renderBasic();
       }, () => {});
     }
     const seq = ++request;
@@ -124,7 +123,10 @@ export function createTasteSettingsSection(deps: TasteSettingsSectionDeps): Tast
   }
 
   learningInput.addEventListener('change', () => void save({ enabled: learningInput.checked }));
-  upgrade.addEventListener('click', () => openRauUpgrade(deps.rau ?? null, rauStatus?.upgradeUrl));
+  upgrade.addEventListener('click', () => {
+    if (deps.openPlans) deps.openPlans();
+    else openRauUpgrade(deps.rau ?? null, rauStatus?.upgradeUrl);
+  });
 
   render();
   return { root, accept, refresh, render };

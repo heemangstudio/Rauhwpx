@@ -23,13 +23,24 @@
 //   node scripts/license-admin.mjs gifts [--status active|revoked|provisioning] [--event-id special-2026-10]
 //   node scripts/license-admin.mjs gift-disable --key-id lic_... [--reason "..."]   # disables the OpenRouter key too
 //   node scripts/license-admin.mjs gift-amount --key-id lic_... --usd 30   # this beta key's gift; 0 = none, a claimed key's limit changes on OpenRouter
-//   node scripts/license-admin.mjs rau                                # hosted Rau-0.1 allowances: this month's spend against the cap
+//   node scripts/license-admin.mjs rau                                # hosted Rau ledgers: this period's spend against the allowance
+//   node scripts/license-admin.mjs rau-spend [--weeks 8]              # hosted Rau spend per week and model, with totals
+//   node scripts/license-admin.mjs accounts --email user@example.com | --id acct_... | --key-id lic_...   # accounts with devices and linked keys
+//   node scripts/license-admin.mjs account-unlink --key-id lic_...     # free a key from its account
+//   node scripts/license-admin.mjs account-link --key-id lic_... --account-id acct_...
+//   node scripts/license-admin.mjs gift-codes issue --plan hama|rau --months N | --days N --count N [--note "..."] [--redeem-by YYYY-MM-DD] [--out codes.csv]
+//                                                    # prints the codes once (or writes them only to --out); they are never shown again
+//   node scripts/license-admin.mjs gift-codes list [--batch-id gcb_...] [--status active|redeemed|revoked|expired]   # masked codes
+//   node scripts/license-admin.mjs gift-codes revoke --batch-id gcb_... | --code GIFT-... [--reason "..."]   # unredeemed codes only
+import { promises as fs } from 'node:fs';
+
 import { adminRequest, siteApiBase } from './admin-request.mjs';
 
 const [command, ...argv] = process.argv.slice(2);
-// `extend` takes the key or success-page ref as its first word.
+// `extend` takes the key or success-page ref as its first word, `gift-codes` its subcommand.
 const target = command === 'extend' && argv[0] && !argv[0].startsWith('--') ? argv[0] : undefined;
-const rest = target ? argv.slice(1) : argv;
+const sub = command === 'gift-codes' && argv[0] && !argv[0].startsWith('--') ? argv[0] : undefined;
+const rest = target || sub ? argv.slice(1) : argv;
 const args = {};
 for (let i = 0; i < rest.length; i += 1) {
   const name = rest[i].replace(/^--/, '').replace(/-([a-z])/g, (_, c) => c.toUpperCase());
@@ -46,6 +57,7 @@ if (command === 'extend') {
 const base = siteApiBase();
 const token = process.env.ADMIN_TOKEN;
 if (!token) { process.stderr.write('ADMIN_TOKEN is not set\n'); process.exit(2); }
+if (command === 'gift-codes') process.exit(await giftCodes());
 
 const posts = {
   issue: '/v1/admin/licenses/issue',
@@ -61,6 +73,8 @@ const posts = {
   'remove-device': '/v1/admin/licenses/remove-device',
   'gift-disable': '/v1/admin/gifts/disable',
   'gift-amount': '/v1/admin/gifts/amount',
+  'account-unlink': '/v1/admin/accounts/unlink',
+  'account-link': '/v1/admin/accounts/link',
 };
 const gets = {
   lookup: '/v1/admin/licenses',
@@ -72,7 +86,9 @@ const gets = {
   webhooks: '/v1/admin/webhooks',
   gifts: '/v1/admin/gifts',
   rau: '/v1/admin/rau',
+  'rau-spend': '/v1/admin/rau/spend',
   downloads: '/v1/admin/downloads',
+  accounts: '/v1/admin/accounts',
 };
 if (command === 'webhooks') {
   if (args.rejected && args.held) { process.stderr.write('pick one of --rejected or --held\n'); process.exit(2); }
@@ -97,12 +113,14 @@ if (gets[command]) {
   }
   res = await adminRequest({ base, token, method: 'POST', path: posts[command], body });
 } else {
-  process.stderr.write('usage: license-admin.mjs issue|beta|betas|signatures|customers|lookup|orders|webhooks|attention|ack|release|apply-renewal|revoke|restore|reset-devices|remove-device|resend-email|extend|downloads|gifts|gift-disable|gift-amount|rau [--flags]\n');
+  process.stderr.write('usage: license-admin.mjs issue|beta|betas|signatures|customers|lookup|orders|webhooks|attention|ack|release|apply-renewal|revoke|restore|reset-devices|remove-device|resend-email|extend|downloads|gifts|gift-disable|gift-amount|rau|rau-spend|accounts|account-unlink|account-link|gift-codes [--flags]\n');
   process.exit(2);
 }
 const parsed = res.json;
 const pretty = parsed ? JSON.stringify(parsed, null, 2) : res.text;
-process.stdout.write(`${res.status} ${pretty}\n`);
+// The Rau reports print a table only; anything else (and every failure) prints the JSON answer.
+const tableOnly = (command === 'rau' || command === 'rau-spend') && res.ok && parsed;
+process.stdout.write(tableOnly ? `${res.status}\n` : `${res.status} ${pretty}\n`);
 const kstDate = (iso) => new Date(Date.parse(iso) + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
 /** One line per key: plan, status and how long it runs (KST date). */
 function expiryLine(license) {
@@ -114,7 +132,7 @@ function expiryLine(license) {
   const renews = license.subscription?.autoRenew === false ? '갱신 안 함' : '자동 갱신';
   const failed = license.subscription?.status === 'past_due' && license.subscription.paymentGraceEndsAt
     ? ` · 결제 실패, ${kstDate(license.subscription.paymentGraceEndsAt)}까지 유예` : '';
-  const plan = `${license.edition === 'pro' ? 'pro ' : ''}${license.plan ?? 'annual'}`;
+  const plan = `${license.edition === 'hama' || license.edition === 'rau' ? `${license.edition} ` : ''}${license.plan ?? 'annual'}`;
   return `${license.key} ${plan} · ${license.status} · ${kstDate(license.expiresAt)}까지 · ${renews}${failed}`;
 }
 if (command === 'downloads' && res.ok && parsed) {
@@ -127,13 +145,103 @@ const listed = parsed?.licenses ?? parsed?.signatures ?? (parsed?.license ? [par
 if (res.ok && listed.length && listed.every((l) => l.key)) {
   process.stdout.write(`\n${listed.map(expiryLine).join('\n')}\n`);
 }
-if (command === 'rau' && res.ok && parsed) {
-  const lines = [`${parsed.model} · ${parsed.period} · cap $${parsed.capUsd} · resets ${parsed.resetsAt}`];
-  for (const a of parsed.allowances) lines.push(`${a.keyId} ${a.status} · $${a.usedUsd ?? '?'} / $${a.capUsd}`);
-  process.stdout.write(`\n${lines.join('\n')}\n`);
+const money = (value) => (typeof value === 'number' ? `$${value.toFixed(4)}` : '-');
+/** Rows of cells as aligned columns. */
+function table(rows) {
+  const widths = rows[0].map((_, i) => Math.max(...rows.map((row) => String(row[i]).length)));
+  return rows.map((row) => row.map((cell, i) => String(cell).padEnd(widths[i])).join('  ').trimEnd()).join('\n');
+}
+if (command === 'rau' && tableOnly) {
+  const head = `Rau · ${parsed.configured ? 'on' : 'off'} · routes ${parsed.models.map((m) => m.id).join(', ') || '-'} · plan $${parsed.allowanceUsd}/month · trial $${parsed.trialAllowanceUsd} · ${parsed.count} ledgers`;
+  const rows = [['principal', 'source', 'used', 'allowance', 'left', 'period end', 'calls', 'total']];
+  for (const l of parsed.ledgers) {
+    rows.push([l.principalId, l.source, money(l.usedUsd), `$${l.allowanceUsd}`, money(l.remainingUsd), l.periodEnd ? kstDate(l.periodEnd) : '-', l.periodCalls, money(l.totalUsd)]);
+  }
+  process.stdout.write(`${head}\n${table(rows)}\n`);
+}
+if (command === 'rau-spend' && tableOnly) {
+  const rows = [['week', 'model', 'calls', 'usd', 'input', 'output', 'cache read', 'cache write', 'routes']];
+  const line = (label, model, row) => rows.push([
+    label, model, row.calls, money(row.usd), row.inputTokens, row.outputTokens, row.cacheReadTokens, row.cacheWriteTokens,
+    Object.entries(row.routes).map(([route, usd]) => `${route} ${money(usd)}`).join(', ') || '-',
+  ]);
+  for (const week of parsed.weeks) {
+    const models = Object.entries(week.models);
+    if (models.length === 0) rows.push([week.week, '-', 0, money(0), '', '', '', '', '']);
+    for (const [model, row] of models) line(week.week, model, row);
+  }
+  for (const [model, row] of Object.entries(parsed.totals.models)) line('total', model, row);
+  process.stdout.write(`${table(rows)}\n${parsed.weeks.length} weeks · ${parsed.totals.calls} calls · ${money(parsed.totals.usd)}\n`);
+}
+if (command === 'accounts' && res.ok && parsed) {
+  const lines = parsed.accounts.map((a) => `${a.id} ${a.email}${a.emailVerified ? '' : ' (미인증)'} · 기기 ${a.devices.length} · 키 ${a.licenses.map((l) => `${l.keyId} ${l.status}`).join(', ') || '-'}`);
+  process.stdout.write(`\n${lines.join('\n') || '계정 없음'}\n`);
 }
 // The key alone on the last line, so it can be copied without picking through the JSON.
 if (command === 'beta' && res.ok && parsed?.license?.key) {
   process.stdout.write(`\n${parsed.license.name} (${parsed.license.deviceLimit} devices): ${parsed.license.key}\n`);
 }
 process.exit(res.ok ? 0 : 1);
+
+/** `gift-codes issue|list|revoke`. Only `issue` ever sees plaintext codes: on stdout once, or only in `--out`. */
+async function giftCodes() {
+  const usage = 'usage: license-admin.mjs gift-codes issue --plan hama|rau --months N | --days N --count N [--note "..."] [--redeem-by YYYY-MM-DD] [--out codes.csv]\n'
+    + '       license-admin.mjs gift-codes list [--batch-id gcb_...] [--status active|redeemed|revoked|expired]\n'
+    + '       license-admin.mjs gift-codes revoke --batch-id gcb_... | --code GIFT-... [--reason "..."]\n';
+  if (sub === 'list') {
+    const res = await adminRequest({ base, token, path: '/v1/admin/gift-codes', query: args });
+    process.stdout.write(`${res.status} ${res.json ? JSON.stringify(res.json, null, 2) : res.text}\n`);
+    if (res.ok && res.json) {
+      const lines = res.json.batches.map((b) => `${b.batchId} ${b.plan} · ${b.durationMonths ? `${b.durationMonths}개월` : `${b.durationDays}일`} · 미사용 ${b.counts.active} · 사용 ${b.counts.redeemed} · 취소 ${b.counts.revoked} · 기한 지남 ${b.counts.expired}${b.note ? ` · ${b.note}` : ''}`);
+      process.stdout.write(`\n${lines.join('\n') || '배치 없음'}\n`);
+    }
+    return res.ok ? 0 : 1;
+  }
+  if (sub === 'revoke') {
+    const res = await adminRequest({ base, token, method: 'POST', path: '/v1/admin/gift-codes/revoke', body: args });
+    process.stdout.write(`${res.status} ${res.json ? JSON.stringify(res.json, null, 2) : res.text}\n`);
+    return res.ok ? 0 : 1;
+  }
+  if (sub !== 'issue') { process.stderr.write(usage); return 2; }
+  const { months, days, out, ...fields } = args;
+  if (typeof fields.plan !== 'string' || typeof fields.count !== 'string' || (typeof months === 'string') === (typeof days === 'string')) {
+    process.stderr.write(usage);
+    return 2;
+  }
+  // Opened before the request: a code the file cannot take would be lost for good.
+  const file = typeof out === 'string' ? await fs.open(out, 'wx', 0o600).catch((error) => {
+    process.stderr.write(`--out ${out}: ${error.code === 'EEXIST' ? 'the file already exists' : error.message}\n`);
+    return null;
+  }) : undefined;
+  if (file === null) return 2;
+  let res;
+  try {
+    res = await adminRequest({
+      base,
+      token,
+      method: 'POST',
+      path: '/v1/admin/gift-codes/issue',
+      body: { ...fields, ...(typeof months === 'string' ? { durationMonths: months } : { durationDays: days }) },
+    });
+  } catch (error) {
+    await file?.close();
+    if (file) await fs.rm(out, { force: true });
+    throw error;
+  }
+  const { codes = [], ...summary } = res.json ?? {};
+  if (summary.batch) delete summary.batch.codes; // masked copies of the same codes
+  process.stdout.write(`${res.status} ${res.json ? JSON.stringify(summary, null, 2) : res.text}\n`);
+  if (file) {
+    if (res.ok) {
+      const b = summary.batch;
+      const rows = codes.map((code) => [code, b.batchId, b.plan, b.durationMonths ?? '', b.durationDays ?? '', b.redeemBy ?? ''].join(','));
+      await file.writeFile(`code,batch_id,plan,duration_months,duration_days,redeem_by\n${rows.join('\n')}\n`);
+    }
+    await file.close();
+    if (!res.ok) await fs.rm(out, { force: true });
+    else process.stdout.write(`\n${codes.length} codes written to ${out}\n`);
+  } else if (res.ok) {
+    process.stdout.write(`\n${codes.join('\n')}\n`);
+  }
+  return res.ok ? 0 : 1;
+}

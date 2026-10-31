@@ -34,7 +34,7 @@
   display: flex;
   flex-direction: column;
   gap: 16px;
-  padding: 20px 24px 24px;
+  padding: 14px 24px 24px;
   overflow-y: auto;
   overscroll-behavior-y: contain;
   overflow-anchor: none;
@@ -61,9 +61,64 @@
   transform: none;
 }
 
-/* Rau-0.1 장은 파란 테두리로 구분한다. */
-.rhwp-setup-dialog[data-step='taste'] {
-  border-color: #5b8fd4; /* token-ok */
+.rhwp-setup-dialog[data-step='rau'] .rhwp-setup-hippo {
+  display: none;
+}
+
+.rhwp-setup-dialog[data-step='rau'] .rhwp-setup-head {
+  justify-content: flex-end;
+}
+
+.rhwp-setup-upgrade {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 0 12px 12px;
+  text-align: center;
+}
+
+.rhwp-setup-party-hama {
+  width: 104px;
+  height: 80px;
+  image-rendering: pixelated;
+}
+
+.rhwp-setup-upgrade-title {
+  margin: 0;
+  color: var(--n-ink);
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: var(--ag-track-tight);
+}
+
+.rhwp-setup-upgrade-copy {
+  max-width: 260px;
+  margin: 0;
+  color: var(--n-ink-secondary);
+  font-size: var(--ag-fs-body);
+  line-height: var(--ag-lh-body);
+  word-break: keep-all;
+}
+
+.rhwp-setup-upgrade-action {
+  margin-top: 8px;
+  padding: 10px 24px;
+  border: 0;
+  border-radius: var(--ag-r-row);
+  background: var(--ag-primary-bg);
+  color: var(--ag-primary-fg);
+  font: inherit;
+  cursor: pointer;
+}
+
+.rhwp-setup-upgrade-action:hover {
+  background: var(--ag-primary-bg-hover);
+}
+
+.rhwp-setup-upgrade-action:focus-visible {
+  outline: var(--ag-focus-ring);
+  outline-offset: var(--ag-focus-offset);
 }
 
 /* ── 하마와 말풍선 ── */
@@ -78,70 +133,34 @@
   flex: 1 1 auto;
   min-width: 0;
   display: flex;
-  align-items: flex-end;
-  gap: 12px;
+  align-items: center;
+  gap: 8px;
 }
 
-/* 하마가 서는 자리. 반짝임은 여기 붙여 공중제비에 같이 돌지 않게 한다. */
+/* 작은 하마가 헤엄쳐 갔다 올 만큼만 자리를 둔다. */
 .rhwp-setup-hippo-stage {
   position: relative;
   flex: none;
-  width: 78px;
-  height: 60px;
-  cursor: default;
+  width: 60px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
 }
 
-/* 26×20 칸 여섯 개(닫음·말함·벌림·깜빡임·걸음·웅크림)를 3배로 키운다. 움직임은 hippo.ts 가
-   transform 을 3px·90° 단위로 바꿔 만든다. */
-.rhwp-setup-hippo-sprite {
-  display: block;
-  width: 78px;
-  height: 60px;
-  background: url('/images/boot/hama-sprites.png') 0 0 / 468px 60px no-repeat;
-  image-rendering: pixelated;
-  transform-origin: 50% 60%;
-}
-
-/* 마지막 장면: 머리 위 반짝임 두 개가 번갈아 깜빡인다. */
-.rhwp-setup-hippo[data-excited='true'] .rhwp-setup-hippo-stage::before,
-.rhwp-setup-hippo[data-excited='true'] .rhwp-setup-hippo-stage::after {
-  content: '';
-  position: absolute;
-  width: 3px;
-  height: 3px;
-  background: #62b3e2; /* token-ok */
-  box-shadow:
-    0 -3px 0 #62b3e2, 0 3px 0 #62b3e2, -3px 0 0 #62b3e2, 3px 0 0 #62b3e2; /* token-ok */
-  animation: rhwp-setup-twinkle 600ms steps(1, end) infinite;
-}
-
-.rhwp-setup-hippo[data-excited='true'] .rhwp-setup-hippo-stage::before {
-  left: 33px;
-  top: -18px;
-}
-
-.rhwp-setup-hippo[data-excited='true'] .rhwp-setup-hippo-stage::after {
-  left: 69px;
-  top: -6px;
-  animation-delay: -300ms;
-}
-
-@keyframes rhwp-setup-twinkle {
-  0% { opacity: 1; }
-  50% { opacity: 0; }
-}
-
-.rhwp-setup-dialog[data-step='done'] .rhwp-setup-body {
-  display: none;
+.rhwp-setup-hippo-stage:focus-visible {
+  outline: var(--ag-focus-ring);
+  outline-offset: var(--ag-focus-offset);
 }
 
 .rhwp-setup-say {
   position: relative;
   box-sizing: border-box;
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-width: 0;
-  min-height: calc(2 * var(--ag-lh-body, 1.45) * var(--ag-fs-body) + 20px);
-  margin: 0 0 22px;
+  min-height: calc(var(--ag-lh-body, 1.45) * var(--ag-fs-body) + 20px);
+  margin: 0;
   padding: 10px 12px;
   border-radius: var(--ag-r-card);
   background: var(--n-ink-fill-soft);
@@ -464,10 +483,10 @@
   mask-image: url('/icons/provider-pi.svg');
 }
 
-/* Hama 마크 — 앱 하마의 하품하는 자세. */
-.rhwp-setup-card-logo .ag-provider-icon-mask[data-agent='hama'] {
-  -webkit-mask-image: url('/icons/provider-hama.svg');
-  mask-image: url('/icons/provider-hama.svg');
+/* 호스팅 Rau 마크. */
+.rhwp-setup-card-logo .ag-provider-icon-mask[data-agent='rau'] {
+  -webkit-mask-image: url('/icons/rau.png');
+  mask-image: url('/icons/rau.png');
 }
 
 .rhwp-setup-card-logo .ag-provider-icon-mask[data-agent='grok'] {
@@ -594,241 +613,97 @@
   outline-offset: var(--ag-focus-offset);
 }
 
-/* ── 라이선스: 픽셀 열쇠가 있는 구매 칸과 키 칸 ── */
+/* ── 계정: 로그인 판(계정 페이지와 같은 것)과 로그인을 마친 자리 ── */
 
-.rhwp-setup-license {
-  display: flex;
-  flex-direction: column;
+.rhwp-setup-account .acct-signin-out {
   gap: 8px;
 }
 
-.rhwp-setup-license-buy {
+.rhwp-setup-account .acct-signin-provider {
+  min-height: 40px;
+}
+
+.rhwp-setup-account .acct-signin-or {
+  margin: 4px 0;
+}
+
+.rhwp-setup-account .acct-signin-email {
+  flex-direction: row;
+}
+
+.rhwp-setup-account .acct-signin-email .acct-input {
+  flex: 1 1 auto;
+  min-height: 36px;
+  font-size: var(--ag-fs-secondary);
+}
+
+.rhwp-setup-account .acct-signin-email .acct-btn {
+  min-height: 36px;
+  font-size: var(--ag-fs-secondary);
+}
+
+.rhwp-setup-account .acct-signin-wait {
+  padding: 12px 0 4px;
+}
+
+.rhwp-setup-account .acct-signin-wait .acct-btn {
+  margin-top: 10px;
+}
+
+.rhwp-setup-account .acct-signin-choose-title {
+  font-size: var(--ag-fs-body);
+}
+
+.rhwp-setup-account-done {
   position: relative;
-  box-sizing: border-box;
   display: flex;
   align-items: center;
-  gap: 14px;
-  width: 100%;
-  padding: 14px 14px 14px 12px;
-  border: 1px solid transparent;
+  gap: 12px;
+  padding: 12px 44px 12px 12px;
+  border: 1px solid var(--n-ink);
   border-radius: var(--ag-r-card);
-  background: var(--n-ink-fill-soft);
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  cursor: default;
-  transition: var(--ag-transition-color);
-}
-
-.rhwp-setup-license-buy:hover:not(:disabled) {
-  background: var(--n-ink-fill-hover);
-}
-
-.rhwp-setup-license-buy:active:not(:disabled) {
-  background: var(--n-ink-fill-pressed);
-  transition: none;
-}
-
-.rhwp-setup-license-buy:focus-visible {
-  outline: var(--ag-focus-ring);
-  outline-offset: var(--ag-focus-offset);
-}
-
-.rhwp-setup-license[data-state='licensed'] .rhwp-setup-license-buy {
-  border-color: var(--n-ink);
   background: var(--n-surface);
+  outline: none;
 }
 
-.rhwp-setup-license[data-state='licensed'] .rhwp-setup-check {
+.rhwp-setup-account-done[hidden] {
+  display: none;
+}
+
+.rhwp-setup-account-avatar {
+  width: 36px;
+  height: 36px;
+}
+
+.rhwp-setup-account-avatar .acct-avatar-initial {
+  font-size: 15px;
+}
+
+.rhwp-setup-account-copy {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.rhwp-setup-account-name {
+  font-size: var(--ag-fs-body);
+  font-weight: var(--ag-fw-medium);
+}
+
+.rhwp-setup-account-email {
+  overflow: hidden;
+  color: var(--n-ink-secondary);
+  font-size: var(--ag-fs-meta);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rhwp-setup-account-done .rhwp-setup-check {
   top: 50%;
   right: 14px;
   margin-top: -9px;
   opacity: 1;
   transform: none;
-}
-
-/* 열쇠 자리. 그림 크기(57×21)에 맞춘 각진 받침 위에 둔다. */
-.rhwp-setup-key {
-  position: relative;
-  flex: none;
-  display: grid;
-  place-items: center;
-  width: 72px;
-  height: 48px;
-  border-radius: var(--ag-r-chip);
-  background: var(--n-ink-fill-soft);
-}
-
-.rhwp-setup-key-art {
-  display: block;
-  image-rendering: pixelated;
-}
-
-.rhwp-setup-key-face {
-  fill: #f0b93a; /* token-ok */
-}
-
-.rhwp-setup-key-shadow {
-  fill: #b07a16; /* token-ok */
-}
-
-.rhwp-setup-key-glint {
-  fill: #fff3c4; /* token-ok */
-}
-
-/* 열쇠 위 반짝임. 하마의 반짝임과 같은 3px 십자다. */
-.rhwp-setup-key::after {
-  content: '';
-  position: absolute;
-  top: 9px;
-  right: 9px;
-  width: 3px;
-  height: 3px;
-  background: #f0b93a; /* token-ok */
-  box-shadow:
-    0 -3px 0 #f0b93a, 0 3px 0 #f0b93a, -3px 0 0 #f0b93a, 3px 0 0 #f0b93a; /* token-ok */
-  opacity: 0;
-}
-
-.rhwp-setup-license-buy:hover .rhwp-setup-key::after,
-.rhwp-setup-license[data-state='licensed'] .rhwp-setup-key::after {
-  animation: rhwp-setup-twinkle 600ms steps(1, end) infinite;
-}
-
-/* 활성화되면 열쇠가 한 번 폴짝 뛴다(3px 단위). */
-.rhwp-setup-license[data-state='licensed'] .rhwp-setup-key-art {
-  animation: rhwp-setup-key-hop 420ms steps(1, end) 1;
-}
-
-@keyframes rhwp-setup-key-hop {
-  0% { transform: none; }
-  25% { transform: translateY(-3px); }
-  50% { transform: translateY(-6px); }
-  75% { transform: translateY(-3px); }
-  100% { transform: none; }
-}
-
-.rhwp-setup-license-copy {
-  flex: 1 1 auto;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.rhwp-setup-license-title {
-  font-size: var(--ag-fs-body);
-  font-weight: var(--ag-fw-medium);
-  letter-spacing: var(--ag-track-tight);
-  line-height: var(--ag-lh-tight);
-}
-
-.rhwp-setup-license-detail {
-  overflow: hidden;
-  color: var(--n-ink-secondary);
-  font-size: var(--ag-fs-secondary);
-  line-height: var(--ag-lh-tight);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.rhwp-setup-license-go {
-  flex: none;
-  display: grid;
-  place-items: center;
-  width: 24px;
-  height: 24px;
-  color: var(--n-ink-secondary);
-}
-
-.rhwp-setup-license-go .ag-icon {
-  width: 13px;
-  height: 13px;
-}
-
-.rhwp-setup-license[data-state='licensed'] .rhwp-setup-license-go {
-  display: none;
-}
-
-/* 체크 자리만 남긴다. */
-.rhwp-setup-license[data-state='licensed'] .rhwp-setup-license-buy {
-  padding-right: 44px;
-}
-
-.rhwp-setup-license-form {
-  display: flex;
-  gap: 8px;
-}
-
-.rhwp-setup-license-form[hidden] {
-  display: none;
-}
-
-.rhwp-setup-license-input {
-  flex: 1 1 auto;
-  min-width: 0;
-  box-sizing: border-box;
-  height: 36px;
-  padding: 0 10px;
-  border: 1px solid var(--n-ink-hairline);
-  border-radius: var(--ag-r-row);
-  background: var(--n-surface);
-  color: var(--n-ink);
-  font: inherit;
-  font-family: var(--font-family-mono, monospace);
-  font-size: 12px;
-  letter-spacing: 0;
-  text-transform: uppercase;
-  transition: border-color var(--ag-dur-fast) var(--ag-ease-out);
-}
-
-.rhwp-setup-license-input::placeholder {
-  color: var(--n-ink-tertiary);
-  font-family: var(--ag-font);
-  letter-spacing: var(--ag-track-tight);
-  text-transform: none;
-}
-
-.rhwp-setup-license-input:focus {
-  border-color: var(--n-ink-secondary);
-  outline: none;
-}
-
-.rhwp-setup-license-redeem {
-  flex: none;
-  height: 36px;
-  padding: 0 14px;
-  border: 1px solid var(--n-ink-hairline);
-  border-radius: var(--ag-r-row);
-  background: var(--n-ink-fill-soft);
-  color: var(--n-ink);
-  font: inherit;
-  font-size: var(--ag-fs-body);
-  font-weight: var(--ag-fw-medium);
-  letter-spacing: var(--ag-track-tight);
-  cursor: default;
-  transition: var(--ag-transition-color);
-}
-
-.rhwp-setup-license-redeem:hover:not(:disabled) {
-  background: var(--n-ink-fill-hover);
-}
-
-.rhwp-setup-license-redeem:disabled {
-  color: var(--n-ink-tertiary);
-}
-
-.rhwp-setup-license-redeem[aria-busy='true'] {
-  animation: rhwp-setup-redeem-wait 900ms steps(2, end) infinite;
-}
-
-@keyframes rhwp-setup-redeem-wait {
-  50% { opacity: 0.5; }
-}
-
-.rhwp-setup-license-redeem:focus-visible {
-  outline: var(--ag-focus-ring);
-  outline-offset: var(--ag-focus-offset);
 }
 
 /* ── 아래: 진행 점과 다음 ── */
@@ -847,19 +722,36 @@
 
 .rhwp-setup-dots {
   display: flex;
-  gap: 6px;
 }
 
 /* 픽셀 하마에 맞춰 점도 각지게 둔다. */
 .rhwp-setup-dot {
+  display: grid;
+  place-items: center;
+  width: 12px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.rhwp-setup-dot::before {
+  content: '';
   width: 6px;
   height: 6px;
   background: var(--n-ink-quaternary);
   transition: background var(--ag-dur-fast) var(--ag-ease-out);
 }
 
-.rhwp-setup-dot[data-current='true'] {
+.rhwp-setup-dot[aria-current='step']::before,
+.rhwp-setup-dot:hover::before {
   background: var(--n-ink);
+}
+
+.rhwp-setup-dot:focus-visible {
+  outline: 2px solid var(--n-ink);
+  outline-offset: 1px;
 }
 
 .rhwp-setup-primary {
@@ -890,8 +782,19 @@
 }
 
 .rhwp-setup-primary[data-quiet='true'] {
+  display: grid;
+  place-items: center;
+  min-width: 0;
+  width: auto;
+  height: 36px;
+  padding: 0 12px;
   background: transparent;
   color: var(--n-ink-secondary);
+}
+
+.rhwp-setup-primary[data-quiet='true'] svg {
+  width: 18px;
+  height: 18px;
 }
 
 .rhwp-setup-primary[data-quiet='true']:hover {
@@ -910,13 +813,99 @@
   .rhwp-setup-panel,
   .rhwp-setup-check,
   .rhwp-setup-dot,
-  .rhwp-setup-font-icon,
-  .rhwp-setup-key::after,
-  .rhwp-setup-key-art,
-  .rhwp-setup-license-redeem,
-  .rhwp-setup-hippo-stage::before,
-  .rhwp-setup-hippo-stage::after {
+  .rhwp-setup-font-icon {
     animation: none;
     transition: none;
   }
+}
+
+/* 시작 경로와 요금제: 실제로 쓸 수 있는 기능만 다음 장으로 이어진다. */
+.rhwp-setup-overlay[hidden],
+.rhwp-setup-primary[hidden] {
+  display: none;
+}
+
+.rhwp-setup-paths,
+.rhwp-setup-plans {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.rhwp-setup-path {
+  display: grid;
+  grid-template-columns: 28px 1fr;
+  align-items: center;
+  gap: 6px 14px;
+  padding: 18px;
+  border: 1px solid var(--n-ink-hairline);
+  border-radius: var(--ag-r-card);
+  background: var(--n-ink-fill-soft);
+  color: var(--n-ink);
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+  transition: background var(--ag-dur-fast) var(--ag-ease-out);
+}
+
+.rhwp-setup-path > svg {
+  grid-row: span 2;
+  width: 24px;
+  height: 24px;
+  color: var(--n-ink-secondary);
+}
+
+.rhwp-setup-path strong {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.rhwp-setup-path span,
+.rhwp-setup-hint,
+.rhwp-setup-notice {
+  color: var(--n-ink-secondary);
+  font-size: var(--ag-fs-secondary);
+  line-height: 1.6;
+  word-break: keep-all;
+}
+
+.rhwp-setup-path:hover {
+  background: var(--n-ink-fill-hover);
+}
+
+.rhwp-setup-path:focus-visible {
+  outline: var(--ag-focus-ring);
+  outline-offset: var(--ag-focus-offset);
+}
+
+.rhwp-setup-hint {
+  margin: 14px 0 0;
+}
+
+.rhwp-setup-notice {
+  margin: 0;
+}
+
+.rhwp-setup-plan-summary {
+  border: 1px solid var(--n-ink-hairline);
+  border-radius: var(--ag-r-card);
+  overflow: hidden;
+}
+
+.rhwp-setup-plan-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 18px;
+  color: var(--n-ink);
+  font-size: var(--ag-fs-body);
+}
+
+.rhwp-setup-plan-row + .rhwp-setup-plan-row {
+  border-top: 1px solid var(--n-ink-hairline);
+}
+
+.rhwp-setup-plan-row span {
+  color: var(--n-ink-secondary);
+  font-size: var(--ag-fs-secondary);
 }

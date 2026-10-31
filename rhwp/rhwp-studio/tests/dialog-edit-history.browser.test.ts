@@ -200,9 +200,22 @@ test('책갈피 넣기·이름 바꾸기·지우기는 각각 undo 한 번으로
 test('쪽·구역·번호 대화상자 확인은 각각 undo 한 번으로 되돌아간다', opts, async (t) => {
   for (const entry of [
     'page:setup', 'file:page-setup', 'page:page-border', 'page:col-settings',
-    'page:section-settings', 'page:new-page-num', 'insert:endnote-shape',
+    'page:section-settings', 'page:new-page-num', 'insert:note-shape',
   ] as const) {
     await t.test(entry, async () => assertOneUndoStep(await scenario('layoutDialog', entry), entry));
+  }
+  assertNothingRecorded(await scenario('noteShapeNoChange'), '주석 모양 변경 없는 확인');
+});
+
+test('주석 안에서 연 주석 모양은 그 주석의 탭만 보이고, 되돌려도 주석 편집과 캐럿이 그대로다', opts, async (t) => {
+  for (const kind of ['footnote', 'endnote'] as const) {
+    await t.test(kind, async () => {
+      const result = await scenario('noteShapeInNote', kind);
+      assertOneUndoStep(result, kind);
+      assert.deepEqual(result.tabs, [kind === 'footnote' ? '각주 모양' : '미주 모양']);
+      assert.equal(result.carets[0].startsWith('true:'), true, '주석을 넣으면 주석 편집으로 들어간다');
+      assert.deepEqual(result.carets, Array(4).fill(result.carets[0]), '확인·되돌리기·다시 하기 뒤 캐럿');
+    });
   }
 });
 

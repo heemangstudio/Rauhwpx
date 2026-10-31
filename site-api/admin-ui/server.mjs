@@ -56,6 +56,10 @@ const ROUTES = {
   'GET /api/feedback/attachment': { path: '/v1/admin/feedback/attachment', fields: ['id', 'name'], binary: true },
   'POST /api/feedback/status': { path: '/v1/admin/feedback/status', fields: ['id', 'status'] },
   'POST /api/feedback/delete': { path: '/v1/admin/feedback/delete', fields: ['id'] },
+  // Plan and term come from the owner every time; nothing here fixes or defaults them.
+  'GET /api/gift-codes': { path: '/v1/admin/gift-codes', fields: ['batchId', 'status'] },
+  'POST /api/gift-codes/issue': { path: '/v1/admin/gift-codes/issue', fields: ['plan', 'durationMonths', 'durationDays', 'count', 'note', 'redeemBy'] },
+  'POST /api/gift-codes/revoke': { path: '/v1/admin/gift-codes/revoke', fields: ['batchId', 'codeHash', 'reason'] },
 };
 /** Response headers a binary route passes through. Length is recounted: fetch may have decoded gzip. */
 const BINARY_HEADERS = ['content-type', 'content-disposition'];

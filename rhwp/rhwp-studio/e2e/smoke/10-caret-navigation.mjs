@@ -49,13 +49,15 @@ async function walk(page, label, steps) {
 }
 
 /** 세 문단(둘째 줄까지 넘치는 긴 문단 포함)을 쓰고 단어·줄·문단·위아래·처음끝 이동을 확인한다. */
-async function checkArea(page, label) {
+// lead: 첫 문단 글 앞의 칸 수. 각주는 번호와 공백 두 칸 뒤에서 글이 시작하고, 캐럿 0 은 번호 앞이다(한컴 c02a).
+async function checkArea(page, label, lead = 0) {
   await typeLines(page, ['alpha beta gamma', 'delta epsilon', LONG]);
   await walk(page, label, [
     ['Meta+ArrowUp', [0, 0]],
-    ['Alt+ArrowRight', [0, 6]],
-    ['End', [0, 16]],
-    ['Alt+ArrowLeft', [0, 11]],
+    ...(lead ? [['Alt+ArrowRight', [0, lead]]] : []),
+    ['Alt+ArrowRight', [0, lead + 6]],
+    ['End', [0, lead + 16]],
+    ['Alt+ArrowLeft', [0, lead + 11]],
     ['Home', [0, 0]],
     // 각주 첫 문단은 번호 뒤에서 시작하므로 다음 문단의 같은 x 는 처음이 아닐 수 있다.
     ['ArrowDown', [1, null]],
@@ -163,7 +165,7 @@ export default {
     await clickPage(page);
     await page.evaluate(() => window.__dispatcher.dispatch('insert:footnote'));
     await waitFor(page, 'footnote editing', () => window.__inputHandler.cursor.isInFootnote());
-    await checkArea(page, 'footnote');
+    await checkArea(page, 'footnote', 2);
 
     await newDocument(page);
     await clickPage(page);

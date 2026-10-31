@@ -41,9 +41,9 @@
         }
         return [status.offline ? '라이선스가 활성화되어 있어요. 지금은 오프라인이라 마지막 확인으로 쓰고 있어요.' : '라이선스가 활성화되어 있어요.', false];
       case 'expired':
-        return [`${status.license?.licenseExpiresAt ? `${date(status.license.licenseExpiresAt)}에 ` : ''}Pro 기간이 끝났어요. 구독을 갱신하거나 새 키를 넣어 주세요.`, true];
+        return [`${status.license?.licenseExpiresAt ? `${date(status.license.licenseExpiresAt)}에 ` : ''}Basic 기간이 끝났어요. 구독을 갱신하거나 새 키를 넣어 주세요.`, true];
       case 'free':
-        return ['키를 넣으면 Pro 기능을 쓸 수 있어요.', false];
+        return ['키를 넣으면 Basic 기능을 쓸 수 있어요.', false];
       case 'revoked':
         return [beta
           ? '베타 테스트 기간이 끝나 키가 해지되었어요.'
@@ -127,7 +127,7 @@
   });
 
   $('deactivate').addEventListener('click', async (event) => {
-    if (!window.confirm('이 기기에서 라이선스를 비활성화할까요? 다른 기기에서 키를 쓸 수 있게 되고, 이 기기에서는 Pro 기능이 꺼져요.')) return;
+    if (!window.confirm('이 기기에서 라이선스를 비활성화할까요? 다른 기기에서 키를 쓸 수 있게 되고, 이 기기에서는 Basic 기능이 꺼져요.')) return;
     const result = await busy(event.currentTarget, () => api.deactivate());
     licensedNote.classList.remove('ok');
     setNote(licensedNote, result.ok ? '' : result.message);

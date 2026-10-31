@@ -1,10 +1,7 @@
 import type { SidebarBridge } from '../../agent/bridge.ts';
-import type { HamaCap, UsageSummary } from '../../agent/types.ts';
+import type { UsageSummary } from '../../agent/types.ts';
 import { formatRelativeTime, formatResetAt } from './usage-format.ts';
 import { createIcon } from './icons.ts';
-import { hamaGauge } from './hama-harness.ts';
-
-const HAMA_CAP_LABEL: Record<HamaCap, string> = { cap_5h: '5시간', cap_week: '주간 한도', cap_month: '월간 한도' };
 
 function node<K extends keyof HTMLElementTagNameMap>(tag: K, className: string, text = '') {
   const element = document.createElement(tag);
@@ -63,50 +60,6 @@ export function createProviderQuota(bridge: SidebarBridge, accept: (usage: Usage
       busy = false;
       if (!disposed) render(summary);
     }
-  }
-
-  /** Hama 플랜의 한도 — 플랜이 없으면 카드도 없다. */
-  function hamaCard(): HTMLElement | null {
-    const windows = hamaGauge(bridge.hamaStatus?.());
-    if (!windows.length) return null;
-    const card = node('section', 'ag-settings-quota-card');
-    card.dataset.provider = 'hama';
-    const header = node('div', 'ag-settings-quota-header');
-    const identity = node('div', 'ag-settings-quota-identity');
-    identity.append(node('h3', 'ag-settings-quota-title', 'Hama'));
-    const actions = node('div', 'ag-settings-quota-header-actions');
-    const refreshButton = node('button', 'ag-settings-quota-refresh');
-    refreshButton.type = 'button';
-    refreshButton.dataset.action = 'refresh-usage';
-    refreshButton.title = 'Hama 사용량 새로고침';
-    refreshButton.setAttribute('aria-label', refreshButton.title);
-    refreshButton.disabled = refreshing;
-    refreshButton.setAttribute('aria-busy', String(refreshing));
-    refreshButton.append(createIcon('refresh'));
-    refreshButton.onclick = refresh;
-    actions.append(refreshButton);
-    header.append(identity, actions);
-    card.append(header);
-    for (const entry of windows) {
-      const remaining = 100 - entry.percent;
-      const meter = node('div', 'ag-settings-quota-meter');
-      meter.dataset.cap = entry.cap;
-      meter.append(node('div', 'ag-settings-quota-caption', `${HAMA_CAP_LABEL[entry.cap]}: ${remaining}% 남음`));
-      const track = node('div', 'ag-settings-quota-track');
-      track.setAttribute('role', 'meter');
-      track.setAttribute('aria-label', `Hama ${HAMA_CAP_LABEL[entry.cap]} 남은 한도`);
-      track.setAttribute('aria-valuemin', '0');
-      track.setAttribute('aria-valuemax', '100');
-      track.setAttribute('aria-valuenow', String(remaining));
-      const fill = node('div', 'ag-settings-quota-fill');
-      fill.style.width = `${remaining}%`;
-      fill.dataset.health = entry.blocked || remaining <= 15 ? 'low' : remaining <= 40 ? 'medium' : 'high';
-      track.append(fill);
-      meter.append(track);
-      if (entry.resetsAt) meter.append(node('div', 'ag-settings-usage-updated', formatResetAt(entry.resetsAt)));
-      card.append(meter);
-    }
-    return card;
   }
 
   function render(value: UsageSummary | null) {
@@ -272,17 +225,13 @@ export function createProviderQuota(bridge: SidebarBridge, accept: (usage: Usage
       cards.push(card);
     }
     feedback.hidden = !feedback.textContent;
-    const hama = hamaCard();
-    element.replaceChildren(...(hama ? [hama] : []), ...cards, feedback);
+    element.replaceChildren(...cards, feedback);
   }
-  const stopHamaStatus = bridge.onEvent?.((event) => {
-    if (event.type === 'hama-status') render(summary);
-  });
   return { element, render, setRefreshing(value: boolean) {
     refreshing = value;
     for (const button of element.querySelectorAll<HTMLButtonElement>('.ag-settings-quota-refresh')) {
       button.disabled = value;
       button.setAttribute('aria-busy', String(value));
     }
-  }, dispose() { disposed = true; confirmation = null; stopHamaStatus?.(); } };
+  }, dispose() { disposed = true; confirmation = null; } };
 }

@@ -28,6 +28,15 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 40
+    # The Postgres tests run against this throwaway database, never the production one.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 20
     steps:
       - uses: actions/checkout@v5
         with:
@@ -38,6 +47,9 @@ jobs:
           node-version: 20
 
       - name: Test site-api
+        env:
+          SITE_API_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres
+          SITE_API_REQUIRE_POSTGRES: '1'
         run: |
           npm --prefix site-api ci
           npm --prefix site-api test

@@ -138,7 +138,7 @@ test('the title-bar autofix button sends the described state and reports whether
   } finally { await browser?.close(); await server.close(); }
 });
 
-test('the autofix button stays glued to the left of the search box in every title-bar layout, after the license pill', { timeout: 60_000 }, async () => {
+test('the autofix button stays glued to the left of the search box in every title-bar layout', { timeout: 60_000 }, async () => {
   const server = await createServer({ root: fileURLToPath(new URL('../', import.meta.url)), configFile: false, logLevel: 'silent', server: { host: '127.0.0.1', port: 0 },
     plugins: [{ name: 'manual-autofix-layout', configureServer(vite) {
       vite.middlewares.use((request, response, next) => {
@@ -156,7 +156,6 @@ test('the autofix button stays glued to the left of the search box in every titl
     await page.goto(`http://127.0.0.1:${address.port}/manual-autofix-layout`);
     await page.evaluate(async () => {
       await import('../src/style.css');
-      await import('../src/ui/license-gate.css');
       const { setAutofixApi } = await import('../src/ui/autofix/autofix.ts');
       const { installManualAutofix } = await import('../src/ui/autofix/autofix-manual.ts');
       const settings = { enabled: true, decided: true, providers: [] };
@@ -166,45 +165,26 @@ test('the autofix button stays glued to the left of the search box in every titl
       installManualAutofix();
     });
     await page.waitForSelector('#editor-autofix-manual');
-    const measure = (htmlClass: string, titleHidden: boolean, pill: boolean, width: number) => page.evaluate(async (cls, hidden, withPill, viewport) => {
+    const measure = (htmlClass: string, titleHidden: boolean, width: number) => page.evaluate(async (cls, hidden, viewport) => {
       document.documentElement.className = cls;
       document.getElementById('editor-document-title')!.hidden = hidden;
-      document.querySelector('.license-pill')?.remove();
-      if (withPill) {
-        // license-gate.ts 와 같은 자리: 자동 수정 단추가 검색 바로 왼쪽에 있으면 그 앞.
-        const search = document.getElementById('editor-command-search')!;
-        const pillNode = document.createElement('button');
-        pillNode.className = 'license-pill';
-        pillNode.textContent = '체험 7일 남음';
-        const autofix = search.previousElementSibling?.id === 'editor-autofix-manual' ? search.previousElementSibling : null;
-        (autofix ?? search).before(pillNode);
-      }
       document.body.style.width = `${viewport}px`;
       await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       const rect = (selector: string) => {
         const box = document.querySelector(selector)?.getBoundingClientRect();
         return box ? { left: box.left, right: box.right, top: box.top } : null;
       };
-      return { tool: rect('#editor-autofix-manual'), search: rect('#editor-command-search'), pill: rect('.license-pill') };
-    }, htmlClass, titleHidden, pill, width);
+      return { tool: rect('#editor-autofix-manual'), search: rect('#editor-command-search') };
+    }, htmlClass, titleHidden, width);
     for (const htmlClass of ['', 'desktop-mac desktop-native-menu', 'desktop-windows']) {
       for (const titleHidden of [false, true]) {
-        for (const pill of [false, true]) {
-          for (const width of [1200, 700]) {
-            const label = `${htmlClass || 'web'} title ${titleHidden ? 'hidden' : 'shown'} pill ${pill} width ${width}`;
-            const { tool, search, pill: pillBox } = await measure(htmlClass, titleHidden, pill, width);
-            assert.ok(tool && search, label);
-            assert.equal(tool.top, search.top, `${label}: same row`);
-            const gap = search.left - tool.right;
-            assert.ok(gap >= 0 && gap < 12, `${label}: gap ${gap}`);
-            if (pillBox && htmlClass === 'desktop-windows') {
-              // Windows 제목 막대는 검색이 메뉴 단추 옆(왼쪽)에, 알약이 오른쪽 끝에 선다.
-              assert.ok(pillBox.left > search.right, `${label}: pill stays at the right end`);
-            } else if (pillBox) {
-              const pillGap = tool.left - pillBox.right;
-              assert.ok(pillGap >= 0 && pillGap < 16, `${label}: pill gap ${pillGap}`);
-            }
-          }
+        for (const width of [1200, 700]) {
+          const label = `${htmlClass || 'web'} title ${titleHidden ? 'hidden' : 'shown'} width ${width}`;
+          const { tool, search } = await measure(htmlClass, titleHidden, width);
+          assert.ok(tool && search, label);
+          assert.equal(tool.top, search.top, `${label}: same row`);
+          const gap = search.left - tool.right;
+          assert.ok(gap >= 0 && gap < 12, `${label}: gap ${gap}`);
         }
       }
     }

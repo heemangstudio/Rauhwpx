@@ -1612,7 +1612,7 @@ const BASE_TOOL_DEFINITIONS = [
   },
   {
     name: 'list_footnotes',
-    description: `List footnotes and endnotes with anchor (sectionIdx, paraIdx, controlIdx), number and text. 'body' notes are editable via edit_footnote; 'table'/'shape' notes are address-only.`,
+    description: `List footnotes and endnotes in document order: kind, number, text after the number, and the edit_footnote anchor (sectionIdx, paraIdx, controlIdx; cellPath in a table or text box).`,
     shape: {},
   },
   {
@@ -1637,6 +1637,7 @@ const BASE_TOOL_DEFINITIONS = [
       sectionIdx: z.number().int(),
       paraIdx: z.number().int(),
       controlIdx: z.number().int(),
+      cellPath: cellPathParam(),
       text: z.string().describe('One paragraph, no newlines; "" clears'),
     },
   },

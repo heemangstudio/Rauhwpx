@@ -238,39 +238,41 @@ async function writeDurable(file, bytes) {
 }
 
 /**
- * Reports live in `<dir>/<id>/` (report.json plus attachment files) with `<dir>/index.json`
- * listing them. A report directory appears with one rename, and every write holds one lock,
- * so a directory not in the index is a leftover and the next prune removes it.
+ * Reports live in `<dir>/<id>/` (report.json plus attachment files). The index lists them: the file
+ * `<dir>/index.json`, or the feedback_reports table in Postgres mode (`index`, any store with
+ * update/read). A report directory appears with one rename inside the index update that adds its
+ * entry, and a directory is removed only after the update that drops its entry has been saved, so
+ * a directory not in the index is a leftover and the next prune removes it.
  */
 export function createFeedbackService({
   dir,
+  index = dir ? createFileStore(path.join(dir, 'index.json'), { emptyState: emptyFeedbackIndex }) : null,
   now = Date.now,
   proofKey = DEFAULT_FEEDBACK_PROOF_KEY,
   maxStorageBytes = DEFAULT_FEEDBACK_MAX_STORAGE_BYTES,
   retentionDays = FEEDBACK_RETENTION_DAYS,
   adminToken = '',
   notify = async () => {},
+  newId = () => `fb_${now().toString(36)}${randomBytes(6).toString('hex')}`,
 } = {}) {
   if (!dir) throw new Error('feedback dir is required');
-  const index = createFileStore(path.join(dir, 'index.json'), { emptyState: emptyFeedbackIndex });
   const installLimiter = createRateLimiter({ now });
-  let mutation = Promise.resolve();
 
-  function withLock(fn) {
-    const result = mutation.then(fn, fn);
-    mutation = result.then(() => undefined, () => undefined);
-    return result;
+  /** An index without a `reports` array counts as empty, and anything else in it goes (in place). */
+  function normalize(state) {
+    if (!state || typeof state !== 'object' || Array.isArray(state)) return emptyFeedbackIndex();
+    if (Array.isArray(state.reports)) return state;
+    for (const key of Object.keys(state)) delete state[key];
+    return Object.assign(state, emptyFeedbackIndex());
   }
 
-  async function loadIndex() {
-    const state = await index.load();
-    return Array.isArray(state?.reports) ? state : emptyFeedbackIndex();
-  }
-
-  /** Drops reports past retention and leftover directories. Call only inside the lock. */
-  async function prune(state) {
+  /**
+   * Drops reports past retention from `state` (inside an index update) and lists the directories to
+   * remove once that update is saved: the dropped reports' and any leftover.
+   */
+  async function pruneIndex(state) {
     const cutoff = now() - retentionDays * DAY;
-    const expired = state.reports.filter((entry) => !(Date.parse(entry.receivedAt) >= cutoff));
+    const before = state.reports.length;
     state.reports = state.reports.filter((entry) => Date.parse(entry.receivedAt) >= cutoff);
     const keep = new Set(state.reports.map((entry) => entry.id));
     let names = [];
@@ -280,9 +282,21 @@ export function createFeedbackService({
       if (error?.code !== 'ENOENT') throw error;
     }
     const stale = names.filter((name) => (REPORT_ID_RE.test(name) && !keep.has(name)) || name.startsWith('.incoming-'));
-    if (expired.length) await index.save(state);
-    await Promise.all(stale.map((name) => fs.rm(path.join(dir, name), { recursive: true, force: true })));
-    return expired.length;
+    return { expired: before - state.reports.length, stale };
+  }
+
+  const removeDirs = (names) => Promise.all(names.map((name) => fs.rm(path.join(dir, name), { recursive: true, force: true })));
+
+  /** Runs `fn(state, pruned)` in an index update after pruning; the prune is saved even when fn saves nothing. */
+  async function withPrune(fn) {
+    const { stale, value } = await index.update(async (stored) => {
+      const state = normalize(stored);
+      const pruned = await pruneIndex(state);
+      const result = await fn(state, pruned);
+      return { dirty: result.dirty !== false || pruned.expired > 0, stale: pruned.stale, value: result.value };
+    });
+    await removeDirs(stale);
+    return value;
   }
 
   const usedBytes = (state) => state.reports.reduce((sum, entry) => sum + (Number(entry.bytes) || 0), 0);
@@ -292,35 +306,49 @@ export function createFeedbackService({
     if (!installLimiter.check(report.installHash, REPORTS_PER_INSTALL_PER_HOUR, HOUR)) {
       throw feedbackError('rate_limited', 429);
     }
-    return withLock(async () => {
-      const state = await loadIndex();
-      await prune(state);
-      const id = `fb_${now().toString(36)}${randomBytes(6).toString('hex')}`;
-      const stored = { id, receivedAt: new Date(now()).toISOString(), ...report };
-      const json = Buffer.from(`${JSON.stringify({ ...stored, bytes: undefined }, null, 2)}\n`, 'utf8');
-      stored.bytes = json.length + files.reduce((sum, [, bytes]) => sum + bytes.length, 0);
-      if (usedBytes(state) + stored.bytes > maxStorageBytes) throw feedbackError('storage_full', 507);
-
-      await fs.mkdir(dir, { recursive: true });
-      const incoming = path.join(dir, `.incoming-${id}`);
-      const target = path.join(dir, id);
-      try {
-        await fs.mkdir(incoming, { mode: 0o700 });
-        await Promise.all([...files, ['report.json', json]].map(([name, bytes]) => writeDurable(path.join(incoming, name), bytes)));
-        await syncDirectory(incoming);
-        await fs.rename(incoming, target);
-        await syncDirectory(dir);
+    let written = null;
+    const cleanUp = async () => {
+      if (!written) return;
+      await fs.rm(written.incoming, { recursive: true, force: true }).catch(() => {});
+      await fs.rm(written.target, { recursive: true, force: true }).catch(() => {});
+    };
+    let outcome;
+    try {
+      // A refusal or a failed write comes back as `error`, so the prune before it is still saved.
+      outcome = await withPrune(async (state) => {
+        const id = newId();
+        const stored = { id, receivedAt: new Date(now()).toISOString(), ...report };
+        const json = Buffer.from(`${JSON.stringify({ ...stored, bytes: undefined }, null, 2)}\n`, 'utf8');
+        stored.bytes = json.length + files.reduce((sum, [, bytes]) => sum + bytes.length, 0);
+        if (usedBytes(state) + stored.bytes > maxStorageBytes) {
+          return { dirty: false, value: { error: feedbackError('storage_full', 507) } };
+        }
+        try {
+          await fs.mkdir(dir, { recursive: true });
+          written = { incoming: path.join(dir, `.incoming-${id}`), target: path.join(dir, id) };
+          await fs.mkdir(written.incoming, { mode: 0o700 });
+          await Promise.all([...files, ['report.json', json]].map(([name, bytes]) => writeDurable(path.join(written.incoming, name), bytes)));
+          await syncDirectory(written.incoming);
+          await fs.rename(written.incoming, written.target);
+          await syncDirectory(dir);
+        } catch (error) {
+          return { dirty: false, value: { error } };
+        }
         const summary = summarize(stored, 'new');
         state.reports.push(summary);
-        await index.save(state);
-        return summary;
-      } catch (error) {
-        await fs.rm(incoming, { recursive: true, force: true }).catch(() => {});
-        await fs.rm(target, { recursive: true, force: true }).catch(() => {});
-        if (error?.code === 'STORE_TOO_LARGE') throw feedbackError('storage_full', 507);
-        throw error;
-      }
-    });
+        return { value: { summary } };
+      });
+    } catch (error) {
+      // The index was not saved: the report's directory must not stay.
+      await cleanUp();
+      if (error?.code === 'STORE_TOO_LARGE') throw feedbackError('storage_full', 507);
+      throw error;
+    }
+    if (outcome.error) {
+      await cleanUp();
+      throw outcome.error;
+    }
+    return outcome.summary;
   }
 
   function requireAdmin(token) {
@@ -342,18 +370,16 @@ export function createFeedbackService({
     /** Newest first, with storage use so the inbox can show how full the volume is. */
     async list(token) {
       requireAdmin(token);
-      return withLock(async () => {
-        const state = await loadIndex();
-        await prune(state);
+      return withPrune(async (state) => {
         const reports = [...state.reports].sort((a, b) => String(b.receivedAt).localeCompare(String(a.receivedAt)));
         const counts = Object.fromEntries(FEEDBACK_STATUSES.map((status) => [status, 0]));
         for (const entry of reports) if (Object.hasOwn(counts, entry.status)) counts[entry.status] += 1;
-        return { ok: true, reports, counts, storage: { bytes: usedBytes(state), maxBytes: maxStorageBytes } };
+        return { dirty: false, value: { ok: true, reports, counts, storage: { bytes: usedBytes(state), maxBytes: maxStorageBytes } } };
       });
     },
     async detail(token, id) {
       requireAdmin(token);
-      const entry = requireEntry(await loadIndex(), id);
+      const entry = requireEntry(normalize(await index.read()), id);
       const report = await readReport(entry.id);
       report.attachments = Object.fromEntries(Object.entries(report.attachments ?? {})
         .map(([kind, { file, ...rest }]) => [kind, rest]));
@@ -363,7 +389,7 @@ export function createFeedbackService({
     async attachment(token, { id, name } = {}) {
       requireAdmin(token);
       if (!FEEDBACK_ATTACHMENTS.includes(name)) throw invalid('name');
-      const entry = requireEntry(await loadIndex(), id);
+      const entry = requireEntry(normalize(await index.read()), id);
       const attachment = (await readReport(entry.id)).attachments?.[name];
       if (!attachment || !STORED_FILE_RE.test(attachment.file)) throw feedbackError('not_found', 404);
       const bytes = await fs.readFile(path.join(dir, entry.id, attachment.file));
@@ -374,24 +400,23 @@ export function createFeedbackService({
     async setStatus(token, { id, status } = {}) {
       requireAdmin(token);
       if (!FEEDBACK_STATUSES.includes(status)) throw invalid('status');
-      return withLock(async () => {
-        const state = await loadIndex();
-        const entry = requireEntry(state, id);
+      return index.update((stored) => {
+        const entry = requireEntry(normalize(stored), id);
         entry.status = status;
-        await index.save(state);
         return { ok: true, report: entry };
       });
     },
     async remove(token, { id } = {}) {
       requireAdmin(token);
-      return withLock(async () => {
-        const state = await loadIndex();
+      const removed = await index.update((stored) => {
+        const state = normalize(stored);
         const entry = requireEntry(state, id);
         state.reports = state.reports.filter((item) => item !== entry);
-        await index.save(state);
-        await fs.rm(path.join(dir, entry.id), { recursive: true, force: true });
-        return { ok: true };
+        return { id: entry.id };
       });
+      // After the save: a crash in between leaves a directory the next prune removes.
+      await fs.rm(path.join(dir, removed.id), { recursive: true, force: true });
+      return { ok: true };
     },
   };
 
@@ -399,7 +424,8 @@ export function createFeedbackService({
     submit,
     /** Telegram ping for a stored report. Never throws. */
     notify: (summary) => Promise.resolve().then(() => notify(feedbackTelegramText(summary))).catch(() => {}),
-    prune: () => withLock(async () => prune(await loadIndex())),
+    /** Drops reports past retention and leftover directories; resolves to the number dropped. */
+    prune: () => withPrune(async (_state, { expired }) => ({ dirty: false, value: expired })),
     admin,
   };
 }

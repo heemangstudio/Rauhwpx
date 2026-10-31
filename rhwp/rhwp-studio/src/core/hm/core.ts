@@ -58,6 +58,8 @@ export class HmCore {
   constructor(readonly adapter: HeemangAdapter) {}
 
   get doc(): Doc { return this.adapter.hmDoc(); }
+  /** 문서 내용이 바뀔 때마다 달라진다. 내용에서 얻은 캐시(주석 목록 등)의 키다. */
+  get contentRevision(): string { return `${this.adapter.documentInstance}:${this.revision}`; }
   hasDocument(): boolean { return this.adapter.hasLoadedDocument(); }
 
   /** 엔진 호출을 감싸 EngineError 를 Error 로 바꾼다. */

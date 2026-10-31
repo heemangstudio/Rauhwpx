@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>가격 | HamaEditor</title>
-<meta name="description" content="HamaEditor 공식 라이선스는 연 ₩9,900(부가세 포함, 자동 갱신)이에요. Signature Edition ₩29,000(일회성)은 출시 예정이에요. macOS와 Windows에서 3일 동안 먼저 써 볼 수 있어요.">
+<meta name="description" content="HamaEditor 편집기는 무료예요. Hama는 쓰던 AI를 에이전트로 연결하고, Rau는 여기에 내 글 취향을 배우는 Rau 모드를 더해요. Rau는 7일 무료 체험이 있어요.">
 <meta name="theme-color" content="#16191b">
 <link rel="icon" type="image/png" href="assets/hamaeditor-logo.png?v=hippo">
 <link rel="apple-touch-icon" href="assets/hamaeditor-logo.png?v=hippo">
@@ -19,27 +19,65 @@
 <script>document.documentElement.classList.add('js');</script>
 <style>
 html, body { overflow-x: clip; }
-#price-section { position: relative; isolation: isolate; overflow-y: clip; min-height: calc(100svh - var(--nav-h)); display: flex; flex-direction: column; justify-content: center; }
+#price-section { position: relative; isolation: isolate; overflow-y: clip; padding-bottom: var(--space-2xl); }
 .netart { position: absolute; left: 50%; top: 50%; z-index: -1; translate: -50% -50%; font: 400 clamp(7px, .75vw, 12px)/.8334 "Nanum Gothic Coding", var(--mono); pointer-events: none; user-select: none; }
 .netart pre { margin: 0; font: inherit; white-space: pre; }
 .netart__base { color: var(--ascii-neuron-ink); opacity: .42; }
 .netart__glow { position: absolute; left: 0; top: 0; color: var(--accent-hover); opacity: 0; transition: opacity 300ms ease; mask-image: radial-gradient(circle 170px at var(--mx, -999px) var(--my, -999px), #000 15%, rgb(0 0 0 / .4) 55%, transparent); }
 .netart.is-lit .netart__glow { opacity: .9; }
-.plans { gap: var(--space-lg); padding: var(--space-xl) 48px 0; }
+.price-head { padding: var(--space-2xl) 48px 0; text-align: center; }
+.price-head .h1 { font-size: clamp(44px, 5vw, 68px); }
+.plans { gap: var(--space-lg); max-width: 960px; margin-inline: auto; padding: var(--space-xl) 48px 0; align-items: stretch; }
 .plans .cell { padding: 0; }
-.plans .card { display: flex; flex-direction: column; height: 100%; background: color-mix(in srgb, var(--paper) 88%, transparent); outline: 1px solid var(--line-strong); outline-offset: -1px; }
-.plans .h2 { margin-top: var(--space-2xs); }
-.plans .meta { margin-top: var(--space-xs); }
-.plans ul { margin: var(--space-lg) 0 var(--space-xl); }
-.plans li + li { margin-top: var(--space-xs); }
-.plans .check { margin-top: auto; }
-.plans .btn--block { margin-top: var(--space-md); }
-.plans .btn:disabled { margin-top: auto; }
-.plans [data-buy-note]:empty { display: none; }
-.trial-row { display: flex; justify-content: center; padding: var(--space-xl) 48px; }
+.plan .card { display: flex; flex-direction: column; height: 100%; padding: 28px; background: color-mix(in srgb, var(--paper) 90%, transparent); outline: 1px solid var(--line-strong); outline-offset: -1px; }
+.plan--rau .card { outline-color: var(--accent); background: color-mix(in srgb, var(--paper-2) 92%, transparent); }
+.plan__top { display: flex; align-items: center; justify-content: space-between; gap: var(--space-sm); min-height: 36px; }
+.plan__name { font-size: 28px; line-height: 1.2; color: var(--text); }
+.plan__tag { padding: 2px 10px; border: 1px dashed var(--line-strong); border-radius: 3px 6px 4px 5px; font-size: 13px; font-weight: 600; color: var(--meta); }
+.plan__price { display: flex; align-items: baseline; gap: 6px; margin-top: var(--space-md); font-family: var(--font-hand); font-weight: 700; font-size: clamp(44px, 3.6vw, 54px); line-height: 1.1; letter-spacing: -.035em; }
+.plan__price small { font: 500 16px/1 var(--font); letter-spacing: 0; color: var(--meta); }
+.plan .meta { margin-top: var(--space-xs); min-height: 1.7em; }
+.plan ul { margin: var(--space-lg) 0 var(--space-xl); padding-left: 1.1em; }
+.plan li { color: var(--muted); }
+.plan li + li { margin-top: var(--space-xs); }
+.plan li b { color: var(--text); font-weight: 600; }
+.plan .check { margin-top: auto; }
+.plan__trial { margin-top: auto; font-size: 15px; color: var(--muted); }
+.plan__trial b { color: var(--text); font-weight: 600; }
+.price-free { margin-top: var(--space-lg); text-align: center; color: var(--muted); }
+.plan .check[hidden] { display: none; }
+.plan .check + .btn { margin-top: var(--space-md); }
+.plan .btn--block { margin-top: auto; }
+.plan__trial ~ .check, .plan__trial ~ .btn--block { margin-top: var(--space-sm); }
+.plan [data-buy-note] { margin-top: var(--space-xs); font-size: 14px; color: var(--meta); }
+.plan [data-buy-note]:empty { display: none; }
+.cycle { display: inline-flex; padding: 3px; border: 1px solid var(--line-strong); border-radius: 4px 7px 5px 6px; }
+.cycle label { position: relative; display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px; border-radius: 3px 5px 4px 4px; font-size: 14px; font-weight: 600; color: var(--meta); cursor: pointer; transition: background-color 150ms ease, color 150ms ease; }
+.cycle input { position: absolute; inset: 0; margin: 0; opacity: 0; cursor: pointer; }
+.cycle label:has(input:checked) { background: var(--accent-wash); color: var(--text); }
+.cycle label:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+.cycle__save { font-size: 12px; font-weight: 700; color: var(--accent); }
+.plan:has([value="monthly"]:checked) [data-cycle="yearly"],
+.plan:has([value="yearly"]:checked) [data-cycle="monthly"] { display: none; }
+.faq { padding: var(--space-2xl) 48px var(--space-3xl); }
+.faq .h2 { font-size: clamp(32px, 3.4vw, 46px); }
+.faq__list { max-width: 760px; margin-top: var(--space-lg); border-top: 1px solid var(--line-strong); }
+.faq details { border-bottom: 1px solid var(--line-strong); }
+.faq summary { display: flex; align-items: center; justify-content: space-between; gap: var(--space-md); padding: 20px 0; font-size: 18px; font-weight: 600; cursor: pointer; list-style: none; }
+.faq summary::-webkit-details-marker { display: none; }
+.faq summary::after { content: "+"; flex: none; font: 400 26px/1 var(--font-hand); color: var(--accent); transition: rotate 200ms var(--ease-out); }
+.faq details[open] summary::after { rotate: 45deg; }
+.faq details p { max-width: 42em; padding-bottom: 22px; color: var(--muted); }
+.faq details p + p { margin-top: calc(var(--space-xs) - 22px); }
+@media (max-width: 1020px) {
+  .plans { grid-template-columns: minmax(0, 1fr); max-width: 520px; }
+}
 @media (max-width: 760px) {
+  .price-head { padding: 40px var(--space-md) 0; }
   .plans { padding: 28px var(--space-md) 0; }
-  .trial-row { padding: 28px var(--space-md); }
+  .plan .card { padding: 24px 20px; }
+  .faq { padding: var(--space-xl) var(--space-md) var(--space-2xl); }
+  .faq summary { font-size: 17px; }
 }
 </style>
 </head>
@@ -66,7 +104,7 @@ html, body { overflow-x: clip; }
       <a href="pricing.html" aria-current="page">가격</a>
     </nav>
     <div class="btn-row">
-      <a class="btn btn--primary" href="#price">연 ₩9,900에 구매하기</a>
+      <a class="btn btn--primary" href="#rau">Rau 알아보기</a>
       <a class="btn btn--secondary" href="download.html"><span class="btn__icons" aria-hidden="true"><svg class="btn__icon" viewBox="0 0 384 512" width="15" height="18"><path fill="currentColor" d="M318.7 268.7c-.2-36.7 16.4-64.4 50-84.8-18.8-26.9-47.2-41.7-84.7-44.6-35.5-2.8-74.3 20.7-88.5 20.7-15 0-49.4-19.7-76.4-19.7C63.3 141.2 4 184.8 4 273.5q0 39.3 14.4 81.2c12.8 36.7 59 126.7 107.2 125.2 25.2-.6 43-17.9 75.8-17.9 31.8 0 48.3 17.9 76.4 17.9 48.6-.7 90.4-82.5 102.6-119.3-65.2-30.7-61.7-90-61.7-91.9zm-56.6-164.2c27.3-32.4 24.8-61.9 24-72.5-24.1 1.4-52 16.4-67.9 34.9-17.5 19.8-27.8 44.3-25.6 71.9 26.1 2 49.9-11.4 69.5-34.3z"/></svg><svg class="btn__icon" viewBox="0 0 16 16" width="13" height="13"><path fill="currentColor" d="M0 0h7.3v7.3H0zM8.7 0H16v7.3H8.7zM0 8.7h7.3V16H0zM8.7 8.7H16V16H8.7z"/></svg></span>다운로드</a>
     </div>
   </div>
@@ -171,42 +209,98 @@ html, body { overflow-x: clip; }
 
 </pre></div>
     <div class="frame frame--top">
+      <div class="price-head">
+        <h1 id="price-title" class="h1">가격</h1>
+      </div>
       <div class="cells plans">
-        <article class="cell cell--open" id="price">
+        <article class="cell cell--open plan" id="hama" aria-labelledby="hama-title">
+          <span id="basic"></span><span id="pro"></span>
           <div class="card">
-            <p class="handnote">연간</p>
-            <h1 id="price-title" class="h2">₩9,900</h1>
-            <p class="meta">부가세 포함, 자동 갱신, 언제든 해지</p>
+            <div class="plan__top">
+              <h2 id="hama-title" class="plan__name">Hama</h2>
+              <div class="cycle" role="radiogroup" aria-label="Hama 결제 주기">
+                <label><input type="radio" name="hama-cycle" value="monthly">월간</label>
+                <label><input type="radio" name="hama-cycle" value="yearly" checked>연간 <span class="cycle__save"><span data-price="hamaYearlySaving">₩7,800</span> 절약</span></label>
+              </div>
+            </div>
+            <p class="plan__price" data-cycle="yearly"><span data-price="hamaYearly">₩39,000</span><small>/ 년</small></p>
+            <p class="plan__price" data-cycle="monthly"><span data-price="hamaMonthly">₩3,900</span><small>/ 월</small></p>
+            <p class="meta" data-cycle="yearly">월 <span data-price="hamaYearlyPerMonth">₩3,250</span>꼴 · 부가세 포함 · 언제든 해지</p>
+            <p class="meta" data-cycle="monthly">부가세 포함 · 언제든 해지</p>
             <ul>
-              <li id="mac-only"><span>앱의 모든 기능</span></li>
-              <li><span>키 하나로 기기 두 대까지 (Mac, Windows)</span></li>
-              <li><span>언제든 해지, 결제한 기간까지 사용</span></li>
+              <li><b>내 AI 연결</b><br>쓰던 AI 계정으로 에이전트를 써요</li>
+              <li>사용료는 연결한 계정에서 나가요</li>
+              <li><a class="link" href="index.html#connect">연결할 수 있는 AI</a></li>
             </ul>
-            <label class="check">
+            <label class="check" hidden>
               <input type="checkbox" data-consent>
               <span><a href="tos.html#a9">환불 규정</a>을 확인했으며, 이에 동의합니다.</span>
             </label>
-            <a class="btn btn--primary btn--block" href="#price" data-buy data-buy-sku="annual" aria-disabled="true">Groble에서 연 ₩9,900 결제하기</a>
+            <a class="btn btn--secondary btn--block" href="#hama" data-buy data-buy-sku="hamaYearly" data-buy-label="Groble에서 연간 결제하기" data-cycle="yearly" aria-disabled="true">곧 출시</a>
+            <a class="btn btn--secondary btn--block" href="#hama" data-buy data-buy-sku="hamaMonthly" data-buy-label="Groble에서 월간 결제하기" data-cycle="monthly" aria-disabled="true">곧 출시</a>
             <p data-buy-note role="status" aria-live="polite"></p>
           </div>
         </article>
-        <article class="cell cell--open" id="signature">
+        <article class="cell cell--open plan plan--rau" id="rau" aria-labelledby="rau-title">
           <div class="card">
-            <p class="handnote">Signature</p>
-            <h2 id="signature-title" class="h2">₩29,000</h2>
-            <p class="meta">일회성</p>
+            <div class="plan__top">
+              <h2 id="rau-title" class="plan__name">Rau</h2>
+              <div class="cycle" role="radiogroup" aria-label="Rau 결제 주기">
+                <label><input type="radio" name="rau-cycle" value="monthly">월간</label>
+                <label><input type="radio" name="rau-cycle" value="yearly" checked>연간 <span class="cycle__save"><span data-price="rauYearlySaving">₩29,800</span> 절약</span></label>
+              </div>
+            </div>
+            <p class="plan__price" data-cycle="yearly"><span data-price="rauYearly">₩149,000</span><small>/ 년</small></p>
+            <p class="plan__price" data-cycle="monthly"><span data-price="rauMonthly">₩14,900</span><small>/ 월</small></p>
+            <p class="meta" data-cycle="yearly">월 <span data-price="rauYearlyPerMonth">₩12,417</span>꼴 · 부가세 포함 · 언제든 해지</p>
+            <p class="meta" data-cycle="monthly">부가세 포함 · 언제든 해지</p>
             <ul>
-              <li>앱의 모든 기능 (연간과 동일)</li>
-              <li>최소 3년 지속 업데이트 약속</li>
-              <li>키 하나로 기기 두 대까지 (Mac, Windows)</li>
+              <li><b>Hama의 모든 기능</b><br>쓰던 AI 계정으로 에이전트를 써요</li>
+              <li><b>Rau 모드</b><br>작업하면서 내 글 취향을 배워요</li>
             </ul>
-            <button class="btn btn--primary btn--block" type="button" disabled>출시 예정</button>
+            <p class="plan__trial"><b>7일 무료 체험</b> · 앱에서 로그인하면 시작해요</p>
+            <label class="check" hidden>
+              <input type="checkbox" data-consent>
+              <span><a href="tos.html#a9">환불 규정</a>을 확인했으며, 이에 동의합니다.</span>
+            </label>
+            <a class="btn btn--primary btn--block" href="#rau" data-buy data-buy-sku="rauYearly" data-buy-label="Groble에서 연간 결제하기" data-cycle="yearly" aria-disabled="true">곧 출시</a>
+            <a class="btn btn--primary btn--block" href="#rau" data-buy data-buy-sku="rauMonthly" data-buy-label="Groble에서 월간 결제하기" data-cycle="monthly" aria-disabled="true">곧 출시</a>
+            <p data-buy-note role="status" aria-live="polite"></p>
           </div>
         </article>
       </div>
-      <div class="trial-row">
-        <a class="btn btn--secondary" id="trial" href="trial.html">체험판 안내</a>
-      </div>
+      <p class="price-free">편집기는 무료예요. <a class="link" href="download.html">내려받기</a></p>
+    </div>
+  </section>
+
+  <section class="frame faq" id="faq" aria-labelledby="faq-title">
+    <h2 id="faq-title" class="h2">자주 묻는 질문</h2>
+    <div class="faq__list">
+      <details>
+        <summary>Hama와 Rau는 무엇이 다른가요?</summary>
+        <p>Hama는 쓰던 AI 계정을 연결해서 에이전트를 써요. 사용료와 한도는 그 계정을 따라요.</p>
+        <p>Rau는 Hama의 모든 기능에 Rau 모드를 더해요. 에이전트는 Hama처럼 쓰던 AI 계정을 연결해서 써요.</p>
+      </details>
+      <details>
+        <summary>Rau 모드는 무엇인가요?</summary>
+        <p>에이전트와 일하는 동안 내 문체, 자주 쓰는 용어, 정해 둔 결정을 배워 문서 기억에 남겨요. 다음 작업부터 에이전트가 그 취향대로 써요. 배운 항목은 언제든 보고 되돌릴 수 있어요.</p>
+      </details>
+      <details>
+        <summary>월 크레딧을 다 쓰면 어떻게 되나요?</summary>
+        <p>Rau 모드는 월 크레딧 안에서 배워요. 다 쓰면 다음 갱신일에 다시 채워질 때까지 쉬고, 남은 크레딧은 넘어가지 않아요. 연간 결제도 매달 채워져요. 그동안 편집과 내 AI 연결은 그대로 써요.</p>
+      </details>
+      <details>
+        <summary>무료 체험은 어떻게 하나요?</summary>
+        <p>앱에서 로그인하고 Rau 체험을 시작하면 7일 동안 Rau를 써요. 체험은 계정마다 한 번이고, 결제 정보를 받지 않아서 끝나도 자동으로 결제되지 않아요. 계속 쓰려면 Rau를 구매해요.</p>
+      </details>
+      <details>
+        <summary>해지는 어떻게 하나요?</summary>
+        <p>Groble에서 언제든 해지할 수 있어요. 해지해도 결제한 기간이 끝날 때까지 쓰고, 그 뒤에는 무료로 돌아가요. 문서 편집과 저장은 계속돼요. 환불은 <a class="link" href="tos.html#a9">환불 규정</a>을 따라요.</p>
+      </details>
+      <details>
+        <summary>이미 산 라이선스 키는 어떻게 되나요?</summary>
+        <p>연간 구독 키, 한 번 결제로 산 키, 베타 키는 Hama로 그대로 쓸 수 있어요. 새로 입력하거나 바꿀 것은 없어요.</p>
+      </details>
     </div>
   </section>
 
@@ -230,7 +324,6 @@ html, body { overflow-x: clip; }
         <ul>
           <li><a href="pricing.html">가격</a></li>
           <li><a href="download.html">내려받기</a></li>
-          <li><a href="trial.html">체험판</a></li>
         </ul>
       </nav>
       <nav class="footer__col" aria-labelledby="foot-help">
@@ -252,7 +345,10 @@ html, body { overflow-x: clip; }
 
 <script src="assets/purchase.js"></script>
 <script>
-  if (window.HamaPurchase) window.HamaPurchase.bindBuyButtons(document);
+  if (window.HamaPurchase) {
+    window.HamaPurchase.renderPrices(document);
+    window.HamaPurchase.bindBuyButtons(document);
+  }
 </script>
 <script>
   // A blue copy of the network, masked to a circle around the cursor, lights the strands under it.

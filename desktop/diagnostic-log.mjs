@@ -37,7 +37,8 @@ const SECRET_PATTERNS = [
   [/\b(password|passwd|pwd)(["']?\s*[:=]\s*["']?)(?!\[redacted\])([^\s"'&,;)}\]]+)/gi, `$1$2${REDACTED}`],
 ];
 // Windows 의 다른 사용자 폴더와 8.3 짧은 이름(C:\Users\MANAG~1)도 사용자 이름을 드러낸다.
-const WINDOWS_USER_DIR = /\b([A-Za-z]:(?:\\{1,2}|\/)Users(?:\\{1,2}|\/))(?!Public\b|Default\b|\[user\])[^\\/\s"'`:;,)\]}]+/gi;
+// URL 쿼리처럼 :·\·/ 까지 인코딩한 모양(C%3A%5CUsers%5C…)도 같은 폴더다.
+const WINDOWS_USER_DIR = /\b([A-Za-z](?::|%3A)(?:\\{1,2}|\/|%5C|%2F)Users(?:\\{1,2}|\/|%5C|%2F))(?!Public\b|Default\b|\[user\])(?:(?!%5C|%2F)[^\\/\s"'`:;,)\]}])+/gi;
 
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -194,14 +195,19 @@ export function createDiagnosticLog({
       if (typeof value === 'string' && value.length >= 8) knownSecrets.add(value);
     },
     flushSync,
-    /** 디스크의 기록(돌린 파일 포함)에서 끝 maxBytes 를 읽는다. 읽지 못하면 이번 실행의 메모리 기록을 준다. */
+    /**
+     * 디스크의 기록(돌린 파일 포함)에서 끝 maxBytes 를 읽는다. 읽지 못하면 이번 실행의 메모리 기록을 준다.
+     * 기록 파일은 업데이트를 넘어 남으므로, 가리는 규칙이 더 약했던 이전 버전이 쓴 줄도 지금 규칙으로 다시 가린다.
+     */
     tail(limit = 512 * 1024) {
       flushSync();
+      let text;
       try {
-        return tailText(readOrEmpty(rotatedPath) + readOrEmpty(filePath), limit);
+        text = readOrEmpty(rotatedPath) + readOrEmpty(filePath);
       } catch {
-        return tailText(ring, limit);
+        text = ring;
       }
+      return tailText(redact(text), limit);
     },
   };
 }

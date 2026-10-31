@@ -315,14 +315,17 @@ export const formatCommands: CommandDef[] = [
       const ih = services.getInputHandler();
       if (!ih) return;
       const charProps = ih.getCharProperties();
-      // 대화상자 열기 전 선택 범위를 저장 (대화상자 조작 중 선택이 풀릴 수 있음)
-      const savedSel = ih.getSelection();
-      if (!savedSel) return;
+      // 대화상자 열기 전 선택 범위를 저장 (대화상자 조작 중 선택이 풀릴 수 있음).
+      // 주석 편집 중이면 본문 선택이 아니라 주석 안 선택을 쓴다.
+      const noteRanges = ih.getNoteCharFormatRanges();
+      const savedSel = noteRanges ? null : ih.getSelection();
+      if (!savedSel && !noteRanges) return;
       const dialog = new CharShapeDialog(services.wasm, services.eventBus);
       dialog.onApply = (mods) => {
         // fontName/fontNames → fontId/fontIds 변환 (WASM parse_char_shape_mods는 ID만 인식)
         resolveCharShapeFontMods(services.wasm, mods);
-        ih.applyCharPropsToRange(savedSel.start, savedSel.end, mods);
+        if (noteRanges) ih.applyCharPropsToRanges(noteRanges, mods);
+        else if (savedSel) ih.applyCharPropsToRange(savedSel.start, savedSel.end, mods);
       };
       dialog.onClose = () => ih.focus();
       dialog.show(charProps);

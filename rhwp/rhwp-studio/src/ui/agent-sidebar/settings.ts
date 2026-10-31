@@ -48,7 +48,7 @@ import {
 } from './settings-contract.ts';
 import { createChevron } from '../chevron.ts';
 import { createSleepyHippo } from './sleepy-hippo.ts';
-import { AGENT_LABEL, CONNECTABLE_PROVIDERS, createProviderIcon, PROVIDER_ORDER } from './providers.ts';
+import { AGENT_LABEL, createProviderIcon, PROVIDER_ORDER } from './providers.ts';
 import { createSettingsSearch, type SettingsSearchTarget } from './settings-search.ts';
 import {
   formatResetAt,
@@ -59,7 +59,9 @@ import type { SidebarBridge } from '../../agent/bridge.ts';
 import { installOutcomeFromStatus, SetupTerminalResync } from '../../agent/pending-requests.ts';
 import type { ThreadSummary } from '../../agent/threads.ts';
 import { createArchiveSettingsPane } from './settings-archive.ts';
-import { createLicenseSettingsSection } from './settings-license.ts';
+import { createAccountSettingsSection } from '../account/account-settings.ts';
+import { accountStore } from '../account/account-store.ts';
+import type { PlanStore } from '../plan/plan-store.ts';
 import { createPiGiftLine } from './settings-gift.ts';
 import { createAutofixSettingsSection } from './settings-autofix.ts';
 import { createTasteSettingsSection } from './settings-taste.ts';
@@ -96,7 +98,6 @@ const API_KEY_PLACEHOLDER: Record<AgentName, string> = {
   claude: 'sk-ant-…',
   codex: 'sk-proj-…',
   pi: 'sk-or-…',
-  hama: '',
   grok: 'xai-…',
   cursor: 'API 키',
   opencode: 'API 키',
@@ -329,6 +330,7 @@ interface PiDraftModel {
 
 export interface SettingsPanelDeps {
   bridge: SidebarBridge;
+  plan?: PlanStore | null;
   updatesApi?: DesktopUpdatesApi | null;
   eventBus?: EventBus;
   editorRuntime: EditorSettingsRuntime;
@@ -354,7 +356,7 @@ export interface SettingsPanelDeps {
   deleteArchivedThread?: (thread: ThreadSummary) => Promise<boolean>;
   /** 선물 크레딧(macOS 데스크톱만). 없으면 Pi 카드에 선물 줄이 없다. */
   gift?: DesktopGiftApi | null;
-  /** 호스팅 Rau-0.1(Pro) 자격. 데스크톱만. 없으면 Rau-0.1 에 Pro 줄이 없다. */
+  /** 호스팅 Rau(Rau 요금제·체험) 자격. 데스크톱만. 없으면 Rau-0.1 에 Rau 줄이 없다. */
   rau?: DesktopRauApi | null;
   /** 주소를 앱 안 브라우저의 별도 창으로 연다(ChatGPT·Claude 로그인). */
   openSignInWindow?: (url: string, title: string) => Promise<SignInWindow>;
@@ -491,6 +493,10 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     bridge,
     isDisposed: () => disposed,
     rau: deps.rau ?? null,
+    // 요금제 카드가 있으면 Rau 칸에 맞춰 연다(카드는 사이드바가 이 이벤트로 띄운다).
+    openPlans: deps.plan?.api
+      ? () => { window.dispatchEvent(new CustomEvent('rhwp:open-plan-card', { detail: { focus: 'rau' } })); }
+      : null,
   });
   let piCatalog: PiCatalogModel[] = [];
   let piCatalogLoading = false;
@@ -536,9 +542,8 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   const body = el('div', 'ag-settings-body');
   const panes = new Map<SettingsDestination, HTMLElement>();
   const navButtons = new Map<SettingsDestination, HTMLButtonElement>();
-  // 데스크톱 앱의 라이선스 상태와 '이 기기 비활성화'. 웹에는 라이선스 탭이 없다.
-  const desktopLicense = (globalThis as { rhwpDesktop?: { license?: Parameters<typeof createLicenseSettingsSection>[0] } })
-    .rhwpDesktop?.license;
+  // 데스크톱 앱의 계정. 웹에는 계정 탭이 없다.
+  const desktopAccount = accountStore();
   const destinations: ReadonlyArray<{ id: SettingsDestination; label: string; icon: SettingsNavIconId }> = [
     { id: 'editing', label: '편집', icon: 'editing' },
     { id: 'theme', label: '테마', icon: 'theme' },
@@ -547,7 +552,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     { id: 'skills', label: '스킬', icon: 'skills' },
     { id: 'project', label: '프로젝트', icon: 'project' },
     { id: 'archive', label: '보관함', icon: 'archive' },
-    ...(desktopLicense ? [{ id: 'license' as const, label: '라이선스', icon: 'license' as const }] : []),
+    ...(desktopAccount.api ? [{ id: 'account' as const, label: '계정', icon: 'account' as const }] : []),
   ];
   const aiSections: ReadonlyArray<{ id: AiSettingsSection; label: string; icon: SettingsNavIconId }> = [
     { id: 'connection', label: '연결', icon: 'connection' },
@@ -636,20 +641,11 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     },
   });
   panes.get('theme')?.appendChild(themeSettings.element);
-  // 라이선스를 보지 않는 빌드면 탭을 숨기고, 그 탭에 있었다면 편집으로 돌린다.
-  const licenseSection = desktopLicense
-    ? createLicenseSettingsSection(desktopLicense, {
-      onAvailableChange: (available) => {
-        const tab = navButtons.get('license');
-        if (tab) tab.hidden = !available;
-        if (!available && currentDestination === 'license') selectDestination('editing');
-      },
-    })
-    : null;
-  if (licenseSection) {
-    const licenseContent = el('div', 'ag-settings-destination-content');
-    licenseContent.append(licenseSection.root);
-    panes.get('license')?.append(licenseContent);
+  const accountSection = desktopAccount.api ? createAccountSettingsSection(desktopAccount, deps.plan) : null;
+  if (accountSection) {
+    const accountContent = el('div', 'ag-settings-destination-content');
+    accountContent.append(accountSection.root);
+    panes.get('account')?.append(accountContent);
   }
   const projectPane = createProjectSettingsPane({
     service: () => projectSettings ?? projectClientOf(bridge)?.service ?? null,
@@ -687,7 +683,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     { root: HTMLDetailsElement; dot: HTMLElement; detail: HTMLElement; message: HTMLElement; setup: HTMLButtonElement }
   >();
   const providerList = el('div', 'ag-settings-provider-list');
-  for (const agent of CONNECTABLE_PROVIDERS) {
+  for (const agent of PROVIDER_ORDER) {
     const row = el('details', 'ag-settings-provider-row');
     row.dataset.agent = agent;
     const dot = el('span', 'ag-settings-dot');
@@ -1708,7 +1704,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       case 'browser':
       case 'skills':
       case 'archive':
-      case 'license':
+      case 'account':
         return false;
       case 'project':
         return projectPane.isDirty();
@@ -1756,7 +1752,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   function syncPlanLock(): void {
     const locked = aiLocked();
     aiGroupHeader.classList.toggle('ag-settings-ai-locked', locked);
-    if (locked) aiGroupHeader.title = 'Pro에서 쓸 수 있어요';
+    if (locked) aiGroupHeader.title = 'Hama에서 쓸 수 있어요';
     else aiGroupHeader.removeAttribute('title');
     if (!locked) return;
     aiGroupExpanded = false;
@@ -1822,6 +1818,8 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     }
     renderDestinationState();
     syncUsagePolling();
+    if (destination === 'account') accountSection?.open();
+    else accountSection?.close();
     if (destination === 'browser') browserPane.open();
     if (destination === 'skills') refreshSkills?.();
     if (destination === 'project') projectPane.open();
@@ -1989,7 +1987,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
         case 'browser':
       case 'skills':
         case 'archive':
-        case 'license':
+        case 'account':
           return true;
         case 'project':
           projectPane.cancel();
@@ -2010,7 +2008,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       case 'browser':
       case 'skills':
       case 'archive':
-      case 'license':
+      case 'account':
         return true;
       case 'project':
         return projectPane.apply();
@@ -2151,8 +2149,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   function selectableAgents(): readonly AgentName[] {
     return PROVIDER_ORDER.filter((agent) => {
       if (agent === 'pi') return piStatus?.setupComplete === true;
-      // Hama 는 서버가 살아 있는 플랜이라고 답했을 때만 고를 수 있다.
-      if (agent === 'hama') return setupStatuses?.hama?.connected === true;
       return true;
     });
   }
@@ -2297,7 +2293,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   function renderProviders(): void {
     if (setupStatuses) announceProviderUpdates(setupStatuses);
     const online = connectionState === 'connected';
-    for (const agent of CONNECTABLE_PROVIDERS) {
+    for (const agent of PROVIDER_ORDER) {
       const row = providerRows.get(agent);
       if (!row) continue;
       const setup = setupStatuses?.[agent];
@@ -3442,7 +3438,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     usageViews.setLimitsRefreshing(true);
     usageFeedback.textContent = '';
     usageFeedback.hidden = true;
-    void bridge.requestHamaStatus?.(refresh).catch(() => null);
     try {
       const result = await bridge.requestUsage(refresh);
       if (disposed) return;
@@ -3650,6 +3645,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     },
     close(): void {
       settingsOpen = false;
+      accountSection?.close();
       browserPane.close();
       syncUsagePolling();
       if (editingSettings.isDirty()) editingSettings.cancel();
@@ -3943,7 +3939,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       instructionsEditor.destroy();
       unsubscribeInitialSetup();
       providerUpdateHippo?.dispose();
-      licenseSection?.dispose();
+      accountSection?.dispose();
       autofixSection?.dispose();
       piGift?.dispose();
       editingSettings.dispose();

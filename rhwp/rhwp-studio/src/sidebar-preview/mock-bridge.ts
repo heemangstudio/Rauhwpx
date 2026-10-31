@@ -1,6 +1,5 @@
 import type { ChatStartContextProvider, SidebarBridge } from '../agent/bridge.ts';
 import type * as T from '../agent/types.ts';
-import { inactiveHamaStatus } from '../agent/hama-status.ts';
 import { deriveAgentEditingLease } from '../agent/editing-lease.ts';
 import { isChatPermissionCapability, readChatPermissionRequest } from '../agent/chat-permissions.ts';
 import { linkError } from '../agent/document-link.ts';
@@ -8,7 +7,6 @@ import {
   defaultModelForAgent,
   setModelCatalog,
   setPiModels,
-  setHamaModels,
 } from '../agent/models.ts';
 import type { CatalogAgent, ModelCatalogEntry } from '../agent/models.ts';
 import { loadAgentPrefs } from '../agent/agent-prefs.ts';
@@ -53,8 +51,6 @@ export const failureKinds = [
   'pi-setup',
   'usage',
   'usage-soon',
-  'hama-cap',
-  'hama-month',
   'credits',
   'provider',
   'exited',
@@ -89,17 +85,6 @@ function previewFailure(kind: FailureKind, agent: T.AgentName, now: number): T.P
       return failure('usage_limit', "You've hit your limit · resets 3pm (UTC)", `${agent}:rate_limit`, false);
     case 'usage-soon':
       return failure('usage_limit', "You've hit your limit · resets soon", `${agent}:rate_limit`, false, now + 3_000);
-    case 'hama-cap':
-      // 허브가 [hama-cap:…] 꼬리표로 분류한 Hama 5시간 한도. 리셋 시각은 3시간 12분 뒤.
-      return {
-        ...failure('usage_limit', 'Hama 5시간 사용 한도에 도달했어요.\n429 Hama quota exceeded (cap_5h)', 'hama_cap_5h', false, now + 3 * 3_600_000 + 12 * 60_000),
-        agent: 'hama',
-      };
-    case 'hama-month':
-      return {
-        ...failure('usage_limit', 'Hama 이번 달 사용량을 모두 썼어요.\n429 Hama quota exceeded (cap_month)', 'hama_cap_month', false, now + 9 * 24 * 3_600_000),
-        agent: 'hama',
-      };
     case 'credits':
       return failure('usage_limit', 'OpenRouter 크레딧이 부족합니다.\n402 This request requires more credits, or fewer max_tokens. To increase, visit https://openrouter.ai/settings/credits?[redacted]', 'openrouter_credits', false);
     case 'provider':
@@ -273,8 +258,6 @@ export interface MockBridgeOptions {
   liveChat?: MockLiveChat;
   /** Pi 가 선물 크레딧을 쓰는 중인지(mock-gift). 허브처럼 내 키보다 먼저 쓴다. */
   piGift?: () => boolean;
-  /** Hama 플랜 상태(mock-hama). 없으면 플랜이 없다. */
-  hama?: T.HamaStatus;
 }
 
 /** Implements the actual UI contract: new bridge methods produce a type error here. */
@@ -528,20 +511,6 @@ export function createMockBridge(
     const status = syncPi();
     setPiModels(status.models);
     emit({ type: 'pi-status', status });
-  };
-  let hamaStatus: T.HamaStatus = options.hama ?? inactiveHamaStatus();
-  setHamaModels(hamaStatus.models);
-  // 허브처럼 서버가 살아 있는 플랜이라고 답했을 때만 Hama 가 연결이다.
-  data.setups.hama = {
-    ...data.setups.hama,
-    connected: hamaStatus.availability === 'active',
-    authenticated: hamaStatus.availability === 'active',
-    setupComplete: hamaStatus.availability === 'active',
-    authMethod: null,
-  };
-  const emitHama = () => {
-    setHamaModels(hamaStatus.models);
-    emit({ type: 'hama-status', status: hamaStatus });
   };
   let tokenUsageScanned = false;
   const later = (fn: () => void, delay = 20) => {
@@ -1213,11 +1182,6 @@ export function createMockBridge(
       return data.usage;
     },
     requestPiStatus: async () => syncPi(),
-    requestHamaStatus: async () => {
-      emitHama();
-      return hamaStatus;
-    },
-    hamaStatus: () => hamaStatus,
     installPi: async () => {
       await bridge.installAgent('pi');
       emitPi();
@@ -2388,9 +2352,9 @@ export function createMockBridge(
     },
     /** 허브의 취향 학습 결과(taste-learned)를 보낸다. */
     emitTasteLearned: (learned: T.TasteLearned) => emit({ type: 'taste-learned', ...learned }),
-    /** 호스팅 Rau-0.1 이 Pro 가 아니라고 거절했다(rau-upgrade). */
+    /** 호스팅 Rau-0.1 이 Basic 이 아니라고 거절했다(rau-upgrade). */
     emitRauUpgrade: (upgradeUrl: string | null = null) => emit({
-      type: 'rau-upgrade', reason: 'rau_requires_pro', upgradeUrl, threadId: null, documentId: null,
+      type: 'rau-upgrade', reason: 'rau_requires_basic', upgradeUrl, threadId: null, documentId: null,
     }),
     /** 기록에서 배우기의 결과(taste-history-learned)를 보낸다 — 턴에 묶이지 않는다. */
     emitTasteHistoryLearned: (learned: T.TasteHistoryLearned) => emit({ type: 'taste-history-learned', ...learned }),
@@ -2431,11 +2395,6 @@ export function createMockBridge(
     deliverWelcome,
     /** 선물 상태가 바뀌면 허브처럼 Pi 상태를 다시 보낸다. */
     syncPiStatus: emitPi,
-    /** Hama 플랜 상태를 바꾸고 허브처럼 hama-status 를 보낸다. */
-    setHamaStatus: (status: T.HamaStatus) => {
-      hamaStatus = status;
-      emitHama();
-    },
     snapshot: () => ({
       chatStarts: chatStarts.map((start) => ({ ...start, history: [...start.history] })),
       compactions: compactions.map((entry) => ({ ...entry })),

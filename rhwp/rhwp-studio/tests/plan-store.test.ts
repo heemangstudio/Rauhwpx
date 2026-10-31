@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { createPlanStore, desktopPlanApi, planLocksAgent, showsHamaHomeEntry } from '../src/ui/plan/plan-store.ts';
-import type { DesktopPlanApi, PlanStatus, PlanTier } from '../src/ui/plan/plan-types.ts';
+import { familyPriceLine, upgradeFamilies } from '../src/ui/plan/plan-offers.ts';
+import { createPlanStore, desktopPlanApi, planLocksAgent, showsRauHomeEntry } from '../src/ui/plan/plan-store.ts';
+import { tierForSku, tierRank, type DesktopPlanApi, type PlanStatus, type PlanTier } from '../src/ui/plan/plan-types.ts';
 
 function status(tier: PlanTier, agentUnlocked = tier !== 'free'): PlanStatus {
   return {
@@ -11,12 +12,14 @@ function status(tier: PlanTier, agentUnlocked = tier !== 'free'): PlanStatus {
     source: 'live',
     cachedUntil: null,
     checkout: {
-      proMonthly: { available: true, priceKrw: 3900 },
-      proYearly: { available: true, priceKrw: 39000 },
-      hama: { available: false, priceKrw: null },
+      hamaMonthly: { available: true, priceKrw: 3900 },
+      hamaYearly: { available: true, priceKrw: 39000 },
+      rauMonthly: { available: true, priceKrw: 14900 },
+      rauYearly: { available: true, priceKrw: 149000 },
     },
     pendingCheckout: null,
     lastCheckout: null,
+    signedIn: true,
   };
 }
 
@@ -29,17 +32,28 @@ test('without a desktop plan API nothing is locked', () => {
   assert.equal(planLocksAgent(store.status()), false);
 });
 
-test('the lock and the home Hama entry follow the tier', () => {
+test('the lock and the home Rau entry follow the tier', () => {
   assert.equal(planLocksAgent(status('free')), true);
   // 라이선스를 강제하지 않는 개발 빌드는 무료여도 열린다.
   assert.equal(planLocksAgent(status('free', true)), false);
-  for (const tier of ['pro', 'legacy', 'hama'] as const) assert.equal(planLocksAgent(status(tier)), false, tier);
-  // 유료 사용자는 문서 홈에서 Hama 로 올라간다.
+  for (const tier of ['hama', 'rau'] as const) assert.equal(planLocksAgent(status(tier)), false, tier);
+  // Hama 사용자만 문서 홈에서 Rau 로 올라간다.
+  assert.deepEqual((['free', 'hama', 'rau'] as const).map((tier) => showsRauHomeEntry(status(tier))), [false, true, false]);
+  assert.equal(showsRauHomeEntry(null), false);
+});
+
+test('each product opens its tier, and upgrades only go up', () => {
   assert.deepEqual(
-    (['free', 'pro', 'legacy', 'hama'] as const).map((tier) => showsHamaHomeEntry(status(tier))),
-    [false, true, true, false],
+    (['hamaMonthly', 'hamaYearly', 'rauMonthly', 'rauYearly'] as const).map(tierForSku),
+    ['hama', 'hama', 'rau', 'rau'],
   );
-  assert.equal(showsHamaHomeEntry(null), false);
+  assert.ok(tierRank('free') < tierRank('hama') && tierRank('hama') < tierRank('rau'));
+  assert.deepEqual(upgradeFamilies('free'), ['hama', 'rau']);
+  assert.deepEqual(upgradeFamilies('hama'), ['rau']);
+  assert.deepEqual(upgradeFamilies('rau'), []);
+  // 값을 모르면 기본값으로 보인다.
+  assert.equal(familyPriceLine(null, 'rau'), '월 ₩14,900 · 연 ₩149,000');
+  assert.equal(familyPriceLine(status('hama'), 'hama'), '월 ₩3,900 · 연 ₩39,000');
 });
 
 test('the store follows status changes and an unknown status does not lock', async () => {
@@ -59,9 +73,9 @@ test('the store follows status changes and an unknown status does not lock', asy
   await Promise.resolve();
   await Promise.resolve();
   assert.equal(planLocksAgent(store.status()), true);
-  for (const cb of listeners) cb(status('pro'));
+  for (const cb of listeners) cb(status('hama'));
   assert.equal(planLocksAgent(store.status()), false, 'unlocks live on change');
-  assert.deepEqual(seen, ['free', 'pro']);
+  assert.deepEqual(seen, ['free', 'hama']);
   store.dispose();
   assert.equal(listeners.size, 0, 'dispose unsubscribes from the desktop');
 });

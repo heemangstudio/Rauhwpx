@@ -14,6 +14,10 @@ test('config points at the live Groble product and the default API base', () => 
   assert.equal(P.CONFIG.GROBLE_CHECKOUT_URL, 'https://groble.im/payment/GLJFC9');
   assert.equal(P.CONFIG.CHECKOUT_URLS.onetime, 'https://groble.im/payment/uRshdR');
   assert.equal(P.CONFIG.CHECKOUT_URLS.signature, 'https://groble.im/payment/8Xy27f');
+  assert.equal(P.CONFIG.CHECKOUT_URLS.hamaMonthly, 'https://groble.im/payment/SfYBy5');
+  assert.equal(P.CONFIG.CHECKOUT_URLS.hamaYearly, 'https://groble.im/payment/vdw3HN');
+  assert.equal(P.CONFIG.CHECKOUT_URLS.rauMonthly, 'https://groble.im/payment/R3n8zG');
+  assert.equal(P.CONFIG.CHECKOUT_URLS.rauYearly, 'https://groble.im/payment/atqjpJ');
   assert.equal(P.CONFIG.API_BASE, 'https://rau-credits-production.up.railway.app');
   assert.match(P.CONFIG.MAC_DMG_URL, /arm64\.dmg$/);
   assert.match(P.CONFIG.WIN_EXE_URL, /win-x64\.exe$/);
@@ -130,6 +134,19 @@ test('annual keys get the renewal line on the success page; lifetime keys get no
   assert.equal(P.renewalText(Date.parse('2027-10-20T23:59:59.999+09:00')), '매년 자동으로 갱신돼요. 다음 갱신일은 2027년 10월 20일이에요. 언제든 Groble에서 해지할 수 있어요.');
   assert.equal(P.renewalText(null), '');
   assert.equal(P.renewalText(undefined), '');
+  assert.equal(P.renewalText(Date.parse('2026-11-30T23:59:59.999+09:00'), 'monthly'), '매달 자동으로 갱신돼요. 다음 갱신일은 2026년 11월 30일이에요. 언제든 Groble에서 해지할 수 있어요.');
+  assert.match(P.renewalText(Date.parse('2027-10-20T23:59:59.999+09:00'), 'annual'), /^매년/);
+});
+
+test('the success page passes the key plan from by-ref through to the renewal line', async () => {
+  const clock = fakeClock();
+  const updates = [];
+  P.pollLicense({
+    ref: 'r', fetch: () => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ status: 'issued', key: 'K', licenseExpiresAt: 1, plan: 'monthly' }) }),
+    setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout, now: clock.now, onUpdate: (u) => updates.push(u),
+  });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(updates.at(-1).plan, 'monthly');
 });
 
 test('download tracking sends platform and version by sendBeacon, falls back to keepalive fetch, never throws', () => {
@@ -235,7 +252,7 @@ test('buy buttons check their own consent and product, and tolerate blocked stor
   assert.match(location.href, /^https:\/\/groble\.im\/payment\/GLJFC9\?ref=/);
 });
 
-test('yearly stays on sale, and only the pricing page previews Signature', async () => {
+test('the site sells no retired product and every page names the operator', async () => {
   const fs = require('node:fs');
   const path = require('node:path');
   const pages = fs.readdirSync(__dirname).filter((f) => f.endsWith('.html'));
@@ -243,36 +260,89 @@ test('yearly stays on sale, and only the pricing page previews Signature', async
     const html = fs.readFileSync(path.join(__dirname, page), 'utf8');
     assert.doesNotMatch(html, /평생/, `${page} says 평생`);
     assert.doesNotMatch(html, /9,900원에 구매/, `${page} has a price without 연`);
-    if (page !== 'pricing.html') {
-      assert.doesNotMatch(html, /일회성|8Xy27f|₩29,000/, `${page} sells Signature`);
-    }
+    assert.doesNotMatch(html, /data-buy-sku="(signature|annual|onetime)"/, `${page} sells a retired product`);
+    if (page !== 'tos.html') assert.doesNotMatch(html, /일회성|8Xy27f|₩29,000/, `${page} sells Signature`);
     // 네이버 검수는 자바스크립트 없이 바닥글을 봐요.
     assert.match(html, /운영자 하태욱/, `${page} names the operator`);
     assert.match(html, /010-8512-1201/, `${page} shows the operator phone`);
   }
-  const pricing = fs.readFileSync(path.join(__dirname, 'pricing.html'), 'utf8');
+  // Existing GLJFC9 and Signature keys still renew and validate against these products.
   const { resolveLicenseConfig } = await import('../site-api/config.mjs');
-  const byKind = Object.fromEntries(resolveLicenseConfig({}).products.map((product) => [product.kind, product]));
+  const byKind = Object.fromEntries(resolveLicenseConfig({}).products.filter((product) => !product.edition).map((product) => [product.kind, product]));
   assert.equal(P.CONFIG.CHECKOUT_URLS.signature, `https://groble.im/payment/${byKind.signature.id}`);
   assert.equal(P.CONFIG.CHECKOUT_URLS.annual, `https://groble.im/payment/${byKind.subscription.id}`);
-  assert.equal(byKind.signature.id, '8Xy27f');
-  assert.equal(byKind.subscription.id, 'GLJFC9');
-  assert.equal(byKind.signature.expectedPrice, 29000);
-  assert.equal(byKind.subscription.expectedPrice, 9900);
-  assert.match(pricing, /₩29,000/);
-  assert.match(pricing, /연 ₩9,900/);
-  assert.match(pricing, /자동 갱신, 언제든 해지/);
-  assert.doesNotMatch(pricing, /data-buy-sku="signature"/);
-  assert.match(pricing, /data-buy-sku="annual"/);
-  assert.match(pricing, /Groble에서 연 ₩9,900 결제하기/);
-  assert.match(pricing, /<button[^>]* disabled>출시 예정<\/button>/);
-  assert.match(pricing, /일회성/);
-  assert.match(pricing, /최소 3년/);
-  assert.match(pricing, /기기 두 대/);
-  assert.match(pricing, /Mac, Windows/);
-  assert.match(pricing, /href="trial\.html"/);
-  assert.match(pricing, /체험판 안내/);
-  assert.doesNotMatch(pricing, /무료 체험/);
-  assert.doesNotMatch(pricing, /buy-pair|card--navy|perch|buy__badge/);
+});
+
+test('pricing page prices come from CONFIG.PRICES, so the no-JS text cannot drift from the config', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const pricing = fs.readFileSync(path.join(__dirname, 'pricing.html'), 'utf8');
+  const tagged = [...pricing.matchAll(/data-price="([^"]+)"[^>]*>([^<]*)</g)];
+  assert.ok(tagged.length >= 8);
+  for (const [, key, text] of tagged) assert.equal(text, P.priceText(key), `data-price="${key}"`);
+  assert.equal(P.priceText('hamaYearlySaving'), '₩7,800');
+  assert.equal(P.priceText('hamaYearlyPerMonth'), '₩3,250');
+  assert.equal(P.priceText('rauMonthly'), '₩14,900');
+  assert.equal(P.priceText('rauYearly'), '₩149,000');
+  assert.equal(P.priceText('rauYearlySaving'), '₩29,800');
+  assert.equal(P.priceText('nopeMonthly'), null);
+  assert.equal(P.priceText('hama'), null);
+  assert.equal(P.formatWon(1234567), '₩1,234,567');
+  // upgradeUrl points at #rau; old apps and the old license server still open #basic and #pro.
+  for (const id of ['hama', 'rau', 'basic', 'pro']) assert.match(pricing, new RegExp(`id="${id}"`));
+  const skus = [...pricing.matchAll(/data-buy-sku="([^"]+)"/g)].map(([, sku]) => sku).sort();
+  assert.deepEqual(skus, ['hamaMonthly', 'hamaYearly', 'rauMonthly', 'rauYearly']);
+  for (const sku of skus) assert.ok(P.CONFIG.CHECKOUT_URLS[sku], sku);
+  assert.match(pricing, /renderPrices/);
   assert.match(pricing, /bindBuyButtons/);
+});
+
+test('plan copy names no model or AI vendor', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const pricing = fs.readFileSync(path.join(__dirname, 'pricing.html'), 'utf8');
+  const main = pricing.slice(pricing.indexOf('<main'), pricing.indexOf('</main>')).replace(/<span id="(basic|pro)"><\/span>/g, '');
+  const hit = /Haiku|Claude|DeepSeek|Codex|OpenRouter|Sonnet|Opus|GPT|Basic/i.exec(main);
+  assert.equal(hit, null, hit && `pricing copy names ${hit[0]}`);
+  const meta = /<meta name="description" content="([^"]*)"/.exec(pricing)[1];
+  assert.doesNotMatch(meta, /Haiku|Claude|DeepSeek|Codex|OpenRouter|Basic/i);
+});
+
+test('an off-sale plan stays a disabled 곧 출시 button and never navigates; ON_SALE opens it', () => {
+  const onSale = P.CONFIG.ON_SALE;
+  const label = { hidden: true };
+  const consent = { checked: true, hidden: true, addEventListener() {}, closest: () => label };
+  const card = { querySelector: (sel) => (sel === '[data-consent]' ? consent : null) };
+  const make = () => ({
+    textContent: '곧 출시', attrs: { 'aria-disabled': 'true' }, listeners: {},
+    getAttribute(name) { return name === 'data-buy-sku' ? 'rauMonthly' : name === 'data-buy-label' ? 'Groble에서 월간 결제하기' : null; },
+    setAttribute(name, value) { this.attrs[name] = value; },
+    addEventListener(type, fn) { this.listeners[type] = fn; },
+    closest: () => card,
+  });
+  const location = { href: '' };
+  const docWith = (buy) => ({ defaultView: { localStorage: memoryStorage(), location }, querySelectorAll: (sel) => (sel === '[data-buy]' ? [buy] : []) });
+  for (const sku of ['hamaMonthly', 'hamaYearly', 'rauMonthly', 'rauYearly']) assert.equal(P.saleUrl(sku), '', `${sku} is off sale`);
+  try {
+    const soon = make();
+    P.bindBuyButtons(docWith(soon));
+    let prevented = false;
+    soon.listeners.click({ preventDefault() { prevented = true; } });
+    assert.equal(prevented, true);
+    assert.equal(location.href, '');
+    assert.equal(soon.textContent, '곧 출시');
+    assert.equal(soon.attrs['aria-disabled'], 'true');
+    assert.equal(label.hidden, true, 'no consent box for a product that is not on sale');
+
+    onSale.rauMonthly = true;
+    const live = make();
+    P.bindBuyButtons(docWith(live));
+    assert.equal(live.textContent, 'Groble에서 월간 결제하기');
+    assert.equal(live.attrs['aria-disabled'], 'false');
+    assert.equal(label.hidden, false);
+    live.listeners.click({ preventDefault() {} });
+    assert.match(location.href, /^https:\/\/groble\.im\/payment\/R3n8zG\?ref=hama-/);
+  } finally {
+    onSale.rauMonthly = false;
+  }
 });

@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { rm, readFile } from 'node:fs/promises';
+import { hostname } from 'node:os';
 import { basename, dirname, extname, join, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
@@ -53,6 +54,7 @@ import {
   resolveGeneratedDocumentArtifact,
 } from './generated-document-artifact.mjs';
 import { launchRequest } from './launch-routing.mjs';
+import { handleStrayUpdateCopy, isStrayUpdateCopy, repairStrayShortcuts, shortcutFolders } from './update-stray-copy.mjs';
 import {
   NativeFileHandleRegistry,
   recoverInterruptedNativeSave,
@@ -129,6 +131,9 @@ import {
   writeLaunchOwnerMetadata,
 } from './runtime-cleanup.mjs';
 import { reportUniqueInstall, uniqueInstallStatePath } from './unique-install.mjs';
+import { createAccountClient } from './account-client.mjs';
+import { accountAvatarPath, accountStatePath, createAccountManager } from './account-manager.mjs';
+import { installAccountHost } from './account-host.mjs';
 import { createLicenseClient, DEFAULT_LICENSE_API_BASE } from './license-client.mjs';
 import { PRODUCTION_LICENSE_PUBLIC_KEYS } from './license-lease.mjs';
 import { createLicenseManager, licenseStatePath } from './license-manager.mjs';
@@ -136,8 +141,6 @@ import { installLicenseHost } from './license-host.mjs';
 import { createGiftClient } from './gift-client.mjs';
 import { createGiftManager } from './gift-manager.mjs';
 import { handleGiftRequest, installGiftHost, staleGiftResponse } from './gift-host.mjs';
-import { createHamaClient } from './hama-client.mjs';
-import { handleHamaRequest, staleHamaResponse } from './hama-host.mjs';
 import { createRauClient } from './rau-client.mjs';
 import { handleRauRequest, installRauHost, staleRauResponse } from './rau-host.mjs';
 import { createPlanManager } from './plan-manager.mjs';
@@ -233,7 +236,10 @@ const profileDirectories = resolveProfileDirectories({
 });
 app.setPath('userData', profileDirectories.userData);
 registerStudioScheme(protocol);
-const hasSingleInstanceLock = app.requestSingleInstanceLock();
+// 업데이트가 옮겨 둔 임시 사본(%TEMP%\nsXXXX.tmp\old-install)으로 떴으면 잠금을 쥐지 않는다 — 새로 설치된
+// 앱의 실행을 가로채지 않게. 아래에서 알리고 끝낸다.
+const strayUpdateCopy = isStrayUpdateCopy(process.execPath, { packaged: app.isPackaged });
+const hasSingleInstanceLock = !strayUpdateCopy && app.requestSingleInstanceLock();
 // 문제 보고에 싣는 진단 기록(userData/logs). console.warn/error 출력은 그대로 두고 함께 남긴다.
 // 잠금을 쥔 인스턴스만 기록을 이어 쓴다 — 곧 끝날 두 번째 인스턴스가 같은 파일을 돌리면 안 된다.
 const diagnosticLog = createDiagnosticLog({
@@ -501,8 +507,6 @@ class AgentHubOwner {
         RHWP_DOWNLOADS_DIR: app.getPath('downloads'),
         // 선물 크레딧은 macOS·Windows 에서만 준다. 다른 OS 의 허브는 선물 경로를 모른다.
         ...(process.platform === 'darwin' || process.platform === 'win32' ? { RHWP_GIFT_BROKER: 'ipc' } : {}),
-        // Hama 플랜: 메인이 lease 로 플랜 상태를 묻고, 살아 있는 플랜일 때만 Pi 에 줄 lease 를 넘긴다.
-        RHWP_HAMA_BROKER: 'ipc',
         // 호스팅 Rau-0.1 은 메인이 lease 로 대신 묻는다. 허브는 결과만 받는다.
         RHWP_RAU_BROKER: 'ipc',
         ...(rhwpExecutable ? { RHWP_BIN: rhwpExecutable } : {}),
@@ -528,16 +532,6 @@ class AgentHubOwner {
         }
         if (message?.type === 'rhwp-activity-response') {
           if (source === this.#child && typeof message.id === 'string') this.#activityQueries.get(message.id)?.(message.busy !== false);
-          return;
-        }
-        if (message?.type === 'rhwp-hama-request') {
-          if (source !== this.#child || this.#stoppingChild === source || this.#disposed || quitting) {
-            if (source.connected) source.send(staleHamaResponse(message));
-            return;
-          }
-          void handleHamaRequest(hamaDeps, message).then((response) => {
-            if (response && source.connected) source.send(response);
-          });
           return;
         }
         if (message?.type === 'rhwp-rau-request') {
@@ -665,14 +659,6 @@ class AgentHubOwner {
     return this.#suspendPromise;
   }
 
-  /** 라이선스가 바뀌었다고 지금 허브에 알린다. 허브가 Hama 플랜 상태를 다시 묻는다. */
-  notifyHamaChanged() {
-    const child = this.#child;
-    if (!child || this.#stoppingChild === child || this.#disposed || quitting || !child.connected) return;
-    try { child.send({ type: 'rhwp-hama-changed' }); } catch { /* 끝나는 자식 */ }
-  }
-
-  /** 선물 크레딧 상태가 바뀌었다고 지금 허브에 알린다. 허브가 다시 자격 증명을 묻는다. */
   /** 라이선스가 바뀌었다고 지금 허브에 알린다. 허브는 호스팅 Rau 의 거절·한도 기억을 지운다. */
   notifyLicenseChanged() {
     const child = this.#child;
@@ -680,6 +666,7 @@ class AgentHubOwner {
     try { child.send({ type: 'rhwp-rau-changed' }); } catch { /* 끝나는 자식 */ }
   }
 
+  /** 선물 크레딧 상태가 바뀌었다고 지금 허브에 알린다. 허브가 다시 자격 증명을 묻는다. */
   notifyGiftChanged() {
     const child = this.#child;
     if (!child || this.#stoppingChild === child || this.#disposed || quitting || !child.connected) return;
@@ -974,10 +961,13 @@ const updateLifecycle = createUpdateLifecycle({
   nativeUpdater: nativeAutoUpdater,
   platform: process.platform,
   cleanup: async () => {
+    // 쌓인 계정 사용 기록을 보낸다. 서버가 늦으면 3초만 기다린다.
+    const accountFlush = accountManager.flushOnQuit().catch(() => false);
     // 도는 자동 수정 에이전트를 멈추고 그 프로세스 트리 정리가 끝날 때까지 기다린다.
     updateAll?.dispose();
     await disposeAutofix();
     await hubOwner.teardown();
+    await accountFlush;
     // 웹 페이지 대화상자 등으로 브라우저 정리가 멈춰도 종료(와 Windows 업데이트 설치)는 이어 간다.
     let disposeTimer;
     const disposed = await Promise.race([
@@ -1564,6 +1554,7 @@ function licensePublicKeys() {
   return { ...PRODUCTION_LICENSE_PUBLIC_KEYS, [dev.slice(0, split)]: dev.slice(split + 1) };
 }
 const licenseApiBase = (!app.isPackaged && process.env.HAMA_LICENSE_API_BASE) || DEFAULT_LICENSE_API_BASE;
+const licenseEnforced = app.isPackaged || process.env.HAMA_LICENSE_GATE === 'on';
 const isTrustedStudioEvent = (event) => {
   try {
     sessionForEvent(event);
@@ -1573,10 +1564,10 @@ const isTrustedStudioEvent = (event) => {
   }
 };
 const studioWebContents = () => sessions.windows().map((window) => window.webContents);
-// 선물 크레딧(macOS·Windows): 키 서버와 같은 주소에 라이선스 lease 로 묻는다.
+// 선물 크레딧(macOS·Windows): 키 서버와 같은 주소에 계정 lease 로 묻는다.
 const giftManager = createGiftManager({
   client: createGiftClient({ baseUrl: licenseApiBase }),
-  currentLease: () => licenseManager.currentLease(),
+  currentLease: () => accountManager.currentLease(),
   platform: process.platform,
   onChange: (status) => {
     giftHost.broadcast(status);
@@ -1584,15 +1575,11 @@ const giftManager = createGiftManager({
   },
 });
 const giftHost = installGiftHost({ ipcMain, manager: giftManager, isTrustedStudioEvent, studioWebContents });
-// Hama 플랜: 키 서버와 같은 주소의 /v1/hama/status 에 라이선스 lease 로 묻는다.
-const hamaDeps = {
-  client: createHamaClient({ baseUrl: licenseApiBase }),
-  currentLease: () => licenseManager.currentLease(),
-};
-// 호스팅 Rau-0.1(Pro): 키 서버와 같은 주소에 라이선스 lease 로 묻는다.
+// 호스팅 Rau-0.1: 키 서버와 같은 주소의 /v1/rau/* 에 계정 lease 로 묻는다.
+// 무료 lease 는 currentLease 가 주지 않는다.
 const rauDeps = {
   client: createRauClient({ baseUrl: licenseApiBase }),
-  currentLease: () => licenseManager.currentLease(),
+  currentLease: () => accountManager.currentLease(),
 };
 installRauHost({ ipcMain, shell, isTrustedStudioEvent, ...rauDeps });
 const licenseManager = createLicenseManager({
@@ -1606,13 +1593,11 @@ const licenseManager = createLicenseManager({
   },
   appVersion: app.getVersion(),
   platform: process.platform,
-  enforce: app.isPackaged || process.env.HAMA_LICENSE_GATE === 'on',
+  enforce: licenseEnforced,
   onChange: (status) => {
     licenseHost.broadcast(status);
-    hubOwner.notifyHamaChanged();
-    hubOwner.notifyLicenseChanged();
-    void giftManager.licenseChanged().catch((error) => console.warn('[hamaeditor] gift refresh failed:', error));
-    void planManager.licenseChanged(status).catch((error) => console.warn('[hamaeditor] plan refresh failed:', error));
+    // 요금제와 호스팅 기능은 계정이 정한다. 이 기기의 키가 바뀌었으면 계정에 연결한다.
+    void accountManager.licenseChanged().catch((error) => console.warn('[hamaeditor] license key link failed:', error));
   },
 });
 const licenseHost = installLicenseHost({
@@ -1625,9 +1610,45 @@ const licenseHost = installLicenseHost({
   studioWebContents,
   parentWindow: () => BrowserWindow.getFocusedWindow() ?? sessions.windows().at(-1) ?? null,
 });
-// 앱 요금제: 라이선스로 무료·Pro·예전 키를 정하고, 앱 안 결제를 ref 로 확인해 키를 활성화한다.
-const planManager = createPlanManager({
+// ── 계정 ─────────────────────────────────────────────────────────────────
+// 로그인 페이지는 https 만 연다. 소스에서 실행할 때는 HAMA_LICENSE_API_BASE 로 고른 127.0.0.1 시험 서버의
+// http 로그인 페이지도 연다.
+function accountBrowserUrlAllowed(url) {
+  let parsed;
+  try { parsed = new URL(url); } catch { return false; }
+  if (parsed.protocol === 'https:') return true;
+  if (app.isPackaged || parsed.protocol !== 'http:') return false;
+  const base = new URL(licenseApiBase);
+  return base.protocol === 'http:' && ['127.0.0.1', 'localhost'].includes(base.hostname) && parsed.origin === base.origin;
+}
+const accountManager = createAccountManager({
+  statePath: accountStatePath(app.getPath('userData')),
+  avatarPath: accountAvatarPath(app.getPath('userData')),
+  client: createAccountClient({ baseUrl: licenseApiBase, fetchImpl: (url, init) => net.fetch(url, init) }),
+  publicKeys: licensePublicKeys(),
+  // safeStorage 는 app 이 준비된 뒤에만 쓸 수 있다. 상태 파일은 그 뒤에 읽는다.
+  safeStorage,
+  whenReady: app.whenReady(),
   licenseManager,
+  appVersion: app.getVersion(),
+  platform: process.platform,
+  deviceName: () => hostname().replace(/\.local$/i, ''),
+  openExternal: (url) => (accountBrowserUrlAllowed(url) ? shell.openExternal(url) : Promise.reject(new Error('not https'))),
+  onChange: (status) => {
+    accountHost.broadcast(status);
+    void planManager.accountChanged().catch((error) => console.warn('[hamaeditor] plan refresh failed:', error));
+  },
+  // 호스팅 기능에 주는 lease 가 바뀌었다(로그인·로그아웃·갱신·요금제 변경).
+  onLeaseChange: () => {
+    hubOwner.notifyLicenseChanged();
+    void giftManager.licenseChanged().catch((error) => console.warn('[hamaeditor] gift refresh failed:', error));
+  },
+});
+const accountHost = installAccountHost({ ipcMain, manager: accountManager, isTrustedStudioEvent, studioWebContents });
+// 앱 요금제: 계정으로 무료·Hama·Rau 를 정하고, 앱 안 결제를 ref 로 확인해 키를 계정에 연결한다.
+const planManager = createPlanManager({
+  accountManager,
+  enforce: licenseEnforced,
   fetchImpl: (url, init) => net.fetch(url, init),
   apiBase: licenseApiBase,
   userDataDir: app.getPath('userData'),
@@ -1734,6 +1755,7 @@ app.on('child-process-gone', (_event, details) => {
 });
 app.on('will-quit', () => diagnosticLog.flushSync());
 app.on('will-quit', () => planManager.stop());
+app.on('will-quit', () => accountManager.stop());
 
 ipcMain.handle('desktop:get-session-context', (event, agentSessionId = null) => {
   sessionForEvent(event);
@@ -2466,7 +2488,16 @@ ipcMain.on('desktop:browser-guest-focus', (event, payload) => {
   }
 });
 
-if (!hasSingleInstanceLock) {
+if (strayUpdateCopy) {
+  app.whenReady().then(() => handleStrayUpdateCopy({
+    app,
+    dialog,
+    shell,
+    documentPaths: pendingLaunches[0]?.openFiles ?? [],
+    productName: PRODUCT_NAME,
+    releasesUrl: RELEASES_URL,
+  })).catch(() => app.exit(0));
+} else if (!hasSingleInstanceLock) {
   app.quit();
 } else {
   updateLifecycle.start();
@@ -2557,6 +2588,15 @@ if (!hasSingleInstanceLock) {
     // 업데이트로 재시작했으면 그 전의 창을 다시 연다. 30분이 지난 기록은 버린다.
     const restartManifest = await consumeRestartManifest(updateRestartFile);
     configureAutoUpdater({ restartManifest });
+    // 업데이트 중에 연 바로가기가 임시 사본을 가리키게 됐으면 이 실행 파일로 되돌린다(작업 표시줄 고정 포함).
+    if (app.isPackaged && process.platform === 'win32') {
+      void repairStrayShortcuts({
+        shell,
+        folders: shortcutFolders({ appData: app.getPath('appData'), desktop: app.getPath('desktop') }),
+      }).then((repaired) => {
+        if (repaired.length > 0) console.warn('[hamaeditor] repaired shortcuts that pointed at an interrupted update copy:', repaired);
+      }, (error) => console.warn('[hamaeditor] shortcut repair failed:', error));
+    }
     await loadNativeBookmarks();
     await windowFrames.load();
     installMenu();
@@ -2571,6 +2611,7 @@ if (!hasSingleInstanceLock) {
       console.warn('[hamaeditor] license state failed to load:', error);
     });
     licenseManager.start();
+    accountManager.start();
     void planManager.start();
     desktopReady = true;
     let failedLaunches = 0;

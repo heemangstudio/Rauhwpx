@@ -5,7 +5,6 @@ export const PROVIDER_VENDOR: Record<AgentName, string> = {
   claude: 'Anthropic',
   codex: 'OpenAI',
   pi: 'OpenRouter',
-  hama: 'HamaEditor',
   grok: 'xAI',
   cursor: 'Cursor',
   opencode: 'Anomaly',

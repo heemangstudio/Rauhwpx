@@ -24,7 +24,6 @@ import {
   piSystemPromptFor,
   piToolSelection,
 } from './pi-prompt.mjs';
-import { parseHamaCap } from '../hama.mjs';
 import { piResourceArgs } from '../pi/resources.mjs';
 import { applyManagedCliLaunch, NODE_HOST_ENV, NODE_HOST_PRELOAD_ENV } from '../npm-cli-launch.mjs';
 import { tapProviderProcess } from '../provider-transcript.mjs';
@@ -80,14 +79,6 @@ export function isGiftExhaustedError(text) {
   return GIFT_EXHAUSTED_ERROR.test(String(text ?? ''));
 }
 const PI_KEY_MISSING_MESSAGE = 'Pi 설정에서 OpenRouter 키를 연결해 주세요.';
-/** Hama 하네스를 골랐는데 살아 있는 Hama 플랜이 없다. 사용자 키로 넘어가지 않는다. */
-export const HAMA_UNAVAILABLE_MESSAGE = 'Hama 플랜이 활성화되어 있지 않아요.';
-/** Hama 플랜의 한도 이름 → 알림 문구. 리셋 시각은 실패의 resetAt 으로 따로 간다. */
-export const HAMA_CAP_MESSAGES = Object.freeze({
-  cap_5h: 'Hama 5시간 사용 한도에 도달했어요.',
-  cap_week: 'Hama 주간 사용 한도에 도달했어요.',
-  cap_month: 'Hama 이번 달 사용량을 모두 썼어요.',
-});
 /** 내 키를 먼저 쓰다 그 크레딧이 떨어졌을 때. 다음 요청부터 선물 크레딧으로 넘어간다. */
 export const OWN_KEY_EXHAUSTED_GIFT_MESSAGE = 'OpenRouter 크레딧이 부족합니다. 다음 요청부터 Claude 크레딧을 씁니다.';
 
@@ -115,12 +106,10 @@ export function formatOpenRouterCreditError(text, access = null) {
  *   resolvePiAccess?: (model: string | null | undefined) => PiSpawnAccess | null,
  *   onCreditExhausted?: (info: { mode: string, confirmed: boolean }) => void,
  *   onAccessRejected?: (info: { mode: string, status: number }) => void,
- *   onHamaCap?: (info: { cap: 'cap_5h'|'cap_week'|'cap_month', resetsAt: number }) => void,
- *   agentName?: 'pi'|'hama',
  * }} PiBackendOptions
  *
- * @typedef {{ mode: 'hama'|'gift'|'own'|'none', key: string|null, agentDir: string, model: string|null,
- *   reasoning: boolean, fallback?: 'own'|'gift'|'none', reason?: string, cheapModel?: string|null }} PiSpawnAccess
+ * @typedef {{ mode: 'gift'|'own'|'none', key: string|null, agentDir: string, model: string|null,
+ *   reasoning: boolean, fallback?: 'own'|'gift'|'none', reason?: string }} PiSpawnAccess
  *
  * piBin  — pi 실행 파일 경로(`<piRoot>/prefix/node_modules/.bin/pi`).
  * piRoot — 영속 pi 루트. 에이전트 디렉터리는 `<piRoot>/agent`, 세션은 `<piRoot>/sessions`.
@@ -131,7 +120,6 @@ export function formatOpenRouterCreditError(text, access = null) {
  * resolvePiAccess — 스폰마다 부른다. 그때의 자격(키·홈·모델)이 위 값들을 덮는다.
  * onCreditExhausted — 선물 크레딧 스폰이 402 로 끝났을 때, 또는 선물로 넘어갈 수 있는 내 키 스폰이
  *   크레딧 오류로 끝났을 때(mode: 'own') 부른다.
- * onHamaCap — 턴이 Hama 한도 꼬리표(`[hama-cap:<cap>:<iso>]`)와 함께 끝났을 때 부른다.
  */
 
 function piAgentDirOf(opts) {
@@ -233,8 +221,7 @@ export function buildPiEnv(opts, sourceEnv = process.env) {
     PI_TELEMETRY: '0',
     RHWP_WS_URL: `ws://127.0.0.1:${opts.hubPort}/mcp`,
     RHWP_AGENT_TOKEN: String(opts.token ?? ''),
-    // Hama 하네스는 MCP 에 자기 이름으로 붙는다 (허브가 세션의 에이전트와 맞춰 본다).
-    RHWP_AGENT_NAME: opts.agentName === 'hama' ? 'hama' : 'pi',
+    RHWP_AGENT_NAME: 'pi',
     RHWP_HUB_HTTP: `http://127.0.0.1:${opts.hubPort}`,
     RHWP_ROOT_DIR: String(opts.rootDir ?? ''),
     ...(readOnlyRoots.length > 0 ? { RHWP_READONLY_ROOTS: readOnlyRoots.join(path.delimiter) } : {}),
@@ -493,8 +480,7 @@ export function createPiSession(opts, {
 } = {}) {
   const onEvent = opts.onEvent;
 
-  // Hama 하네스도 이 Pi 런타임을 쓴다 (agents/hama.mjs). 이벤트의 에이전트 이름만 다르다.
-  const agent = opts.agentName === 'hama' ? 'hama' : 'pi';
+  const agent = 'pi';
 
   // pi 세션 id 는 우리가 발급한다. 첫 스폰은 세션 파일을 만들고(“creating a new
   // session” 경고가 stderr 에 찍힌다) 이후 스폰은 같은 파일을 이어 쓴다.
@@ -560,20 +546,6 @@ export function createPiSession(opts, {
       try { opts.onCreditExhausted?.({ mode: 'own', confirmed: true }); } catch {}
     }
     return message;
-  }
-
-  /**
-   * Hama 한도 실패. 꼬리표가 있으면 허브에 알리고 알림 문구와 단서(코드 hama_<cap>, 리셋 시각)를 돌려준다.
-   * 한도는 서버의 판단이라 자격과 상관없이 꼬리표만 본다.
-   */
-  function hamaCapFailure(text) {
-    const capped = parseHamaCap(text);
-    if (!capped) return null;
-    try { opts.onHamaCap?.(capped); } catch {}
-    return {
-      message: HAMA_CAP_MESSAGES[capped.cap],
-      failure: { source: 'pi', code: `hama_${capped.cap}`, httpStatus: 429, resetAt: capped.resetsAt },
-    };
   }
 
   /** 크레딧 실패 코드. 선물이면 다 쓴 것(gift_credits)과 잠깐 거절된 것(gift_retry)을 가른다. */
@@ -841,12 +813,6 @@ export function createPiSession(opts, {
       if (typeof opts.resolvePiAccess === 'function') {
         try { turnAccess = opts.resolvePiAccess(opts.model) ?? null; } catch { turnAccess = null; }
       }
-      if (turnAccess?.mode === 'none' && turnAccess.reason === 'hama-unavailable') {
-        const failure = { source: 'pi', code: 'HAMA_NOT_ACTIVE' };
-        onEvent({ type: 'error', agent, message: HAMA_UNAVAILABLE_MESSAGE, failure });
-        endTurn({ type: 'turn-end', agent, stopReason: 'exited', failure });
-        return;
-      }
       if (turnAccess?.mode === 'none') {
         const giftUsedUp = turnAccess.reason === 'gift-exhausted';
         const message = giftUsedUp ? GIFT_EXHAUSTED_NO_KEY_MESSAGE : PI_KEY_MISSING_MESSAGE;
@@ -980,34 +946,30 @@ export function createPiSession(opts, {
           } else if (turnFailureMessage) {
             // 재시도로도 회복하지 못한 마지막 시도의 오류 — 한 번만 보낸다.
             const detail = turnFailureMessage;
-            const capped = hamaCapFailure(detail);
-            const credit = capped ? null : creditFailureMessage(detail);
+            const credit = creditFailureMessage(detail);
             const status = detail.match(/^\s*(\d{3})\b/);
-            const hosted = turnAccess?.mode === 'gift' || turnAccess?.mode === 'hama';
-            if (!capped && !credit && status && hosted && (status[1] === '401' || status[1] === '403')) {
-              // 선물·Hama 프록시가 리스를 거절했다 (해지·미수령·다른 기기). 자격을 다시 받게 한다.
-              try { opts.onAccessRejected?.({ mode: turnAccess.mode, status: Number(status[1]) }); } catch {}
+            if (!credit && status && turnAccess?.mode === 'gift' && (status[1] === '401' || status[1] === '403')) {
+              // 선물 프록시가 리스를 거절했다 (해지·미수령·다른 기기). 자격을 다시 받게 한다.
+              try { opts.onAccessRejected?.({ mode: 'gift', status: Number(status[1]) }); } catch {}
             }
-            const failure = capped?.failure ?? {
+            const failure = {
               source: 'pi',
               ...(status ? { httpStatus: Number(status[1]) } : {}),
               ...(credit ? { code: creditFailureCode(detail) } : {}),
             };
-            const lead = capped?.message ?? credit;
-            const message = lead ? `${lead}\n${detail}` : detail;
+            const message = credit ? `${credit}\n${detail}` : detail;
             onEvent({ type: 'error', agent, message, failure });
             endTurn({ type: 'turn-end', agent, stopReason: 'failed', errorMessage: message, failure });
           } else if (!completedAtDrain && code !== 0) {
-            const capped = hamaCapFailure(stderrTail);
-            const credit = capped ? null : creditFailureMessage(stderrTail);
-            const failure = capped?.failure ?? {
+            const credit = creditFailureMessage(stderrTail);
+            const failure = {
               source: 'pi',
               code: credit ? creditFailureCode(stderrTail) : 'process_exit',
             };
             onEvent({
               type: 'error',
               agent,
-              message: capped?.message ?? credit ?? formatPiExitError(stderrTail, code, signal, opts.token, turnAccess),
+              message: credit ?? formatPiExitError(stderrTail, code, signal, opts.token, turnAccess),
               failure,
             });
             endTurn({ type: 'turn-end', agent, stopReason: 'exited', failure });

@@ -73,3 +73,28 @@ test('멈춘 재시작은 다른 팻말로 알리고, 다시 누르면 경고 �
 test('다운로드에 실패하면 다시 받을 단추를 든다', () => {
   assert.deepEqual(actionIds({ status: 'error', error: { context: 'download', message: 'reset' } }), ['download']);
 });
+
+test('home offers CLI updates only to signed-in paid members and keeps app updates available', async () => {
+  const { homeUpdateSign } = await import('../src/ui/update-hippo/update-all-sign.ts');
+  const all: import('../src/desktop-integration.ts').UpdateAllState = {
+    runId: null, phase: 'idle', restartAt: null,
+    items: [
+      { id: 'claude', fromVersion: '1', targetVersion: '2', status: 'available', message: null },
+      { id: 'codex', fromVersion: '1', targetVersion: '2', status: 'available', message: null },
+    ],
+  };
+  const plan = (tier: 'free' | 'hama' | 'rau', signedIn: boolean, agentUnlocked: boolean) => (
+    { tier, signedIn, agentUnlocked } as import('../src/ui/plan/plan-types.ts').PlanStatus
+  );
+  for (const restricted of [null, plan('hama', false, true), plan('free', true, false), plan('free', true, true), plan('hama', true, false)]) {
+    assert.equal(homeUpdateSign(all, state({ status: 'idle' }), restricted, plain), null);
+    const app = homeUpdateSign(all, state({ status: 'available' }), restricted, plain)!;
+    assert.deepEqual(app.actions.map((action) => action.id), ['download']);
+  }
+  for (const tier of ['hama', 'rau'] as const) {
+    const sign = homeUpdateSign(all, state({ status: 'idle' }), plan(tier, true, true), plain)!;
+    assert.equal(sign.lines.length, 2);
+    assert.deepEqual(sign.actions.map((action) => action.id), ['update-all']);
+    assert.equal(homeUpdateSign(all, state({ status: 'idle' }), plan(tier, false, true), plain), null);
+  }
+});

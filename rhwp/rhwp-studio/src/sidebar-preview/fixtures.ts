@@ -6,7 +6,6 @@ export const agents: T.AgentName[] = [
   'claude',
   'codex',
   'pi',
-  'hama',
   'grok',
   'cursor',
   'opencode',

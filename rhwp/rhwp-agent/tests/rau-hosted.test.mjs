@@ -85,14 +85,14 @@ test('with a license the hosted route runs first and its text is learned like an
   assert.equal(h.frames[0].type, 'taste-learned');
 });
 
-test('a Pro refusal skips learning, prompts once, and is remembered until the license changes', async (t) => {
-  const source = fakeSource(refusal('rau_requires_pro', { upgradeUrl: 'https://heemangstudios.com/pricing.html' }));
+test('a plan refusal skips learning, prompts once, and is remembered until the license changes', async (t) => {
+  const source = fakeSource(refusal('rau_plan_required', { upgradeUrl: 'https://heemangstudios.com/pricing.html#rau' }));
   const h = harness(t, { source });
   await h.run();
   assert.equal(h.calls.length, 0);
   const upgrades = h.frames.filter((frame) => frame.type === 'rau-upgrade');
   assert.equal(upgrades.length, 1);
-  assert.deepEqual([upgrades[0].reason, upgrades[0].upgradeUrl, upgrades[0].documentId], ['rau_requires_pro', 'https://heemangstudios.com/pricing.html', 'doc-1']);
+  assert.deepEqual([upgrades[0].reason, upgrades[0].upgradeUrl, upgrades[0].documentId], ['rau_plan_required', 'https://heemangstudios.com/pricing.html#rau', 'doc-1']);
 
   await h.run();
   assert.equal(source.prompts.length, 1, 'the refusal is remembered');
@@ -109,9 +109,9 @@ test('a Pro refusal skips learning, prompts once, and is remembered until the li
   assert.equal(h.frames.filter((frame) => frame.type === 'rau-upgrade').length, 2);
 });
 
-test('a reached cap skips hosted Rau until it resets, without prompting', async (t) => {
+test('exhausted credits skip hosted Rau until they reset, without prompting', async (t) => {
   const resetsAt = Date.parse('2026-11-01T00:00:00Z');
-  const source = fakeSource(refusal('rau_cap_reached', { capUsd: 3, usedUsd: 3, resetsAt }));
+  const source = fakeSource(refusal('rau_credits_exhausted', { allowanceUsd: 8, usedUsd: 8, resetsAt }));
   const h = harness(t, { source });
   await h.run();
   await h.run();
@@ -159,8 +159,8 @@ test('the IPC source sends only the prompt and maps the desktop error back', asy
   assert.deepEqual(await ok, { text: '{"ops":[]}', model: 'rau' });
 
   const refused = source.learn('prompt-2');
-  processRef.emit('message', { type: 'rhwp-rau-response', id: sent[1].id, ok: false, error: 'rau_requires_pro', code: 'rau_requires_pro', upgradeUrl: 'https://heemangstudios.com/pricing.html' });
-  await assert.rejects(refused, (error) => error.code === 'rau_requires_pro' && error.upgradeUrl === 'https://heemangstudios.com/pricing.html');
+  processRef.emit('message', { type: 'rhwp-rau-response', id: sent[1].id, ok: false, error: 'rau_plan_required', code: 'rau_plan_required', upgradeUrl: 'https://heemangstudios.com/pricing.html#rau' });
+  await assert.rejects(refused, (error) => error.code === 'rau_plan_required' && error.upgradeUrl === 'https://heemangstudios.com/pricing.html#rau');
 
   let changed = 0;
   source.onChange(() => { changed += 1; });

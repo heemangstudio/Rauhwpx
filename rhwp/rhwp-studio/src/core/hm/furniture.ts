@@ -3,6 +3,7 @@
 import type { HmCore } from './core';
 import { unsupported } from './core';
 import type { EndnoteShapeSettings, NoteEditInfo, CursorRect, BodyFootnoteMarkerHit, FootnoteAtCursorResult, DeleteFootnoteResult, SelectionRect, CharProperties, ParaProperties, TextContent, RemovedParaMeta } from './bridge-types';
+import type { DocumentPosition, NoteCaret, NoteContentInfo, NoteHit, NoteListEntry, NoteRef } from './bridge-types';
 
 export function hitTestBodyFootnoteMarker(core: HmCore, pageNum: number, x: number, y: number): BodyFootnoteMarkerHit {
   throw unsupported('hitTestBodyFootnoteMarker');
@@ -12,7 +13,7 @@ export function insertTextContentInHeaderFooter(core: HmCore, sec: number, isHea
   throw unsupported('insertTextContentInHeaderFooter');
 }
 
-export function insertTextContentInFootnote(core: HmCore, sec: number, para: number, controlIdx: number, fnParaIdx: number, charOffset: number, content: TextContent): { ok: boolean; charOffset: number } {
+export function insertTextContentInFootnote(core: HmCore, sec: number, para: number, controlIdx: number, fnParaIdx: number, charOffset: number, content: TextContent, notePath?: string): { ok: boolean; charOffset: number } {
   throw unsupported('insertTextContentInFootnote');
 }
 
@@ -32,11 +33,11 @@ export function setNoteEquationProperties(core: HmCore, noteRef: import('../type
   throw unsupported('setNoteEquationProperties');
 }
 
-export function insertFootnote(core: HmCore, sec: number, para: number, charOffset: number): { ok: boolean; paraIdx: number; controlIdx: number; footnoteNumber: number } {
+export function insertFootnote(core: HmCore, sec: number, para: number, charOffset: number): { ok: boolean; paraIdx: number; controlIdx: number; footnoteNumber: number; fnParaIndex?: number; charOffset?: number } {
   throw unsupported('insertFootnote');
 }
 
-export function insertEndnote(core: HmCore, sec: number, para: number, charOffset: number): { ok: boolean; paraIdx: number; controlIdx: number; endnoteNumber: number } {
+export function insertEndnote(core: HmCore, sec: number, para: number, charOffset: number): { ok: boolean; paraIdx: number; controlIdx: number; endnoteNumber: number; fnParaIndex?: number; charOffset?: number } {
   throw unsupported('insertEndnote');
 }
 
@@ -44,11 +45,23 @@ export function getEndnoteShape(core: HmCore, sec: number): EndnoteShapeSettings
   throw unsupported('getEndnoteShape');
 }
 
-export function applyEndnoteShape(core: HmCore, sec: number, settings: EndnoteShapeSettings): { ok: boolean } {
+export function applyNoteShapeToDocument(core: HmCore, kind: 'footnote' | 'endnote', changes: Partial<EndnoteShapeSettings>): { ok: boolean; changed?: boolean } {
+  throw unsupported('applyNoteShapeToDocument');
+}
+
+export function getFootnoteShape(core: HmCore, sec: number): EndnoteShapeSettings {
+  throw unsupported('getFootnoteShape');
+}
+
+export function applyFootnoteShape(core: HmCore, sec: number, settings: EndnoteShapeSettings): { ok: boolean; changed?: boolean } {
+  throw unsupported('applyFootnoteShape');
+}
+
+export function applyEndnoteShape(core: HmCore, sec: number, settings: EndnoteShapeSettings): { ok: boolean; changed?: boolean } {
   throw unsupported('applyEndnoteShape');
 }
 
-export function getFootnoteInfo(core: HmCore, sec: number, para: number, controlIdx: number): { ok: boolean; paraCount: number; totalTextLen: number; number: number; texts: string[] } {
+export function getFootnoteInfo(core: HmCore, sec: number, para: number, controlIdx: number, notePath?: string): NoteContentInfo {
   throw unsupported('getFootnoteInfo');
 }
 
@@ -56,27 +69,27 @@ export function getFootnoteAtCursor(core: HmCore, sec: number, para: number, cha
   throw unsupported('getFootnoteAtCursor');
 }
 
-export function deleteFootnote(core: HmCore, sec: number, para: number, controlIdx: number): DeleteFootnoteResult {
+export function deleteFootnote(core: HmCore, sec: number, para: number, controlIdx: number, notePath?: string): DeleteFootnoteResult {
   throw unsupported('deleteFootnote');
 }
 
-export function insertTextInFootnote(core: HmCore, sec: number, para: number, controlIdx: number, fnParaIdx: number, charOffset: number, text: string): { ok: boolean; charOffset: number } {
+export function insertTextInFootnote(core: HmCore, sec: number, para: number, controlIdx: number, fnParaIdx: number, charOffset: number, text: string, notePath?: string): { ok: boolean; charOffset: number } {
   throw unsupported('insertTextInFootnote');
 }
 
-export function deleteTextInFootnote(core: HmCore, sec: number, para: number, controlIdx: number, fnParaIdx: number, charOffset: number, count: number): { ok: boolean; charOffset: number; deletedText: string } {
+export function deleteTextInFootnote(core: HmCore, sec: number, para: number, controlIdx: number, fnParaIdx: number, charOffset: number, count: number, notePath?: string): { ok: boolean; charOffset: number; deletedText: string } {
   throw unsupported('deleteTextInFootnote');
 }
 
-export function splitParagraphInFootnote(core: HmCore, sec: number, para: number, controlIdx: number, fnParaIdx: number, charOffset: number, removedParaMeta?: RemovedParaMeta): { ok: boolean; fnParaIndex: number; charOffset: number } {
+export function splitParagraphInFootnote(core: HmCore, sec: number, para: number, controlIdx: number, fnParaIdx: number, charOffset: number, removedParaMeta?: RemovedParaMeta, notePath?: string): { ok: boolean; fnParaIndex: number; charOffset: number } {
   throw unsupported('splitParagraphInFootnote');
 }
 
-export function mergeParagraphInFootnote(core: HmCore, sec: number, para: number, controlIdx: number, fnParaIdx: number): { ok: boolean; fnParaIndex: number; charOffset: number; removedParaMeta: RemovedParaMeta } {
+export function mergeParagraphInFootnote(core: HmCore, sec: number, para: number, controlIdx: number, fnParaIdx: number, notePath?: string): { ok: boolean; fnParaIndex: number; charOffset: number; removedParaMeta: RemovedParaMeta } {
   throw unsupported('mergeParagraphInFootnote');
 }
 
-export function getPageFootnoteInfo(core: HmCore, pageNum: number, footnoteIndex: number): { ok: boolean; sectionIdx: number; paraIdx: number; controlIdx: number; sourceType: string } | null {
+export function getPageFootnoteInfo(core: HmCore, pageNum: number, footnoteIndex: number): { ok: boolean; sectionIdx: number; paraIdx: number; controlIdx: number; sourceType: string; kind?: string; cellPath?: NoteRef['cellPath'] } | null {
   throw unsupported('getPageFootnoteInfo');
 }
 
@@ -84,11 +97,11 @@ export function pageHasFootnoteFootholds(core: HmCore, pageNum: number): boolean
   throw unsupported('pageHasFootnoteFootholds');
 }
 
-export function hitTestFootnote(core: HmCore, pageNum: number, x: number, y: number): { hit: boolean; footnoteIndex?: number } {
+export function hitTestFootnote(core: HmCore, pageNum: number, x: number, y: number): { hit: boolean; footnoteIndex?: number } & Partial<NoteRef> & { kind?: string } {
   throw unsupported('hitTestFootnote');
 }
 
-export function hitTestInFootnote(core: HmCore, pageNum: number, x: number, y: number): { hit: boolean; fnParaIndex?: number; charOffset?: number; footnoteIndex?: number; cursorRect?: { pageIndex: number; x: number; y: number; height: number } } {
+export function hitTestInFootnote(core: HmCore, pageNum: number, x: number, y: number): { hit: boolean; fnParaIndex?: number; charOffset?: number; footnoteIndex?: number; cursorRect?: { pageIndex: number; x: number; y: number; height: number } } & Partial<NoteRef> & { kind?: string; number?: number } {
   throw unsupported('hitTestInFootnote');
 }
 
@@ -96,40 +109,81 @@ export function getCursorRectInFootnote(core: HmCore, pageNum: number, footnoteI
   throw unsupported('getCursorRectInFootnote');
 }
 
-export function getNoteEditInfo(core: HmCore, sec: number, para: number, controlIdx: number): NoteEditInfo | null {
+export function getNoteEditInfo(core: HmCore, sec: number, para: number, controlIdx: number, notePath?: string): NoteEditInfo | null {
   throw unsupported('getNoteEditInfo');
 }
 
-export function getCursorRectInNote(core: HmCore, sec: number, para: number, controlIdx: number, noteParaIdx: number, charOffset: number): CursorRect | null {
+export function getCursorRectInNote(core: HmCore, sec: number, para: number, controlIdx: number, noteParaIdx: number, charOffset: number, notePath?: string): CursorRect | null {
   throw unsupported('getCursorRectInNote');
 }
 
-export function getParaPropertiesInFootnote(core: HmCore, sec: number, para: number, controlIdx: number, fnParaIdx: number): ParaProperties {
+export function getParaPropertiesInFootnote(core: HmCore, sec: number, para: number, controlIdx: number, fnParaIdx: number, notePath?: string): ParaProperties {
   throw unsupported('getParaPropertiesInFootnote');
 }
 
-export function applyParaFormatInFootnote(core: HmCore, sec: number, para: number, controlIdx: number, fnParaIdx: number, propsJson: string): string {
+export function applyParaFormatInFootnote(core: HmCore, sec: number, para: number, controlIdx: number, fnParaIdx: number, propsJson: string, notePath?: string): string {
   throw unsupported('applyParaFormatInFootnote');
 }
 
-export function getCharPropertiesInFootnote(core: HmCore, sec: number, para: number, controlIdx: number, fnParaIdx: number, charOffset: number): CharProperties {
+export function getCharPropertiesInFootnote(core: HmCore, sec: number, para: number, controlIdx: number, fnParaIdx: number, charOffset: number, notePath?: string): CharProperties {
   throw unsupported('getCharPropertiesInFootnote');
 }
 
-export function applyCharFormatInFootnote(core: HmCore, sec: number, para: number, controlIdx: number, fnParaIdx: number, startOffset: number, endOffset: number, propsJson: string): string {
+export function applyCharFormatInFootnote(core: HmCore, sec: number, para: number, controlIdx: number, fnParaIdx: number, startOffset: number, endOffset: number, propsJson: string, notePath?: string): string {
   throw unsupported('applyCharFormatInFootnote');
 }
 
-export function setCharShapeIdInFootnote(core: HmCore, sec: number, para: number, controlIdx: number, fnParaIdx: number, startOffset: number, endOffset: number, charShapeId: number): string {
+export function setCharShapeIdInFootnote(core: HmCore, sec: number, para: number, controlIdx: number, fnParaIdx: number, startOffset: number, endOffset: number, charShapeId: number, notePath?: string): string {
   throw unsupported('setCharShapeIdInFootnote');
 }
 
-export function setParaShapeIdInFootnote(core: HmCore, sec: number, para: number, controlIdx: number, fnParaIdx: number, paraShapeId: number): string {
+export function setParaShapeIdInFootnote(core: HmCore, sec: number, para: number, controlIdx: number, fnParaIdx: number, paraShapeId: number, notePath?: string): string {
   throw unsupported('setParaShapeIdInFootnote');
 }
 
 export function getSelectionRectsInFootnote(core: HmCore, pageNum: number, footnoteIndex: number, startFnPara: number, startOffset: number, endFnPara: number, endOffset: number): SelectionRect[] {
   throw unsupported('getSelectionRectsInFootnote');
+}
+
+/** 위치(본문·표 셀·글상자)에 각주·미주를 넣고, 새 주석과 그 안의 캐럿을 돌려준다. */
+export function insertNoteAt(core: HmCore, pos: DocumentPosition, kind: 'footnote' | 'endnote'): { ok: boolean; kind: 'footnote' | 'endnote'; number: number; anchor: DocumentPosition } & NoteRef & NoteCaret {
+  throw unsupported('insertNoteAt');
+}
+
+export function replaceRangeInFootnote(core: HmCore, sec: number, para: number, controlIdx: number, startFnPara: number, startOffset: number, endFnPara: number, endOffset: number, replacementText: string, notePath?: string): { ok: boolean } & NoteCaret {
+  throw unsupported('replaceRangeInFootnote');
+}
+
+export function pasteInFootnote(core: HmCore, sec: number, para: number, controlIdx: number, startFnPara: number, startOffset: number, endFnPara: number, endOffset: number, text: string | null, notePath?: string): { ok: boolean } & NoteCaret {
+  throw unsupported('pasteInFootnote');
+}
+
+export function copySelectionInFootnote(core: HmCore, sec: number, para: number, controlIdx: number, startFnPara: number, startOffset: number, endFnPara: number, endOffset: number, notePath?: string): { ok: boolean; text: string; html: string } {
+  throw unsupported('copySelectionInFootnote');
+}
+
+export function getNoteAtPosition(core: HmCore, pos: DocumentPosition, direction: 'backward' | 'forward'): { hit: false } | ({ hit: true; charOffset: number } & NoteHit) {
+  throw unsupported('getNoteAtPosition');
+}
+
+export function getNoteAnchor(core: HmCore, sec: number, para: number, controlIdx: number, notePath?: string): DocumentPosition {
+  throw unsupported('getNoteAnchor');
+}
+
+export function listNotes(core: HmCore): NoteListEntry[] {
+  throw unsupported('listNotes');
+}
+
+export function getSelectionRectsInNote(core: HmCore, sec: number, para: number, controlIdx: number, startFnPara: number, startOffset: number, endFnPara: number, endOffset: number, notePath?: string): SelectionRect[] {
+  throw unsupported('getSelectionRectsInNote');
+}
+
+export function navigateInNote(core: HmCore, sec: number, para: number, controlIdx: number, fnParaIdx: number, charOffset: number, motion: 'lineStart' | 'lineEnd' | 'up' | 'down', preferredX?: number, notePath?: string): (NoteCaret & { cursorRect: CursorRect }) | null {
+  throw unsupported('navigateInNote');
+}
+
+export function getBodyPositionAboveNote(core: HmCore, sec: number, para: number, controlIdx: number, x: number, notePath?: string): DocumentPosition | null {
+  throw unsupported('getBodyPositionAboveNote');
 }
 
 export function getParaPropertiesInHf(core: HmCore, sec: number, isHeader: boolean, applyTo: number, hfParaIdx: number): ParaProperties {

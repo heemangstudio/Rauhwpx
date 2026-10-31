@@ -25,6 +25,8 @@ export type EditableParagraphTarget =
       sectionIndex: number;
       hostParagraphIndex: number;
       controlIndex: number;
+      /** 표 셀·글상자 안 주석의 셀 경로(hostParagraphIndex 는 맨 바깥 본문 문단). */
+      cellPath?: CellPathEntry[];
       paragraphIndex: number;
       footnoteIndex: number;
       pageNum: number;

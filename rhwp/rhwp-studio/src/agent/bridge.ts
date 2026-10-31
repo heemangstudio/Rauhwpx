@@ -29,7 +29,6 @@ import {
 } from './tool-executor.ts';
 import { readFileSourceResponse, type FileDocumentSource, type ForeignDocumentBytes } from './foreign-documents.ts';
 import { PendingEditManager, editReportNote } from './pending-edits.ts';
-import { inactiveHamaStatus, readHamaStatus } from './hama-status.ts';
 import { PendingOverlayRenderer, type JumpFlashTarget } from './pending-overlay.ts';
 import { readProviderQuota, readRemoteBalance } from './provider-quota-protocol.ts';
 import { PendingRequestRegistry } from './pending-requests.ts';
@@ -78,7 +77,6 @@ import {
 import {
   setModelCatalog,
   setPiModels as setPiModelRegistry,
-  setHamaModels,
   type CatalogAgent,
   type ModelCatalogEntry,
 } from './models.ts';
@@ -134,7 +132,6 @@ import type {
   PiCatalogModel,
   PiModelConfig,
   PiStatus,
-  HamaStatus,
   BrowserEvent,
   BrowserResult,
   BrowserDownload,
@@ -489,10 +486,6 @@ export interface AgentBridge {
   setUsagePlan(agent: AgentName, plan: string): Promise<UsageSummary | null>;
   /** pi 하네스(설치 · 키 · 모델) 설정 상태. */
   requestPiStatus(): Promise<PiStatus | null>;
-  /** Hama 플랜 상태를 허브에 묻는다. refresh 면 사이트 API 에 다시 묻는다. 플랜이 없으면 null. */
-  requestHamaStatus(refresh?: boolean): Promise<HamaStatus | null>;
-  /** 마지막으로 받은 Hama 플랜 상태 (hama-status 프레임). 아직 받지 않았으면 unavailable. */
-  hamaStatus(): HamaStatus;
   /** pi coding agent 설치. 진행 상황은 pi-setup-progress 이벤트로 온다. */
   installPi(): Promise<PiStatus | null>;
   /** OpenRouter API 키를 검증하고 저장한다. */
@@ -790,7 +783,7 @@ export function readContextEvent(event: AgentStreamEvent): AgentStreamEvent | nu
 }
 
 function isAgentName(v: unknown): v is AgentName {
-  return v === 'claude' || v === 'codex' || v === 'pi' || v === 'hama';
+  return v === 'claude' || v === 'codex' || v === 'pi';
 }
 
 function isBoundedText(value: unknown, max: number): value is string {
@@ -1260,8 +1253,6 @@ function readProviderStatus(value: unknown): ProviderStatusMap {
     claude: readProviderHealth(src['claude']),
     codex: readProviderHealth(src['codex']),
     pi: readProviderHealth(src['pi']),
-    // Hama 는 Pi 런타임으로 돈다. 허브가 따로 보내지 않으면 Pi 의 실행 환경을 따른다.
-    hama: readProviderHealth(src['hama'] ?? src['pi']),
   } as ProviderStatusMap;
 }
 
@@ -1306,7 +1297,6 @@ function readAgentSetupStatuses(value: unknown): AgentSetupStatusMap {
     claude: readAgentSetupStatus(src['claude'], 'claude'),
     codex: readAgentSetupStatus(src['codex'], 'codex'),
     pi: readAgentSetupStatus(src['pi'], 'pi'),
-    hama: readAgentSetupStatus(src['hama'], 'hama'),
   } as AgentSetupStatusMap;
 }
 
@@ -1619,8 +1609,6 @@ export class AgentBridgeImpl implements AgentBridge {
   /** 문서 작업용 편집기 — 화면에 붙어 있으면 view.inputHandler, 아니면 헤드리스 호스트. */
   private editor: AgentEditorHost;
   private view: AgentViewHost | null;
-  /** 마지막 hama-status 프레임. 받기 전에는 unavailable. */
-  private lastHamaStatus: HamaStatus = inactiveHamaStatus();
   /** 하위 구성요소에 넘기는 전달자. 붙이기·떼기가 구성요소를 다시 만들지 않고 반영된다. */
   private readonly editorHost: AgentEditorHost;
   private overlay: PendingOverlayRenderer;
@@ -3709,10 +3697,10 @@ export class AgentBridgeImpl implements AgentBridge {
         break;
       }
       case 'rau-upgrade': {
-        if (msg.reason !== 'rau_requires_pro') break;
+        if (msg.reason !== 'rau_requires_basic' && msg.reason !== 'rau_requires_pro') break;
         this.emit({
           type: 'rau-upgrade',
-          reason: 'rau_requires_pro',
+          reason: 'rau_requires_basic',
           upgradeUrl: typeof msg.upgradeUrl === 'string' && msg.upgradeUrl.startsWith('https://') ? msg.upgradeUrl : null,
           threadId: typeof msg.threadId === 'string' ? msg.threadId : null,
           documentId: typeof msg.documentId === 'string' ? msg.documentId : null,
@@ -3972,15 +3960,6 @@ export class AgentBridgeImpl implements AgentBridge {
         setPiModelRegistry(status.models);
         if (typeof msg.requestId === 'string') this.requests.settle(msg.requestId, status);
         this.emit({ type: 'pi-status', status });
-        break;
-      }
-      case 'hama-status': {
-        const status = readHamaStatus(msg.status);
-        this.lastHamaStatus = status;
-        // 모델 레지스트리를 먼저 바꿔 리스너가 modelsForAgent('hama') 를 바로 최신으로 읽게 한다.
-        setHamaModels(status.models);
-        if (typeof msg.requestId === 'string') this.requests.settle(msg.requestId, status);
-        this.emit({ type: 'hama-status', status });
         break;
       }
       case 'pi-setup-progress': {
@@ -6181,14 +6160,6 @@ export class AgentBridgeImpl implements AgentBridge {
 
   requestPiStatus(): Promise<PiStatus | null> {
     return this.request<PiStatus>({ type: 'pi-status-request' }, 'pi-status');
-  }
-
-  requestHamaStatus(refresh = false): Promise<HamaStatus | null> {
-    return this.request<HamaStatus>({ type: 'hama-status-request', ...(refresh ? { refresh: true } : {}) }, 'hama-status');
-  }
-
-  hamaStatus(): HamaStatus {
-    return this.lastHamaStatus;
   }
 
   installPi(): Promise<PiStatus | null> {

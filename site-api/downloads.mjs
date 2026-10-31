@@ -53,18 +53,19 @@ export function createDownloadsService({
   now = Date.now,
   adminToken = '',
 } = {}) {
-  let chain = Promise.resolve();
-
-  async function load() {
-    const state = await store.load();
-    return state && typeof state.days === 'object' && !Array.isArray(state.days) ? state : emptyDownloadsState();
+  /** A state without a `days` map counts as empty, and anything else in it goes (in place). */
+  function normalize(state) {
+    if (!state || typeof state !== 'object' || Array.isArray(state)) return emptyDownloadsState();
+    if (typeof state.days === 'object' && !Array.isArray(state.days)) return state;
+    for (const key of Object.keys(state)) delete state[key];
+    return Object.assign(state, emptyDownloadsState());
   }
 
   return {
     async record(body) {
       const { platform, version } = parseDownload(body);
-      const run = chain.then(async () => {
-        const state = await load();
+      await store.update((stored) => {
+        const state = normalize(stored);
         const today = kstDay(now());
         const oldest = kstDay(now() - DOWNLOAD_RETENTION_DAYS * DAY_MS);
         for (const day of Object.keys(state.days)) if (day < oldest) delete state.days[day];
@@ -73,19 +74,15 @@ export function createDownloadsService({
         let key = `${platform}|${version}`;
         if (!Object.hasOwn(counts, key) && Object.keys(counts).length >= MAX_KEYS_PER_DAY) key = `${platform}|other`;
         counts[key] = (counts[key] ?? 0) + 1;
-        await store.save(state);
-        return { ok: true };
       });
-      chain = run.catch(() => {});
-      return run;
+      return { ok: true };
     },
     /** Counts for the last `days` KST days (default 30, at most the retention), newest day first. */
     async summary(token, { days } = {}) {
       if (!tokenMatches(token, adminToken)) throw downloadsError('DOWNLOADS_FORBIDDEN', 'admin token required');
-      await chain;
       const span = Math.min(Math.max(Number.parseInt(days, 10) || 30, 1), DOWNLOAD_RETENTION_DAYS);
       const since = kstDay(now() - (span - 1) * DAY_MS);
-      const state = await load();
+      const state = normalize(await store.read());
       const byPlatform = {};
       const byVersion = {};
       const byDay = [];

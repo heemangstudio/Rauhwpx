@@ -15,7 +15,7 @@ import { createDeclaredFontAvailabilityProbe, createRawFontAvailabilityProbe } f
 import { getWebFontSubstituteFamilies } from './font-loader';
 import { isUntitledNewDocumentName } from './document-names';
 import type {
-  DocumentInfo, PageInfo, PageDef, SectionDef, PageBorderFillSettings, EndnoteShapeSettings, NoteEditInfo, CursorRect,
+  DocumentInfo, PageInfo, PageDef, SectionDef, PageBorderFillSettings, NoteShapeSettings, NoteEditInfo, CursorRect,
   HitTestResult, BodyFootnoteMarkerHit, FootnoteAtCursorResult, DeleteFootnoteResult, LineInfo, TableDimensions, CellInfo,
   TableCellTarget, CellBbox, CellProperties, TableProperties, DocumentPosition, MoveVerticalResult, SelectionRect,
   CharProperties, ParaProperties, CellPathEntry, CellPathLike, NavContextEntry, FieldInfoResult, BookmarkInfo,
@@ -25,6 +25,7 @@ import type {
   TableTransposeResult, DeferredCellTextMutationResult, DeferredPaginationResult, WebCanvasImageCacheStats,
   PreparedWasmDocument,
 } from './hm/bridge-types';
+import type { NoteCaret, NoteContentInfo, NoteHit, NoteListEntry, NoteRef } from './hm/bridge-types';
 
 export type {
   RemovedParaMeta, ValidationReport, HmlWarningCode, HmlOpenMetadata, TableCellResizeUpdate, TableTransposeResult,
@@ -379,8 +380,8 @@ export class WasmBridge {
     return api.insertTextContentInHeaderFooter(this.core, sec, isHeader, applyTo, hfParaIdx, charOffset, content);
   }
 
-  insertTextContentInFootnote(sec: number, para: number, controlIdx: number, fnParaIdx: number, charOffset: number, content: TextContent): { ok: boolean; charOffset: number } {
-    return api.insertTextContentInFootnote(this.core, sec, para, controlIdx, fnParaIdx, charOffset, content);
+  insertTextContentInFootnote(sec: number, para: number, controlIdx: number, fnParaIdx: number, charOffset: number, content: TextContent, notePath?: string): { ok: boolean; charOffset: number } {
+    return api.insertTextContentInFootnote(this.core, sec, para, controlIdx, fnParaIdx, charOffset, content, notePath);
   }
 
   insertTextLogical(sec: number, para: number, logicalOffset: number, text: string): string {
@@ -1011,51 +1012,67 @@ export class WasmBridge {
     return api.getFontList(this.core);
   }
 
-  insertFootnote(sec: number, para: number, charOffset: number): { ok: boolean; paraIdx: number; controlIdx: number; footnoteNumber: number } {
+  insertFootnote(sec: number, para: number, charOffset: number): { ok: boolean; paraIdx: number; controlIdx: number; footnoteNumber: number; fnParaIndex?: number; charOffset?: number } {
     return api.insertFootnote(this.core, sec, para, charOffset);
   }
 
-  insertEndnote(sec: number, para: number, charOffset: number): { ok: boolean; paraIdx: number; controlIdx: number; endnoteNumber: number } {
+  insertEndnote(sec: number, para: number, charOffset: number): { ok: boolean; paraIdx: number; controlIdx: number; endnoteNumber: number; fnParaIndex?: number; charOffset?: number } {
     return api.insertEndnote(this.core, sec, para, charOffset);
   }
 
-  getEndnoteShape(sec: number): EndnoteShapeSettings {
+  /** 미주 모양. 바뀐 것이 없으면 편집하지 않고 changed:false 를 돌려준다. */
+  getEndnoteShape(sec: number): NoteShapeSettings {
     return api.getEndnoteShape(this.core, sec);
   }
 
-  applyEndnoteShape(sec: number, settings: EndnoteShapeSettings): { ok: boolean } {
+  applyEndnoteShape(sec: number, settings: NoteShapeSettings): { ok: boolean; changed?: boolean } {
     return api.applyEndnoteShape(this.core, sec, settings);
   }
 
-  getFootnoteInfo(sec: number, para: number, controlIdx: number): { ok: boolean; paraCount: number; totalTextLen: number; number: number; texts: string[] } {
-    return api.getFootnoteInfo(this.core, sec, para, controlIdx);
+  /** 주석 모양 대화상자의 "문서 전체" 적용: 준 항목만 모든 구역에 한 편집으로 쓴다. */
+  applyNoteShapeToDocument(kind: 'footnote' | 'endnote', changes: Partial<NoteShapeSettings>): { ok: boolean; changed?: boolean } {
+    return api.applyNoteShapeToDocument(this.core, kind, changes);
+  }
+
+  /** 각주 모양. 바뀐 것이 없으면 편집하지 않고 changed:false 를 돌려준다. */
+  getFootnoteShape(sec: number): NoteShapeSettings {
+    return api.getFootnoteShape(this.core, sec);
+  }
+
+  applyFootnoteShape(sec: number, settings: NoteShapeSettings): { ok: boolean; changed?: boolean } {
+    return api.applyFootnoteShape(this.core, sec, settings);
+  }
+
+  /** 주석 내용. notePath 는 표 셀·글상자 안 주석의 셀 경로 JSON(NoteRef.cellPath)이고 para 는 맨 바깥 본문 문단이다. */
+  getFootnoteInfo(sec: number, para: number, controlIdx: number, notePath?: string): NoteContentInfo {
+    return api.getFootnoteInfo(this.core, sec, para, controlIdx, notePath);
   }
 
   getFootnoteAtCursor(sec: number, para: number, charOffset: number, direction: 'backward' | 'forward'): FootnoteAtCursorResult {
     return api.getFootnoteAtCursor(this.core, sec, para, charOffset, direction);
   }
 
-  deleteFootnote(sec: number, para: number, controlIdx: number): DeleteFootnoteResult {
-    return api.deleteFootnote(this.core, sec, para, controlIdx);
+  deleteFootnote(sec: number, para: number, controlIdx: number, notePath?: string): DeleteFootnoteResult {
+    return api.deleteFootnote(this.core, sec, para, controlIdx, notePath);
   }
 
-  insertTextInFootnote(sec: number, para: number, controlIdx: number, fnParaIdx: number, charOffset: number, text: string): { ok: boolean; charOffset: number } {
-    return api.insertTextInFootnote(this.core, sec, para, controlIdx, fnParaIdx, charOffset, text);
+  insertTextInFootnote(sec: number, para: number, controlIdx: number, fnParaIdx: number, charOffset: number, text: string, notePath?: string): { ok: boolean; charOffset: number } {
+    return api.insertTextInFootnote(this.core, sec, para, controlIdx, fnParaIdx, charOffset, text, notePath);
   }
 
-  deleteTextInFootnote(sec: number, para: number, controlIdx: number, fnParaIdx: number, charOffset: number, count: number): { ok: boolean; charOffset: number; deletedText: string } {
-    return api.deleteTextInFootnote(this.core, sec, para, controlIdx, fnParaIdx, charOffset, count);
+  deleteTextInFootnote(sec: number, para: number, controlIdx: number, fnParaIdx: number, charOffset: number, count: number, notePath?: string): { ok: boolean; charOffset: number; deletedText: string } {
+    return api.deleteTextInFootnote(this.core, sec, para, controlIdx, fnParaIdx, charOffset, count, notePath);
   }
 
-  splitParagraphInFootnote(sec: number, para: number, controlIdx: number, fnParaIdx: number, charOffset: number, removedParaMeta?: RemovedParaMeta): { ok: boolean; fnParaIndex: number; charOffset: number } {
-    return api.splitParagraphInFootnote(this.core, sec, para, controlIdx, fnParaIdx, charOffset, removedParaMeta);
+  splitParagraphInFootnote(sec: number, para: number, controlIdx: number, fnParaIdx: number, charOffset: number, removedParaMeta?: RemovedParaMeta, notePath?: string): { ok: boolean; fnParaIndex: number; charOffset: number } {
+    return api.splitParagraphInFootnote(this.core, sec, para, controlIdx, fnParaIdx, charOffset, removedParaMeta, notePath);
   }
 
-  mergeParagraphInFootnote(sec: number, para: number, controlIdx: number, fnParaIdx: number): { ok: boolean; fnParaIndex: number; charOffset: number; removedParaMeta: RemovedParaMeta } {
-    return api.mergeParagraphInFootnote(this.core, sec, para, controlIdx, fnParaIdx);
+  mergeParagraphInFootnote(sec: number, para: number, controlIdx: number, fnParaIdx: number, notePath?: string): { ok: boolean; fnParaIndex: number; charOffset: number; removedParaMeta: RemovedParaMeta } {
+    return api.mergeParagraphInFootnote(this.core, sec, para, controlIdx, fnParaIdx, notePath);
   }
 
-  getPageFootnoteInfo(pageNum: number, footnoteIndex: number): { ok: boolean; sectionIdx: number; paraIdx: number; controlIdx: number; sourceType: string } | null {
+  getPageFootnoteInfo(pageNum: number, footnoteIndex: number): { ok: boolean; sectionIdx: number; paraIdx: number; controlIdx: number; sourceType: string; kind?: string; cellPath?: NoteRef['cellPath'] } | null {
     return api.getPageFootnoteInfo(this.core, pageNum, footnoteIndex);
   }
 
@@ -1063,11 +1080,11 @@ export class WasmBridge {
     return api.pageHasFootnoteFootholds(this.core, pageNum);
   }
 
-  hitTestFootnote(pageNum: number, x: number, y: number): { hit: boolean; footnoteIndex?: number } {
+  hitTestFootnote(pageNum: number, x: number, y: number): { hit: boolean; footnoteIndex?: number } & Partial<NoteRef> & { kind?: string } {
     return api.hitTestFootnote(this.core, pageNum, x, y);
   }
 
-  hitTestInFootnote(pageNum: number, x: number, y: number): { hit: boolean; fnParaIndex?: number; charOffset?: number; footnoteIndex?: number; cursorRect?: { pageIndex: number; x: number; y: number; height: number } } {
+  hitTestInFootnote(pageNum: number, x: number, y: number): { hit: boolean; fnParaIndex?: number; charOffset?: number; footnoteIndex?: number; cursorRect?: { pageIndex: number; x: number; y: number; height: number } } & Partial<NoteRef> & { kind?: string; number?: number } {
     return api.hitTestInFootnote(this.core, pageNum, x, y);
   }
 
@@ -1075,36 +1092,84 @@ export class WasmBridge {
     return api.getCursorRectInFootnote(this.core, pageNum, footnoteIndex, fnParaIdx, charOffset);
   }
 
-  getNoteEditInfo(sec: number, para: number, controlIdx: number): NoteEditInfo | null {
-    return api.getNoteEditInfo(this.core, sec, para, controlIdx);
+  getNoteEditInfo(sec: number, para: number, controlIdx: number, notePath?: string): NoteEditInfo | null {
+    return api.getNoteEditInfo(this.core, sec, para, controlIdx, notePath);
   }
 
-  getCursorRectInNote(sec: number, para: number, controlIdx: number, noteParaIdx: number, charOffset: number): CursorRect | null {
-    return api.getCursorRectInNote(this.core, sec, para, controlIdx, noteParaIdx, charOffset);
+  getCursorRectInNote(sec: number, para: number, controlIdx: number, noteParaIdx: number, charOffset: number, notePath?: string): CursorRect | null {
+    return api.getCursorRectInNote(this.core, sec, para, controlIdx, noteParaIdx, charOffset, notePath);
   }
 
-  getParaPropertiesInFootnote(sec: number, para: number, controlIdx: number, fnParaIdx: number): ParaProperties {
-    return api.getParaPropertiesInFootnote(this.core, sec, para, controlIdx, fnParaIdx);
+  getParaPropertiesInFootnote(sec: number, para: number, controlIdx: number, fnParaIdx: number, notePath?: string): ParaProperties {
+    return api.getParaPropertiesInFootnote(this.core, sec, para, controlIdx, fnParaIdx, notePath);
   }
 
-  applyParaFormatInFootnote(sec: number, para: number, controlIdx: number, fnParaIdx: number, propsJson: string): string {
-    return api.applyParaFormatInFootnote(this.core, sec, para, controlIdx, fnParaIdx, propsJson);
+  applyParaFormatInFootnote(sec: number, para: number, controlIdx: number, fnParaIdx: number, propsJson: string, notePath?: string): string {
+    return api.applyParaFormatInFootnote(this.core, sec, para, controlIdx, fnParaIdx, propsJson, notePath);
   }
 
-  getCharPropertiesInFootnote(sec: number, para: number, controlIdx: number, fnParaIdx: number, charOffset: number): CharProperties {
-    return api.getCharPropertiesInFootnote(this.core, sec, para, controlIdx, fnParaIdx, charOffset);
+  getCharPropertiesInFootnote(sec: number, para: number, controlIdx: number, fnParaIdx: number, charOffset: number, notePath?: string): CharProperties {
+    return api.getCharPropertiesInFootnote(this.core, sec, para, controlIdx, fnParaIdx, charOffset, notePath);
   }
 
-  applyCharFormatInFootnote(sec: number, para: number, controlIdx: number, fnParaIdx: number, startOffset: number, endOffset: number, propsJson: string): string {
-    return api.applyCharFormatInFootnote(this.core, sec, para, controlIdx, fnParaIdx, startOffset, endOffset, propsJson);
+  applyCharFormatInFootnote(sec: number, para: number, controlIdx: number, fnParaIdx: number, startOffset: number, endOffset: number, propsJson: string, notePath?: string): string {
+    return api.applyCharFormatInFootnote(this.core, sec, para, controlIdx, fnParaIdx, startOffset, endOffset, propsJson, notePath);
   }
 
-  setCharShapeIdInFootnote(sec: number, para: number, controlIdx: number, fnParaIdx: number, startOffset: number, endOffset: number, charShapeId: number): string {
-    return api.setCharShapeIdInFootnote(this.core, sec, para, controlIdx, fnParaIdx, startOffset, endOffset, charShapeId);
+  setCharShapeIdInFootnote(sec: number, para: number, controlIdx: number, fnParaIdx: number, startOffset: number, endOffset: number, charShapeId: number, notePath?: string): string {
+    return api.setCharShapeIdInFootnote(this.core, sec, para, controlIdx, fnParaIdx, startOffset, endOffset, charShapeId, notePath);
   }
 
-  setParaShapeIdInFootnote(sec: number, para: number, controlIdx: number, fnParaIdx: number, paraShapeId: number): string {
-    return api.setParaShapeIdInFootnote(this.core, sec, para, controlIdx, fnParaIdx, paraShapeId);
+  setParaShapeIdInFootnote(sec: number, para: number, controlIdx: number, fnParaIdx: number, paraShapeId: number, notePath?: string): string {
+    return api.setParaShapeIdInFootnote(this.core, sec, para, controlIdx, fnParaIdx, paraShapeId, notePath);
+  }
+
+  /** 본문·표 셀·글상자 위치에 각주·미주를 넣는다. 캐럿은 새 주석 안(번호와 공백 뒤)이다. */
+  insertNoteAt(pos: DocumentPosition, kind: 'footnote' | 'endnote'): { ok: boolean; kind: 'footnote' | 'endnote'; number: number; anchor: DocumentPosition } & NoteRef & NoteCaret {
+    return api.insertNoteAt(this.core, pos, kind);
+  }
+
+  /** 주석 안 범위를 한 번에 바꾼다(지우기와 넣기가 한 엔진 트랜잭션). */
+  replaceRangeInFootnote(sec: number, para: number, controlIdx: number, startFnPara: number, startOffset: number, endFnPara: number, endOffset: number, replacementText: string, notePath?: string): { ok: boolean } & NoteCaret {
+    return api.replaceRangeInFootnote(this.core, sec, para, controlIdx, startFnPara, startOffset, endFnPara, endOffset, replacementText, notePath);
+  }
+
+  /** 주석 안에 붙여 넣는다. text 가 null 이면 엔진 클립보드 조각을 쓴다. 주석 표시는 버린다. */
+  pasteInFootnote(sec: number, para: number, controlIdx: number, startFnPara: number, startOffset: number, endFnPara: number, endOffset: number, text: string | null, notePath?: string): { ok: boolean } & NoteCaret {
+    return api.pasteInFootnote(this.core, sec, para, controlIdx, startFnPara, startOffset, endFnPara, endOffset, text, notePath);
+  }
+
+  copySelectionInFootnote(sec: number, para: number, controlIdx: number, startFnPara: number, startOffset: number, endFnPara: number, endOffset: number, notePath?: string): { ok: boolean; text: string; html: string } {
+    return api.copySelectionInFootnote(this.core, sec, para, controlIdx, startFnPara, startOffset, endFnPara, endOffset, notePath);
+  }
+
+  /** 위치 바로 뒤(forward)·앞(backward)의 주석 표시. 표 셀·글상자도 본다. */
+  getNoteAtPosition(pos: DocumentPosition, direction: 'backward' | 'forward'): { hit: false } | ({ hit: true; charOffset: number } & NoteHit) {
+    return api.getNoteAtPosition(this.core, pos, direction);
+  }
+
+  /** 주석 표시 바로 앞의 본문(셀) 위치. */
+  getNoteAnchor(sec: number, para: number, controlIdx: number, notePath?: string): DocumentPosition {
+    return api.getNoteAnchor(this.core, sec, para, controlIdx, notePath);
+  }
+
+  /** 문서 순서의 모든 각주·미주(표 셀·글상자 포함). */
+  listNotes(): NoteListEntry[] {
+    return api.listNotes(this.core);
+  }
+
+  getSelectionRectsInNote(sec: number, para: number, controlIdx: number, startFnPara: number, startOffset: number, endFnPara: number, endOffset: number, notePath?: string): SelectionRect[] {
+    return api.getSelectionRectsInNote(this.core, sec, para, controlIdx, startFnPara, startOffset, endFnPara, endOffset, notePath);
+  }
+
+  /** 주석 안 줄 처음·끝, 위·아래 줄 이동. 주석을 벗어나면 null. preferredX 는 쪽 px. */
+  navigateInNote(sec: number, para: number, controlIdx: number, fnParaIdx: number, charOffset: number, motion: 'lineStart' | 'lineEnd' | 'up' | 'down', preferredX?: number, notePath?: string): (NoteCaret & { cursorRect: CursorRect }) | null {
+    return api.navigateInNote(this.core, sec, para, controlIdx, fnParaIdx, charOffset, motion, preferredX, notePath);
+  }
+
+  /** 주석 첫 줄에서 위로 나갈 본문 자리(주석 영역 바로 위 본문 줄, 같은 x). */
+  getBodyPositionAboveNote(sec: number, para: number, controlIdx: number, x: number, notePath?: string): DocumentPosition | null {
+    return api.getBodyPositionAboveNote(this.core, sec, para, controlIdx, x, notePath);
   }
 
   moveLineEndpoint(sec: number, para: number, ci: number, sx: number, sy: number, ex: number, ey: number): void {

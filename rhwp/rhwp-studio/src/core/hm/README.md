@@ -23,6 +23,7 @@ and call hm-wasm. Read `extensions.ts` before auditing stubs: a throw in a base 
 | `table-editing.ts`, `table-properties.ts`, `agent-tables.ts` | Table edits, properties and agent operations |
 | `objects-editing.ts`, `objects-grouping.ts`, `objects-navigation.ts`, `objects-transform.ts`, `agent-equations.ts` | Pictures, shapes, equations and transforms |
 | `furniture-editing.ts`, `furniture-pictures.ts`, `fields-controls.ts`, `fields-forms.ts` | Headers/footers, notes, fields and forms |
+| `notes-shape.ts` | Footnote and endnote shapes per section (number format, numbering, placement, separator) |
 | `page-settings.ts`, `search-text.ts`, `document-counts.ts`, `agent-document.ts` | Page settings, search, counts and agent document operations |
 
 A function the engine cannot serve yet throws `unsupported(name)` (`EngineNotSupportedError`). The command layer

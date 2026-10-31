@@ -2,7 +2,9 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { isBodyControl } from './picture-hit-policy';
-import { InsertTextCommand, InsertLineBreakCommand, InsertTabCommand, SplitParagraphCommand, SplitParagraphInCellCommand, InsertTextInHeaderFooterCommand, SplitParagraphInHeaderFooterCommand, SplitParagraphInFootnoteCommand, InsertTextInFootnoteCommand, DeleteTextInFootnoteCommand, MergeParagraphInFootnoteCommand, deleteSelectionImmediate } from './command';
+import { InsertTextCommand, InsertLineBreakCommand, InsertTabCommand, SplitParagraphCommand, SplitParagraphInCellCommand, InsertTextInHeaderFooterCommand, SplitParagraphInHeaderFooterCommand, SplitParagraphInFootnoteCommand, InsertTextInFootnoteCommand, DeleteTextInFootnoteCommand, MergeParagraphInFootnoteCommand, deleteSelectionImmediate, notePathOf } from './command';
+import type { NoteContentInfo } from '@/core/types';
+import { confirmNoteDelete, NOTE_NUMBER_DELETE_MESSAGE } from '@/ui/note-delete-dialog';
 import { matchShortcut, defaultShortcuts } from '@/command/shortcut-map';
 import * as _connector from './input-handler-connector';
 import {
@@ -62,10 +64,22 @@ const SUBMODE_GLOBAL_COMMANDS = new Set([
   'format:underline',
 ]);
 
+/** 주석 안에서는 글자·문단 모양 대화상자와 위첨자·아래첨자도 쓴다. 명령이 주석 선택을 다룬다. */
+const NOTE_GLOBAL_COMMANDS = new Set([
+  ...SUBMODE_GLOBAL_COMMANDS,
+  'format:char-shape',
+  'format:para-shape',
+  'format:superscript',
+  'format:subscript',
+  'format:font-size-increase',
+  'format:font-size-decrease',
+]);
+
 function dispatchSubmodeGlobalShortcut(this: any, e: KeyboardEvent): boolean {
   if (!this.dispatcher) return false;
   const commandId = matchShortcut(e, defaultShortcuts);
-  if (!commandId || !SUBMODE_GLOBAL_COMMANDS.has(commandId)) return false;
+  const allowed = this.cursor.isInFootnote?.() ? NOTE_GLOBAL_COMMANDS : SUBMODE_GLOBAL_COMMANDS;
+  if (!commandId || !allowed.has(commandId)) return false;
 
   e.preventDefault();
   this.dispatcher.dispatch(commandId);
@@ -317,6 +331,41 @@ function handleHeaderFooterNavigationShortcut(this: any, e: KeyboardEvent): bool
   return false;
 }
 
+/** 주석 units 문자열에서 번호·개체 칸. */
+const NOTE_OBJECT_UNIT = '\uFFFC';
+
+/** 주석 편집을 닫고 본문 표시 옆으로 돌아간다(Shift+Esc, 닫기, 첫 줄에서 위). */
+function leaveFootnote(this: any): void {
+  this.cursor.exitFootnoteMode();
+  this.eventBus.emit('footnoteModeChanged', false);
+  this.afterEdit();
+  this.textarea?.focus();
+}
+
+/**
+ * 주석 안 글자가 아닌 칸 하나를 지운다. 주석 자신의 번호면 한컴처럼 먼저 묻는다
+ * (c02b·c02k: '[번호 넣기] 를 지울까요?'). 지우기는 스냅샷이라 되돌리면 번호·개체가 그대로 돌아온다.
+ */
+function deleteFootnoteUnit(this: any, content: NoteContentInfo, para: number, offset: number): void {
+  const range = { start: { fnParaIdx: para, charOffset: offset }, end: { fnParaIdx: para, charOffset: offset + 1 } };
+  const isNumber = content.numbers?.some(number => number.fnParaIndex === para && number.charOffset === offset) === true;
+  if (!isNumber) {
+    this.replaceFootnoteSelection('', { operationType: 'deleteObjectInFootnote', range });
+    return;
+  }
+  const note = this.cursor.fnNoteRef();
+  this.noteDeletePending = true;
+  void confirmNoteDelete(NOTE_NUMBER_DELETE_MESSAGE)
+    .then((ok: boolean) => {
+      if (ok && this.cursor.isEditingNote(note)) this.replaceFootnoteSelection('', { operationType: 'deleteNoteNumber', range });
+    })
+    .catch((error: unknown) => console.warn('[InputHandler] 주석 번호 지우기 실패:', error))
+    .finally(() => {
+      this.noteDeletePending = false;
+      this.textarea?.focus();
+    });
+}
+
 /** 본문과 같은 플랫폼별 탐색 규칙을 각주 좌표계에 적용한다. Shift 는 각주 안 선택을 넓힌다. */
 function handleFootnoteNavigationShortcut(this: any, e: KeyboardEvent): boolean {
   const input = toNavigationKeyInput(e);
@@ -342,7 +391,13 @@ function handleFootnoteNavigationShortcut(this: any, e: KeyboardEvent): boolean 
   } else if (boundary) {
     this.cursor.moveToFootnoteBoundary(e.key === 'ArrowUp' || e.key === 'Home' ? -1 : 1);
   } else {
-    this.cursor.moveVerticalInFn(e.key === 'ArrowUp' ? -1 : 1);
+    const moved = this.cursor.moveVerticalInFn(e.key === 'ArrowUp' ? -1 : 1);
+    // 한컴 c03c: 첫 줄에서 위는 주석을 나가 주석 영역 바로 위 본문 줄로 간다. 마지막 줄에서 아래는 그대로다(c03d).
+    if (!moved && e.key === 'ArrowUp' && !e.shiftKey && this.cursor.exitFootnoteUpward()) {
+      this.eventBus.emit('footnoteModeChanged', false);
+      this.afterEdit();
+      return true;
+    }
   }
   this.updateCaret();
   if (e.shiftKey) this.updateSelection();
@@ -508,6 +563,8 @@ const chordMapK: Record<string, string> = {
 const chordMapM: Record<string, string | [string, Record<string, unknown>]> = {
   n: 'insert:footnote',
   ㅜ: 'insert:footnote', // 한글 IME
+  e: 'insert:endnote',
+  ㄷ: 'insert:endnote', // 한글 IME
   s: 'page:hide',
   ㄴ: 'page:hide', // 한글 IME
   m: 'insert:equation',
@@ -812,7 +869,7 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
     if (this._pendingChordM) {
       this._pendingChordM = false;
       const codeToKey: Record<string, string> = {
-        KeyM: 'm', KeyN: 'n', KeyS: 's', KeyF: 'f', KeyK: 'k',
+        KeyM: 'm', KeyN: 'n', KeyE: 'e', KeyS: 's', KeyF: 'f', KeyK: 'k',
         KeyR: 'r', KeyB: 'b', KeyD: 'd', KeyG: 'g', KeyY: 'y',
         KeyC: 'c', KeyW: 'w',
       };
@@ -970,13 +1027,16 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
   // ─── 각주 편집 모드 키보드 처리 ──────────────────────────
   if (this.cursor.isInFootnote()) {
     if (dispatchSubmodeGlobalShortcut.call(this, e)) return;
-    // Shift+Esc 또는 Escape → 주석 편집 모드 탈출
+    // 한컴 c03a·c03b: Shift+Esc 만 주석을 닫는다. Esc 는 선택을 풀고, 선택이 없으면 아무것도 하지 않는다.
     if (e.key === 'Escape') {
       e.preventDefault();
-      this.cursor.exitFootnoteMode();
-      this.eventBus.emit('footnoteModeChanged', false);
-      this.afterEdit();
-      this.textarea?.focus();
+      if (e.shiftKey) {
+        leaveFootnote.call(this);
+      } else if (this.cursor.hasSelection()) {
+        this.cursor.clearSelection();
+        this.updateSelection();
+        this.updateCaret();
+      }
       return;
     }
 
@@ -994,22 +1054,28 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
       return;
     }
 
-    // Enter → 각주 내 문단 분할, Shift+Enter → 본문처럼 강제 줄바꿈
+    const target = this.footnoteEditTarget();
+    const path = notePathOf(target);
+
+    // Enter → 각주 내 문단 분할, Shift+Enter → 본문처럼 강제 줄바꿈. 선택 위에서는 바꾸기와 나누기가 한 번의 되돌리기다.
     if (e.key === 'Enter') {
       e.preventDefault();
+      if (this.getNonEmptyFootnoteSelection()) {
+        this.replaceFootnoteSelection(e.shiftKey ? '\n' : '', { operationType: 'splitParagraphInFootnote', split: !e.shiftKey });
+        return;
+      }
       try {
-        this.deleteFootnoteSelection();
-        const target = { sectionIdx: this.cursor.fnSectionIdx, paraIdx: this.cursor.fnParaIdx, controlIdx: this.cursor.fnControlIdx, footnoteIndex: this.cursor.fnFootnoteIndex, pageNum: this.cursor.fnPageNum };
         const innerParaIdx = this.cursor.fnInnerParaIdx;
         const charOffset = this.cursor.fnCharOffset;
         if (e.shiftKey) {
-          this.wasm.insertTextInFootnote(target.sectionIdx, target.paraIdx, target.controlIdx, innerParaIdx, charOffset, '\n');
+          this.wasm.insertTextInFootnote(target.sectionIdx, target.paraIdx, target.controlIdx, innerParaIdx, charOffset, '\n', path);
           this.executeOperation({ kind: 'record', command: new InsertTextInFootnoteCommand(target, innerParaIdx, charOffset, '\n') });
           this.cursor.setFnCursorPosition(innerParaIdx, charOffset + 1);
           this.afterEdit();
           return;
         }
-        const result = this.wasm.splitParagraphInFootnote(target.sectionIdx, target.paraIdx, target.controlIdx, innerParaIdx, charOffset);
+        // 한컴 c02e: 첫 문단 처음(번호 앞)에서 Enter 하면 번호가 둘째 문단으로 내려가고 캐럿은 그 앞에 선다.
+        const result = this.wasm.splitParagraphInFootnote(target.sectionIdx, target.paraIdx, target.controlIdx, innerParaIdx, charOffset, undefined, path);
         this.executeOperation({ kind: 'record', command: new SplitParagraphInFootnoteCommand(target, innerParaIdx, charOffset, result.fnParaIndex) });
         this.cursor.setFnCursorPosition(result.fnParaIndex, 0);
         this.afterEdit();
@@ -1020,69 +1086,74 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
     // Backspace / Delete
     if (e.key === 'Backspace' || e.key === 'Delete') {
       e.preventDefault();
-      if (this.deleteFootnoteSelection()) {
-        this.afterEdit();
+      if (this.noteDeletePending) return;
+      // 선택을 지울 때는 번호가 들어 있어도 묻지 않는다(한컴 c02f·c02g).
+      if (this.getNonEmptyFootnoteSelection()) {
+        this.deleteFootnoteSelection();
         return;
       }
-      const target = { sectionIdx: this.cursor.fnSectionIdx, paraIdx: this.cursor.fnParaIdx, controlIdx: this.cursor.fnControlIdx, footnoteIndex: this.cursor.fnFootnoteIndex, pageNum: this.cursor.fnPageNum };
+      const content = this.cursor.footnoteContent();
+      if (!content) return;
       const innerParaIdx = this.cursor.fnInnerParaIdx;
       const fnOff = this.cursor.fnCharOffset;
-      if (e.key === 'Backspace') {
-        if (fnOff > 0) {
-          try {
+      const units = Array.from(content.units?.[innerParaIdx] ?? content.texts[innerParaIdx] ?? '');
+      const paragraphLength = content.lengths?.[innerParaIdx] ?? units.length;
+      const isObjectUnit = (offset: number) => units[offset] === NOTE_OBJECT_UNIT;
+      try {
+        if (e.key === 'Backspace') {
+          if (fnOff > 0) {
+            if (isObjectUnit(fnOff - 1)) {
+              deleteFootnoteUnit.call(this, content, innerParaIdx, fnOff - 1);
+              return;
+            }
             // [Task #2337] 삭제 텍스트를 반환에서 확보해 역연산 기록. Backspace → undo 후 커서 fnOff.
-            const res = this.wasm.deleteTextInFootnote(target.sectionIdx, target.paraIdx, target.controlIdx, innerParaIdx, fnOff - 1, 1);
+            const res = this.wasm.deleteTextInFootnote(target.sectionIdx, target.paraIdx, target.controlIdx, innerParaIdx, fnOff - 1, 1, path);
             this.executeOperation({ kind: 'record', command: new DeleteTextInFootnoteCommand(target, innerParaIdx, fnOff - 1, res.deletedText ?? '', fnOff) });
             this.cursor.setFnCursorPosition(innerParaIdx, fnOff - 1);
             this.afterEdit();
-          } catch { /* ignore */ }
-        } else if (innerParaIdx > 0) {
-          // 문단 시작에서 Backspace → 이전 문단과 병합. 병합 전 커서 (innerParaIdx, 0).
-          try {
-            const result = this.wasm.mergeParagraphInFootnote(target.sectionIdx, target.paraIdx, target.controlIdx, innerParaIdx);
+          } else if (innerParaIdx > 0) {
+            // 문단 시작에서 Backspace → 이전 문단과 병합. 병합 전 커서 (innerParaIdx, 0).
+            const result = this.wasm.mergeParagraphInFootnote(target.sectionIdx, target.paraIdx, target.controlIdx, innerParaIdx, path);
             this.executeOperation({ kind: 'record', command: new MergeParagraphInFootnoteCommand(target, innerParaIdx, result.fnParaIndex, result.charOffset, innerParaIdx, 0, result.removedParaMeta) });
             this.cursor.setFnCursorPosition(result.fnParaIndex, result.charOffset);
             this.afterEdit();
-          } catch { /* ignore */ }
-        }
-      } else {
-        // Delete(forward): 커서는 fnOff 유지 → undo 후에도 fnOff.
-        try {
-          const info = this.wasm.getFootnoteInfo(
-            target.sectionIdx,
-            target.paraIdx,
-            target.controlIdx,
-          );
-          const paragraphLength = Array.from(info.texts[innerParaIdx] ?? '').length;
-          if (fnOff < paragraphLength) {
-            const res = this.wasm.deleteTextInFootnote(target.sectionIdx, target.paraIdx, target.controlIdx, innerParaIdx, fnOff, 1);
-            if (res.deletedText) {
-              this.executeOperation({ kind: 'record', command: new DeleteTextInFootnoteCommand(target, innerParaIdx, fnOff, res.deletedText, fnOff) });
-            }
-          } else if (innerParaIdx + 1 < info.paraCount) {
-            const result = this.wasm.mergeParagraphInFootnote(
-              target.sectionIdx,
-              target.paraIdx,
-              target.controlIdx,
-              innerParaIdx + 1,
-            );
-            this.executeOperation({
-              kind: 'record',
-              command: new MergeParagraphInFootnoteCommand(
-                target,
-                innerParaIdx + 1,
-                result.fnParaIndex,
-                result.charOffset,
-                innerParaIdx,
-                fnOff,
-                result.removedParaMeta,
-              ),
-            });
-            this.cursor.setFnCursorPosition(innerParaIdx, fnOff);
+          } else if (paragraphLength === 0 && content.paraCount > 1) {
+            // 한컴 c02g: 빈 첫 문단 처음의 Backspace 는 그 빈 문단을 없앤다. 글이나 번호가 있으면 아무것도 하지 않는다(c02a).
+            const result = this.wasm.mergeParagraphInFootnote(target.sectionIdx, target.paraIdx, target.controlIdx, 1, path);
+            this.executeOperation({ kind: 'record', command: new MergeParagraphInFootnoteCommand(target, 1, result.fnParaIndex, result.charOffset, 0, 0, result.removedParaMeta) });
+            this.cursor.setFnCursorPosition(0, 0);
+            this.afterEdit();
+          }
+        } else if (fnOff < paragraphLength) {
+          if (isObjectUnit(fnOff)) {
+            deleteFootnoteUnit.call(this, content, innerParaIdx, fnOff);
+            return;
+          }
+          // Delete(forward): 커서는 fnOff 유지 → undo 후에도 fnOff.
+          const res = this.wasm.deleteTextInFootnote(target.sectionIdx, target.paraIdx, target.controlIdx, innerParaIdx, fnOff, 1, path);
+          if (res.deletedText) {
+            this.executeOperation({ kind: 'record', command: new DeleteTextInFootnoteCommand(target, innerParaIdx, fnOff, res.deletedText, fnOff) });
           }
           this.afterEdit();
-        } catch { /* ignore */ }
-      }
+        } else if (innerParaIdx + 1 < content.paraCount) {
+          const result = this.wasm.mergeParagraphInFootnote(target.sectionIdx, target.paraIdx, target.controlIdx, innerParaIdx + 1, path);
+          this.executeOperation({
+            kind: 'record',
+            command: new MergeParagraphInFootnoteCommand(
+              target,
+              innerParaIdx + 1,
+              result.fnParaIndex,
+              result.charOffset,
+              innerParaIdx,
+              fnOff,
+              result.removedParaMeta,
+            ),
+          });
+          this.cursor.setFnCursorPosition(innerParaIdx, fnOff);
+          this.afterEdit();
+        }
+        // 마지막 문단 끝의 Delete 는 아무것도 하지 않는다(한컴 c02c).
+      } catch { /* ignore */ }
       return;
     }
 
@@ -1975,6 +2046,15 @@ export function handleSelectAll(this: any): void {
     this.updateCaret();
     return;
   }
+  // 한컴 c02f: 주석 안의 모두 선택은 그 주석의 문단 목록만 고른다.
+  if (this.cursor.isInFootnote?.()) {
+    if (this.cursor.selectAllInFootnote()) {
+      this.updateCaret();
+      this.updateSelection();
+      this.eventBus.emit('command-state-changed');
+    }
+    return;
+  }
 
   // 표 안에서는 누를 때마다 셀 내용 → 표 전체 셀 → 표를 감싼 셀(또는 문서)로 넓힌다.
   if (this.cursor.isInCellSelectionMode()) {
@@ -2007,6 +2087,34 @@ export function handleSelectAll(this: any): void {
   this.cursor.setAnchor();
   this.cursor.moveToDocumentEnd();
   this.updateCaret();
+}
+
+/** 주석 안 선택을 엔진 조각과 시스템 클립보드에 담는다. 선택이 없으면 false. */
+function copyFootnoteSelection(this: any, e: ClipboardEvent): boolean {
+  const selection = this.getNonEmptyFootnoteSelection();
+  if (!selection) return false;
+  e.preventDefault();
+  try {
+    const result = this.wasm.copySelectionInFootnote(
+      this.cursor.fnSectionIdx,
+      this.cursor.fnParaIdx,
+      this.cursor.fnControlIdx,
+      selection.start.fnParaIdx,
+      selection.start.charOffset,
+      selection.end.fnParaIdx,
+      selection.end.charOffset,
+      this.cursor.fnNotePath,
+    );
+    if (!result.ok) return false;
+    if (e.clipboardData) {
+      if (result.text) e.clipboardData.setData('text/plain', result.text);
+      e.clipboardData.setData('text/html', prepareRhwpInternalClipboardHtml(this, result.html, result.text));
+    }
+    return true;
+  } catch (err) {
+    console.warn('[InputHandler] 주석 선택 복사 실패:', err);
+    return false;
+  }
 }
 
 function copyHeaderFooterSelection(this: any, e: ClipboardEvent): boolean {
@@ -2099,6 +2207,10 @@ export function onCopy(this: any, e: ClipboardEvent): boolean {
 
   if (this.cursor.isInHeaderFooter() && this.getNonEmptyHeaderFooterSelection()) {
     return copyHeaderFooterSelection.call(this, e);
+  }
+  // 주석 안에서는 주석 선택만 복사한다. 본문 선택(진입 전 캐럿)은 건드리지 않는다.
+  if (this.cursor.isInFootnote?.()) {
+    return copyFootnoteSelection.call(this, e);
   }
 
   // 개체(글상자/그림) 선택 모드 → 개체 복사
@@ -2260,6 +2372,12 @@ export function onCut(this: any, e: ClipboardEvent): void {
     if (copyHeaderFooterSelection.call(this, e)) this.deleteSelection();
     return;
   }
+  // 한컴 c08b: 오려 두기는 묻지 않는다. 되돌리면 선택이 돌아온다.
+  if (this.cursor.isInFootnote?.()) {
+    if (copyFootnoteSelection.call(this, e)) this.deleteFootnoteSelection('cutInFootnote');
+    else e.preventDefault();
+    return;
+  }
 
   // 개체 선택 모드 → 개체 잘라내기 (복사 후 삭제)
   if (this.cursor.isInPictureObjectSelection()) {
@@ -2321,6 +2439,18 @@ export function onPaste(this: any, e: ClipboardEvent): void {
         operationType: 'pastePlainTextInHeaderFooter',
         allowCollapsed: true,
       });
+    }
+    return;
+  }
+  // 주석 안 붙여넣기는 주석 선택(없으면 캐럿)에 한 번의 엔진 붙여넣기로 들어간다(한컴 c09e: 되돌리기 한 번).
+  // 같은 편집기에서 복사한 조각은 서식째, 그 밖은 글자로 넣는다. 조각의 주석 표시는 버린다(한컴 c08c).
+  if (this.cursor.isInFootnote?.()) {
+    const internal = !pasteWithoutFormatting && this.wasm.hasInternalClipboard()
+      && (!clipboardData || hasCurrentRhwpClipboardMarker(this, html));
+    if (internal) {
+      this.replaceFootnoteSelection(null, { operationType: 'pasteInFootnote', paste: true, allowCollapsed: true });
+    } else if (text) {
+      this.replaceFootnoteSelection(text, { operationType: 'pastePlainTextInFootnote', paste: true, allowCollapsed: true });
     }
     return;
   }

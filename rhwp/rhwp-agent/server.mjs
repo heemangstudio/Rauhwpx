@@ -21,7 +21,6 @@ import {
 } from './agents/codex.mjs';
 import { IDLE_PROCESS_RELEASE_MS, redactDiagnosticText } from './agents/backend.mjs';
 import { canResumePiSession, createPiSession } from './agents/pi.mjs';
-import { canResumeHamaSession, createHamaSession } from './agents/hama.mjs';
 import { canResumeCodexThread } from './agents/codex-app-server.mjs';
 import {
   detachCompactionNeeded,
@@ -113,7 +112,6 @@ import { createCodexModelCatalog, createCodexModelResolver, createCodexModelStor
 import { createOpenRouter } from './openrouter.mjs';
 import { createIpcSecretStore } from './secret-store.mjs';
 import { createIpcGiftSource } from './gift-source.mjs';
-import { createHamaHarness, createIpcHamaSource } from './hama-hosted.mjs';
 import { tasteLearningAllowed } from './byok-taste.mjs';
 import { createHostedRau, createIpcRauSource } from './rau-hosted.mjs';
 import { handlePiToolDefinitions } from './pi/tool-schema.mjs';
@@ -400,16 +398,6 @@ const piManager = createPiManager({
 });
 /** 보조 작업이 쓰는 OpenRouter 라우터 — 리스는 선물 프록시로, 내 키는 openrouter.ai 로만 보낸다. */
 const piRouter = piManager.router;
-/**
- * Hama 하네스 (Hama 플랜). 데스크톱이 플랜 상태와 lease 를 준다. BYOK(pi) 의 키·모델과 섞지 않는다.
- * Pi 런타임과 세션 폴더는 같이 쓰고, 홈은 `<piRoot>/agent-hama` 다.
- */
-const hamaSource = createIpcHamaSource();
-const hamaHarness = createHamaHarness({
-  piRoot: PI_ROOT,
-  source: hamaSource,
-  isPiInstalled: () => piStatus.installed === true,
-});
 const authRuns = new AuthRunRegistry();
 let npmPrefixMutationQueue = Promise.resolve();
 function mutateSharedNpmPrefix(operation) {
@@ -493,7 +481,6 @@ function ensureBootWork() {
     piStatus = await piManager.status();
     // 선물 자격은 데스크톱 서버 응답을 기다릴 수 있다 — 기동을 막지 않고 끝나면 알린다.
     if (giftSource.available) void refreshGiftAndBroadcast(false);
-    if (hamaSource.available) void refreshHamaAndBroadcast();
     await Promise.all([
       // 저장된 Claude 토큰이 아직 받아들여지는지 한 번 확인한다. 네트워크가 없으면 그대로 둔다.
       cliSetup.verifyAuth('claude')
@@ -989,7 +976,7 @@ async function browserActorForMcp(record, sock, tool, args) {
     .filter(({ scope }) => scope.generation === generation && scope.turnId === turnId
       && scope.agent === sock.agentLabel && scope.tool === tool && scope.fingerprint === fingerprint);
   let matches = find();
-  if (!PI_RUNTIME_AGENTS.has(sock.agentLabel) && matches.length === 0) {
+  if (sock.agentLabel !== 'pi' && matches.length === 0) {
     const deadline = Date.now() + USER_QUESTION_SCOPE_WAIT_MS;
     while (!matches.length && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 20));
@@ -997,7 +984,7 @@ async function browserActorForMcp(record, sock, tool, args) {
       matches = find();
     }
   }
-  if (matches.length > 1 || (!PI_RUNTIME_AGENTS.has(sock.agentLabel) && matches.length !== 1)) {
+  if (matches.length > 1 || (sock.agentLabel !== 'pi' && matches.length !== 1)) {
     throw workflowError('CALLER_SCOPE_UNKNOWN', 'The provider did not establish a unique browser call identity');
   }
   const scope = matches.length ? record.pendingBrowserScopes.splice(matches[0].index, 1)[0] : null;
@@ -1743,9 +1730,7 @@ function flushProviderCredentialHomes(homes) {
 
 /** CLI 설치·인증을 cli-setup-manager 가 관리하는 에이전트들. */
 const CLI_SETUP_AGENTS = ['claude', 'codex'];
-const KNOWN_AGENTS = new Set([...CLI_SETUP_AGENTS, 'pi', 'hama']);
-/** Pi 런타임을 쓰는 하네스 — BYOK(pi) 와 Hama(hama). MCP 도구 신뢰 규칙이 같다. */
-const PI_RUNTIME_AGENTS = new Set(['pi', 'hama']);
+const KNOWN_AGENTS = new Set([...CLI_SETUP_AGENTS, 'pi']);
 const AGENT_INSTRUCTION_DRAFT_TTL_MS = 5 * 60 * 1000;
 // 학습기의 제안은 사용자가 설정을 열 때까지 기다린다.
 const RAU_INSTRUCTION_DRAFT_TTL_MS = 24 * 60 * 60 * 1000;
@@ -1771,7 +1756,6 @@ const SESSION_FACTORIES = {
   claude: createClaudeSession,
   codex: createCodexSession,
   pi: createPiSession,
-  hama: createHamaSession,
 };
 
 /**
@@ -1782,7 +1766,6 @@ const SESSION_RESUME_PROBES = {
   claude: canResumeClaudeSession,
   codex: canResumeCodexThread,
   pi: canResumePiSession,
-  hama: canResumeHamaSession,
 };
 
 function unknownAgentError(agent) {
@@ -1830,8 +1813,7 @@ function refreshGiftAndBroadcast(refresh = true) {
  */
 let giftPiInstallAttempted = false;
 function installPiForGift(status) {
-  const hosted = status?.credential === 'gift' || status?.hamaActive === true;
-  if (giftPiInstallAttempted || !hosted || status.installed || status.installing) return;
+  if (giftPiInstallAttempted || status?.credential !== 'gift' || status.installed || status.installing) return;
   giftPiInstallAttempted = true;
   log('gift claimed without Pi: installing Pi in the background');
   const installing = mutateSharedNpmPrefix(() => {
@@ -1849,54 +1831,6 @@ function installPiForGift(status) {
 }
 
 giftSource.onChange(() => { void refreshGiftAndBroadcast(true); });
-
-/** 바뀐 Hama 플랜 상태를 모든 Studio 탭에 보낸다. 설정 연결 상태(hama.connected)도 따라 바뀐다. */
-function broadcastHamaStatus() {
-  const status = hamaHarness.snapshot();
-  broadcastToStudios({ v: 1, type: 'hama-status', status });
-  void broadcastFreshAgentSetupStatuses().catch(() => {});
-  return status;
-}
-
-function refreshHamaAndBroadcast() {
-  return hamaHarness.refresh()
-    .then(() => {
-      const status = broadcastHamaStatus();
-      // 플랜이 살아 있는데 Pi 런타임이 없으면 뒤에서 설치한다 (선물과 같은 길).
-      if (status.availability === 'active') installPiForGift({ ...piStatus, hamaActive: true });
-    })
-    .catch((error) => log(`hama refresh failed: ${error?.message ?? error}`));
-}
-
-// 라이선스가 바뀌면 데스크톱이 알린다.
-hamaSource.onChange(() => { void refreshHamaAndBroadcast(); });
-
-/** Hama 스폰마다 Hama 자격만 고른다. 한도 꼬리표가 오면 막힌 상태를 바로 알린다. */
-function hamaSpawnHooks() {
-  return {
-    resolvePiAccess: (model) => hamaHarness.resolveSpawn(model),
-    onAccessRejected: () => { void refreshHamaAndBroadcast(); },
-    onHamaCap: (info) => {
-      void hamaHarness.noteCap(info)
-        .then(() => broadcastHamaStatus())
-        .catch((error) => log(`hama cap update failed: ${error?.message ?? error}`));
-    },
-  };
-}
-
-/** Pi 런타임 하네스(BYOK·Hama)의 스폰 훅. 다른 에이전트는 없다. */
-function piRuntimeSpawnHooks(agent) {
-  if (agent === 'pi') return piSpawnHooks();
-  if (agent === 'hama') return hamaSpawnHooks();
-  return {};
-}
-
-/** Pi 런타임 하네스의 모델 설정 (BYOK 는 내 모델, Hama 는 Hama 모델). */
-function piRuntimeModelConfig(agent, id) {
-  if (agent === 'pi') return piModelConfig(id);
-  if (agent === 'hama') return hamaHarness.modelConfig(id);
-  return null;
-}
 
 /** Pi 스폰마다 자격을 새로 고르고, 선물 크레딧이 떨어지면 내 키로 넘긴다. 채팅과 레이아웃 작업이 함께 쓴다. */
 function piSpawnHooks() {
@@ -1934,28 +1868,6 @@ function piAgentSetupStatus() {
   };
 }
 
-
-/** Hama 하네스의 연결 상태. 서버가 플랜이 살아 있다고 답했고 Pi 런타임이 있을 때만 연결이다. */
-function hamaAgentSetupStatus() {
-  const snapshot = hamaHarness.snapshot();
-  const active = snapshot.availability === 'active';
-  return {
-    agent: 'hama',
-    installed: piStatus.installed,
-    available: piStatus.installed,
-    installing: piStatus.installing,
-    version: piStatus.version,
-    authenticated: active,
-    authMethod: null,
-    keyTail: null,
-    authenticating: false,
-    setupComplete: active && piStatus.installed,
-    connected: active && piStatus.installed,
-    latestVersion: piStatus.latestVersion ?? null,
-    updateRequired: piStatus.updateRequired === true,
-    error: null,
-  };
-}
 
 function withAuthRunStatus(statuses, ownerSessionId = null) {
   return Object.fromEntries(Object.entries(statuses).map(([agent, status]) => {
@@ -2007,7 +1919,7 @@ async function agentSetupStatuses(ownerSessionId = null, refresh = false) {
   const codex = withDetectedHarness(codexSetup, health.codex);
   cliSetupStatus = { claude, codex };
   return withAuthRunStatus(
-    { claude, codex, pi: piAgentSetupStatus(), hama: hamaAgentSetupStatus() },
+    { claude, codex, pi: piAgentSetupStatus() },
     typeof ownerSessionId === 'string' ? ownerSessionId : null,
   );
 }
@@ -2234,11 +2146,6 @@ async function modelCatalog(agent, record, { refresh = false } = {}) {
 }
 
 function resolveModel(agent, requested, record = null) {
-  if (agent === 'hama') {
-    // Hama 모델만 고를 수 있다 (Haiku 5.5 와 싼 모델). 없는 모델이면 기본 모델(Haiku).
-    if (typeof requested === 'string' && hamaHarness.modelConfig(requested)) return requested;
-    return hamaHarness.defaultModelId();
-  }
   if (agent === 'pi') {
     if (typeof requested === 'string' && piModelConfig(requested)) return requested;
     if (piStatus.defaultModelId && piModelConfig(piStatus.defaultModelId)) return piStatus.defaultModelId;
@@ -2280,9 +2187,9 @@ function resolveModel(agent, requested, record = null) {
 }
 
 function resolveEffort(agent, model, requested, record = null) {
-  if (PI_RUNTIME_AGENTS.has(agent)) {
+  if (agent === 'pi') {
     // 추론을 지원하지 않는 모델은 effort 자체가 없다 — 붙이면 요청이 거부된다.
-    const config = piRuntimeModelConfig(agent, model);
+    const config = piModelConfig(model);
     const efforts = config?.efforts ?? [];
     if (efforts.length === 0) return null;
     if (typeof requested === 'string' && efforts.includes(requested)) return requested;
@@ -3748,8 +3655,6 @@ async function launchTemplateJob(record, job) {
     piManager,
     piModelConfig,
     piSpawnHooks,
-    piRuntimeSpawnHooks,
-    piRuntimeModelConfig,
     SESSION_FACTORIES,
     unknownAgentError
   });
@@ -3830,7 +3735,7 @@ const TRACED_PROVIDER_EVENTS = new Set(['turn-start', 'turn-end', 'tool-call', '
 
 /** 실패 문구에서 지울 이 세션의 비밀 값: MCP 세션 토큰, OpenRouter 키, CLI 설정 키. */
 function providerFailureSecrets(opts) {
-  const values = [opts.token, opts.openRouterApiKey, piManager.apiKey(), piManager.ownApiKey(), hamaHarness.secret()];
+  const values = [opts.token, opts.openRouterApiKey, piManager.apiKey(), piManager.ownApiKey()];
   for (const [name, value] of Object.entries(opts.providerEnv ?? {})) {
     if (/KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL/i.test(name)) values.push(value);
   }
@@ -4326,7 +4231,7 @@ function handoffPayload(delivery, plainText) {
 function applyHandoffContext(session, { model, providerContextUsage, resumed }) {
   const usage = providerContextUsage && typeof providerContextUsage === 'object' ? providerContextUsage : {};
   session.contextWindow = resolveContextWindow(session.agent, {
-    modelContextLength: piRuntimeModelConfig(session.agent, model)?.contextLength ?? undefined,
+    modelContextLength: session.agent === 'pi' ? piModelConfig(model)?.contextLength : undefined,
     reportedMaxTokens: usage.maxTokens,
   });
   const used = Number(usage.usedTokens);
@@ -5779,15 +5684,13 @@ async function startSession(
     piBin: piManager.piBin,
     piRoot: piManager.rootDir,
     openRouterApiKey: agent === 'pi' ? piManager.apiKey() ?? undefined : undefined,
-    reasoning: Boolean(piRuntimeModelConfig(agent, model)?.reasoning),
-    ...piRuntimeSpawnHooks(agent),
+    reasoning: agent === 'pi' ? Boolean(piModelConfig(model)?.reasoning) : false,
+    ...(agent === 'pi' ? piSpawnHooks() : {}),
     // 문서 없이 시작한 세션만 문서 연결 도구를 받는다. 연결한 뒤 다시 뜬 공급자는 받지 않는다.
     projectToolGates: () => ({ ...projectToolGates(), requestable: true, documentLink: true, askChatgpt: webAssistantGate('chatgpt'), askClaude: webAssistantGate('claude') }),
     // 기록(RHWP_PROVIDER_TRANSCRIPT_DIR)의 meta.cli 에 남길 CLI 버전.
-    providerCliVersion: (PI_RUNTIME_AGENTS.has(agent) ? piStatus.version : cliSetupStatus[agent]?.version) ?? null,
-    ...(piRuntimeModelConfig(agent, model)?.contextLength
-      ? { contextWindow: piRuntimeModelConfig(agent, model).contextLength }
-      : {}),
+    providerCliVersion: (agent === 'pi' ? piStatus.version : cliSetupStatus[agent]?.version) ?? null,
+    ...(agent === 'pi' && piModelConfig(model)?.contextLength ? { contextWindow: piModelConfig(model).contextLength } : {}),
   };
   const createBackend = SESSION_FACTORIES[agent];
   if (!createBackend) throw unknownAgentError(agent);
@@ -6214,17 +6117,6 @@ async function handleStudioMessage(record, sock, msg) {
           ? piManager.ensureGiftFresh({ timeoutMs: 3_000 })
           : piManager.refreshGift();
         await wait.then(() => refreshPiStatus()).catch(() => {});
-      }
-      // Hama 는 서버가 플랜이 살아 있다고 답했을 때만 연다. 라이선스 등급으로 짐작하지 않는다.
-      if (agent === 'hama') {
-        await hamaHarness.ensureFresh({ timeoutMs: 3_000 }).catch(() => {});
-        if (!hamaHarness.active() || !piStatus.installed) {
-          rejectStart(Object.assign(
-            new Error('Hama 플랜이 활성화되어 있지 않아요.'),
-            { code: 'HAMA_NOT_ACTIVE' },
-          ));
-          return;
-        }
       }
       // 설정이 끝나지 않은 pi 로는 세션을 열지 않는다 — 살아 있는 세션도 건드리지 않는다.
       if (agent === 'pi' && !piStatus.setupComplete) {
@@ -6955,7 +6847,7 @@ async function handleStudioMessage(record, sock, msg) {
         ...(Number.isFinite(entry.receivedBytes) ? { receivedBytes: entry.receivedBytes } : {}),
         ...(Number.isFinite(entry.totalBytes) ? { totalBytes: entry.totalBytes } : {}),
       });
-      const installing = PI_RUNTIME_AGENTS.has(agent)
+      const installing = agent === 'pi'
         ? mutateSharedNpmPrefix(() => piManager.install(progress)).then(async (status) => {
           piStatus = status;
         })
@@ -6981,8 +6873,7 @@ async function handleStudioMessage(record, sock, msg) {
       const requestId = typeof msg.requestId === 'string' ? msg.requestId : null;
       const agent = msg.agent;
       const method = msg.method;
-      // Hama 는 로그인하지 않는다 — 라이선스로 서버가 정한다.
-      if (!KNOWN_AGENTS.has(agent) || agent === 'hama' || (method !== 'oauth' && method !== 'api-key')) {
+      if (!KNOWN_AGENTS.has(agent) || (method !== 'oauth' && method !== 'api-key')) {
         sendAgentSetupError(record, sock, requestId, null, new Error('로그인 요청을 확인하지 못했어요.'));
         return;
       }
@@ -6991,7 +6882,7 @@ async function handleStudioMessage(record, sock, msg) {
       let credentialsCommitted = false;
       const cancelProvider = () => {
         abort.abort();
-        if (PI_RUNTIME_AGENTS.has(agent)) void piManager.cancelSetup();
+        if (agent === 'pi') void piManager.cancelSetup();
         else if (CLI_SETUP_AGENTS.includes(agent)) void cliSetup.cancel(agent);
       };
       // 같은 세션이 다시 로그인을 시작하면 남아 있던 이전 시도를 취소하고 처음부터 시작한다.
@@ -7256,14 +7147,6 @@ async function handleStudioMessage(record, sock, msg) {
     case 'secret-submit': {
       // 비밀 값은 이 메시지로만 들어온다. browser-request 의 비밀 차단은 그대로 둔다.
       void handleSecretSubmit(record, sock, msg);
-      return;
-    }
-    case 'hama-status-request': {
-      const requestId = typeof msg.requestId === 'string' ? msg.requestId : null;
-      const read = msg.refresh === true ? hamaHarness.refresh() : hamaHarness.ensureFresh();
-      void read
-        .catch(() => {})
-        .then(() => replyToStudio(record, sock, { v: 1, type: 'hama-status', requestId, status: hamaHarness.snapshot() }));
       return;
     }
     case 'pi-status-request': {
@@ -7955,7 +7838,7 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
       if (tool === 'request_permission') {
         const generation = record.agentSession.generation;
         void (async () => {
-          if (!PI_RUNTIME_AGENTS.has(sock.agentLabel)) await consumeChatPermissionScope(record, sock.agentLabel, args, generation);
+          if (sock.agentLabel !== 'pi') await consumeChatPermissionScope(record, sock.agentLabel, args, generation);
           return requestChatPermission(record, args, generation);
         })().then(sendResult).catch((error) => sendError(error, 'CHAT_PERMISSION_FAILED'));
         return;
@@ -7993,7 +7876,7 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
           // Pi에는 위임 에이전트 질문 경로가 없어 MCP 프로세스 자체가 루트다.
           // 다른 레거시 전송은 별도 프로바이더 스트림의 정확한 일회용 범위 티켓을
           // 기다린 뒤 소비해, 상속된 환경 변수만으로 루트를 사칭하지 못하게 한다.
-          if (!PI_RUNTIME_AGENTS.has(sock.agentLabel)) {
+          if (sock.agentLabel !== 'pi') {
             const matchingScopes = await waitForUserQuestionScopes(
               record,
               sock.agentLabel,
@@ -8357,7 +8240,7 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
       if (tool === 'list_documents' && args.path !== undefined) {
         void (async () => {
           const root = !workerJob && !sock.piSubagentId && sock.agentRole === 'chat' && !msg.parentTaskId
-            && (PI_RUNTIME_AGENTS.has(sock.agentLabel) || await documentPathCallerIsRoot(record, sock.agentLabel, tool, args));
+            && (sock.agentLabel === 'pi' || await documentPathCallerIsRoot(record, sock.agentLabel, tool, args));
           return listDocumentByPath(record, { root, path: args.path });
         })().then(sendResult).catch((error) => sendError(error, 'PATH_REJECTED'));
         return;
@@ -8784,7 +8667,7 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
         void (async () => {
           checkAttachment();
           const root = !sock.piSubagentId && sock.agentRole === 'chat' && !msg.parentTaskId
-            && (PI_RUNTIME_AGENTS.has(sock.agentLabel) || await documentPathCallerIsRoot(record, sock.agentLabel, tool, args));
+            && (sock.agentLabel === 'pi' || await documentPathCallerIsRoot(record, sock.agentLabel, tool, args));
           if (!root) throw workflowError('ROOT_INTERACTION_REQUIRED', 'Only the root conversation may attach or detach a document');
           checkAttachment();
           if (session.documentLinkCall) throw workflowError('DOCUMENT_LINK_PENDING', 'Another document attach or detach is already in progress in this chat');
@@ -9943,7 +9826,6 @@ httpServer.on('upgrade', (req, socket, head) => {
         if (providers !== cachedProviders) replyToStudio(record, ws, { v: 1, type: 'provider-status', providers });
       }).catch((e) => log(`provider health on connect failed: ${e?.message ?? e}`));
       sendJson(ws, { v: 1, type: 'pi-status', status: piStatus });
-      sendJson(ws, { v: 1, type: 'hama-status', status: hamaHarness.snapshot() });
       void agentSetupStatuses(record.sessionId).then((statuses) => {
         replyToStudio(record, ws, { v: 1, type: 'agent-setup-status', statuses });
       }).catch((e) => log(`agent setup status on connect failed: ${e?.message ?? e}`));

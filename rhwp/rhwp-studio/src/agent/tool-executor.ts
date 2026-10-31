@@ -1066,28 +1066,36 @@ function optCell(args: Record<string, unknown>): CellAddr | undefined {
     cellIdx: rec['cellIdx'] as number,
   };
   if (args['cellPath'] !== undefined) {
-    const rawPath = args['cellPath'];
-    if (!Array.isArray(rawPath) || rawPath.length < 1 || rawPath.length > 8) {
-      throw new AgentToolError('INVALID_ARGS', 'cellPath must contain 1..8 table cell entries');
-    }
-    cell.path = rawPath.map((entry, index) => {
-      const segment = asRecord(entry);
-      for (const key of ['controlIndex', 'cellIndex', 'cellParaIndex'] as const) {
-        if (typeof segment[key] !== 'number' || !Number.isSafeInteger(segment[key]) || (segment[key] as number) < 0) {
-          throw new AgentToolError('INVALID_ARGS', `cellPath[${index}].${key} must be a nonnegative integer`);
-        }
-      }
-      return {
-        controlIndex: segment['controlIndex'] as number,
-        cellIndex: segment['cellIndex'] as number,
-        cellParaIndex: segment['cellParaIndex'] as number,
-      };
-    });
+    cell.path = parseCellPath(args['cellPath'], 'cellPath must contain 1..8 table cell entries');
     if (cell.path[0].controlIndex !== cell.controlIdx || cell.path[0].cellIndex !== cell.cellIdx) {
       throw new AgentToolError('INVALID_ARGS', 'cellPath starts at a different table cell than cell');
     }
   }
   return cell;
+}
+
+/** 셀 경로 인자 — 1..8개 항목, 키마다 음이 아닌 정수 */
+function parseCellPath(raw: unknown, lengthMessage: string): CellPathEntry[] {
+  if (!Array.isArray(raw) || raw.length < 1 || raw.length > 8) throw new AgentToolError('INVALID_ARGS', lengthMessage);
+  return raw.map((entry, index) => {
+    const segment = asRecord(entry);
+    for (const key of ['controlIndex', 'cellIndex', 'cellParaIndex'] as const) {
+      if (typeof segment[key] !== 'number' || !Number.isSafeInteger(segment[key]) || (segment[key] as number) < 0) {
+        throw new AgentToolError('INVALID_ARGS', `cellPath[${index}].${key} must be a nonnegative integer`);
+      }
+    }
+    return {
+      controlIndex: segment['controlIndex'] as number,
+      cellIndex: segment['cellIndex'] as number,
+      cellParaIndex: segment['cellParaIndex'] as number,
+    };
+  });
+}
+
+/** edit_footnote 의 cellPath — list_footnotes 가 준 표 셀·글상자 주석의 경로를 그대로 받는다 */
+function optNoteCellPath(args: Record<string, unknown>): CellPathEntry[] | undefined {
+  const raw = args['cellPath'];
+  return raw === undefined || raw === null ? undefined : parseCellPath(raw, 'cellPath must contain 1..8 entries (copy it from list_footnotes)');
 }
 
 /** 셀 안 개체의 엔진 경로 — 한 칸 셀 주소도 경로로 바꾸고 마지막 cellParaIndex 는 개체 문단이다 */
@@ -3930,41 +3938,18 @@ export class AgentToolExecutor {
     };
   }
 
-  /** 렌더된 페이지들에서 각주/미주 앵커를 수집한다 (본문 소스만 내용 조회 가능) */
+  /**
+   * 문서 순서의 모든 각주·미주(본문·표 셀·글상자). text 는 번호와 공백 뒤의 주석 글이다.
+   * 표 셀·글상자 주석은 cellPath 가 표시가 든 안쪽 문단까지 내려가고 controlIdx 는 그 문단 기준이다.
+   */
   private listFootnotes(): unknown {
     this.requireDocLoaded();
-    const { wasm } = this.deps;
-    const seen = new Set<string>();
-    const notes: Array<{
-      sectionIdx: number; paraIdx: number; controlIdx: number;
-      sourceType: string; number?: number; text?: string; paraCount?: number;
-    }> = [];
-    const pageCount = wasm.pageCount;
-    for (let page = 0; page < pageCount; page++) {
-      for (let i = 0; i < 200; i++) {
-        const info = wasm.getPageFootnoteInfo(page, i);
-        if (!info || info.ok !== true) break;
-        const key = `${info.sectionIdx}:${info.paraIdx}:${info.controlIdx}:${info.sourceType}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        const entry: (typeof notes)[number] = {
-          sectionIdx: info.sectionIdx, paraIdx: info.paraIdx, controlIdx: info.controlIdx,
-          sourceType: info.sourceType,
-        };
-        if (info.sourceType === 'body') {
-          try {
-            const d = wasm.getFootnoteInfo(info.sectionIdx, info.paraIdx, info.controlIdx);
-            if (d?.ok === true) {
-              entry.number = d.number;
-              entry.paraCount = d.paraCount;
-              entry.text = d.texts.join('\n').slice(0, 300);
-            }
-          } catch { /* 내용 조회는 best-effort */ }
-        }
-        notes.push(entry);
-      }
-    }
-    notes.sort((a, b) => a.sectionIdx - b.sectionIdx || a.paraIdx - b.paraIdx || a.controlIdx - b.controlIdx);
+    const notes = this.deps.wasm.listNotes().map((note) => ({
+      sectionIdx: note.sectionIdx, paraIdx: note.paraIdx, controlIdx: note.controlIdx,
+      ...(note.cellPath?.length ? { cellPath: note.cellPath } : {}),
+      kind: note.kind, sourceType: note.sourceType, number: note.number,
+      paraCount: note.paraCount, text: note.noteText.slice(0, 300),
+    }));
     return { revision: this.revision, notes };
   }
 
@@ -4004,6 +3989,7 @@ export class AgentToolExecutor {
     const sectionIdx = reqInt(args, 'sectionIdx');
     const paraIdx = reqInt(args, 'paraIdx');
     const controlIdx = reqInt(args, 'controlIdx');
+    const cellPath = optNoteCellPath(args);
     const text = reqString(args, 'text').replace(/\r\n?/g, '\n');
     if (text.length > 2000) {
       throw new AgentToolError('INVALID_ARGS', `text must be at most 2000 chars (got ${text.length})`);
@@ -4011,9 +3997,13 @@ export class AgentToolExecutor {
     if (text.includes('\n')) {
       throw new AgentToolError('INVALID_ARGS', 'footnote text must be a single paragraph (no newlines)');
     }
-    const obj: ObjectOp = { type: 'setNoteText', sectionIdx, paraIdx, controlIdx, text };
+    const obj: ObjectOp = { type: 'setNoteText', sectionIdx, paraIdx, controlIdx, ...(cellPath ? { cellPath } : {}), text };
     const r = this.stageObjectOp(agent, obj, sectionIdx, paraIdx);
-    return { revision: this.revision, changeSetId: r.changeSetId };
+    const applied = r.obj as Extract<ObjectOp, { type: 'setNoteText' }>;
+    return {
+      revision: this.revision, changeSetId: r.changeSetId,
+      ...(applied.noteKind ? { kind: applied.noteKind } : {}),
+    };
   }
 
   /**
@@ -4093,10 +4083,11 @@ export class AgentToolExecutor {
         const noteAt = linkEnd > 0 ? agentTextToLogicalOffset(wasm, sectionIdx, paraIdx, linkEnd - 1) + 1 : 0;
         const res = wasm.insertFootnote(sectionIdx, paraIdx, noteAt);
         if (!res.ok) throw new AgentToolError('HYPERLINK_FAILED', 'insertFootnote failed');
-        // 새 각주 문단은 번호 자리 공백 둘("  ")로 시작한다 — 손으로 넣을 때처럼 번호 뒤에 쓴다.
-        const fresh = wasm.getFootnoteInfo(sectionIdx, res.paraIdx, res.controlIdx);
-        const at = fresh?.ok === true && fresh.texts[0] === '  ' ? 2 : 0;
-        if (wasm.insertTextInFootnote(sectionIdx, res.paraIdx, res.controlIdx, 0, at, footnote)?.ok !== true) {
+        // 글은 엔진 영수증 캐럿(새 각주의 번호와 공백 뒤)에 쓴다 — 손으로 넣을 때와 같은 자리다.
+        const caret = res.fnParaIndex !== undefined && res.charOffset !== undefined
+          ? { fnParaIndex: res.fnParaIndex, charOffset: res.charOffset }
+          : wasm.getFootnoteInfo(sectionIdx, res.paraIdx, res.controlIdx).textStart;
+        if (wasm.insertTextInFootnote(sectionIdx, res.paraIdx, res.controlIdx, caret.fnParaIndex, caret.charOffset, footnote)?.ok !== true) {
           throw new AgentToolError('HYPERLINK_FAILED', 'insertTextInFootnote failed');
         }
         return { fieldId, note: { number: res.footnoteNumber, controlIdx: res.controlIdx } };

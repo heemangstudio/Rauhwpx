@@ -71,7 +71,8 @@ export class SymbolsDialog {
   private currentBlock: UnicodeBlock = UNICODE_BLOCKS[0];
   private captureHandler: ((e: KeyboardEvent) => void) | null = null;
 
-  constructor(services: CommandServices) {
+  /** `onPick` 을 주면 문서에 넣지 않고 고른 글자를 돌려준 뒤 닫는다 (주석 모양의 기호 모양 칸). */
+  constructor(services: CommandServices, private onPick?: (char: string) => void) {
     this.services = services;
   }
 
@@ -108,9 +109,8 @@ export class SymbolsDialog {
     this._open = false;
     this.overlay?.remove();
 
-    // 편집 영역 포커스 복원
-    const ih = this.services.getInputHandler();
-    ih?.focus();
+    // 편집 영역 포커스 복원 (다른 대화상자에서 열었으면 그 대화상자에 남는다)
+    if (!this.onPick) this.services.getInputHandler()?.focus();
   }
 
   // ── DOM 구성 ──
@@ -295,6 +295,13 @@ export class SymbolsDialog {
 
   private doInsert(): void {
     if (!this.selectedChar) return;
+    if (this.onPick) {
+      const char = this.selectedChar;
+      this.addToRecent(char);
+      this.hide();
+      this.onPick(char);
+      return;
+    }
 
     const ih = this.services.getInputHandler();
     if (!ih) return;

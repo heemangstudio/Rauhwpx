@@ -326,6 +326,24 @@ test('requests without a conservative fallback hard-timeout and restart the work
   client.dispose();
 });
 
+test('a large document manifest gets a budget that grows with its size instead of the 5 s default', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+  const worker = new FakeWorker();
+  const client = new MergeWorkerClient(() => worker);
+  let settled = false;
+  // 13.6 MB HWPX 의 첫 manifest 는 새 워커에서 44초쯤 걸렸다. 버전 사용·커밋이 모두 이 결과를 기다린다.
+  const pending = client.buildDocumentManifest(new Uint8Array(13 * 1024 * 1024));
+  pending.then(() => { settled = true; }, () => { settled = true; });
+  await new Promise<void>((resolve) => queueMicrotask(resolve));
+  t.mock.timers.tick(45_000);
+  await Promise.resolve();
+  assert.equal(settled, false, 'the request must still be running after 45 s');
+  assert.equal(worker.terminated, false);
+  worker.emit({ id: worker.request!.id, type: 'manifest', entries: [] });
+  assert.deepEqual(await pending, []);
+  client.dispose();
+});
+
 test('a cold worker budget starts when it reports ready, within a bounded start-up allowance', async () => {
   const workers: FakeWorker[] = [];
   const client = new MergeWorkerClient(() => {

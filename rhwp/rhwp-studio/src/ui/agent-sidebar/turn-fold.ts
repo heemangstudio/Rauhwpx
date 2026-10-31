@@ -79,6 +79,7 @@ const CATEGORIES = {
   shapeAdd: counted('edit', (n) => `도형 ${n}개 추가`),
   objectEdit: counted('edit', (n) => `개체 ${n}개 수정`),
   footnoteAdd: counted('edit', (n) => `각주 ${n}개 추가`),
+  endnoteAdd: counted('edit', (n) => `미주 ${n}개 추가`),
   footnoteEdit: counted('edit', (n) => `각주 ${n}개 수정`),
   linkAdd: counted('edit', (n) => `링크 ${n}개 추가`),
   fieldSet: counted('edit', (n) => `필드 ${n}개 입력`),
@@ -317,6 +318,7 @@ function classifyCall(name: string, a: Args, unique: string, expandBatch = true)
       : [{ category: 'paraEdit', keys: paragraphKeys(a, unique) }];
   }
   if (TABLE_EDIT_TOOLS.has(name)) return [{ category: 'tableEdit', keys: [tableKey(a, unique)] }];
+  if (name === 'insert_footnote' && str(a['kind']) === 'endnote') return [{ category: 'endnoteAdd', keys: [unique] }];
   const insert = INSERT_TOOLS[name];
   if (insert) return [{ category: insert, keys: [unique] }];
   const once = ONCE_TOOLS[name];
@@ -330,8 +332,11 @@ function classifyCall(name: string, a: Args, unique: string, expandBatch = true)
       const where = cellTableKey(a, unique) ?? '';
       return [{ category: 'objectEdit', keys: [p !== null && c !== null ? `${sectionOf(a)}|${where}|${p}|${c}` : unique] }];
     }
-    case 'edit_footnote':
-      return [{ category: 'footnoteEdit', keys: [tableKey(a, unique)] }];
+    case 'edit_footnote': {
+      // 표 셀·글상자 주석은 같은 본문 문단·컨트롤 번호라도 셀 경로가 다르면 다른 주석이다.
+      const path = Array.isArray(a['cellPath']) && a['cellPath'].length > 0 ? `|${JSON.stringify(a['cellPath'])}` : '';
+      return [{ category: 'footnoteEdit', keys: [`${tableKey(a, unique)}${path}`] }];
+    }
     case 'set_field_value':
       return [{ category: 'fieldSet', keys: [str(a['name']) || unique] }];
     case 'set_bookmark':

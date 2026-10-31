@@ -57,7 +57,7 @@ export type AgentPrefsSaveResult =
   | { ok: false; value: AgentPrefs; error: string };
 
 function isAgentName(value: unknown): value is AgentName {
-  return value === 'claude' || value === 'codex' || value === 'pi' || value === 'hama';
+  return value === 'claude' || value === 'codex' || value === 'pi';
 }
 
 /** 첫 실행·빈 프로필의 기본 프로바이더. 저장된 선택은 건드리지 않는다. */

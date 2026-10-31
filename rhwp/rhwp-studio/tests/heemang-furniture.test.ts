@@ -53,36 +53,28 @@ test('머리말의 이모지 편집과 쪽 번호는 저장 후에도 남고 실
 test('각주와 미주는 자기 문단 목록을 편집하고 HWP와 HWPX로 왕복한다', t => {
   const { core, doc } = open(t);
   const note = furniture.insertFootnote(core, 0, 0, 0);
-  furniture.insertTextInFootnote(core, 0, note.paraIdx, note.controlIdx, 0, 0, '각주😀');
+  // 새 주석의 캐럿(엔진 영수증)은 번호 뒤다. 캐럿 0 은 번호 앞이다.
+  const start = note.charOffset;
+  assert.ok(start >= 1);
+  furniture.insertTextInFootnote(core, 0, note.paraIdx, note.controlIdx, 0, start, '각주😀');
   // 주석 번호는 문단 맨 앞에 남고 입력은 그 뒤에 들어간다.
   const [list] = core.query<Array<{ kind: string; lists: Array<{ section: number; steps: [] }> }>>({ kind: 'controls' }).filter(c => c.kind === 'footnote')[0].lists;
   const first = core.query<Array<{ offsets: number[]; controls: Array<{ kind: string; offset: number }> }>>({ kind: 'paragraphs', list, from: 0, count: 1 })[0];
   assert.ok(first.controls.find(c => c.kind === 'autoNumber')!.offset < first.offsets[0]);
-  furniture.splitParagraphInFootnote(core, 0, note.paraIdx, note.controlIdx, 0, 2);
-  assert.deepEqual(furniture.getFootnoteInfo(core, 0, note.paraIdx, note.controlIdx).texts, ['각주', '😀']);
+  furniture.splitParagraphInFootnote(core, 0, note.paraIdx, note.controlIdx, 0, start + 2);
+  const prefix = furniture.getFootnoteInfo(core, 0, note.paraIdx, note.controlIdx).texts[0].slice(0, -2);
+  assert.deepEqual(furniture.getFootnoteInfo(core, 0, note.paraIdx, note.controlIdx).texts, [`${prefix}각주`, '😀']);
   furniture.mergeParagraphInFootnote(core, 0, note.paraIdx, note.controlIdx, 1);
   const endnote = furniture.insertEndnote(core, 0, 0, 1);
-  furniture.insertTextInFootnote(core, 0, endnote.paraIdx, endnote.controlIdx, 0, 0, '미주');
+  furniture.insertTextInFootnote(core, 0, endnote.paraIdx, endnote.controlIdx, 0, endnote.charOffset, '미주');
   for (const format of ['hwp5', 'hwpx']) {
     const reopened = open(t, doc.serializeAs(format, false)).core;
-    assert.deepEqual(furniture.getFootnoteInfo(reopened, 0, note.paraIdx, note.controlIdx).texts, ['각주😀']);
-    assert.deepEqual(furniture.getFootnoteInfo(reopened, 0, endnote.paraIdx, endnote.controlIdx).texts, ['미주']);
+    assert.equal(furniture.getFootnoteInfo(reopened, 0, note.paraIdx, note.controlIdx).noteText, '각주😀');
+    assert.equal(furniture.getFootnoteInfo(reopened, 0, endnote.paraIdx, endnote.controlIdx).noteText, '미주');
   }
   furniture.deleteFootnote(core, 0, note.paraIdx, note.controlIdx);
   core.mutate(d => d.undo());
-  assert.deepEqual(furniture.getFootnoteInfo(core, 0, note.paraIdx, note.controlIdx).texts, ['각주😀']);
-});
-
-test('미주 번호 모양과 간격은 미주 설정을 저장하고 각주 설정을 유지한다', t => {
-  const { core, doc } = open(t);
-  const beforeFootnote = core.query({ kind: 'noteShape', section: 0, noteKind: 'footnote' });
-  const settings = { ...furniture.getEndnoteShape(core, 0), numberFormat: 'hangulJamo', prefixChar: '(', suffixChar: ')', startNumber: 3,
-    separatorEnabled: true, separatorLength: 7200, separatorMarginTop: 80, separatorMarginBottom: 100, noteSpacing: 150,
-    separatorColor: '#123456', numbering: 'restartSection', placement: 'sectionEnd' };
-  furniture.applyEndnoteShape(core, 0, settings);
-  const reopened = open(t, doc.serialize(false)).core;
-  assert.deepEqual(furniture.getEndnoteShape(reopened, 0), settings);
-  assert.deepEqual(reopened.query({ kind: 'noteShape', section: 0, noteKind: 'footnote' }), beforeFootnote);
+  assert.equal(furniture.getFootnoteInfo(core, 0, note.paraIdx, note.controlIdx).noteText, '각주😀');
 });
 
 test('머리말 마당은 쪽 번호·파일 이름과 정렬·굵게를 넣는다', t => {

@@ -472,6 +472,32 @@ test('Windows npm .cmd around a native exe launches the exe directly, skipping c
   assert.equal(launched.env.ELECTRON_RUN_AS_NODE, undefined);
 });
 
+test('a Claude shim whose native exe npm pruned ends the turn as a missing CLI, not through cmd.exe', async (t) => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'rhwp-native-cmd-pruned-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const { cmdPath, exePath } = writeNativeExeCmdShim(root);
+  // 다른 CLI 의 npm install 이 패키지를 지우고 .bin/claude.cmd 만 남긴 prefix.
+  rmSync(path.dirname(path.dirname(exePath)), { recursive: true, force: true });
+  const events = [];
+  const session = createClaudeSession({
+    ...claudeOpts,
+    rootDir: root,
+    claudeBin: cmdPath,
+    onEvent: (event) => events.push(event),
+  }, { platform: 'win32', nodeCommand: path.join(root, 'HamaEditor.exe'), closeGraceMs: 10 });
+  t.after(() => session.dispose());
+  session.sendUserMessage('hello');
+  // 실제 spawn 이 실패하고 정리까지 끝나야 턴이 닫힌다.
+  for (let waited = 0; !events.some((event) => event.type === 'turn-end') && waited < 10_000; waited += 20) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  const end = events.find((event) => event.type === 'turn-end');
+  assert.equal(end?.failure?.code, 'cli_missing', JSON.stringify(events));
+  const error = events.find((event) => event.type === 'error');
+  assert.match(error.message, /ENOENT/);
+  assert.doesNotMatch(error.message, /EINVAL|ENAMETOOLONG/);
+});
+
 test('native Claude SDK launch points at the exe behind a Windows npm .cmd', async (t) => {
   const root = mkdtempSync(path.join(os.tmpdir(), 'rhwp-claude-sdk-native-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));

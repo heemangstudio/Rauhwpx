@@ -153,6 +153,39 @@ function drawLayers(ctx: CanvasRenderingContext2D, layers: readonly Layer[], pal
   }
 }
 
+/** 로그인 카드에서 노트북을 두드리는 하마. */
+export function createTypingHama(): HTMLCanvasElement {
+  const canvas = document.createElement('canvas');
+  canvas.className = 'acct-signin-mark';
+  canvas.width = SCENE_W;
+  canvas.height = SCENE_H;
+  canvas.setAttribute('aria-hidden', 'true');
+  const [art, x, y] = PROPS.laptop!;
+  drawLayers(canvas.getContext('2d')!, [
+    { art, x, y },
+    { art: PAW_DOWN },
+  ], COLORS);
+  return canvas;
+}
+
+/** 설정을 마친 카드의 파티 하마. 사이드바와 같은 픽셀·팔레트로 그린다. */
+export function createPartyHama(): HTMLCanvasElement {
+  const canvas = document.createElement('canvas');
+  canvas.className = 'rhwp-setup-party-hama';
+  canvas.width = SCENE_W;
+  canvas.height = 20;
+  canvas.setAttribute('aria-hidden', 'true');
+  const hat = ['...W...', '...r...', '..rPr..', '..rrr..', '.rPrrr.', '.rrrrr.', 'PPPPPPP'];
+  drawLayers(canvas.getContext('2d')!, [
+    { art: STAND, y: 3 },
+    { art: hat, x: 3, y: -1 },
+    { art: ['h'], x: 1, y: -1 },
+    { art: ['r'], x: 17, y: 2 },
+    { art: ['P'], x: 19, y: -2 },
+  ], COLORS);
+  return canvas;
+}
+
 const dot = (x: number, y: number, ch: string): Layer => ({ art: [ch], x, y });
 function sparkle(size: number): Layer[] {
   const [x, y] = [9, -2];
@@ -557,7 +590,7 @@ interface Drag {
   moved: boolean;
 }
 
-class Hama implements ActionHost {
+export class Hama implements ActionHost {
   readonly el: HTMLDivElement;
   readonly canvas: HTMLCanvasElement;
   private readonly ctx: CanvasRenderingContext2D;
@@ -565,6 +598,8 @@ class Hama implements ActionHost {
   facing: Facing = 1;
   bounds: [number, number] = [0, 0];
   mode: ChatHamaMode = 'idle';
+  idleActions: readonly ActionName[] | null = null;
+  private idleActionIndex = 0;
   /** 부딪혀 내려설 때(스매시) — 입력기를 흔든다. */
   onImpact: (() => void) | null = null;
   /** 들어 올릴 수 있는 높이(장면 픽셀) — 채팅 화면의 절반까지. */
@@ -583,10 +618,11 @@ class Hama implements ActionHost {
   private raf = 0;
   private active = false;
   private lastTurn = 0;
+  private readonly fixedFacing?: Facing;
 
-  constructor() {
+  constructor(fixedFacing?: Facing) {
+    this.fixedFacing = fixedFacing;
     this.el = document.createElement('div');
-    // .ag-hama 는 Hama 하네스의 에이전트 클래스(ag-${agent})라 하마 그림은 다른 이름을 쓴다.
     this.el.className = 'ag-hama-hippo';
     this.el.setAttribute('aria-hidden', 'true');
     this.el.style.marginLeft = `${OX * SCALE}px`;
@@ -605,8 +641,8 @@ class Hama implements ActionHost {
   }
 
   /** 보이는 동안만 rAF 를 돌린다. */
-  setActive(active: boolean): void {
-    this.active = active;
+  setActive(active: boolean, animate = true): void {
+    this.active = active && animate;
     this.syncLoop();
     if (active) this.render(performance.now());
   }
@@ -642,6 +678,7 @@ class Hama implements ActionHost {
   play(name: ActionName, opts?: ActionState['opts']): void {
     this.target = null;
     this.returnTo = null;
+    this.micro = null;
     this.action = { def: ACTIONS[name], name, at: performance.now(), from: this.x, opts };
   }
 
@@ -682,7 +719,7 @@ class Hama implements ActionHost {
     let px = Math.floor((clientX - rect.left) / SCALE);
     const py = Math.floor((clientY - rect.top) / SCALE);
     // scaleX(-1) 로 뒤집혀 있으면 캔버스 열도 뒤집힌다.
-    if (this.facing < 0) px = SCENE_W - 1 - px;
+    if ((this.fixedFacing ?? this.facing) < 0) px = SCENE_W - 1 - px;
     const x0 = Math.max(0, px - 1);
     const y0 = Math.max(0, py - 1);
     const w = Math.min(SCENE_W, px + 2) - x0;
@@ -763,13 +800,17 @@ class Hama implements ActionHost {
     if (this.mode === 'idle' && !this.action && !walking && !this.drag) {
       if (now - this.lastInput > AUTO_SLEEP_MS) this.setMode('sleep');
       else if (now > this.nextIdle) {
-        const roll = Math.random();
-        if (roll < 0.25) this.micro = { pose: 'ear', until: now + 200 };
-        else if (roll < 0.4) this.micro = { pose: 'open', until: now + 900 };
-        else if (roll < 0.7) this.play('shuffle');
-        else if (roll < 0.8) this.play('hop');
-        else if (roll < 0.9) this.walkTo(this.x - 4 - Math.random() * 8, true);
-        else this.play((['jump', 'swim', 'backflip', 'splash'] as const)[Math.floor(Math.random() * 4)]!);
+        if (this.idleActions?.length) {
+          this.play(this.idleActions[this.idleActionIndex++ % this.idleActions.length]!);
+        } else {
+          const roll = Math.random();
+          if (roll < 0.25) this.micro = { pose: 'ear', until: now + 200 };
+          else if (roll < 0.4) this.micro = { pose: 'open', until: now + 900 };
+          else if (roll < 0.7) this.play('shuffle');
+          else if (roll < 0.8) this.play('hop');
+          else if (roll < 0.9) this.walkTo(this.x - 4 - Math.random() * 8, true);
+          else this.play((['jump', 'swim', 'backflip', 'splash'] as const)[Math.floor(Math.random() * 4)]!);
+        }
         this.nextIdle = now + 1800 + Math.random() * 2600;
       }
     }
@@ -795,6 +836,7 @@ class Hama implements ActionHost {
       }
       if (!f) {
         this.action = null;
+        this.nextIdle = now + 1800 + Math.random() * 2600;
       } else {
         pose = f.pose;
         dx = f.x ?? 0;
@@ -832,13 +874,14 @@ class Hama implements ActionHost {
     if (!this.el.isConnected) return;
     const f = this.frame(now);
     const light = document.documentElement.dataset.themeEffective === 'light';
-    const key = JSON.stringify(f) + this.x + this.facing + light;
+    const facing = this.fixedFacing ?? this.facing;
+    const key = JSON.stringify(f) + this.x + facing + light;
     if (key === this.lastKey) return;
     this.lastKey = key;
     this.lastTurn = f.turn;
     drawLayers(this.ctx, f.layers, light ? LIGHT_COLORS : COLORS);
     this.el.style.transform = `translateX(${(this.x + f.dx) * SCALE}px)`;
-    this.canvas.style.transform = `translateY(${f.dy * SCALE}px) scaleX(${this.facing}) rotate(${f.turn * 90 * this.facing}deg)`;
+    this.canvas.style.transform = `translateY(${f.dy * SCALE}px) scaleX(${facing}) rotate(${f.turn * 90 * facing}deg)`;
   }
 
   private loop(now: number): void {

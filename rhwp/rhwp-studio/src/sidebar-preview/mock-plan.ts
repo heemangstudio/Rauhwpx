@@ -1,14 +1,15 @@
 /**
- * 데스크톱 요금제 API(rhwpDesktop.plan)의 미리보기 대역. `?plan=free|pro|legacy|hama` (기본 off: 웹처럼 API 없음).
- * `&checkout=off` 면 결제 링크가 비어 모든 단추가 '곧 출시'다. 기본은 Pro 월간·연간만 열리고 Hama 는 준비 중,
- * `checkout=all` 이면 Hama 도 열린다. 결제를 시작하면 페이지는 열지 않고 보고만 하며, 2.4초 뒤 산 등급이 된다
+ * 데스크톱 요금제 API(rhwpDesktop.plan)의 미리보기 대역. `?plan=free|hama|rau` (기본 off: 웹처럼 API 없음).
+ * `account=` 를 주면 계정 대역이 로그인 여부와 등급을 정하고, 로그아웃이면 결제가 sign_in_required 로 막힌다.
+ * `&checkout=off` 면 결제 링크가 비어 모든 단추가 '곧 출시'다. 기본은 앱처럼 Hama·Rau 의 월간·연간이 모두 열린다.
+ * 결제를 시작하면 페이지는 열지 않고 보고만 하며, 2.4초 뒤 산 등급이 된다
  * (`&checkoutHold=1` 이면 확인 중에 머문다).
  */
 import type { DesktopPlanApi, PlanSku, PlanStatus, PlanTier } from '../ui/plan/plan-types.ts';
 import { tierForSku } from '../ui/plan/plan-types.ts';
 
-export const mockPlanTiers = ['free', 'pro', 'legacy', 'hama'] as const;
-export const mockCheckoutModes = ['pro', 'all', 'off'] as const;
+export const mockPlanTiers = ['free', 'hama', 'rau'] as const;
+export const mockCheckoutModes = ['on', 'off'] as const;
 export type MockCheckoutMode = (typeof mockCheckoutModes)[number];
 
 const CHECKOUT_DELAY_MS = 2400;
@@ -20,21 +21,23 @@ export function mockPlanTier(params: URLSearchParams): PlanTier | null {
 
 export function mockCheckoutMode(params: URLSearchParams): MockCheckoutMode {
   const value = params.get('checkout');
-  return mockCheckoutModes.includes(value as MockCheckoutMode) ? (value as MockCheckoutMode) : 'pro';
+  return mockCheckoutModes.includes(value as MockCheckoutMode) ? (value as MockCheckoutMode) : 'on';
 }
 
 export interface MockPlan {
   api: DesktopPlanApi;
   status(): PlanStatus;
   setTier(tier: PlanTier): void;
+  setSignedIn(signedIn: boolean): void;
   setCheckout(mode: MockCheckoutMode): void;
+  expireCheckout(): void;
   /** 결제를 시작한 상품들(순서대로). */
   readonly checkouts: PlanSku[];
 }
 
 export function createMockPlan(
   tier: PlanTier | null,
-  options: { checkout: MockCheckoutMode; hold: boolean; report: (message: string) => void },
+  options: { checkout: MockCheckoutMode; hold: boolean; signedIn?: boolean; report: (message: string) => void },
 ): MockPlan | null {
   if (!tier) return null;
   let checkoutMode = options.checkout;
@@ -43,9 +46,10 @@ export function createMockPlan(
   let timer: number | null = null;
 
   const checkoutOptions = (): PlanStatus['checkout'] => ({
-    proMonthly: { available: checkoutMode !== 'off', priceKrw: 3900 },
-    proYearly: { available: checkoutMode !== 'off', priceKrw: 39000 },
-    hama: { available: checkoutMode === 'all', priceKrw: null },
+    hamaMonthly: { available: checkoutMode !== 'off', priceKrw: 3900 },
+    hamaYearly: { available: checkoutMode !== 'off', priceKrw: 39000 },
+    rauMonthly: { available: checkoutMode !== 'off', priceKrw: 14900 },
+    rauYearly: { available: checkoutMode !== 'off', priceKrw: 149000 },
   });
   let status: PlanStatus = {
     tier,
@@ -55,6 +59,7 @@ export function createMockPlan(
     checkout: checkoutOptions(),
     pendingCheckout: null,
     lastCheckout: null,
+    signedIn: options.signedIn ?? true,
   };
   const emit = (next: Partial<PlanStatus>): void => {
     status = { ...status, ...next };
@@ -65,6 +70,7 @@ export function createMockPlan(
   const api: DesktopPlanApi = {
     getStatus: async () => status,
     async startCheckout(sku) {
+      if (!status.signedIn) return { ok: false, code: 'sign_in_required', status };
       if (!status.checkout[sku].available) return { ok: false, code: 'not_available', status };
       if (status.pendingCheckout) return { ok: false, code: 'busy', status };
       checkouts.push(sku);
@@ -94,9 +100,19 @@ export function createMockPlan(
     api,
     status: () => status,
     setTier,
+    setSignedIn(signedIn) {
+      if (status.signedIn !== signedIn) emit({ signedIn });
+    },
     setCheckout(mode) {
       checkoutMode = mode;
       emit({ checkout: checkoutOptions() });
+    },
+    expireCheckout() {
+      const pending = status.pendingCheckout;
+      if (!pending) return;
+      if (timer !== null) window.clearTimeout(timer);
+      timer = null;
+      emit({ pendingCheckout: null, lastCheckout: { ok: false, sku: pending.sku, code: 'timed_out' } });
     },
     checkouts,
   };

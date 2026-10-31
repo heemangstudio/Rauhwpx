@@ -19,6 +19,7 @@ import './furniture-editing';
 import './furniture-pictures';
 import './hml-document';
 import './hwpjson';
+import './notes-shape';
 import './objects-connectors';
 import './objects-editing';
 import './objects-grouping';

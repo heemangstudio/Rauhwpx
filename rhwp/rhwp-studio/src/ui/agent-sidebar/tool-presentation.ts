@@ -1040,8 +1040,12 @@ function successText(name: string, args: Args, result: Args, category: ToolCateg
       return countText(count(result['numberings']), '번호', '번호 없음');
     case 'list_bookmarks':
       return countText(count(result['bookmarks']), '책갈피', '책갈피 없음');
-    case 'list_footnotes':
-      return countText(count(result['notes']), '각주', '각주 없음');
+    case 'list_footnotes': {
+      if (!Array.isArray(result['notes'])) return '';
+      const endnotes = result['notes'].filter((note) => rec(note)['kind'] === 'endnote').length;
+      const footnotes = result['notes'].length - endnotes;
+      return join([footnotes ? `각주 ${footnotes}개` : '', endnotes ? `미주 ${endnotes}개` : '']) || '각주 없음';
+    }
     case 'get_fields':
       return countText(count(result['fields']), '필드', '필드 없음');
     case 'search_reference_files':

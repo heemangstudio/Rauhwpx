@@ -1,0 +1,63 @@
+/* ─── 문서 홈의 계정 단추 ─────────────────────────────
+   Rau 입구와 새 채팅 사이. 사진과 이름(로그아웃이면 '로그인'). 높이·모서리·눌림은 이웃과 같고, 사진 원이 왼쪽 안쪽 여백을 채운다. */
+
+.acct-button {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 7px;
+  height: 28px;
+  margin-right: 4px;
+  padding: 0 10px 0 2px;
+  border: 0;
+  border-radius: var(--ag-r-row, 8px);
+  background: transparent;
+  color: var(--dh-text-secondary, var(--n-ink-secondary));
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: default;
+  -webkit-app-region: no-drag;
+  transition:
+    background-color var(--ag-dur-fast, 120ms) var(--ag-ease-out, ease-out),
+    color var(--ag-dur-fast, 120ms) var(--ag-ease-out, ease-out);
+}
+
+/* 홈의 `.document-home button { font: inherit }` 이 굵기를 덮지 않게 한 단계 높인다. */
+.document-home .acct-button {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.acct-button:hover {
+  background: var(--dh-hover, var(--n-ink-fill-hover));
+  color: var(--dh-text, var(--n-ink));
+}
+
+.acct-button:active {
+  background: var(--dh-pressed, var(--n-ink-fill-pressed));
+}
+
+.acct-button:focus-visible {
+  outline: 2px solid var(--dh-focus, var(--focus-ring));
+  outline-offset: 2px;
+}
+
+.acct-button-label {
+  /* 긴 이름은 말줄임표로 끊는다. 온전한 이름은 title·aria-label 에 있다. */
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 18px;
+}
+
+.acct-button-avatar {
+  width: 24px;
+  height: 24px;
+}
+
+.acct-button-avatar .acct-avatar-initial {
+  font-size: 11px;
+}

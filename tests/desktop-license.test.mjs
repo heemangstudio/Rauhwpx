@@ -143,15 +143,15 @@ test('activation turns on paid features, and settings show a masked key', async 
   assert.equal(server.calls.at(-1).body.appVersion, '3.1.0');
   assert.deepEqual(changes.at(-1), 'licensed');
   assert.equal(result.status.paid, true);
-  // 예전 서버와 예전 키는 edition·plan·rau 를 보내지 않는다. Pro 판이 아니고 Rau 자격은 모른다.
+  // 예전 서버와 예전 키는 edition·plan·rau 를 보내지 않는다. 요금제 판을 모르고 Rau 자격도 모른다.
   assert.deepEqual([result.status.edition, result.status.plan, result.status.rau], [null, null, { eligible: null }]);
 });
 
-test('the Pro server\'s edition, plan and Rau eligibility are stored and follow the lease', async (t) => {
+test('the plan server\'s edition, plan and Rau eligibility are stored and follow the lease', async (t) => {
   const { manager, make, server, clock } = await setup(t);
-  const key = server.issueKey({ plan: 'monthly', rauEligible: true });
+  const key = server.issueKey({ plan: 'monthly', edition: 'rau' });
   let status = (await manager.activate(key)).status;
-  assert.deepEqual([status.paid, status.edition, status.plan, status.rau], [true, 'pro', 'monthly', { eligible: true }]);
+  assert.deepEqual([status.paid, status.edition, status.plan, status.rau], [true, 'rau', 'monthly', { eligible: true }]);
   status = await make().status();
   assert.deepEqual([status.paid, status.plan, status.rau.eligible], [true, 'monthly', true], 'kept across restarts');
   server.setOffline(true);
@@ -161,6 +161,32 @@ test('the Pro server\'s edition, plan and Rau eligibility are stored and follow 
   server.setOffline(false);
   status = await make().check({ force: true });
   assert.deepEqual([status.state, status.paid, status.plan], ['licensed', true, 'monthly']);
+});
+
+test('key server requests carry no plan-name header, a Hama key has no hosted Rau, and dev-era basic or pro reads as Hama', async (t) => {
+  const { dir, server, make } = await setup(t);
+  const sent = [];
+  const recordingFetch = (url, init) => {
+    sent.push(Object.keys(init?.headers ?? {}).map((name) => name.toLowerCase()));
+    return server.fetch(url, init);
+  };
+  const manager = createLicenseManager({
+    statePath: join(dir, 'license.json'),
+    client: createLicenseClient({ baseUrl: 'https://keys.test', fetchImpl: recordingFetch }),
+    publicKeys: DEV_PUBLIC_KEYS,
+    now: () => T0,
+    log: quiet,
+  });
+  const status = (await manager.activate(server.issueKey({ plan: 'annual', edition: 'hama' }))).status;
+  assert.ok(sent.length > 0 && sent.every((names) => !names.includes('x-hama-plan-names')), JSON.stringify(sent));
+  assert.deepEqual([status.edition, status.rau.eligible], ['hama', false]);
+  const file = join(dir, 'license.json');
+  for (const old of ['basic', 'pro']) {
+    const saved = JSON.parse(await readFile(file, 'utf8'));
+    saved.license.edition = old;
+    await writeFile(file, JSON.stringify(saved));
+    assert.equal((await make().status()).edition, 'hama', old);
+  }
 });
 
 test('activation errors come back as user-facing messages', async (t) => {

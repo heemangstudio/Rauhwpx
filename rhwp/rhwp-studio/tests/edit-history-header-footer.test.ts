@@ -92,8 +92,7 @@ for (const kind of ['footnote', 'endnote'] as const) {
   test(`insert:${kind} 실패는 이력도 노트 편집 진입도 남기지 않는다`, () => {
     const wasm = env.newDocument();
     wasm.insertText(0, 0, 0, '각주 자리');
-    const method = kind === 'footnote' ? 'insertFootnote' : 'insertEndnote';
-    wasm[method] = () => ({ ok: false, paraIdx: 0, controlIdx: 0 });
+    wasm.insertNoteAt = () => ({ ok: false, kind, sectionIdx: 0, paraIdx: 0, controlIdx: 0, number: 0, fnParaIndex: 0, charOffset: 0 });
     const host = env.createHost(wasm);
     const before = documentFingerprint(wasm);
     try { quiet(() => run(insertCommands, `insert:${kind}`, host)); } catch { /* 실패는 호출부로 전파될 수 있다 */ }
@@ -248,7 +247,7 @@ function regionFixture(region: Region) {
   }
   const note = wasm.insertFootnote(0, 0, 2);
   const info = wasm.getNoteEditInfo(0, note.paraIdx, note.controlIdx);
-  const start = info.charOffset; // 각주 번호 뒤 첫 편집 위치
+  const start = note.charOffset; // 새 주석의 캐럿: 번호(와 공백) 뒤 첫 편집 위치
   wasm.insertTextInFootnote(0, note.paraIdx, note.controlIdx, 0, start, '각주😀글');
   wasm.splitParagraphInFootnote(0, note.paraIdx, note.controlIdx, 0, start + 4);
   wasm.insertTextInFootnote(0, note.paraIdx, note.controlIdx, 1, 0, '둘째');
@@ -261,8 +260,8 @@ function regionFixture(region: Region) {
     host.cursor.setFnCursorPosition(para, offset);
   });
   const where = () => ({ inRegion: host.cursor.isInFootnote(), para: host.cursor.fnInnerParaIdx, offset: host.cursor.fnCharOffset });
-  const texts = () => wasm.getFootnoteInfo(0, note.paraIdx, note.controlIdx).texts;
-  return { wasm, host, at, where, start, firstLength: [...texts()[0]].length, note };
+  const lengths = () => wasm.getFootnoteInfo(0, note.paraIdx, note.controlIdx).lengths;
+  return { wasm, host, at, where, start, firstLength: lengths()[0], note };
 }
 
 const regionEdits: Array<{ name: string; caret: (f: ReturnType<typeof regionFixture>) => [number, number]; act: (host: any) => void }> = [

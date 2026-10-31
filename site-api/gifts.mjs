@@ -13,7 +13,8 @@ import { createMemoryStore } from './store.mjs';
  * allocations: the admin-set gift amount per license; licenses without one get `amountUsd`, and 0 means
  * no gift. grant.limitUsd is the limit on the OpenRouter key; pendingLimitUsd is a limit change on
  * its way to OpenRouter, counted against the budget until it lands.
- * Assumes ONE replica, like licenses.mjs: all writes go through one in-process lock.
+ * Every write runs exclusively through `store.update`; OpenRouter calls happen between updates,
+ * never inside one.
  */
 
 export const GIFT_PROXY_PREFIX = '/v1/gift/openrouter';
@@ -86,12 +87,6 @@ export function createGiftsService({
   const configured = Boolean(provisioningKey && eventId);
   const openrouter = createOpenRouterClient({ apiBase, provisioningKey, fetchImpl });
 
-  let mutation = Promise.resolve();
-  function withLock(fn) {
-    const result = mutation.then(fn, fn);
-    mutation = result.then(() => undefined, () => undefined);
-    return result;
-  }
   function normalize(state) {
     const next = state && typeof state === 'object' && !Array.isArray(state) ? state : {};
     if (!next.events || typeof next.events !== 'object' || Array.isArray(next.events)) next.events = {};
@@ -114,17 +109,13 @@ export function createGiftsService({
   function committedExcept(ev, keyId) {
     return Object.values(ev?.grants ?? {}).filter((g) => g.keyId !== keyId).reduce((sum, g) => sum + committedOf(g), 0);
   }
+  /** `fn` runs alone on the store and returns `{ value, dirty }`; the state is saved unless `dirty` is false. */
   async function mutate(fn) {
-    return withLock(async () => {
-      const state = normalize(await store.load());
-      const result = await fn(state);
-      if (result?.dirty !== false) await store.save(state);
-      return result?.value ?? result;
-    });
+    const result = await store.update((state) => fn(normalize(state)));
+    return result?.value ?? result;
   }
   async function read() {
-    await mutation.catch(() => {});
-    return normalize(await store.load());
+    return normalize(await store.read());
   }
   async function currentGrant(keyId) {
     return own((await read()).events[eventId]?.grants, keyId);

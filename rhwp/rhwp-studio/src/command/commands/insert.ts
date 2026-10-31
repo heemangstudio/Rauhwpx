@@ -5,7 +5,7 @@ import { EquationEditorDialog } from '@/ui/equation-editor-dialog';
 import { EquationPropertiesDialog } from '@/ui/equation-props-dialog';
 import { SymbolsDialog } from '@/ui/symbols-dialog';
 import { BookmarkDialog } from '@/ui/bookmark-dialog';
-import { EndnoteShapeDialog } from '@/ui/endnote-shape-dialog';
+import { NoteShapeDialog, type NoteKind } from '@/ui/endnote-shape-dialog';
 import { FieldInsertDialog } from '@/ui/field-insert-dialog';
 import { showShapePicker } from '@/ui/shape-picker';
 import { showToast } from '@/ui/toast';
@@ -43,41 +43,13 @@ let equationEditorDialog: EquationEditorDialog | null = null;
 let equationPropsDialog: EquationPropertiesDialog | null = null;
 let symbolsDialog: SymbolsDialog | null = null;
 let bookmarkDialog: BookmarkDialog | null = null;
-let endnoteShapeDialog: EndnoteShapeDialog | null = null;
 let fieldInsertDialog: FieldInsertDialog | null = null;
 
-function enterNoteEditing(
-  services: any,
-  ih: any,
-  sectionIdx: number,
-  paraIdx: number,
-  controlIdx: number,
-): void {
-  const info = services.wasm.getNoteEditInfo(sectionIdx, paraIdx, controlIdx);
-  if (!info?.ok) return;
-  const cursor = (ih as any).cursor;
-  if (!cursor?.enterFootnoteMode) return;
-  cursor.enterFootnoteMode(
-    sectionIdx,
-    paraIdx,
-    controlIdx,
-    info.footnoteIndex ?? 0,
-    info.pageNum ?? 0,
-  );
-  cursor.setFnCursorPosition(info.fnParaIndex ?? 0, info.charOffset ?? 2);
-  services.eventBus.emit('footnoteModeChanged', true);
-  (ih as any).active = true;
-  (ih as any).updateCaret?.();
-  (ih as any).textarea?.focus();
-}
-
 /**
- * [Task #3207] 각주/미주 삽입을 snapshot 으로 기록한 뒤 노트 편집 모드로 진입한다.
+ * 각주/미주를 캐럿 자리(본문·표 셀·글상자)에 넣고 그 안으로 들어간다. 한 스냅샷 이력이다.
  *
- * 삽입은 본문에 노트 참조를 넣어 문자 수를 바꾸므로 미기록 시 undo 불가 + 후속 undo
- * 오프셋 오염으로 이어진다. undo 시 노트 모드 이탈은 별도 배선이 필요 없다 —
- * SnapshotCommand 는 editContext() 를 노출하지 않아 restoreEditContextAfterHistory 의
- * 본문 분기를 타고, 그 분기가 노트 모드를 빠져나와 삽입 위치로 커서를 되돌린다.
+ * 되돌리면 본문의 넣은 자리로, 다시 하면 새 주석의 번호와 공백 뒤로 돌아간다(한컴 c09a). 캐럿은 엔진 영수증의 캐럿이다.
+ * 새 주석을 닫으면(Shift+Esc·닫기) 표시 바로 뒤로 간다(한컴 c01). 주석·머리말 안에서는 넣지 않는다.
  */
 function insertNote(
   services: Parameters<CommandDef['execute']>[0],
@@ -85,21 +57,59 @@ function insertNote(
 ): void {
   const ih = services.getInputHandler();
   if (!ih) return;
+  const cursor = (ih as any).cursor;
+  if (cursor?.isInFootnote?.() || cursor?.isInHeaderFooter?.()) return;
   const pos = ih.getPosition();
-  let result: { ok: boolean; paraIdx: number; controlIdx: number } | undefined;
+  let result: ReturnType<WasmBridge['insertNoteAt']> | undefined;
   ih.executeOperation({
     kind: 'snapshot',
     operationType: kind === 'footnote' ? 'insertFootnote' : 'insertEndnote',
+    editContextAfter: () => {
+      if (!result) throw new Error(`[insert:${kind}] 삽입 결과가 없습니다`);
+      return {
+        mode: 'footnote',
+        sectionIdx: result.sectionIdx,
+        paraIdx: result.paraIdx,
+        controlIdx: result.controlIdx,
+        ...(result.cellPath?.length ? { cellPath: result.cellPath } : {}),
+        exitAfterMark: true,
+        footnoteIndex: 0,
+        pageNum: 0,
+        innerParaIdx: result.fnParaIndex,
+        charOffset: result.charOffset,
+      };
+    },
     operation: (wasm) => {
-      result = kind === 'footnote'
-        ? wasm.insertFootnote(pos.sectionIndex, pos.paragraphIndex, pos.charOffset)
-        : wasm.insertEndnote(pos.sectionIndex, pos.paragraphIndex, pos.charOffset);
+      result = wasm.insertNoteAt(pos, kind);
       if (!result.ok) throw new Error(`[insert:${kind}] 삽입 실패`);
       return pos;
     },
   });
   // 편집 모드 게이트로 라우터가 작업을 드롭했으면 result 가 없다.
-  if (result) enterNoteEditing(services, ih, pos.sectionIndex, result.paraIdx, result.controlIdx);
+  if (!result) return;
+  (ih as any).active = true;
+  (ih as any).updateCaret?.();
+  (ih as any).textarea?.focus();
+}
+
+/** 주석·머리말 안이 아니면 넣을 수 있다. */
+const canInsertNote = (ctx: Parameters<NonNullable<CommandDef['canExecute']>>[0]) =>
+  ctx.hasDocument && ctx.inNote !== true && ctx.inHeaderFooter !== true;
+
+/**
+ * 주석 모양 대화상자를 연다 (한컴 FootnoteOption). 본문에서는 각주·미주 두 탭, 주석 안에서는 그 주석의 탭 하나다.
+ * 구역은 주석 안이면 그 주석의 구역, 아니면 본문 캐럿의 구역이다.
+ */
+function openNoteShapeDialog(services: Parameters<CommandDef['execute']>[0]): void {
+  const ih = services.getInputHandler();
+  const cursor = (ih as any)?.cursor;
+  let sectionIdx = ih?.getPosition()?.sectionIndex ?? 0;
+  let kinds: NoteKind[] = ['footnote', 'endnote'];
+  if (cursor?.isInFootnote?.()) {
+    sectionIdx = cursor.fnSectionIdx;
+    kinds = [services.wasm.getFootnoteInfo(cursor.fnSectionIdx, cursor.fnParaIdx, cursor.fnControlIdx, cursor.fnNotePath).kind];
+  }
+  new NoteShapeDialog(services.wasm, services.eventBus, sectionIdx, services, kinds).show();
 }
 
 export const insertCommands: CommandDef[] = [
@@ -257,7 +267,8 @@ export const insertCommands: CommandDef[] = [
     id: 'insert:footnote',
     label: '각주',
     icon: 'icon-footnote',
-    canExecute: (ctx) => ctx.hasDocument,
+    shortcutLabel: 'Ctrl+M,N',
+    canExecute: canInsertNote,
     execute(services) {
       insertNote(services, 'footnote');
     },
@@ -266,7 +277,8 @@ export const insertCommands: CommandDef[] = [
     id: 'insert:endnote',
     label: '미주',
     icon: 'icon-endnote',
-    canExecute: (ctx) => ctx.hasDocument,
+    shortcutLabel: 'Ctrl+M,E',
+    canExecute: canInsertNote,
     execute(services) {
       insertNote(services, 'endnote');
     },
@@ -275,12 +287,13 @@ export const insertCommands: CommandDef[] = [
     id: 'insert:note-close',
     label: '닫기',
     icon: 'icon-delete',
-    canExecute: (ctx) => ctx.hasDocument,
+    canExecute: (ctx) => ctx.hasDocument && ctx.inNote !== false,
     execute(services) {
       const ih = services.getInputHandler();
       if (!ih) return;
       const cursor = (ih as any).cursor;
       if (!cursor?.isInFootnote?.()) return;
+      // 한컴 c03b: 닫기는 Shift+Esc 와 같다. 새 주석이면 표시 뒤, 있던 주석이면 표시 앞으로 간다.
       cursor.exitFootnoteMode();
       services.eventBus.emit('footnoteModeChanged', false);
       (ih as any).updateCaret?.();
@@ -288,15 +301,12 @@ export const insertCommands: CommandDef[] = [
     },
   },
   {
-    id: 'insert:endnote-shape',
-    label: '미주 모양',
-    icon: 'icon-endnote',
+    id: 'insert:note-shape',
+    label: '주석 모양',
+    icon: 'icon-footnote',
     canExecute: (ctx) => ctx.hasDocument,
     execute(services) {
-      const pos = services.getInputHandler()?.getPosition();
-      const sectionIdx = pos?.sectionIndex ?? 0;
-      endnoteShapeDialog = new EndnoteShapeDialog(services.wasm, services.eventBus, sectionIdx, services);
-      endnoteShapeDialog.show();
+      openNoteShapeDialog(services);
     },
   },
   {

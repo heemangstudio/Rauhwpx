@@ -3,16 +3,20 @@ import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { MAX_AVATAR_BYTES, accountError, accountIdForEmail, createAccountsService, emptyAccountsState } from './accounts.mjs';
+import { createFileAvatars, createPostgresAvatars } from './avatars.mjs';
 import {
   DEFAULT_PORT,
+  resolveAccountConfig,
+  resolveAccountsDbPath,
+  resolveAvatarDir,
+  resolveDatabaseUrl,
   resolveFeedbackDir,
   resolveFeedbackMaxBytes,
   resolveFeedbackProofKey,
   resolveGiftConfig,
   resolveGiftsDbPath,
-  resolveHamaConfig,
   resolveHamaDbPath,
-  resolveHamaUsageDir,
   resolveLicenseConfig,
   resolveLicensesDbPath,
   resolveRauConfig,
@@ -22,23 +26,38 @@ import {
   resolveWaitlistDbPath,
   resolveWebhookLogDbPath,
   resolveDownloadsDbPath,
+  retiredEnvNames,
 } from './config.mjs';
+import { createDatabase } from './db.mjs';
+import { checkImported, importJsonToPostgres, importMarkers } from './json-import.mjs';
 import {
   DEFAULT_FEEDBACK_PROOF_KEY,
   MAX_FEEDBACK_BODY_BYTES,
   createFeedbackService,
+  emptyFeedbackIndex,
   feedbackError,
 } from './feedback.mjs';
 import { GIFT_PROXY_PREFIX, createGiftsService, emptyGiftsState, parseGiftAmount } from './gifts.mjs';
 import { verifyGrobleWebhook } from './groble-webhook.mjs';
-import { HAMA_ANTHROPIC_PREFIX, HAMA_OPENAI_PREFIX, createHamaService, emptyHamaState } from './hama.mjs';
-import { createHamaProxy } from './hama-proxy.mjs';
+import { createLegacyRauPlans } from './hama-legacy.mjs';
 import { createHeldAlerter } from './held-alert.mjs';
 import { createEmailProvider, resendProviderFromEnv } from './license-email.mjs';
 import { parseSigningPrivateKey, publicKeyFromPrivate, rawPublicKeyBase64 } from './license-lease.mjs';
-import { createLicensesService, emptyLicensesState, licenseError } from './licenses.mjs';
-import { renderUniqueInstallsPage } from './pages.mjs';
-import { MAX_RAU_BODY_BYTES, createRauService, emptyRauState, rauRateLimited } from './rau.mjs';
+import { createLicensesService, emptyLicensesState, licenseError, tokenEquals } from './licenses.mjs';
+import { accountsMapper } from './mappers/accounts.mjs';
+import { downloadsMapper } from './mappers/downloads.mjs';
+import { feedbackMapper } from './mappers/feedback.mjs';
+import { giftsMapper } from './mappers/gifts.mjs';
+import { hamaMapper } from './mappers/hama.mjs';
+import { licensesMapper } from './mappers/licenses.mjs';
+import { rauMapper } from './mappers/rau.mjs';
+import { uniqueInstallsMapper } from './mappers/unique-installs.mjs';
+import { waitlistMapper } from './mappers/waitlist.mjs';
+import { webhookLogMapper } from './mappers/webhook-log.mjs';
+import { renderAccountLoginErrorPage, renderUniqueInstallsPage } from './pages.mjs';
+import { createPostgresStore } from './pg-store.mjs';
+import { MAX_RAU_BODY_BYTES, createRauService, emptyRauState, leaseOf, rauRateLimited } from './rau.mjs';
+import { createRauUpstream } from './rau-upstream.mjs';
 import { createRateLimiter } from './rate-limit.mjs';
 import { createFileStore } from './store.mjs';
 import { createTelegramSender } from './telegram.mjs';
@@ -51,6 +70,7 @@ import { createWaitlistService, emptyWaitlistState } from './waitlist.mjs';
 import { createDownloadsService, emptyDownloadsState } from './downloads.mjs';
 import { createWebhookAlerter } from './webhook-alert.mjs';
 import { createWebhookLog, emptyWebhookLogState, heldEventDetails, webhookLogEntry } from './webhook-log.mjs';
+import { createWorkOSClient } from './workos.mjs';
 
 const MAX_JSON_BODY_BYTES = 64 * 1024;
 const MAX_WEBHOOK_BODY_BYTES = 256 * 1024;
@@ -200,19 +220,32 @@ function securityHeaders(isHtml) {
   };
 }
 
+/** Account routes answer `{ ok:false, error }` for unreadable bodies too. */
+async function readAccountJson(req) {
+  try {
+    return await readJson(req);
+  } catch (error) {
+    if (error?.code === 'BODY_TOO_LARGE') throw accountError('too_large', 413);
+    if (error?.code === 'JSON_INVALID') throw accountError('invalid', 400, { field: 'body' });
+    throw error;
+  }
+}
+
 export function siteRequestListener({
   uniqueInstalls,
   waitlist,
   downloads,
   licenses,
+  accounts,
   gifts,
-  hama,
   rau,
   feedback,
   licenseConfig = {},
   webhookLog = createWebhookLog(),
   webhookAlerts = createWebhookAlerter({ log: () => {} }),
   heldAlerts = createHeldAlerter({ log: () => {} }),
+  storage = 'files',
+  jsonImports = async () => ({}),
   log = () => {},
 }) {
   const limiter = createRateLimiter();
@@ -240,6 +273,11 @@ export function siteRequestListener({
       if (limiter.check(`${bucket}:${ip}`, max, windowMs)) return;
       req.resume?.();
       throw rateLimitedError();
+    };
+    const allowAccount = (bucket, max, windowMs) => {
+      if (limiter.check(`${bucket}:${ip}`, max, windowMs)) return;
+      req.resume?.();
+      throw accountError('rate_limited', 429);
     };
     const rejectWebhook = (reason, { verified = false, rawBody } = {}) => {
       const status = WEBHOOK_REJECT_STATUS[reason] ?? 503;
@@ -279,7 +317,7 @@ export function siteRequestListener({
         if (!licenses) throw siteError('NOT_FOUND', 'not found');
       }
       if (pathname.startsWith('/v1/gift/') && !gifts) throw siteError('NOT_FOUND', 'not found');
-      if ((pathname.startsWith('/v1/rau/') || pathname === '/v1/admin/rau') && !rau) throw siteError('NOT_FOUND', 'not found');
+      if ((pathname.startsWith('/v1/rau/') || pathname === '/v1/admin/rau' || pathname.startsWith('/v1/admin/rau/')) && !rau) throw siteError('NOT_FOUND', 'not found');
       if (pathname.startsWith(`${GIFT_PROXY_PREFIX}/`)) {
         // Streams its own response (SSE), so it never goes through send().
         allow('gift-proxy', 600, MINUTE);
@@ -292,54 +330,144 @@ export function siteRequestListener({
         }
         return;
       }
-      if (pathname.startsWith('/v1/hama/') || pathname === '/v1/admin/hama' || pathname.startsWith('/v1/admin/hama/')) {
-        // Hama plan (hama.mjs). Every route is 404 while HAMA_ENABLED is off.
-        if (!hama) throw siteError('NOT_FOUND', 'not found');
-        if (pathname.startsWith(`${HAMA_ANTHROPIC_PREFIX}/`) || pathname.startsWith(`${HAMA_OPENAI_PREFIX}/`)) {
-          // Streams its own response (SSE), so it never goes through send().
-          allow('hama-proxy', 600, MINUTE);
-          try {
-            await hama.proxy.handle(req, res, pathname);
-          } catch (error) {
-            log(`[site-api] hama proxy failed: ${error?.message ?? error}`);
-            if (res.headersSent) res.destroy();
-            else send(500, { error: { code: 500, message: 'server_error' } });
-          }
-          return;
+      if (pathname.startsWith('/v1/account/')) {
+        // App routes (no CORS). Every one answers accounts_not_configured until WORKOS_API_KEY is set.
+        if (!accounts?.configured) {
+          req.resume?.();
+          throw accountError('accounts_not_configured', 503);
         }
         switch (route) {
-          case 'GET /v1/hama/status':
-            allow('hama-status', 120, MINUTE);
-            req.resume?.();
-            send(200, await hama.status(bearerToken(req) || String(req.headers['x-api-key'] ?? '').trim()));
+          case 'GET /v1/account/auth/providers':
+            allowAccount('account', 300, TEN_MINUTES);
+            send(200, accounts.providers());
             return;
-          case 'GET /v1/admin/hama':
-            allow('admin', 120, TEN_MINUTES);
-            send(200, await hama.admin.list(bearerToken(req), Object.fromEntries(searchParams)));
+          case 'POST /v1/account/auth/start':
+            allowAccount('account-start', 20, TEN_MINUTES);
+            send(200, await accounts.startLogin(await readAccountJson(req)));
             return;
-          case 'GET /v1/admin/hama/usage':
-            allow('admin', 120, TEN_MINUTES);
-            send(200, await hama.admin.usage(bearerToken(req), Object.fromEntries(searchParams)));
-            return;
-          case 'POST /v1/admin/hama/enroll': {
-            allow('admin', 120, TEN_MINUTES);
-            const token = bearerToken(req);
-            const body = await readJson(req);
-            // Only an existing license can be enrolled; the lookup also checks the token.
-            const keyId = typeof body?.keyId === 'string' ? body.keyId.trim() : '';
-            if (!keyId || !(await licenses.admin.lookup(token, { keyId })).licenses[0]) throw licenseError('invalid_key', 404);
-            send(200, await hama.admin.enroll(token, { ...body, keyId }));
+          case 'GET /v1/account/auth/callback': {
+            allowAccount('account-callback', 60, TEN_MINUTES);
+            const result = await accounts.callback(Object.fromEntries(searchParams));
+            if (!result.redirect) {
+              send(400, renderAccountLoginErrorPage());
+              return;
+            }
+            res.writeHead(302, { Location: result.redirect, ...securityHeaders(false) });
+            res.end();
             return;
           }
-          case 'POST /v1/admin/hama/disable':
-            allow('admin', 120, TEN_MINUTES);
-            send(200, await hama.admin.disable(bearerToken(req), await readJson(req)));
+          case 'POST /v1/account/auth/token':
+            allowAccount('account-token', 30, TEN_MINUTES);
+            send(200, await accounts.token(await readAccountJson(req)));
+            return;
+          case 'POST /v1/account/refresh':
+            allowAccount('account', 300, TEN_MINUTES);
+            send(200, await accounts.refresh(bearerToken(req), await readAccountJson(req)));
+            return;
+          case 'POST /v1/account/signout':
+            allowAccount('account', 300, TEN_MINUTES);
+            await readAccountJson(req);
+            send(200, await accounts.signout(bearerToken(req)));
+            return;
+          case 'POST /v1/account/devices/remove':
+            allowAccount('account', 300, TEN_MINUTES);
+            send(200, await accounts.removeDevice(bearerToken(req), await readAccountJson(req)));
+            return;
+          // Per-account limits live in accounts.mjs; this one only stops floods.
+          case 'POST /v1/account/redeem':
+            allowAccount('account', 300, TEN_MINUTES);
+            send(200, await accounts.redeem(bearerToken(req), await readAccountJson(req)));
+            return;
+          case 'POST /v1/account/claim':
+            allowAccount('account', 300, TEN_MINUTES);
+            send(200, await accounts.claim(bearerToken(req), await readAccountJson(req)));
+            return;
+          case 'POST /v1/account/gift-codes/redeem':
+            allowAccount('account', 300, TEN_MINUTES);
+            send(200, await accounts.redeemGiftCode(bearerToken(req), await readAccountJson(req)));
+            return;
+          case 'POST /v1/account/profile':
+            allowAccount('account', 300, TEN_MINUTES);
+            send(200, await accounts.updateProfile(bearerToken(req), await readAccountJson(req)));
+            return;
+          case 'PUT /v1/account/avatar': {
+            allowAccount('account', 300, TEN_MINUTES);
+            // A body declared past twice the cap is refused unread and the connection closes.
+            if (Number(req.headers['content-length']) > 2 * MAX_AVATAR_BYTES) {
+              discardUpload(req, 2 * MAX_AVATAR_BYTES);
+              send(413, { ok: false, error: 'too_large' }, { Connection: 'close' });
+              return;
+            }
+            const contentType = String(req.headers['content-type'] ?? '').split(';')[0].trim().toLowerCase();
+            let reading = false;
+            try {
+              send(200, await accounts.setAvatar(bearerToken(req), contentType, () => {
+                reading = true;
+                return readUpload(req, MAX_AVATAR_BYTES);
+              }));
+            } catch (error) {
+              // Refused before the body was read: drain it so the client still reads the answer.
+              if (!reading) discardUpload(req, 2 * MAX_AVATAR_BYTES);
+              throw error;
+            }
+            return;
+          }
+          case 'GET /v1/account/avatar': {
+            allowAccount('account', 300, TEN_MINUTES);
+            const avatar = await accounts.getAvatar(bearerToken(req));
+            const etag = `"${avatar.rev}"`;
+            const headers = { ETag: etag, 'Cache-Control': 'private, no-cache', 'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff' };
+            if (req.headers['if-none-match'] === etag) {
+              res.writeHead(304, headers);
+              res.end();
+              return;
+            }
+            res.writeHead(200, {
+              ...headers,
+              'Content-Type': avatar.type,
+              'Content-Length': avatar.bytes.length,
+              'Content-Security-Policy': "default-src 'none'; sandbox",
+            });
+            res.end(avatar.bytes);
+            return;
+          }
+          case 'POST /v1/account/avatar/remove':
+            allowAccount('account', 300, TEN_MINUTES);
+            await readAccountJson(req);
+            send(200, await accounts.removeAvatar(bearerToken(req)));
+            return;
+          case 'POST /v1/account/stats':
+            allowAccount('account', 300, TEN_MINUTES);
+            send(200, await accounts.recordStats(bearerToken(req), await readAccountJson(req)));
+            return;
+          case 'POST /v1/account/rau-trial':
+            allowAccount('account', 300, TEN_MINUTES);
+            await readAccountJson(req);
+            send(200, await accounts.startRauTrial(bearerToken(req)));
+            return;
+          case 'POST /v1/account/delete':
+            allowAccount('account', 300, TEN_MINUTES);
+            send(200, await accounts.deleteAccount(bearerToken(req), await readAccountJson(req)));
             return;
           default:
             throw siteError('NOT_FOUND', 'not found');
         }
       }
       switch (route) {
+        case 'GET /v1/admin/accounts':
+          allow('admin', 120, TEN_MINUTES);
+          if (!accounts) throw siteError('NOT_FOUND', 'not found');
+          send(200, await accounts.admin.lookup(bearerToken(req), Object.fromEntries(searchParams)));
+          return;
+        case 'POST /v1/admin/accounts/unlink':
+          allow('admin', 120, TEN_MINUTES);
+          send(200, await licenses.admin.unlinkAccount(bearerToken(req), await readJson(req)));
+          return;
+        case 'POST /v1/admin/accounts/link':
+          allow('admin', 120, TEN_MINUTES);
+          if (!accounts) throw siteError('NOT_FOUND', 'not found');
+          send(200, await accounts.admin.link(bearerToken(req), await readJson(req)));
+          return;
         case 'GET /v1/groble/webhook':
           // Deploy check: 404 until this build is live, 503 while the secret is missing.
           if (!licenseConfig.webhookSecret) send(503, { ok: false, error: 'not_configured' });
@@ -456,10 +584,11 @@ export function siteRequestListener({
           await readJson(req);
           send(200, await gifts.claim(bearerToken(req)));
           return;
-        // Hosted Rau-0.1. Per-license limits live in rau.mjs; these per-IP ones only stop floods.
+        // Hosted Rau. Per-principal limits live in rau.mjs; these per-IP ones only stop floods.
         case 'GET /v1/rau/status':
           if (!limiter.check(`rau-status:${ip}`, 120, MINUTE)) throw rauRateLimited(60);
-          send(200, await rau.status(bearerToken(req)));
+          req.resume?.();
+          send(200, await rau.status(leaseOf(req)));
           return;
         case 'POST /v1/rau/learn': {
           if (Number(req.headers['content-length']) > 4 * MAX_RAU_BODY_BYTES) {
@@ -469,12 +598,16 @@ export function siteRequestListener({
           }
           if (!limiter.check(`rau-learn:${ip}`, 120, MINUTE)) { req.resume?.(); throw rauRateLimited(60); }
           const raw = await readOrNull(req, MAX_RAU_BODY_BYTES);
-          send(200, await rau.learn(bearerToken(req), raw));
+          send(200, await rau.learn(leaseOf(req), raw));
           return;
         }
         case 'GET /v1/admin/rau':
           allow('admin', 120, TEN_MINUTES);
           send(200, await rau.admin.list(bearerToken(req)));
+          return;
+        case 'GET /v1/admin/rau/spend':
+          allow('admin', 120, TEN_MINUTES);
+          send(200, await rau.admin.spend(bearerToken(req), Object.fromEntries(searchParams)));
           return;
         case 'GET /v1/admin/gifts':
           allow('admin', 120, TEN_MINUTES);
@@ -526,6 +659,18 @@ export function siteRequestListener({
         case 'GET /v1/admin/webhooks':
           allow('admin', 120, TEN_MINUTES);
           send(200, await licenses.admin.webhooks(bearerToken(req), Object.fromEntries(searchParams)));
+          return;
+        case 'GET /v1/admin/gift-codes':
+          allow('admin', 120, TEN_MINUTES);
+          send(200, await licenses.admin.giftCodes(bearerToken(req), Object.fromEntries(searchParams)));
+          return;
+        case 'POST /v1/admin/gift-codes/issue':
+          allow('admin', 120, TEN_MINUTES);
+          send(200, await licenses.admin.issueGiftCodes(bearerToken(req), await readJson(req)));
+          return;
+        case 'POST /v1/admin/gift-codes/revoke':
+          allow('admin', 120, TEN_MINUTES);
+          send(200, await licenses.admin.revokeGiftCodes(bearerToken(req), await readJson(req)));
           return;
         case 'POST /v1/admin/licenses/issue':
         case 'POST /v1/admin/licenses/issue-beta':
@@ -640,7 +785,12 @@ export function siteRequestListener({
           res.end(await readFile(RAU_ICON_PATH));
           return;
         case 'GET /healthz':
-          send(200, { ok: true });
+          send(200, { ok: true, storage });
+          return;
+        case 'GET /v1/admin/storage':
+          allow('admin', 120, TEN_MINUTES);
+          if (!tokenEquals(bearerToken(req), licenseConfig.adminToken)) throw licenseError('forbidden', 403);
+          send(200, { ok: true, storage, imports: await jsonImports() });
           return;
         case 'GET /unique-installs':
           allow('unique-install-page', 120, MINUTE);
@@ -713,24 +863,27 @@ export function siteRequestListener({
 }
 
 export function createSiteServer(env = process.env, options = {}) {
-  const uniqueInstallsStore = createFileStore(resolveUniqueInstallsDbPath(env), {
-    emptyState: emptyUniqueInstallsState,
-  });
+  const log = options.log ?? ((line) => process.stderr.write(`${line}\n`));
+  // With a database every store runs there and never touches its JSON file (feedback attachments
+  // stay files in both modes). `options.db` (tests, main) wins over DATABASE_URL.
+  const db = options.db !== undefined ? options.db : databaseFromEnv(env, log);
+  const domainStore = (mapper, filePath, emptyState) => (db
+    ? createPostgresStore({ db, mapper })
+    : createFileStore(filePath, { emptyState }));
+  const uniqueInstallsStore = domainStore(uniqueInstallsMapper, resolveUniqueInstallsDbPath(env), emptyUniqueInstallsState);
   const uniqueInstalls = createUniqueInstallsService({
     store: uniqueInstallsStore,
     pingKey: resolveUniqueInstallPingKey(env) || DEFAULT_UNIQUE_INSTALL_PING_KEY,
   });
   const waitlist = createWaitlistService({
-    store: createFileStore(resolveWaitlistDbPath(env), {
-      emptyState: emptyWaitlistState,
-    }),
+    store: domainStore(waitlistMapper, resolveWaitlistDbPath(env), emptyWaitlistState),
     adminToken: env.RAU_WAITLIST_ADMIN_TOKEN ?? '',
     telegramBotToken: env.RAU_WAITLIST_TELEGRAM_BOT_TOKEN ?? '',
     telegramChatId: env.RAU_WAITLIST_TELEGRAM_CHAT_ID ?? '',
   });
   const licenseConfig = resolveLicenseConfig(env);
   const downloads = createDownloadsService({
-    store: createFileStore(resolveDownloadsDbPath(env), { emptyState: emptyDownloadsState }),
+    store: domainStore(downloadsMapper, resolveDownloadsDbPath(env), emptyDownloadsState),
     adminToken: licenseConfig.adminToken,
     now: options.now,
   });
@@ -740,16 +893,25 @@ export function createSiteServer(env = process.env, options = {}) {
     licenseConfig.publicKeyDerBase64 = publicKey.export({ format: 'der', type: 'spki' }).toString('base64');
     licenseConfig.publicKeyRawBase64 = rawPublicKeyBase64(publicKey);
   }
-  const log = options.log ?? ((line) => process.stderr.write(`${line}\n`));
+  const retired = retiredEnvNames(env);
+  if (retired.length) log(`[site-api] retired variables are set and ignored: ${retired.join(', ')}`);
+  const rauConfig = resolveRauConfig(env);
+  for (const warning of rauConfig.warnings) log(`[site-api] ${warning}`);
+  const accountConfig = resolveAccountConfig(env);
+  const accountsStore = domainStore(accountsMapper, resolveAccountsDbPath(env), emptyAccountsState);
   const webhookLog = createWebhookLog({
-    store: createFileStore(resolveWebhookLogDbPath(env), { emptyState: emptyWebhookLogState }),
+    store: domainStore(webhookLogMapper, resolveWebhookLogDbPath(env), emptyWebhookLogState),
     now: options.now,
   });
   const alertProvider = options.alertProvider !== undefined ? options.alertProvider : resendProviderFromEnv(env);
   const webhookAlerts = createWebhookAlerter({ provider: alertProvider, now: options.now, log });
   const heldAlerts = createHeldAlerter({ provider: alertProvider, log });
+  // The old hosted Hama plan's hama.json (or its tables) is frozen: only read, never written. Its active plans keep Rau.
+  const legacyRauPlan = createLegacyRauPlans(domainStore(hamaMapper, resolveHamaDbPath(env), () => ({ plans: {}, ledgers: {} })));
+  // Created after accounts (it authenticates through them); accounts read it late.
+  let rau = null;
   const licenses = createLicensesService({
-    store: createFileStore(resolveLicensesDbPath(env), { emptyState: emptyLicensesState }),
+    store: domainStore(licensesMapper, resolveLicensesDbPath(env), emptyLicensesState),
     uniqueInstallsStore: uniqueInstallsStore,
     signingKey,
     leaseKid: licenseConfig.signingKeyId,
@@ -757,7 +919,8 @@ export function createSiteServer(env = process.env, options = {}) {
     onetimeProductIds: licenseConfig.onetimeProductIds,
     subscriptionProductIds: licenseConfig.subscriptionProductIds,
     signatureProductIds: licenseConfig.signatureProductIds,
-    proProducts: licenseConfig.proProducts,
+    hamaProducts: licenseConfig.hamaProducts,
+    rauProducts: licenseConfig.rauProducts,
     products: licenseConfig.products,
     paymentGraceMs: licenseConfig.paymentGraceMs,
     paymentGraceMaxMs: licenseConfig.paymentGraceMaxMs,
@@ -770,46 +933,59 @@ export function createSiteServer(env = process.env, options = {}) {
     grandfatherPlatforms: licenseConfig.grandfatherPlatforms,
     adminToken: licenseConfig.adminToken,
     downloadUrl: licenseConfig.downloadUrl,
+    legacyRauPlan,
+    accountForEmail: async (emailLower) => accountIdForEmail(await accountsStore.read(), emailLower),
     webhookLog,
     now: options.now,
     log,
   });
+  if (accountConfig.apiKey && !signingKey) log('[site-api] WORKOS_API_KEY is set but LICENSE_SIGNING_PRIVATE_KEY is not: accounts stay off');
+  const accounts = createAccountsService({
+    store: accountsStore,
+    licenses,
+    workos: accountConfig.apiKey ? createWorkOSClient({
+      apiKey: accountConfig.apiKey,
+      clientId: accountConfig.clientId,
+      apiBase: accountConfig.apiBase,
+      redirectUri: accountConfig.redirectUri,
+      fetchImpl: options.fetchImpl,
+    }) : null,
+    signingKey,
+    leaseKid: licenseConfig.signingKeyId,
+    avatars: db ? createPostgresAvatars(db) : createFileAvatars(resolveAvatarDir(env)),
+    // Bound late: the Rau service authenticates through this one.
+    rauConfigured: () => Boolean(rau?.configured),
+    rauUsage: async (principal) => (rau ? rau.usage(principal) : null),
+    providers: accountConfig.providers,
+    deviceLimit: accountConfig.deviceLimit,
+    adminToken: licenseConfig.adminToken,
+    now: options.now,
+    log,
+  });
   const gifts = createGiftsService({
-    store: createFileStore(resolveGiftsDbPath(env), { emptyState: emptyGiftsState }),
-    authenticate: (lease) => licenses.authenticateLease(lease),
+    store: domainStore(giftsMapper, resolveGiftsDbPath(env), emptyGiftsState),
+    authenticate: (lease) => accounts.authenticateLease(lease, { purpose: 'gift' }),
     config: resolveGiftConfig(env),
     adminToken: licenseConfig.adminToken,
     fetchImpl: options.fetchImpl,
     now: options.now,
     log,
   });
-  const hamaConfig = resolveHamaConfig(env);
-  const hamaService = hamaConfig.enabled ? createHamaService({
-    store: createFileStore(resolveHamaDbPath(env), { emptyState: emptyHamaState }),
-    authenticate: (lease) => licenses.authenticateLease(lease),
-    config: hamaConfig,
+  const rauUpstream = createRauUpstream({ config: rauConfig, fetchImpl: options.fetchImpl, log });
+  rau = createRauService({
+    store: domainStore(rauMapper, resolveRauDbPath(env), emptyRauState),
+    // A revoked or expired key still authenticates here, so it hears rau_plan_required instead of 401.
+    authenticate: (lease) => accounts.authenticateLease(lease, { allowInactive: true, withRau: true, purpose: 'rau' }),
+    upstream: rauUpstream,
+    config: rauConfig,
+    upgradeUrl: licenseConfig.rauUpgradeUrl,
     adminToken: licenseConfig.adminToken,
-    now: options.now,
-    log,
-    usageLogDir: resolveHamaUsageDir(env),
-  }) : null;
-  const hama = hamaService && {
-    ...hamaService,
-    proxy: createHamaProxy({ hama: hamaService, config: hamaConfig, fetchImpl: options.fetchImpl, now: options.now, log }),
-  };
-  const rau = createRauService({
-    store: createFileStore(resolveRauDbPath(env), { emptyState: emptyRauState }),
-    // A revoked or expired key still authenticates here, so it hears rau_requires_pro instead of 401.
-    authenticate: (lease) => licenses.authenticateLease(lease, { allowInactive: true }),
-    config: resolveRauConfig(env),
-    upgradeUrl: licenseConfig.proUpgradeUrl,
-    adminToken: licenseConfig.adminToken,
-    fetchImpl: options.fetchImpl,
     now: options.now,
     log,
   });
   const feedback = createFeedbackService({
     dir: resolveFeedbackDir(env),
+    index: domainStore(feedbackMapper, path.join(resolveFeedbackDir(env), 'index.json'), emptyFeedbackIndex),
     proofKey: resolveFeedbackProofKey(env) || DEFAULT_FEEDBACK_PROOF_KEY,
     maxStorageBytes: resolveFeedbackMaxBytes(env),
     adminToken: licenseConfig.adminToken,
@@ -822,7 +998,12 @@ export function createSiteServer(env = process.env, options = {}) {
       log,
     }),
   });
-  const listener = siteRequestListener({ uniqueInstalls, waitlist, downloads, licenses, gifts, hama, rau, feedback, licenseConfig, webhookLog, webhookAlerts, heldAlerts, log });
+  const listener = siteRequestListener({
+    uniqueInstalls, waitlist, downloads, licenses, accounts, gifts, rau, feedback, licenseConfig, webhookLog, webhookAlerts, heldAlerts,
+    storage: db ? 'postgres' : 'files',
+    jsonImports: db ? () => importMarkers(db) : undefined,
+    log,
+  });
   setImmediate(() => { void feedback.prune().catch((error) => log(`[site-api] feedback prune failed: ${error?.message ?? error}`)); });
   // Retry any key email that was queued before a restart.
   setImmediate(() => { void licenses.deliverPendingEmails().catch(() => {}); });
@@ -848,11 +1029,43 @@ export function createSiteServer(env = process.env, options = {}) {
   return server;
 }
 
+function databaseFromEnv(env, log) {
+  const url = resolveDatabaseUrl(env);
+  return url ? createDatabase(url, { log }) : null;
+}
+
+async function main() {
+  const log = (line) => process.stderr.write(`${line}\n`);
+  const port = Number(process.env.PORT ?? DEFAULT_PORT);
+  const db = databaseFromEnv(process.env, log);
+  if (db) {
+    try {
+      await importJsonToPostgres(db, process.env, { log });
+      await checkImported(db);
+    } catch (error) {
+      log(`[site-api] Postgres is not usable: ${error?.message ?? error}`);
+      await db.close().catch(() => {});
+      process.exit(1);
+    }
+  }
+  const server = createSiteServer(process.env, { db });
+  server.listen(port, '0.0.0.0', () => {
+    log(`[site-api] listening on 0.0.0.0:${port}${db ? ' with Postgres' : ''}`);
+  });
+  if (db) {
+    // Finish in-flight requests, then end the pool; Railway sends SIGTERM before a redeploy.
+    process.once('SIGTERM', () => {
+      log('[site-api] SIGTERM: closing');
+      setTimeout(() => process.exit(0), 10_000).unref();
+      setTimeout(() => server.closeAllConnections?.(), 5_000).unref();
+      server.close(() => {
+        db.close().catch((error) => log(`[site-api] closing Postgres failed: ${error?.message ?? error}`)).finally(() => process.exit(0));
+      });
+      server.closeIdleConnections?.();
+    });
+  }
+}
+
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
 
-if (isMain) {
-  const port = Number(process.env.PORT ?? DEFAULT_PORT);
-  createSiteServer().listen(port, '0.0.0.0', () => {
-    process.stderr.write(`[site-api] listening on 0.0.0.0:${port}\n`);
-  });
-}
+if (isMain) await main();

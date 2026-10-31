@@ -1,16 +1,19 @@
-// 호스팅 Rau-0.1 HTTP 클라이언트. 키 서버와 같은 주소를 쓰고, 라이선스 lease 로 인증한다.
-//   POST /v1/rau/learn  (Bearer lease) {prompt}  → {ok, text, model, usage:{usedUsd, capUsd, remainingUsd, resetsAt}}
-//   GET  /v1/rau/status (Bearer lease)           → {ok, eligible, reason, upgradeUrl, capUsd, usedUsd, remainingUsd, resetsAt}
-//   실패: {ok:false, error: 'unauthorized' 401 | 'rau_requires_pro' 403 (+upgradeUrl)
-//          | 'rau_cap_reached' 402 (+capUsd, usedUsd, resetsAt) | 'rate_limited' 429
+// 호스팅 Rau HTTP 클라이언트. 키 서버와 같은 주소를 쓰고, 계정 lease 로 인증한다.
+//   GET  /v1/rau/status (Bearer lease)           → {ok, eligible, source, reason, upgradeUrl, allowanceUsd, usedUsd,
+//                                                    remainingUsd, resetsAt(ISO)}
+//   POST /v1/rau/learn  (Bearer lease) {prompt}  → {ok, text, model, usage:{allowanceUsd, usedUsd, remainingUsd, resetsAt}}
+//   실패: {ok:false, error: 'unauthorized' 401 | 'rau_plan_required' 403 (+upgradeUrl)
+//          | 'rau_credits_exhausted' 402 (+allowanceUsd, usedUsd, resetsAt) | 'rate_limited' 429
 //          | 'upstream_unavailable' 502 | 'rau_not_configured' 503}
-// lease 는 메인 프로세스 밖으로 나가지 않는다. 허브와 Studio 는 결과와 오류 코드만 받는다.
+// status 는 Studio 의 rau:status 가 쓰고, learn 은 Rau-0.1 학습이 쓴다.
+// lease 는 메인 프로세스 밖으로 나가지 않는다.
 import { DEFAULT_LICENSE_API_BASE } from './license-client.mjs';
-import { PRICING_URL } from './license-manager.mjs';
 
 export const RAU_ERRORS = Object.freeze([
-  'unauthorized', 'rau_requires_pro', 'rau_cap_reached', 'rate_limited', 'upstream_unavailable', 'rau_not_configured',
+  'unauthorized', 'rau_plan_required', 'rau_credits_exhausted', 'rate_limited', 'upstream_unavailable', 'rau_not_configured',
 ]);
+/** Rau 요금제나 체험이 없을 때 보여 주는 요금제 페이지. */
+export const RAU_UPGRADE_URL = 'https://heemangstudios.com/pricing.html#rau';
 /** 서버가 받는 프롬프트 한도. 넘으면 보내지 않고 내 계정 경로로 넘긴다. */
 export const RAU_PROMPT_MAX_BYTES = 48 * 1024;
 /** 학습 한 번은 모델 호출이라 느리다. 허브의 IPC 대기(RAU_SOURCE_TIMEOUT_MS)보다 짧게 둔다. */
@@ -26,7 +29,7 @@ export class RauServerError extends Error {
     this.code = code;
     this.status = details.status ?? null;
     this.upgradeUrl = details.upgradeUrl ?? null;
-    this.capUsd = details.capUsd ?? null;
+    this.allowanceUsd = details.allowanceUsd ?? null;
     this.usedUsd = details.usedUsd ?? null;
     this.resetsAt = details.resetsAt ?? null;
   }
@@ -34,12 +37,12 @@ export class RauServerError extends Error {
 
 /** 서버가 준 업그레이드 주소는 우리 사이트나 Groble 의 https 페이지일 때만 쓴다. */
 export function upgradeUrlFrom(value) {
-  if (typeof value !== 'string') return PRICING_URL;
+  if (typeof value !== 'string') return RAU_UPGRADE_URL;
   try {
     const url = new URL(value);
-    return url.protocol === 'https:' && UPGRADE_HOSTS.has(url.hostname) ? url.href : PRICING_URL;
+    return url.protocol === 'https:' && UPGRADE_HOSTS.has(url.hostname) ? url.href : RAU_UPGRADE_URL;
   } catch {
-    return PRICING_URL;
+    return RAU_UPGRADE_URL;
   }
 }
 
@@ -53,11 +56,11 @@ export function resetsAtFrom(value) {
   return null;
 }
 
-const usd = (value) => (Number.isFinite(value) ? value : null);
+const usd = (value) => (Number.isFinite(value) && value >= 0 ? value : null);
 
 function usageFrom(body) {
   return {
-    capUsd: usd(body?.capUsd),
+    allowanceUsd: usd(body?.allowanceUsd),
     usedUsd: usd(body?.usedUsd),
     remainingUsd: usd(body?.remainingUsd),
     resetsAt: resetsAtFrom(body?.resetsAt),
@@ -95,13 +98,14 @@ export function createRauClient({
     }
     if (response.ok && parsed && typeof parsed === 'object' && !Array.isArray(parsed) && parsed.ok === true) return parsed;
     if (response.ok) throw new RauServerError('server', 'bad response', { status: response.status });
-    const code = typeof parsed?.error === 'string' && RAU_ERRORS.includes(parsed.error) ? parsed.error
+    const error = parsed?.error;
+    const code = typeof error === 'string' && RAU_ERRORS.includes(error) ? error
       : response.status === 401 ? 'unauthorized' : null;
     if (!code) throw new RauServerError('server', `HTTP ${response.status}`, { status: response.status });
     throw new RauServerError(code, code, {
       status: response.status,
-      ...(code === 'rau_requires_pro' ? { upgradeUrl: upgradeUrlFrom(parsed?.upgradeUrl) } : {}),
-      ...(code === 'rau_cap_reached' ? usageFrom(parsed) : {}),
+      ...(code === 'rau_plan_required' ? { upgradeUrl: upgradeUrlFrom(parsed?.upgradeUrl) } : {}),
+      ...(code === 'rau_credits_exhausted' ? usageFrom(parsed) : {}),
     });
   }
 
@@ -118,13 +122,18 @@ export function createRauClient({
         usage: usageFrom(body.usage),
       };
     },
+    /**
+     * 자격과 크레딧. eligible 이 아니면 source·사용량은 null 이다. 시각은 epoch ms.
+     */
     async status(lease) {
       const body = await request('GET', '/v1/rau/status', lease, undefined, statusTimeoutMs);
+      const eligible = body.eligible === true;
       return {
-        eligible: body.eligible === true,
-        reason: body.reason === 'rau_requires_pro' ? 'rau_requires_pro' : null,
+        eligible,
+        source: eligible && (body.source === 'plan' || body.source === 'trial') ? body.source : null,
+        reason: eligible ? null : 'rau_plan_required',
         upgradeUrl: upgradeUrlFrom(body.upgradeUrl),
-        ...usageFrom(body),
+        ...(eligible ? usageFrom(body) : { allowanceUsd: null, usedUsd: null, remainingUsd: null, resetsAt: null }),
       };
     },
   };

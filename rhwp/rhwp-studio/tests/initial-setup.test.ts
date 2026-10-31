@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import { AGENT_MODELS } from '../src/agent/models.ts';
 import type { AgentName, AgentSetupStatus } from '../src/agent/types.ts';
-import { CONNECTABLE_PROVIDERS, PROVIDER_ORDER } from '../src/ui/agent-sidebar/providers.ts';
+import { PROVIDER_ORDER } from '../src/ui/agent-sidebar/providers.ts';
 import {
   isProviderConfigured,
   previewModelLabels,
@@ -23,9 +23,6 @@ import {
   shouldSuppressInitialSetup,
 } from '../src/ui/initial-setup/state.ts';
 import { indexHasHancomFonts, planFontStep, planSteps } from '../src/ui/initial-setup/steps.ts';
-import { needsLicenseStep } from '../src/ui/initial-setup/license-step.ts';
-import { looksLikeFullKey } from '../src/ui/agent-sidebar/settings-license.ts';
-import type { LicenseStatus } from '../src/ui/agent-sidebar/settings-license.ts';
 import { BOOT_FINAL_HOLD_MS, remainingBootMs } from '../src/ui/boot-screen.ts';
 
 function memoryStore(seed: Record<string, string> = {}) {
@@ -93,8 +90,6 @@ test('카드 모델 목록은 현재 선택과 Pi 기본 안내를 짧게 보여
   assert.deepEqual(previewModelLabels('pi'), ['OpenRouter에서 고름', '최대 3개']);
   assert.equal(SUGGESTED_AGENT, 'claude');
   assert.equal(PROVIDER_ORDER[0], 'claude');
-  // Hama 는 플랜이라 처음 설정의 연결 카드에 서지 않는다.
-  assert.deepEqual([...CONNECTABLE_PROVIDERS], ['claude', 'codex', 'pi']);
   assert.equal(PROVIDER_VENDOR.claude, 'Anthropic');
   for (const agent of PROVIDER_ORDER) {
     assert.ok(PROVIDER_VENDOR[agent]);
@@ -153,32 +148,20 @@ test('글꼴 단계는 한컴 글꼴을 스스로 찾지 못했을 때만 넣는
   assert.equal(planFontStep({ ...base, canDiscover: true, hancomFonts: true }), null);
   // 찾을 방법이 없는 브라우저는 묻지 않는다.
   assert.equal(planFontStep(base), null);
-  assert.deepEqual(planSteps('discover'), ['theme', 'models', 'fonts']);
-  assert.deepEqual(planSteps(null), ['theme', 'models']);
+  assert.deepEqual(planSteps('discover'), ['theme', 'fonts', 'welcome']);
+  assert.deepEqual(planSteps(null), ['theme', 'welcome']);
 });
 
-test('자동 버그 수정 단계는 데스크톱에서만 맨 끝에 넣는다', () => {
-  assert.deepEqual(planSteps('missing', { autofix: true }), ['theme', 'models', 'fonts', 'autofix']);
-  assert.deepEqual(planSteps(null, { autofix: true }), ['theme', 'models', 'autofix']);
-  assert.deepEqual(planSteps(null, { autofix: false }), ['theme', 'models']);
-});
-
-test('라이선스 장은 키를 넣지 않은 데스크톱 사용자에게만 자동 버그 수정 앞에 뜬다', () => {
-  const status = (state: LicenseStatus['state']) => ({ state } as LicenseStatus);
-  for (const state of ['free', 'needs_activation'] as const) assert.equal(needsLicenseStep(status(state)), true);
-  for (const state of ['licensed', 'unenforced', 'lease_expired', 'revoked', 'expired'] as const) assert.equal(needsLicenseStep(status(state)), false);
-  // 웹 빌드처럼 라이선스 API 가 없으면 장이 없다.
-  assert.equal(needsLicenseStep(null), false);
-  assert.deepEqual(planSteps('missing', { license: true }), ['theme', 'models', 'fonts', 'license']);
-  assert.deepEqual(planSteps(null, { autofix: true, license: true }), ['theme', 'models', 'license', 'autofix']);
-  // Rau-0.1 은 자동 버그 수정 바로 앞에 묻는다.
-  assert.deepEqual(planSteps('missing', { autofix: true, license: true, taste: true }), ['theme', 'models', 'fonts', 'license', 'taste', 'autofix']);
-  // ChatGPT·Claude 연결은 데스크톱에서 Rau-0.1 바로 앞에 묻는다.
-  assert.deepEqual(planSteps('missing', { autofix: true, license: true, connectors: true, taste: true }), ['theme', 'models', 'fonts', 'license', 'connectors', 'taste', 'autofix']);
-  assert.deepEqual(planSteps(null, { connectors: true }), ['theme', 'models', 'connectors']);
-  // 붙여 넣은 키는 다 찼을 때만 바로 확인한다.
-  assert.equal(looksLikeFullKey(' hama-7kq2m-px4rt-9wzlb-c3vnd-h8yja\n'), true);
-  assert.equal(looksLikeFullKey('HAMA-7KQ2M-PX4RT'), false);
+test('AI 경로는 로그인과 유료 요금제를 확인한 뒤 연결로 이어진다', () => {
+  assert.deepEqual(planSteps('missing', { ai: true, account: true }), ['theme', 'fonts', 'welcome', 'account']);
+  assert.deepEqual(planSteps(null, { ai: true, account: true, signedIn: true, tier: 'free' }), ['theme', 'welcome', 'account', 'plans']);
+  assert.deepEqual(planSteps(null, { ai: true, signedIn: true, tier: 'hama' }), ['theme', 'welcome', 'models']);
+  assert.deepEqual(planSteps(null, { ai: true, signedIn: true, tier: 'rau' }), ['theme', 'welcome', 'models', 'rau']);
+  assert.deepEqual(planSteps(null, { ai: true, signedIn: false, tier: 'rau', account: true }), ['theme', 'welcome', 'account']);
+  // ChatGPT·Claude 연결은 데스크톱 유료 경로에서 AI 연결 뒤, Rau 앞에 묻는다.
+  assert.deepEqual(planSteps(null, { ai: true, signedIn: true, tier: 'hama', connectors: true }), ['theme', 'welcome', 'models', 'connectors']);
+  assert.deepEqual(planSteps(null, { ai: true, signedIn: true, tier: 'rau', connectors: true }), ['theme', 'welcome', 'models', 'connectors', 'rau']);
+  assert.deepEqual(planSteps(null, { ai: true, signedIn: true, tier: 'free', connectors: true }), ['theme', 'welcome', 'plans']);
 });
 
 test('한컴 설치 폴더의 글꼴이나 한컴 전용 글꼴이 있으면 한컴 글꼴이 있다고 본다', () => {

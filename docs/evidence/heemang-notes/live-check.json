@@ -1,0 +1,163 @@
+{
+ "runtime": "Studio dev (Vite + hub on free ports via e2e/agent-bench-harness.mjs), headless Chrome, hm-wasm vendor build at branch tip",
+ "fixture": "Hancom 2022 base.hwpx (hancom-note-captures/_inputs)",
+ "pageErrors": 0,
+ "results": [
+  {
+   "check": "insert enters new note",
+   "ok": true
+  },
+  {
+   "check": "typing lands after number",
+   "ok": true
+  },
+  {
+   "check": "Home goes before number",
+   "ok": true
+  },
+  {
+   "check": "Backspace at 0 is a no-op",
+   "ok": true
+  },
+  {
+   "check": "Left at 0 stays",
+   "ok": true
+  },
+  {
+   "check": "Right from 0 goes after the number",
+   "ok": true
+  },
+  {
+   "check": "Backspace after number asks",
+   "ok": true
+  },
+  {
+   "check": "N keeps the number",
+   "ok": true
+  },
+  {
+   "check": "Delete before number asks",
+   "ok": true
+  },
+  {
+   "check": "Y deletes the number, space kept",
+   "ok": true
+  },
+  {
+   "check": "undo restores the number",
+   "ok": true
+  },
+  {
+   "check": "Delete/Right at end are no-ops",
+   "ok": true
+  },
+  {
+   "check": "Enter at 0 moves the number down",
+   "ok": true
+  },
+  {
+   "check": "Shift+Home then type replaces number+text",
+   "ok": true
+  },
+  {
+   "check": "replace is one undo step",
+   "ok": true
+  },
+  {
+   "check": "IME over selection",
+   "ok": true
+  },
+  {
+   "check": "IME replace is one undo step",
+   "ok": true
+  },
+  {
+   "check": "redo restores IME text",
+   "ok": true
+  },
+  {
+   "check": "copy in note puts the note selection on the clipboard",
+   "ok": true
+  },
+  {
+   "check": "paste in note goes into the note",
+   "ok": true
+  },
+  {
+   "check": "cut in note removes the selection",
+   "ok": true
+  },
+  {
+   "check": "body untouched by note clipboard",
+   "ok": true
+  },
+  {
+   "check": "select all selects the note list only",
+   "ok": true
+  },
+  {
+   "check": "Esc clears the selection and stays",
+   "ok": true
+  },
+  {
+   "check": "Esc without selection does nothing",
+   "ok": true
+  },
+  {
+   "check": "Shift+Esc leaves to right after the new mark",
+   "ok": true
+  },
+  {
+   "check": "Backspace after a footnote mark asks [각주]",
+   "ok": true
+  },
+  {
+   "check": "N keeps the footnote",
+   "ok": true
+  },
+  {
+   "check": "Backspace after an endnote mark asks [미주]",
+   "ok": true
+  },
+  {
+   "check": "Y deletes the endnote",
+   "ok": true
+  },
+  {
+   "check": "undo restores the endnote",
+   "ok": true
+  },
+  {
+   "check": "deleting a selection with a mark never asks",
+   "ok": true
+  },
+  {
+   "check": "clicking a body mark enters the note at caret 0",
+   "ok": true
+  },
+  {
+   "check": "Shift+Esc after entering an existing note lands before the mark",
+   "ok": true
+  },
+  {
+   "check": "Up on the first note line leaves to the body line above the note area",
+   "ok": true
+  },
+  {
+   "check": "insert in a table cell creates a cell note",
+   "ok": true
+  },
+  {
+   "check": "cell note numbered in document order",
+   "ok": true
+  },
+  {
+   "check": "clicking another note area switches notes",
+   "ok": true
+  },
+  {
+   "check": "save HWPX and reopen keeps notes",
+   "ok": true
+  }
+ ]
+}
