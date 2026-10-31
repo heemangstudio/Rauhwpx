@@ -540,9 +540,9 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
         actions.append(soon);
       }
       for (const sku of skus) {
-        const buy = button(`acct-btn${family === 'pro' && sku === monthly ? ' acct-btn-primary' : ''}`, sku === monthly ? '월간 시작' : '연간 시작');
+        const buy = button(sku === yearly ? 'acct-link acct-offer-yearly' : `acct-btn${family === 'pro' ? ' acct-btn-primary' : ''}`, sku === monthly ? '월간 구독' : '연간 구독');
         buy.dataset.sku = sku;
-        buy.setAttribute('aria-label', `${family === 'pro' ? 'Pro' : 'Hama'} ${sku === monthly ? '월간' : '연간'} 시작`);
+        buy.setAttribute('aria-label', `${family === 'pro' ? 'Pro' : 'Hama'} ${sku === monthly ? '월간' : '연간'} 구독`);
         buy.disabled = checkoutBusy !== null || pending != null;
         if (checkoutBusy === sku) setBusy(buy, true);
         buy.addEventListener('click', () => { void checkout(sku); });
