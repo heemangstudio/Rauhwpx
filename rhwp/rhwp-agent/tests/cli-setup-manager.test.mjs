@@ -858,6 +858,56 @@ test('a user npm config that skips scripts, optional packages or saving still in
   assert.equal(cli.installs.length, 2);
 });
 
+test('installing one CLI keeps another that an older build installed without saving it to the prefix package.json', async (t) => {
+  const rootDir = await tmpRoot(t);
+  const cli = npmConfigAwareCli(rootDir);
+  const prefixDir = path.join(rootDir, 'prefix');
+  // 예전 빌드(--save 없음, 사용자 save=false)가 남긴 prefix: Claude 는 설치됐지만 package.json 에는 없다.
+  const claudeDir = path.join(prefixDir, 'node_modules', '@anthropic-ai', 'claude-code');
+  await fs.mkdir(claudeDir, { recursive: true });
+  await fs.writeFile(path.join(claudeDir, 'package.json'), JSON.stringify({ name: '@anthropic-ai/claude-code', version: '2.1.3' }));
+  const claudeBin = path.join(prefixDir, 'node_modules', '.bin', process.platform === 'win32' ? 'claude.cmd' : 'claude');
+  await fs.mkdir(path.dirname(claudeBin), { recursive: true });
+  await fs.writeFile(claudeBin, 'rem runnable\n');
+  await fs.writeFile(path.join(prefixDir, 'package.json'), JSON.stringify({ name: 'prefix', dependencies: {} }));
+  const manager = await createCliSetupManager({
+    rootDir,
+    spawnProcess: cli.spawnProcess,
+    baseEnv: { CODEX_HOME: path.join(rootDir, 'codex-home') },
+    readClaudeLogin: async () => null,
+    fetchImpl: async () => { throw new Error('offline'); },
+  }).init();
+
+  assert.equal((await manager.install('codex')).installed, true);
+  const claude = await manager.status('claude');
+  assert.equal(claude.installed, true, 'installing Codex must not prune the Claude CLI');
+  const manifest = JSON.parse(await fs.readFile(path.join(prefixDir, 'package.json'), 'utf8'));
+  assert.equal(manifest.dependencies['@anthropic-ai/claude-code'], '^2.1.3');
+  assert.ok(manifest.dependencies['@openai/codex']);
+});
+
+test('a Windows Claude shim left behind after npm removed its package reads as not installed and is not launched', async (t) => {
+  const rootDir = await tmpRoot(t);
+  const binDir = path.join(rootDir, 'prefix', 'node_modules', '.bin');
+  await fs.mkdir(binDir, { recursive: true });
+  // npm 11 cmd-shim for Claude Code's native claude.exe; the package folder itself is gone.
+  await fs.writeFile(path.join(binDir, 'claude.cmd'), [
+    '@ECHO off', 'GOTO start', ':find_dp0', 'SET dp0=%~dp0', 'EXIT /b', ':start', 'SETLOCAL', 'CALL :find_dp0',
+    '"%dp0%\\..\\@anthropic-ai\\claude-code\\bin\\claude.exe"   %*', '',
+  ].join('\r\n'));
+  const { spawnProcess } = fakeSpawner(path.join(rootDir, 'prefix'), 'win32');
+  const manager = await createCliSetupManager({
+    rootDir, spawnProcess, platform: 'win32', readClaudeLogin: async () => null,
+    fetchImpl: async () => { throw new Error('offline'); },
+  }).init();
+
+  const status = await manager.status('claude');
+  assert.equal(status.installed, false);
+  const launch = await manager.prepareLaunch('claude');
+  t.after(() => launch.release());
+  assert.equal(launch.bin, null);
+});
+
 test('npm finishing without a runnable CLI fails the install instead of reporting it installed', async (t) => {
   const rootDir = await tmpRoot(t);
   const cli = versionedCli(rootDir);

@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
-import { applyManagedCliLaunch, applyNodeHostEnv, createNodeHost, isNodeBinary } from './npm-cli-launch.mjs';
+import { applyManagedCliLaunch, applyNodeHostEnv, createNodeHost, isNodeBinary, npmCmdShimTargetMissing } from './npm-cli-launch.mjs';
 import { bundledNpmLaunch } from './npm-runtime.mjs';
 import { API_KEY_MAX_BYTES, AUTH_CODE_MAX_BYTES, textFitsByteLimit } from './input-bounds.mjs';
 import { redactDiagnosticText } from './agents/backend.mjs';
@@ -228,6 +228,13 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
   function assertAgent(agent) { if (!Object.hasOwn(CONFIG, agent)) throw setupError('AGENT_SETUP_INVALID', `지원하지 않는 에이전트예요: ${agent}`); return CONFIG[agent]; }
   function assertPrefixAvailable() {
     if (prefixCleanupUncertain) throw setupError('AGENT_INSTALL_CLEANUP_UNCERTAIN', '이전 CLI 설치 프로세스가 종료됐는지 확인할 수 없어 설치와 실행을 중단했어요.');
+  }
+  /**
+   * 관리형 CLI 의 .bin 실행 파일이 있고 실제로 띄울 대상이 남아 있는지. 다른 CLI 의 npm install 이 패키지를 지우고
+   * Windows .cmd 심만 남겼으면 설치되지 않은 것과 같다 — 상태는 다시 설치를 권하고, 실행은 관리형 CLI 가 없을 때의 길로 간다.
+   */
+  function managedBinPresent(bin) {
+    return existsSync(bin) && !(platform === 'win32' && npmCmdShimTargetMissing(bin));
   }
   function binPath(agent) { const item = assertAgent(agent); return path.join(binDir, platform === 'win32' ? `${item.bin}.cmd` : item.bin); }
   function managedLaunch(command, argv, env) {
@@ -484,7 +491,7 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
   }
   async function managedVersion(agent) {
     const bin = binPath(agent);
-    if (!existsSync(bin)) { versionProbes.delete(agent); return null; }
+    if (!managedBinPresent(bin)) { versionProbes.delete(agent); return null; }
     const fingerprint = await binFingerprint(agent, bin);
     const cached = versionProbes.get(agent);
     if (cached?.fingerprint === fingerprint) return cached.version;
@@ -526,7 +533,7 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
     let version = installing
       ? installedVersions.get(agent) ?? null
       : await managedVersion(agent);
-    const hasBin = existsSync(bin);
+    const hasBin = managedBinPresent(bin);
     // 설치 직후 확인에서 실행되지 않은 그 파일이 그대로면 설치되지 않은 것으로 알린다.
     const unusable = !installing && !version && hasBin && unusableBins.has(agent)
       && unusableBins.get(agent) === await binFingerprint(agent, bin);
@@ -551,6 +558,41 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
     assertAgent(agent); await load();
     return authState(agent);
   }
+  /**
+   * 이미 설치된 관리형 CLI 를 prefix 의 package.json 에 적는다. `npm install <pkg>` 은 package.json 에 없는
+   * 패키지를 지우므로(prune), 예전 빌드가 --save 없이(사용자 save=false 등) 설치했거나 package.json 을 잃은
+   * prefix 에서 Codex 를 설치하면 Claude 가 지워지고, 그 반대도 같다. 읽지 못한 package.json 은 그대로 둔다.
+   */
+  async function recordInstalledClis() {
+    const manifestPath = path.join(prefixDir, 'package.json');
+    let manifest = {};
+    try {
+      manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
+    } catch (error) {
+      if (error?.code !== 'ENOENT') return;
+    }
+    if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) return;
+    const dependencies = manifest.dependencies && typeof manifest.dependencies === 'object' ? { ...manifest.dependencies } : {};
+    let changed = false;
+    for (const { package: name } of Object.values(CONFIG)) {
+      if (dependencies[name]) continue;
+      let version = null;
+      try {
+        version = JSON.parse(await fs.readFile(path.join(prefixDir, 'node_modules', ...name.split('/'), 'package.json'), 'utf8')).version;
+      } catch { /* 설치되지 않은 CLI */ }
+      if (typeof version !== 'string' || !version) continue;
+      dependencies[name] = `^${version}`;
+      changed = true;
+    }
+    if (!changed) return;
+    const temp = `${manifestPath}.new-${randomUUID()}`;
+    try {
+      await fs.writeFile(temp, `${JSON.stringify({ ...manifest, dependencies }, null, 2)}\n`);
+      await replaceFileAtomically(temp, manifestPath, { platform });
+    } finally {
+      await fs.rm(temp, { force: true }).catch(() => {});
+    }
+  }
   /** 같은 에이전트 설치가 이미 돌고 있으면 그 결과를 함께 기다린다. */
   async function install(agent, onProgress) {
     const item = assertAgent(agent);
@@ -566,6 +608,7 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
       // npm 로그는 캐시 밖(npm-logs, npm 이 최근 10개만 남김)에 두어 실패 메시지가 가리키는 로그 파일이 지워지지 않게 한다.
       // 캐시가 매번 새로 생기므로 번들 npm 의 업데이트 확인도 매번 돌게 되는데, 번들 npm 은 앱이 고정하므로 끈다.
       const npmCacheDir = path.join(npmCacheRunsDir, `${now()}-${randomUUID()}`);
+      await recordInstalledClis();
       let result;
       try {
         // 사용자 npm 설정의 ignore-scripts=true, omit=optional, save=false 도 덮어쓴다. 그대로 두면 npm 이 0 으로 끝나도
@@ -623,7 +666,7 @@ export function createCliSetupManager({ rootDir = defaultCliSetupRoot(), spawnPr
     let released = false;
     const bin = binPath(agent);
     return {
-      bin: existsSync(bin) ? bin : null,
+      bin: managedBinPresent(bin) ? bin : null,
       env: envFor(agent),
       release() {
         if (released) return;
