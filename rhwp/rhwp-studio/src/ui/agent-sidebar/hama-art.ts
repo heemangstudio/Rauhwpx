@@ -7,9 +7,11 @@ export const COLORS: Record<string, string> = {
   o: '#62b3e2', s: '#2f73a0', h: '#b2e2fb',
   L: '#7a828d', B: '#5b636e', G: '#b2e2fb', g: '#e6f5ff',
   P: '#f2f4f7', p: '#9aa3ae', r: '#ff6b6b', W: '#ffffff', m: '#c98b5b',
+  // 물방울·비눗방울(d), 빗자루 솔(y), 종이(w).
+  d: '#b2e2fb', y: '#e0b45c', w: '#f2f4f7',
 };
 /** 밝은 테마에서는 흰 반짝임과 z 가 배경에 묻히므로 진한 파랑으로 바꾼다. */
-export const LIGHT_COLORS: Record<string, string> = { W: '#2f73a0', g: '#62b3e2', P: '#e1e6ec' };
+export const LIGHT_COLORS: Record<string, string> = { W: '#2f73a0', g: '#62b3e2', P: '#e1e6ec', d: '#62b3e2', y: '#c99a3e', w: '#b9c1cb' };
 
 // ---------------------------------------------------------------- 하마
 // 앱 아이콘의 하품하는 자세를 반 해상도로: 머리를 들고 턱을 벌렸다.
@@ -202,3 +204,42 @@ export function ripples(cx: number, age: number): Layer[] {
   if (k > 3) return [];
   return [dot(cx - 2 - k * 2, GROUND, fade(k)), dot(cx + 2 + k * 2, GROUND, fade(k))];
 }
+
+// ---------------------------------------------------------------- 앱 순간과 재주의 소품
+// 하마 좌표(7행이 땅), 하마는 오른쪽을 본다. 몸은 그대로 두고 소품만 같은 격자와 몇 안 되는 색으로 더한다.
+/** 도장: 손잡이를 입에 물고, 나무 몸통 아래 빨간 인면. */
+export const STAMP = ['.m.', '.m.', 'mmm', 'rrr'];
+/** 땅에 깐 종이 한 장, 도장을 찍은 뒤. */
+export const SHEET = ['wwwwww'];
+export const SHEET_STAMPED = ['wwrrrw'];
+/** 종이를 접어 비행기로: 한 장, 반 접기, 비행기, 멀어진 비행기. */
+export const PAGE = ['www', 'www', 'www'];
+export const PAGE_FOLD = ['ww.', 'www', 'ww.'];
+export const PLANE = ['w...', 'wwww', '.pw.'];
+export const PLANE_FAR = ['ww', '.w'];
+/** 부메랑 — 90도씩 돌린 네 모습. */
+export const BOOMERANG = [
+  ['mmm', 'm..', 'm..'],
+  ['mmm', '..m', '..m'],
+  ['..m', '..m', 'mmm'],
+  ['m..', 'm..', 'mmm'],
+];
+/** 낙하산에 매단 상자, 열린 상자. */
+export const PARACHUTE = ['.rrrrr.', 'rrrrrrr', 'p.....p', '.p...p.'];
+export const BOX = ['mmm', 'mmm', 'mmm'];
+export const BOX_OPEN = ['m...m', '.m.m.', '.mmm.', '.mmm.'];
+/** 빗자루: 주둥이에 문 자루와 솔. */
+export const BROOM = ['m....', '.m...', '..yy.', '.yyyy'];
+/** 풍선: 부푸는 두 모습과 다 부푼 모습. */
+export const BALLOON = ['.rr.', 'rrrr', 'rrrr', 'rrrr', '.rr.'];
+export const BALLOON_HALF = ['rr', 'rr'];
+/** 비눗방울. */
+export const BUBBLE = ['.d.', 'd.d', '.d.'];
+export const BUBBLE_BIG = ['.dd.', 'd..d', 'd..d', '.dd.'];
+/** 비구름과 우산(닫힘, 반쯤, 펼침). */
+export const CLOUD = ['.pp.ppp.', 'pppppppp', '.LLLLLL.'];
+export const UMBRELLA = ['.rrrrr.', 'rrrrrrr'];
+export const UMBRELLA_HALF = ['.rrr.', 'rrrrr'];
+export const UMBRELLA_SHUT = ['r', 'r'];
+/** 코끝에 올리는 두 색 공 — 도는 두 모습. */
+export const BEACH_BALL = [['rw', 'wr'], ['wr', 'rw']];

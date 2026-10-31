@@ -14,6 +14,8 @@ import { baseToolName, presentToolCall } from './tool-presentation.ts';
 import './chat-hama.css';
 import {
   COLORS, LIGHT_COLORS, POSES, PROPS, Z_FADE, OX, BELOW, SCENE_W, SCENE_H, PIVOT, GROUND, SCALE, drawLayers, dot, sparkle, prop, fade, lerp, arc, droplets, ripples,
+  STAMP, SHEET, SHEET_STAMPED, PAGE, PAGE_FOLD, PLANE, PLANE_FAR, BOOMERANG, PARACHUTE, BOX, BOX_OPEN, BROOM,
+  BALLOON, BALLOON_HALF, BUBBLE, BUBBLE_BIG, CLOUD, UMBRELLA, UMBRELLA_HALF, UMBRELLA_SHUT, BEACH_BALL,
   type PoseName, type Layer,
 } from './hama-art.ts';
 
@@ -34,6 +36,8 @@ interface ActionFrame {
   x?: number;
   y?: number;
   turn?: number;
+  /** 몸만 옮긴다 — 소품은 제자리에 둔다. */
+  hx?: number;
   hy?: number;
   clip?: boolean;
   /** 반짝임 크기. */
@@ -295,12 +299,290 @@ const SKATE: ActionFn = (t, a, h) => {
   return null;
 };
 
+// ---------------------------------------------------------------- 앱 순간과 새 재주
+const place = (art: readonly string[], x: number, y: number, map?: Record<string, string>): Layer => ({ art, x, y, map });
+/** (x, y)의 반짝임 — size 1 은 점, 2 는 십자. */
+function twinkle(x: number, y: number, size: number): Layer[] {
+  if (size <= 0) return [];
+  const out = [dot(x, y, 'W')];
+  if (size > 1) for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) out.push(dot(x + dx, y + dy, 'd'));
+  return out;
+}
+
+/** 앞에 소품을 펴는 몸짓은 자리가 넓은 쪽을 보고 한다 — 오른쪽 구석의 집에서는 왼쪽을 본다. */
+const towardRoom = (fn: ActionFn): ActionFn => (t, a, h) => {
+  const f = fn(t, a, h);
+  return f && { face: a.from - h.bounds[0] > h.bounds[1] - a.from ? -1 : 1, ...f };
+};
+
+/** 저장: 종이가 밀려 들어오고, 문 도장을 쳐들었다가 내리찍고, 찍힌 종이가 밀려 나간다. */
+const STAMP_DOWN: ActionFn = (t) => {
+  if (t >= 1750) return null;
+  const sheetX = t < 260 ? Math.round(lerp(22, 10, t / 260)) : Math.round(lerp(10, 22, (t - 1300) / 400));
+  const sheet = place(t < 560 ? SHEET : SHEET_STAMPED, sheetX, 7);
+  // 도장 손잡이를 주둥이 끝에 문다 — 서면 인면이 종이 위에 닿고, 고개를 들면 쳐들리고, 엎드리면 종이를 누른다.
+  if (t < 260) return { pose: 'stand', layers: [sheet, place(STAMP, 12, 3)] };
+  if (t < 440) return { pose: 'open', hy: -2, layers: [sheet, place(STAMP, 11, 0)] };
+  if (t < 560) {
+    const puff = t < 520 ? [dot(11, 6, 'W'), dot(15, 6, 'W')] : [];
+    return { pose: 'crouch', impact: true, layers: [sheet, place(STAMP, 12, 4), ...puff] };
+  }
+  if (t < 1300) return { pose: 'open', layers: [sheet, place(STAMP, 11, 2)] };
+  return { pose: t > 1550 && t < 1650 ? 'ear' : 'stand', layers: [sheet, place(STAMP, 12, 3)] };
+};
+
+/** 내보내기: 종이를 접어 비행기를 만들고, 몸을 젖혔다가 던진다. 비행기는 멀어지며 작아진다. */
+const PAPER_PLANE: ActionFn = (t) => {
+  if (t < 330) return { pose: 'stand', layers: [place(t < 110 ? PAGE : t < 220 ? PAGE_FOLD : PLANE, 13, 2)] };
+  if (t < 480) return { pose: 'crouch', hx: -1, layers: [place(PLANE, 12, 3)] };
+  if (t < 560) return { pose: 'open', layers: [place(PLANE, 12, 1)] };
+  const p = (t - 560) / 1000;
+  if (p < 1) {
+    const art = p < 0.4 ? PLANE : p < 0.75 ? PLANE_FAR : ['w'];
+    return { pose: p < 0.35 ? 'open' : 'stand', layers: [place(art, 12 + Math.round(8 * p), 1 - Math.round(6 * p))] };
+  }
+  if (t < 1700) return { pose: t > 1580 && t < 1680 ? 'ear' : 'stand' };
+  return null;
+};
+
+/** 되돌리기: 부메랑을 던지면 앞으로 돌아 나가 머리 위를 지나 다시 입으로 돌아온다. */
+const BOOMERANG_THROW: ActionFn = (t) => {
+  const held = BOOMERANG[0]!;
+  if (t < 160) return { pose: 'crouch', hx: -1, layers: [place(held, 12, 3)] };
+  const fly = t - 160;
+  const FLIGHT = 1300;
+  if (fly < FLIGHT) {
+    const th = (fly / FLIGHT) * Math.PI * 2;
+    const cx = 13 + Math.round(6 * Math.sin(th));
+    const cy = 2 - Math.round(3.2 * (1 - Math.cos(th)));
+    // 머리 위로 지나갈 때 몸을 숙인다.
+    const overhead = th > Math.PI * 1.2 && th < Math.PI * 1.92;
+    return { pose: fly < 120 ? 'open' : overhead ? 'crouch' : 'stand', layers: [place(BOOMERANG[Math.floor(fly / 60) % 4]!, cx - 1, cy - 1)] };
+  }
+  const back = fly - FLIGHT;
+  if (back < 160) return { pose: 'open', layers: [place(held, 12, 1)] };
+  if (back < 300) return { pose: 'crouch', layers: [place(held, 12, 3)] };
+  if (back < 620) return { pose: 'stand', layers: [place(held, 13, 2)] };
+  return null;
+};
+
+/** 문서 열기: 낙하산에 매달린 상자가 내려오고, 하마가 다가가 코로 밀자 상자가 열려 반짝인다. */
+const PARCEL_DROP: ActionFn = (t) => {
+  const DESCENT = 1100;
+  if (t < DESCENT) {
+    const top = Math.round(lerp(-9, 1, t / DESCENT));
+    const sway = t < DESCENT - 200 ? Math.floor(t / 260) % 2 : 0;
+    // 내려오는 동안 고개를 들어 올려다본다.
+    return { pose: t > 250 && t < 850 ? 'open' : 'stand', layers: [place(PARACHUTE, 13 + sway, top), place(BOX, 15 + sway, top + 4)] };
+  }
+  const on = t - DESCENT;
+  // 낙하산은 상자 둘레로 내려앉는다.
+  const chute = on < 100 ? place(['rrrrrrr'], 13, 3) : place(['rrrrrrr'], 13, 7);
+  const opened = on >= 620;
+  const box = opened ? place(BOX_OPEN, 14, 4) : place(BOX, 15, 5);
+  const layers = [chute, box];
+  if (on < 200) return { pose: 'stand', layers };
+  if (on < 330) return { pose: 'step', hx: 1, layers };
+  if (on < 480) return { pose: 'stand', hx: 2, layers };
+  if (on < 620) return { pose: 'crouch', hx: 2, layers };
+  if (on < 1300) {
+    const k = on - 620;
+    const shine = k < 90 ? [dot(16, 4, 'W')] : k < 400 ? twinkle(16, 2, 2) : k < 560 ? twinkle(16, 2, 1) : [];
+    return { pose: 'cheer', hx: 2, layers: [...layers, ...shine] };
+  }
+  if (on < 1430) return { pose: 'step', hx: 1, layers };
+  if (on < 1600) return { pose: 'stand', layers };
+  return null;
+};
+
+const CONFETTI_COLORS = ['r', 'd', 'y', 'W', 'm'];
+/** 오래 걸린 일을 마쳤다: 웅크렸다가 뛰며 입에서 색종이를 터뜨린다. 색종이는 하늘거리며 내려앉는다. */
+const CONFETTI_POP: ActionFn = (t) => {
+  if (t < 140) return { pose: 'crouch' };
+  const s = t - 140;
+  if (s >= 2300) return null;
+  const bits: Layer[] = [];
+  const RISE = 300;
+  for (let i = 0; i < 12; i++) {
+    // 부채꼴로 고르게 퍼진다 — 색과 높이는 섞는다.
+    const vx = -2.2 + ((i * 5) % 12) * 0.5;
+    const up = 3 + ((i * 7) % 4);
+    const x0 = 11, y0 = 1;
+    let x: number, y: number;
+    if (s < RISE) {
+      const p = s / RISE;
+      x = x0 + (vx * s) / 100;
+      y = y0 - up * (1 - (1 - p) * (1 - p));
+    } else {
+      const fall = s - RISE;
+      // 꼭대기에서는 천천히 떨어지며 좌우로 한 칸씩 흔들린다.
+      x = x0 + (vx * RISE) / 100 + (vx * fall) / 600 + (Math.floor(fall / 140 + i) % 2);
+      y = y0 - up + fall / (100 + noise(i + 3) * 40);
+    }
+    if (y >= GROUND + 1) continue;
+    bits.push(dot(Math.round(x), Math.min(GROUND, Math.round(y)), CONFETTI_COLORS[i % CONFETTI_COLORS.length]!));
+  }
+  const hop = s < 100 ? -2 : s < 220 ? -1 : s > 900 && s < 1050 ? -1 : 0;
+  // 색종이는 몸 뒤로 지나간다.
+  return { pose: s < 1700 ? 'cheer' : 'stand', hy: hop, behind: bits, layers: s < 80 ? [dot(10, 0, 'W')] : [] };
+};
+
+/** 새 채팅: 빗자루를 물고 앞을 쓸면 먼지가 날아가고, 깨끗해진 자리가 반짝인다. */
+const SWEEP: ActionFn = (t) => {
+  const STROKE = 200;
+  const STROKES = 7;
+  const k = Math.floor(t / STROKE);
+  const layers: Layer[] = [];
+  // 앞으로 쓸 때마다 먼지 두 점이 앞으로 튄다.
+  for (let j = 0; j < STROKES; j += 2) {
+    const age = t - j * STROKE - 60;
+    if (age < 0 || age > 460) continue;
+    const s = age / 80;
+    layers.push(dot(19 + Math.round(s * 0.6), GROUND + arc(age / 460, 2), 'p'));
+    layers.push(dot(19 + Math.round(s * 0.3), GROUND + arc(age / 460, 4), 'L'));
+    if (age > 120) layers.push(dot(19 + Math.round(s * 0.5), GROUND + arc((age - 120) / 340, 3), 'p'));
+  }
+  if (k < STROKES) {
+    const out = k % 2 === 0;
+    return { pose: out ? 'step' : 'stand', hx: out ? 1 : 0, layers: [place(BROOM, out ? 14 : 13, 4), ...layers] };
+  }
+  const end = t - STROKES * STROKE;
+  if (end >= 700) return null;
+  const shine = end < 120 ? twinkle(18, 6, 1) : end < 420 ? twinkle(18, 5, 2) : [];
+  return { pose: end > 480 && end < 580 ? 'ear' : 'stand', layers: [place(BROOM, 13, 4), ...layers, ...shine] };
+};
+
+/** 등에 묶은 풍선이 부풀어 하마를 들어 올리다 터지고, 하마는 떨어져 어질어질하다. */
+const BALLOON_RIDE: ActionFn = (t) => {
+  if (t >= 2000) return null;
+  const sway = Math.floor(t / 280) % 2;
+  // 등에 묶은 실 — 풍선이 흔들리면 윗부분이 따라간다.
+  const string = (x: number): Layer[] => [dot(3, 3, 'p'), dot(3, 2, 'p'), dot(x, 1, 'p'), dot(x, 0, 'p')];
+  if (t < 150) return { pose: 'stand', layers: [...string(3), dot(3, -1, 'r')] };
+  if (t < 300) return { pose: 'stand', layers: [...string(3), place(BALLOON_HALF, 3, -2)] };
+  const LIFT = 6;
+  if (t < 1260) {
+    const p = Math.min(1, (t - 300) / 900);
+    const y = -Math.round(LIFT * (1 - (1 - p) * (1 - p)));
+    // 들리면 발을 버둥거린다.
+    const pose: PoseName = y < 0 && Math.floor(t / 140) % 2 ? 'stand' : 'step';
+    return { pose, y, layers: [...string(3 + sway), place(BALLOON, 2 + sway, -5)] };
+  }
+  if (t < 1340) {
+    const burst = [dot(1, -6, 'r'), dot(6, -6, 'r'), dot(0, -3, 'r'), dot(7, -3, 'r'), dot(1, 0, 'r'), dot(6, 0, 'r'), dot(3, -3, 'W'), dot(4, -3, 'W')];
+    return { pose: 'cheer', y: -LIFT, layers: [...string(3), ...burst] };
+  }
+  if (t < 1540) {
+    const p = (t - 1340) / 200;
+    return { pose: 'step', y: -LIFT + Math.round(LIFT * p * p) };
+  }
+  if (t < 1640) return { pose: 'crouch', impact: true };
+  return { pose: t > 1880 ? 'ear' : 'stand', x: t < 1840 ? (Math.floor(t / 70) % 2 ? 1 : -1) : 0 };
+};
+
+/** 비눗방울을 불어 띄운다 — 큰 것 하나, 작은 것 하나. 떠오르다 톡 터진다. */
+function blown(age: number, big: boolean): Layer[] {
+  if (age < 0) return [];
+  if (age < 200) return [dot(13, 3, 'd')];
+  if (age < 400 || (big && age < 600)) return [age < 400 ? place(BUBBLE, 13, 2) : place(BUBBLE_BIG, 13, 1)];
+  const rel = age - (big ? 600 : 400);
+  const art = big ? BUBBLE_BIG : BUBBLE;
+  const x = 13 + Math.floor(rel / 300) + (Math.floor(rel / 220) % 2);
+  const y = (big ? 1 : 2) - Math.floor(rel / 110);
+  const top = big ? -4 : -2;
+  if (y > top) return [place(art, x, y)];
+  // 터지면 네 귀퉁이로 물방울이 튄다.
+  const pop = rel - ((big ? 1 : 2) - top) * 110;
+  if (pop > 140) return [];
+  const [w, h] = [art[0]!.length, art.length];
+  return [dot(x - 1, y - 1, 'W'), dot(x + w, y - 1, 'W'), dot(x - 1, y + h, 'W'), dot(x + w, y + h, 'W')];
+}
+const BUBBLE_BLOW: ActionFn = (t) => {
+  if (t >= 2400) return null;
+  const layers = [...blown(t - 150, true), ...blown(t - 1250, false)];
+  const pose: PoseName = t < 150 || (t > 1100 && t < 1250) ? 'crouch' : t > 2150 && t < 2250 ? 'ear' : 'stand';
+  return { pose, layers };
+};
+
+/** 머리 위에 비구름이 와서 비를 뿌리면, 움츠렸다가 우산을 펴고 버틴다. 구름이 가면 몸을 턴다. */
+const RAIN_SHOWER: ActionFn = (t) => {
+  if (t >= 2700) return null;
+  const layers: Layer[] = [];
+  const umbrella = t < 1000 || t >= 2460 ? null
+    : t < 1080 || t >= 2380 ? place(UMBRELLA_SHUT, 6, 0)
+      : t < 1160 || t >= 2300 ? place(UMBRELLA_HALF, 4, -1) : place(UMBRELLA, 3, -1);
+  const open = t >= 1160 && t < 2300;
+  // 빗방울: 구름 아래에서 떨어져 머리(우산을 펴면 우산 위)에서 사라진다.
+  for (let i = 0; i < 26; i++) {
+    const born = 350 + i * 70;
+    const age = t - born;
+    if (age < 0 || born > 2100) continue;
+    const col = 3 + Math.floor(noise(i + 11) * 7);
+    const y = -2 + Math.floor(age / 45);
+    const floor = open ? -2 : col < 5 ? 3 : 2;
+    if (y <= floor) layers.push(dot(col, y, 'd'));
+  }
+  // 우산 끝에서 떨어지는 물.
+  if (open && t < 2200) {
+    for (const [x, at] of [[3, 1300], [9, 1390], [3, 1660], [9, 1750], [3, 2020]] as const) {
+      const age = t - at;
+      const y = 1 + Math.floor(age / 50);
+      if (age >= 0 && y <= GROUND) layers.push(dot(x, y, 'd'));
+    }
+  }
+  if (t < 2500) {
+    const x = t < 400 ? Math.round(lerp(-9, 2, t / 400)) : t < 2100 ? 2 : Math.round(lerp(2, 9, (t - 2100) / 400));
+    layers.unshift(place(CLOUD, x, -5, t >= 2100 ? { L: COLORS.p!, p: COLORS.P! } : undefined));
+  }
+  if (umbrella) layers.push(umbrella, ...(open ? [dot(6, 1, 'L'), dot(6, 2, 'L')] : []));
+  if (t < 450) return { pose: 'stand', layers };
+  if (t < 600) return { pose: 'ear', layers };
+  if (t < 1160) return { pose: 'crouch', layers };
+  if (t < 2300) return { pose: t > 1700 && t < 1800 ? 'ear' : 'stand', layers };
+  return { pose: 'stand', x: t < 2600 ? (Math.floor(t / 60) % 2 ? 1 : -1) : 0, layers };
+};
+
+/** 물개처럼 코끝으로 공을 튀긴다 — 점점 높이 세 번, 잠깐 버티다가 공을 앞으로 굴려 보낸다. */
+const NOSE_BALL: ActionFn = (t) => {
+  const ball = (x: number, y: number): Layer => place(BEACH_BALL[Math.floor(t / 90) % 2]!, x, y);
+  const REST = 1;
+  if (t < 300) return { pose: 'stand', layers: [ball(10, Math.round(lerp(-7, REST, (t / 300) ** 2)))] };
+  let at = t - 300;
+  for (const [ms, height] of [[360, 3], [400, 4], [460, 5]] as const) {
+    if (at < ms) return { pose: at < 80 ? 'cheer' : 'stand', layers: [ball(10, REST + arc(at / ms, height))] };
+    at -= ms;
+  }
+  // 코 위에서 버틴다 — 몸이 한 칸씩 흔들려도 공은 코를 따라간다.
+  if (at < 420) {
+    const sway = [0, -1, 0, 1][Math.floor(at / 105)] ?? 0;
+    return { pose: at > 300 ? 'ear' : 'stand', hx: sway, layers: [ball(10 + sway, REST)] };
+  }
+  at -= 420;
+  const ROLL = [[11, 1], [12, 2], [13, 3], [14, 5], [15, 6], [16, 5], [17, 5], [18, 6], [19, 6], [20, 6]] as const;
+  const step = Math.floor(at / 70);
+  if (step < ROLL.length) {
+    const [x, y] = ROLL[step]!;
+    return { pose: 'stand', layers: [ball(x, y)] };
+  }
+  return null;
+};
+
 const ACTIONS = {
   hop: HOP, cheer: CHEER, backflip: BACKFLIP, shuffle: SHUFFLE, land: LAND, shake: SHAKE,
   jump: JUMP, splash: SPLASH, smash: SMASH, swim: SWIM, skate: SKATE, ballBounce: BALL_BOUNCE, drop: DROP,
+  stamp: towardRoom(STAMP_DOWN), plane: towardRoom(PAPER_PLANE), boomerang: towardRoom(BOOMERANG_THROW),
+  parcel: towardRoom(PARCEL_DROP), confetti: towardRoom(CONFETTI_POP), broom: towardRoom(SWEEP),
+  balloon: BALLOON_RIDE, bubbles: towardRoom(BUBBLE_BLOW), rain: RAIN_SHOWER, noseBall: towardRoom(NOSE_BALL),
 } satisfies Record<string, ActionDef>;
 type ActionName = keyof typeof ACTIONS;
-const TRICKS: readonly ActionName[] = ['jump', 'backflip', 'ballBounce', 'splash', 'smash', 'swim', 'skate'];
+export type HamaActionName = ActionName;
+const TRICKS: readonly ActionName[] = ['jump', 'backflip', 'ballBounce', 'splash', 'smash', 'swim', 'skate', 'balloon', 'noseBall', 'boomerang'];
+/** 한가할 때 가끔 하는 큰 몸짓. */
+const IDLE_TRICKS: readonly ActionName[] = ['jump', 'swim', 'backflip', 'splash', 'bubbles', 'rain', 'noseBall'];
+/** 앱 순간과 재주로 더한 몸짓 — 미리보기에서 하나씩 본다. */
+export const HAMA_SHOWCASE: readonly ActionName[] = ['stamp', 'plane', 'boomerang', 'parcel', 'confetti', 'broom', 'balloon', 'bubbles', 'rain', 'noseBall'];
+/** 하던 몸짓을 끊어도 되는 잔동작. */
+const AMBIENT: ReadonlySet<ActionName> = new Set(['hop', 'shuffle', 'land']);
 
 const TYPING = [[90, 1], [80, 0], [90, 1], [80, 0], [70, 1], [260, 0], [90, 1], [70, 0], [90, 1], [200, 0], [80, 1], [80, 0], [90, 1], [420, 0]] as const;
 const TYPING_MS = TYPING.reduce((s, [ms]) => s + ms, 0);
@@ -514,6 +796,11 @@ export class Hama implements ActionHost {
     }
   }
 
+  /** 끌리지 않고, 상태 몸짓이나 재주를 하지 않는가. 깡충·발 구르기 같은 잔동작은 끊어도 된다. */
+  isFree(): boolean {
+    return !this.drag && (this.mode === 'idle' || this.mode === 'sleep') && (!this.action || AMBIENT.has(this.action.name));
+  }
+
   /** 마우스가 하마에 닿으면 귀를 턴다. */
   hover(): void {
     if (!this.action && this.mode === 'idle') this.micro = { pose: 'ear', until: performance.now() + 220 };
@@ -617,7 +904,7 @@ export class Hama implements ActionHost {
           else if (roll < 0.7) this.play('shuffle');
           else if (roll < 0.8) this.play('hop');
           else if (roll < 0.9) this.walkTo(this.x - 4 - Math.random() * 8, true);
-          else this.play((['jump', 'swim', 'backflip', 'splash'] as const)[Math.floor(Math.random() * 4)]!);
+          else this.play(IDLE_TRICKS[Math.floor(Math.random() * IDLE_TRICKS.length)]!);
         }
         this.nextIdle = now + 1800 + Math.random() * 2600;
       }
@@ -627,7 +914,7 @@ export class Hama implements ActionHost {
     const t = Math.max(0, now - this.modeAt);
     const m = MODES[this.mode](t);
     let pose = m.pose;
-    let dx = 0, dy = 0, turn = 0, hy = 0;
+    let dx = 0, dy = 0, turn = 0, hx = 0, hy = 0;
     let clip: number | undefined;
     let fx = m.fx ?? [];
     let behind = m.behind ?? [];
@@ -650,6 +937,7 @@ export class Hama implements ActionHost {
         dx = f.x ?? 0;
         dy = f.y ?? 0;
         turn = f.turn ?? 0;
+        hx = f.hx ?? 0;
         hy = f.hy ?? 0;
         clip = f.clip ? GROUND + 1 : undefined;
         fx = f.fx ? sparkle(f.fx) : f.layers ?? [];
@@ -667,6 +955,7 @@ export class Hama implements ActionHost {
       pose = this.drag.lift > 0 && Math.floor(now / 140) % 2 ? 'stand' : 'step';
       dy = -2 - this.drag.lift;
       dx = 0;
+      hx = 0;
       turn = 0;
     } else if (walking && !this.action) {
       pose = Math.floor(now / 120) % 2 ? 'step' : 'stand';
@@ -674,13 +963,19 @@ export class Hama implements ActionHost {
       pose = this.micro.pose;
     }
     if (m.nod && !this.action) dy += 1;
-    const layers = [...behind, { art: POSES[pose], y: hy, clip }, ...fx];
+    const layers = [...behind, { art: POSES[pose], x: hx, y: hy, clip }, ...fx];
     return { layers, dx, dy, turn };
   }
 
   private render(now: number): void {
     if (!this.el.isConnected) return;
     const f = this.frame(now);
+    // 지금 하는 몸짓 이름(미리보기·시험용).
+    const action = this.action?.name ?? '';
+    if ((this.el.dataset.action ?? '') !== action) {
+      if (action) this.el.dataset.action = action;
+      else delete this.el.dataset.action;
+    }
     const light = document.documentElement.dataset.themeEffective === 'light';
     const facing = this.fixedFacing ?? this.facing;
     const key = JSON.stringify(f) + this.x + facing + light;
@@ -746,12 +1041,31 @@ export interface ChatHama {
   tool(tool: string, argsJson?: string): void;
   /** 답을 쓰는 중이다. */
   talking(): void;
-  /** 턴이 끝났다 — 완료면 환호, 실패면 움츠림, 중단이면 그냥 선다. */
+  /** 턴이 끝났다 — 완료면 환호(오래 걸렸으면 색종이), 실패면 움츠림, 중단이면 그냥 선다. */
   turnEnded(outcome: TurnOutcome): void;
+  /** 앱에서 일이 생겼다. 보이고 한가할 때만, 잦지 않게 몸짓으로 답한다. */
+  react(moment: HamaMoment): void;
+  /** 이름으로 몸짓을 바로 한다(미리보기·시험용). 하마가 없으면 false. */
+  perform(name: HamaActionName): boolean;
   /** 지금 상태(시험용). */
   readonly mode: ChatHamaMode;
   dispose(): void;
 }
+
+/** 하마가 답하는 앱의 순간. */
+export type HamaMoment = 'saved' | 'exported' | 'undone' | 'opened' | 'newChat';
+/** 순간마다 하는 몸짓과, 같은 순간에 다시 답하기까지 두는 간격. */
+const MOMENTS: Record<HamaMoment, { action: ActionName; gapMs: number }> = {
+  saved: { action: 'stamp', gapMs: 60_000 },
+  exported: { action: 'plane', gapMs: 15_000 },
+  undone: { action: 'boomerang', gapMs: 120_000 },
+  opened: { action: 'parcel', gapMs: 30_000 },
+  newChat: { action: 'broom', gapMs: 30_000 },
+};
+/** 어떤 순간이든 앞 몸짓과 두는 간격. */
+const MOMENT_GAP_MS = 8000;
+/** 이보다 오래 돈 턴을 마치면 색종이를 터뜨린다. */
+const LONG_RUN_MS = 60_000;
 
 const RUNNING_MODES: ReadonlySet<ChatHamaMode> = new Set(['think', 'work', 'read', 'search', 'talk']);
 /** 끝 상태를 보인 뒤 한가함으로 돌아가기까지. */
@@ -761,6 +1075,9 @@ export function createChatHama(opts: ChatHamaOptions): ChatHama {
   const { composer, input, hitRoot } = opts;
   let mode: ChatHamaMode = 'idle';
   let running = false;
+  let runStartedAt = 0;
+  let lastMomentAt = -Infinity;
+  const momentAt = new Map<HamaMoment, number>();
   let settleAt = 0;
   let settleTimer = 0;
   let homeTimer = 0;
@@ -975,6 +1292,7 @@ export function createChatHama(opts: ChatHamaOptions): ChatHama {
       if (next === running) return;
       running = next;
       if (next) {
+        runStartedAt = performance.now();
         if (!RUNNING_MODES.has(mode)) {
           setMode('think');
           mounted?.hama.play('hop');
@@ -990,8 +1308,27 @@ export function createChatHama(opts: ChatHamaOptions): ChatHama {
       if (running && mode !== 'talk') setMode('talk');
     },
     turnEnded(outcome: TurnOutcome): void {
+      const long = runStartedAt > 0 && performance.now() - runStartedAt >= LONG_RUN_MS;
       running = false;
+      runStartedAt = 0;
       setMode(outcome === 'completed' ? 'done' : outcome === 'failed' ? 'error' : 'idle');
+      if (outcome === 'completed' && long && isActive()) mounted?.hama.play('confetti');
+    },
+    react(moment: HamaMoment): void {
+      if (!mounted || !isActive() || running || (mode !== 'idle' && mode !== 'sleep') || !mounted.hama.isFree()) return;
+      const now = performance.now();
+      const { action, gapMs } = MOMENTS[moment];
+      if (now - lastMomentAt < MOMENT_GAP_MS || now - (momentAt.get(moment) ?? -Infinity) < gapMs) return;
+      lastMomentAt = now;
+      momentAt.set(moment, now);
+      mounted.hama.wake();
+      mounted.hama.play(action);
+    },
+    perform(name: HamaActionName): boolean {
+      if (!mounted) return false;
+      mounted.hama.wake();
+      mounted.hama.play(name);
+      return true;
     },
     get mode() {
       return mode;

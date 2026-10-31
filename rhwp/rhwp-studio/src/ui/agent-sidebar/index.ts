@@ -214,7 +214,7 @@ import { createEffortSlider } from './effort-slider.ts';
 import { createChatScrollRail } from './chat-scroll-rail.ts';
 import { formatTokens } from './usage-format.ts';
 import { createComposerRestingMotion } from './composer-resting.ts';
-import { createChatHama, type ChatHama } from './chat-hama.ts';
+import { createChatHama, type ChatHama, type HamaActionName } from './chat-hama.ts';
 import { rauEntry, rauIsDefault, readHarnessChoice, recordHarnessChoice } from './rau-harness.ts';
 import { createArrivalGuard, typingActivity as windowTypingActivity, type TypingActivity } from './typing-guard.ts';
 import { createDelayedStatus, revealAfterDelay } from './delayed-status.ts';
@@ -556,6 +556,8 @@ export interface AgentSidebarHandle {
   startDraftChat(): void;
   /** 이 사이드바가 보이는 채팅. 초안이거나 비어 있으면 null. */
   currentThreadId(): string | null;
+  /** 입력기 위 하마에게 이름으로 몸짓을 시킨다(미리보기·시험용). 하마가 꺼져 있으면 false. */
+  playHama(name: HamaActionName): boolean;
   /** 기록에서 배운 구분선을 그 채팅의 끝에 남긴다. 보이는 채팅에서 턴이 돌면 턴이 끝난 뒤에. */
   addTasteHistoryMarker(threadId: string, learned: TasteHistoryLearned): void;
   /** 보이는 채팅에 아직 문서가 없다 (초안 포함). 문서를 이을 수 있다. */
@@ -4466,7 +4468,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     input,
     hitRoot: chatPage,
     enabled: () => userSettings.getViewSettings().showHama,
-    shown: () => active && (root.classList.contains('ag-fullscreen') || !root.classList.contains('ag-collapsed')),
+    // 전체 화면의 빈 채팅에서는 픽셀 무대의 하마가 주인공이라 입력기 하마는 쉬고 숨는다.
+    shown: () => active && (root.classList.contains('ag-fullscreen') || !root.classList.contains('ag-collapsed'))
+      && !chatPage.classList.contains('ag-chat-empty'),
   });
   const unsubscribeHamaSetting = userSettings.subscribe(() => chatHama?.sync());
   // 접기·집중 화면·설정이나 목록 같은 다른 면은 모두 뿌리의 클래스로 바뀐다.
@@ -4678,6 +4682,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       animate: fullscreen && !threadChanged,
       reroll: threadChanged,
     });
+    chatHama?.sync();
   }
   chatPage.append(header, messages, focusGreeting.root, review, compactChanges, planSurface, planRestore, reconnectChip, setupChip, calibrationChip, rauUpgradeChip.root, watchStrip.root, followUpStrip.root, questionController.root, composer);
   messages.after(latestDock);
@@ -9494,6 +9499,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       // 초안마다 새 인사를 고른다 — 이미 집중 모드여도 빈 채팅 배치를 다시 세운다.
       syncFocusGreeting();
       input.focus({ preventScroll: true });
+      chatHama?.react('newChat');
       return;
     }
     selectTemplate(null);
@@ -13866,6 +13872,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         }),
         eventBus.on('history-jumped', () => { turnChanges.clear(); rebuildReview(); scheduleChangesRefresh(); }),
         eventBus.on('document-swapped', () => { turnChanges.clear(); rebuildReview(); scheduleChangesRefresh(); updateDocumentContext(); }),
+        // 하마가 앱의 순간에 답한다 — 보이고 한가할 때만, 잦지 않게(chat-hama.ts).
+        eventBus.on('document-saved', () => chatHama?.react('saved')),
+        eventBus.on('document-exported', () => chatHama?.react('exported')),
+        eventBus.on('history-jumped', () => chatHama?.react('undone')),
+        eventBus.on('document-swapped', () => chatHama?.react('opened')),
         eventBus.on('document-context-changed', updateDocumentContext),
         eventBus.on('cursor-format-changed', updateDocumentContext),
         eventBus.on('picture-object-selection-changed', updateDocumentContext),
@@ -14293,6 +14304,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       setFullscreen(false);
     },
     startupChatSettled: () => startupChatSettled,
+    playHama: (name) => chatHama?.perform(name) ?? false,
     openThreadFromHost(threadId: string): void {
       if (root.dataset.disposed === 'true') return;
       setCollapsed(false);
