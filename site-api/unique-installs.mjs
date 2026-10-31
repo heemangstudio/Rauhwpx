@@ -103,59 +103,56 @@ export function createUniqueInstallsService({
   now = Date.now,
   pingKey = DEFAULT_UNIQUE_INSTALL_PING_KEY,
 } = {}) {
-  let mutation = Promise.resolve();
-
-  function withLock(fn) {
-    const result = mutation.then(fn, fn);
-    mutation = result.then(() => undefined, () => undefined);
-    return result;
-  }
-
   async function summary() {
-    const state = await store.load();
+    const state = await store.read();
     return uniqueInstallsPublicSummary(countOfficialUniqueInstalls(state));
   }
 
   async function record(body) {
     const ping = parseUniqueInstallPing(body, pingKey);
-    return withLock(async () => {
-      const state = await store.load();
-      if (!state.installs || typeof state.installs !== 'object' || Array.isArray(state.installs)) {
-        state.installs = {};
-      }
-      const digest = uniqueInstallDigest(ping.installId);
-      const existing = state.installs[digest];
-      if (existing) {
-        return {
-          uniqueInstalls: countOfficialUniqueInstalls(state),
-          created: false,
-          official: existing.official === true,
-        };
-      }
-      state.installs[digest] = {
-        official: isOfficialDesktopPlatform(ping.os, ping.arch),
-        firstSeenAt: new Date(now()).toISOString(),
-        appVersion: ping.appVersion,
-        os: ping.os,
-        arch: ping.arch,
-      };
-      try {
-        await store.save(state);
-      } catch (error) {
-        if (error?.code === 'STORE_TOO_LARGE') {
-          throw uniqueInstallsError(
-            'UNIQUE_INSTALLS_CAPACITY_EXCEEDED',
-            '고유 설치 저장 공간이 가득 찼어요',
-          );
+    try {
+      const { value } = await store.update((state) => {
+        if (!state.installs || typeof state.installs !== 'object' || Array.isArray(state.installs)) {
+          state.installs = {};
         }
-        throw error;
+        const digest = uniqueInstallDigest(ping.installId);
+        const existing = state.installs[digest];
+        if (existing) {
+          return {
+            dirty: false,
+            value: {
+              uniqueInstalls: countOfficialUniqueInstalls(state),
+              created: false,
+              official: existing.official === true,
+            },
+          };
+        }
+        state.installs[digest] = {
+          official: isOfficialDesktopPlatform(ping.os, ping.arch),
+          firstSeenAt: new Date(now()).toISOString(),
+          appVersion: ping.appVersion,
+          os: ping.os,
+          arch: ping.arch,
+        };
+        return {
+          value: {
+            uniqueInstalls: countOfficialUniqueInstalls(state),
+            created: true,
+            official: state.installs[digest].official,
+          },
+        };
+      });
+      return value;
+    } catch (error) {
+      // The file store's 8 MiB limit; Postgres has none.
+      if (error?.code === 'STORE_TOO_LARGE') {
+        throw uniqueInstallsError(
+          'UNIQUE_INSTALLS_CAPACITY_EXCEEDED',
+          '고유 설치 저장 공간이 가득 찼어요',
+        );
       }
-      return {
-        uniqueInstalls: countOfficialUniqueInstalls(state),
-        created: true,
-        official: state.installs[digest].official,
-      };
-    });
+      throw error;
+    }
   }
 
   return { summary, record };
