@@ -124,46 +124,6 @@
   word-break: keep-all;
 }
 
-/* ── 릴리스 노트 ── 굵은 버전 줄, 3px 네모로 시작하는 항목, 흐린 "외 N개 더". */
-.uh-heading {
-  font-size: 13px;
-  font-weight: 700;
-  line-height: 1.4;
-  letter-spacing: -0.01em;
-}
-
-.uh-board[data-sign='notes'] {
-  gap: 3px;
-  padding: 9px 12px;
-}
-
-.uh-board[data-sign='notes'] .uh-text {
-  gap: 1px;
-  font-weight: 500;
-}
-
-.uh-board[data-sign='notes'] .uh-text span {
-  position: relative;
-  padding-left: 12px;
-}
-
-.uh-board[data-sign='notes'] .uh-text span::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: calc(0.75em - 2px);
-  width: 6px;
-  height: 6px;
-  background: #62b3e2; /* 하마 몸 색 */
-}
-
-.uh-footnote {
-  padding-left: 12px;
-  color: var(--dh-text-secondary, #5b636e);
-  font-size: 12px;
-  line-height: 1.5;
-}
-
 .uh-actions {
   display: flex;
   flex: none;

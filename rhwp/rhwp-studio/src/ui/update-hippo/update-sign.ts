@@ -19,12 +19,8 @@ export interface UpdateSignAction {
 export interface UpdateSign {
   key: string;
   tone: 'plain' | 'warning';
-  /** 글 줄 위의 굵은 제목(릴리스 노트의 버전). */
-  heading?: string;
   /** 팻말의 글 줄. 문장마다 한 줄이다. */
   lines: string[];
-  /** 글 줄 아래의 흐린 한 줄(릴리스 노트의 "외 N개 더"). */
-  footnote?: string;
   /** 0..100. 내려받는 동안에만 있다. */
   progress: number | null;
   actions: UpdateSignAction[];

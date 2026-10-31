@@ -186,6 +186,36 @@ export function createPartyHama(): HTMLCanvasElement {
   return canvas;
 }
 
+/**
+ * 릴리스 노트 카드의 하마. 막 열린 상자를 보며 입을 벌리고, 상자 위로 뚜껑이 떠오르며 반짝인다.
+ * light 면 흰 반짝임을 진한 파랑, 옅은 반짝임을 하마 색으로 바꾼다.
+ */
+export function createReleaseHama(light: boolean): HTMLCanvasElement {
+  const canvas = document.createElement('canvas');
+  canvas.className = 'rn-hama';
+  canvas.width = 30;
+  canvas.height = 14;
+  canvas.setAttribute('aria-hidden', 'true');
+  const box = ['mmmrmmm', 'mmmrmmm', 'MMMrMMM', 'MMMrMMM', 'MMMrMMM'];
+  const lid = ['mmmmrmmmm', 'MMMMrMMMM'];
+  const palette = { ...COLORS, M: '#a3683c', ...(light ? { ...LIGHT_COLORS, h: '#62b3e2' } : {}) };
+  drawLayers(canvas.getContext('2d')!, [
+    { art: OPEN_EAR, x: -1, y: 1 },
+    { art: box, x: 15, y: 4 },
+    { art: lid, x: 14, y: -1 },
+    ...sparkleAt(18, 2, 2),
+    ...sparkleAt(23, -3, 1),
+    dot(12, -2, 'h'),
+  ], palette);
+  return canvas;
+}
+
+function sparkleAt(x: number, y: number, size: number): Layer[] {
+  const out = [dot(x, y, 'W')];
+  if (size > 1) for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) out.push(dot(x + dx, y + dy, 'h'));
+  return out;
+}
+
 const dot = (x: number, y: number, ch: string): Layer => ({ art: [ch], x, y });
 function sparkle(size: number): Layer[] {
   const [x, y] = [9, -2];

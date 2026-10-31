@@ -372,6 +372,7 @@ import {
 } from './versioning/index.ts';
 import type { AgentEditingLease, TasteHistoryLearned } from './agent/types.ts';
 import { mountUpdateHippo } from './ui/update-hippo/update-hippo.ts';
+import { mountReleaseCard } from './ui/update-hippo/release-card.ts';
 import {
   contextualEditingToolbarMode,
   contextualObjectCommandEnabled,
@@ -3186,7 +3187,8 @@ function installDocumentHome(): void {
       mountHomeRauEntry(slot);
       mountAccountButton(slot, { store: accountStore(), plan: sharedPlanStore() });
     },
-    mountCorner: (slot) => mountUpdateHippo(slot, window, __APP_VERSION__, sharedPlanStore()),
+    mountCorner: (slot) => mountUpdateHippo(slot, window, sharedPlanStore()),
+    mountNotice: (slot) => mountReleaseCard(slot),
     unsaved: {
       list: () => unsavedDocumentStore.list(),
       subscribe: (listener) => unsavedDocumentStore.subscribe(listener),

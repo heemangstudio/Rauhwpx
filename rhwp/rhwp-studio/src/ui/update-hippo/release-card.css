@@ -1,0 +1,137 @@
+/* 문서 홈 맨 위의 릴리스 노트 카드 (release-card.ts). 테두리는 업데이트 하마 팻말처럼 한 칸(3px)씩
+   깎은 모서리와 아래로 떨어진 그림자로 그린다. 색은 문서 홈 토큰(--dh-*)을 읽는다. */
+.rn-card {
+  --rn-px: 3px;
+  --rn-edge: var(--dh-hairline-strong, #c4cad3);
+  --rn-shade: var(--dh-hairline, #d9dde3);
+  --rn-scene: #e6f5ff;
+  --rn-added: #62b3e2; /* 하마 몸 색 */
+  --rn-fixed: var(--dh-text-muted, #626b77);
+
+  position: relative;
+  display: flex;
+  gap: 24px;
+  margin: 0 var(--rn-px);
+  padding: 15px 48px 18px 15px;
+  background: var(--dh-raised, #ffffff);
+  color: var(--dh-text, #171b22);
+  box-shadow:
+    0 calc(-1 * var(--rn-px)) 0 0 var(--rn-edge),
+    0 var(--rn-px) 0 0 var(--rn-edge),
+    calc(-1 * var(--rn-px)) 0 0 0 var(--rn-edge),
+    var(--rn-px) 0 0 0 var(--rn-edge),
+    0 calc(2 * var(--rn-px)) 0 0 var(--rn-shade);
+}
+
+:root[data-theme-effective='dark'] .rn-card {
+  --rn-shade: #000000;
+  --rn-scene: #15232d;
+}
+
+.rn-scene {
+  display: flex;
+  flex: none;
+  align-items: flex-end;
+  align-self: flex-start;
+  justify-content: center;
+  width: 216px;
+  height: 120px;
+  padding-bottom: 15px;
+  background: var(--rn-scene);
+}
+
+/* 30×14 그림을 여섯 배로. */
+.rn-hama {
+  display: block;
+  width: 180px;
+  height: 84px;
+  image-rendering: pixelated;
+}
+
+.rn-hama-dark { display: none; }
+:root[data-theme-effective='dark'] .rn-hama-light { display: none; }
+:root[data-theme-effective='dark'] .rn-hama-dark { display: block; }
+
+.rn-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  padding-top: 3px;
+}
+
+.rn-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+}
+
+.rn-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.rn-label {
+  margin: 0 0 6px;
+  color: var(--dh-text-muted, #626b77);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.rn-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  column-width: 220px;
+  column-gap: 32px;
+}
+
+.rn-item {
+  position: relative;
+  padding-left: 15px;
+  break-inside: avoid;
+  font-size: 13px;
+  line-height: 1.6;
+  letter-spacing: -0.01em;
+  word-break: keep-all;
+}
+
+/* 픽셀 네모 글머리표. 새 기능은 하마 색, 고친 문제는 흐린 색. */
+.rn-item::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: calc(0.8em - 3px);
+  width: 6px;
+  height: 6px;
+  background: var(--rn-added);
+}
+
+.rn-fixed .rn-item::before { background: var(--rn-fixed); }
+
+.rn-close {
+  position: absolute;
+  top: 9px;
+  right: 9px;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--dh-text-muted, #626b77);
+  cursor: pointer;
+}
+
+.rn-close svg { fill: currentColor; }
+.rn-close:hover { background: var(--dh-hover, rgba(23, 27, 34, 0.06)); color: var(--dh-text, #171b22); }
+.rn-close:active { background: var(--dh-pressed, rgba(23, 27, 34, 0.1)); }
+.rn-close:focus-visible { outline: 2px solid var(--dh-focus, #4b5563); outline-offset: 0; }
+
+@media (max-width: 640px) {
+  .rn-scene { display: none; }
+}

@@ -147,6 +147,14 @@ html:is(.desktop-mac, .desktop-windows) .dh-topbar :is(button, a, input, [role='
   padding: 0 40px;
 }
 
+/* 릴리스 노트 카드 자리. 새로 만들기 띠와 같은 면으로 이어진다. */
+.dh-notice {
+  padding-top: 24px;
+  background: var(--dh-strip);
+}
+
+.dh-notice:has(> .dh-inner:empty) { display: none; }
+
 .dh-start {
   padding: 20px 0 24px;
   border-bottom: 1px solid var(--dh-hairline);

@@ -5,10 +5,9 @@ import {
   markReleaseNotesSeen,
   pendingReleaseNotes,
   RELEASE_NOTES_STORAGE_KEY,
-  releaseNotesSign,
 } from '../src/ui/update-hippo/release-notes.ts';
 
-const NOTES = { '3.1.0': ['가', '나', '다', '라', '마', '바'], '3.1.1': [] };
+const NOTES = { '3.1.0': { added: ['가', '나'], fixed: ['다'] }, '3.1.1': { added: [], fixed: [] } };
 
 function storage(initial: Record<string, string> = {}) {
   const map = new Map(Object.entries(initial));
@@ -44,7 +43,7 @@ test('새로 설치하면 노트를 보이지 않고, 다음 업데이트부터 
   assert.equal(pendingReleaseNotes('3.1.0', store, NOTES), null);
 });
 
-test('노트가 없는 버전은 팻말을 들지 않는다', () => {
+test('노트가 없는 버전은 카드를 띄우지 않는다', () => {
   assert.equal(pendingReleaseNotes('3.1.1', existingUser(), NOTES), null);
   assert.equal(pendingReleaseNotes('9.9.9', existingUser(), NOTES), null);
 });
@@ -56,22 +55,4 @@ test('저장소가 막혀도 노트 확인이 실패하지 않는다', () => {
   };
   assert.equal(pendingReleaseNotes('3.1.0', broken, NOTES), null);
   assert.doesNotThrow(() => markReleaseNotesSeen('3.1.0', broken));
-});
-
-test('팻말은 앞의 네 항목과 나머지 개수를 보이고, 잠깐 있다 내려간다', () => {
-  const sign = releaseNotesSign('3.1.0', NOTES['3.1.0']);
-  assert.equal(sign.heading, 'HamaEditor 3.1.0');
-  assert.deepEqual(sign.lines, ['가', '나', '다', '라']);
-  assert.equal(sign.footnote, '외 2개 더');
-  assert.equal(sign.detail, '마\n바');
-  assert.deepEqual(sign.actions, []);
-  assert.ok(sign.transientMs && sign.transientMs > 0);
-  assert.match(sign.spoken, /바/);
-});
-
-test('네 항목 이하면 "외 N개 더" 를 붙이지 않는다', () => {
-  const sign = releaseNotesSign('3.1.0', ['가', '나']);
-  assert.deepEqual(sign.lines, ['가', '나']);
-  assert.equal(sign.footnote, undefined);
-  assert.equal(sign.detail, undefined);
 });
