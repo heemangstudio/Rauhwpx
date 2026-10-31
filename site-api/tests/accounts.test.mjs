@@ -128,11 +128,12 @@ test('config: defaults, provider and device-limit checks fail startup on a typo'
     clientId: 'client_01M66W83D02NGE62TDVKR8PW8S',
     apiBase: 'https://api.workos.com',
     redirectUri: 'https://rau-credits-production.up.railway.app/v1/account/auth/callback',
-    providers: ['email', 'google', 'apple'],
+    providers: ['email', 'google'],
     deviceLimit: 5,
   });
   assert.deepEqual(resolveAccountConfig({ ACCOUNT_AUTH_PROVIDERS: 'google', ACCOUNT_DEVICE_LIMIT: '3' }).providers, ['google']);
   assert.throws(() => resolveAccountConfig({ ACCOUNT_AUTH_PROVIDERS: 'email,kakao' }), /kakao/);
+  assert.throws(() => resolveAccountConfig({ ACCOUNT_AUTH_PROVIDERS: 'email,google,apple' }), /apple/);
   assert.throws(() => resolveAccountConfig({ ACCOUNT_AUTH_PROVIDERS: 'github' }), /github/);
   assert.throws(() => resolveAccountConfig({ ACCOUNT_DEVICE_LIMIT: '21' }), /ACCOUNT_DEVICE_LIMIT/);
   assert.throws(() => resolveAccountConfig({ ACCOUNT_AUTH_REDIRECT_URI: 'http://example.com/cb' }), /https/);
@@ -170,7 +171,7 @@ test('without WORKOS_API_KEY every account route answers accounts_not_configured
 });
 
 test('start validates its input and builds the AuthKit URL; providers come from env', async (t) => {
-  const s = await setup(t, { ACCOUNT_AUTH_PROVIDERS: 'email,google' });
+  const s = await setup(t);
   assert.deepEqual(await (await fetch(`${s.origin}/v1/account/auth/providers`)).json(), { ok: true, providers: ['email', 'google'] });
   const login = await s.start({ provider: 'email', loginHint: 'me@example.com' });
   assert.equal(login.res.body.expiresAt, T0 + 10 * MINUTE);
@@ -185,7 +186,9 @@ test('start validates its input and builds the AuthKit URL; providers come from 
 
   const good = { provider: 'google', challenge: pkce().challenge, port: 49152, state: 'app-state-0123456789' };
   const refused = async (body) => (await s.json(await s.post('/v1/account/auth/start', body))).body;
-  assert.deepEqual(await refused({ ...good, provider: 'apple' }), { ok: false, error: 'provider_unavailable' });
+  for (const provider of ['apple', 'kakao']) {
+    assert.deepEqual(await refused({ ...good, provider }), { ok: false, error: 'provider_unavailable' }, provider);
+  }
   for (const [field, value] of [['provider', ''], ['challenge', 'short'], ['port', 80], ['port', '49152'], ['state', 'short'], ['loginHint', 'not-an-email']]) {
     assert.deepEqual(await refused({ ...good, [field]: value }), { ok: false, error: 'invalid', field }, `${field}=${value}`);
   }

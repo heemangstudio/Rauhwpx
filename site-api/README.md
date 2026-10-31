@@ -143,9 +143,9 @@ Keys look like `HAMA-XXXXX-XXXXX-XXXXX-XXXXX-XXXXX` (125 random bits, Crockford 
 
 ### Accounts
 
-HamaEditor accounts sign in with WorkOS AuthKit (email magic link on the AuthKit page, Google, Apple) through the system browser and a loopback callback in the app. `accounts.mjs` owns accounts, devices and sessions; `workos.mjs` is the only outbound call (10 s timeouts). The plan follows the account's linked licenses, and the app gets an account lease (v2) instead of a license lease. Every `/v1/account/*` route answers `503 accounts_not_configured` until `WORKOS_API_KEY` (and the license signing key, which signs the account lease) is set. They are app routes: no CORS. Errors are `{ok:false, error, ...extra}`.
+HamaEditor accounts sign in with WorkOS AuthKit (email magic link on the AuthKit page, or Google) through the system browser and a loopback callback in the app. `accounts.mjs` owns accounts, devices and sessions; `workos.mjs` is the only outbound call (10 s timeouts). The plan follows the account's linked licenses, and the app gets an account lease (v2) instead of a license lease. Every `/v1/account/*` route answers `503 accounts_not_configured` until `WORKOS_API_KEY` (and the license signing key, which signs the account lease) is set. They are app routes: no CORS. Errors are `{ok:false, error, ...extra}`.
 
-- `GET /v1/account/auth/providers` → `{ok, providers}` from `ACCOUNT_AUTH_PROVIDERS`. `email` is AuthKit's own page (`provider=authkit`, with `login_hint` when given), `google` `GoogleOAuth`, `apple` `AppleOAuth`. `kakao` is the hook for a later WorkOS connection: until `workos.mjs` maps it, listing it fails startup.
+- `GET /v1/account/auth/providers` → `{ok, providers}` from `ACCOUNT_AUTH_PROVIDERS`. `email` is AuthKit's own page (`provider=authkit`, with `login_hint` when given), `google` `GoogleOAuth`. `kakao` is the hook for a later WorkOS connection: until `workos.mjs` maps it, listing it fails startup, like any unknown id.
 - `POST /v1/account/auth/start {provider, challenge, port, state, loginHint?}` → `{ok, url, expiresAt}`: `challenge` is base64url(SHA-256(PKCE verifier)), `port` the app's loopback port (1024–65535), `state` the app's nonce (`[A-Za-z0-9_-]{16,128}`). The login lives 10 minutes; `url` is the WorkOS authorize URL with the login id as `state`. Errors: 400 `invalid` with `field`, 400 `provider_unavailable`, 429 `rate_limited` (20 per IP per 10 minutes).
 - `GET /v1/account/auth/callback` is the WorkOS redirect target. It takes the login (single use), exchanges the code with `WORKOS_API_KEY`, finds the account by WorkOS user, else by verified email, else creates one, and answers 302 to `http://127.0.0.1:<port>/auth/callback?code=<grant>&state=<app state>`. A WorkOS error answers the same URL with `error=auth_cancelled` (`access_denied`) or `auth_failed`. An unknown or expired login gets a one-line Korean page and no redirect. Codes, grants, sessions and full emails are never logged. A verified email then links that email's licenses to the account.
 - `POST /v1/account/auth/token {code, verifier, device:{id, name, platform, appVersion}, replaceDeviceId?}` → `{ok, session, ...account}`. The grant is single use, bound to the PKCE challenge, valid 10 minutes and 10 attempts; every failure is 400 `grant_invalid`. An account holds `ACCOUNT_DEVICE_LIMIT` devices; the same device id signing in again replaces its session and keeps its slot. At the limit it answers 409 `device_limit {limit, devices}` (the grant stays), and a retry with `replaceDeviceId` removes that device and its session first (404 `device_not_found` for another id). 30 per IP per 10 minutes.
@@ -159,7 +159,7 @@ HamaEditor accounts sign in with WorkOS AuthKit (email magic link on the AuthKit
 Owner setup in the WorkOS dashboard (production environment of client `client_01M66W83D02NGE62TDVKR8PW8S`):
 
 1. Redirects: add `https://rau-credits-production.up.railway.app/v1/account/auth/callback` (the `ACCOUNT_AUTH_REDIRECT_URI` default) as a redirect URI.
-2. Authentication: enable Magic Auth, and Google OAuth and Apple OAuth with their own client credentials (WorkOS's shared test credentials only work in staging).
+2. Authentication: enable Magic Auth, and Google OAuth with its own client credentials (WorkOS's shared test credentials only work in staging).
 3. API keys: create a secret key and set it on Railway `rau-credits` as `WORKOS_API_KEY`. It stays only there.
 
 ## Data
@@ -246,7 +246,7 @@ All files live in `RAU_SITE_DATA`. On Railway it defaults to the `/data` volume;
 | `WORKOS_CLIENT_ID` | WorkOS client id (public), default `client_01M66W83D02NGE62TDVKR8PW8S` |
 | `WORKOS_API_BASE` | WorkOS API base, default `https://api.workos.com`. Only for local tests |
 | `ACCOUNT_AUTH_REDIRECT_URI` | Callback WorkOS redirects to, default `https://rau-credits-production.up.railway.app/v1/account/auth/callback`. Must be registered in WorkOS → Redirects |
-| `ACCOUNT_AUTH_PROVIDERS` | Comma list of sign-in providers, default `email,google,apple`. An id without a WorkOS connection (`kakao` for now) fails startup |
+| `ACCOUNT_AUTH_PROVIDERS` | Comma list of sign-in providers, default `email,google`. An id without a WorkOS connection (`kakao` for now) or an unknown id fails startup |
 | `ACCOUNT_DEVICE_LIMIT` | Devices per account, 1–20, default 5 |
 
 ## Run and deploy
