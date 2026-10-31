@@ -141,7 +141,7 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
       ipcRenderer.on('account:changed', listener);
       return () => ipcRenderer.removeListener('account:changed', listener);
     },
-    signIn: (provider, loginHint) => ipcRenderer.invoke('account:sign-in', provider, loginHint),
+    signIn: (provider, loginHint, intent) => ipcRenderer.invoke('account:sign-in', provider, loginHint, intent),
     cancelSignIn: () => ipcRenderer.invoke('account:cancel-sign-in'),
     replaceDevice: (deviceId) => ipcRenderer.invoke('account:replace-device', deviceId),
     refresh: () => ipcRenderer.invoke('account:refresh'),

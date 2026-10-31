@@ -558,7 +558,7 @@ export function createAccountManager({
       available: state.available,
       state: value,
       providers: [...state.providers],
-      signIn: flow ? { provider: flow.provider, startedAt: flow.startedAt } : null,
+      signIn: flow ? { provider: flow.provider, startedAt: flow.startedAt, intent: flow.intent } : null,
       lastError,
       deviceChoice: flow?.deviceChoice ? { limit: flow.deviceChoice.limit, devices: flow.deviceChoice.devices.map((d) => ({ ...d })) } : null,
       account: view ? {
@@ -875,7 +875,8 @@ export function createAccountManager({
     });
   }
 
-  async function signIn(provider, loginHint) {
+  /** intent 'sign_up' 은 서버가 AuthKit 의 가입 화면으로 연다. 그 밖에는 로그인과 같다. */
+  async function signIn(provider, loginHint, intent) {
     await serialize(load);
     if (!ACCOUNT_PROVIDERS.includes(provider) || !state.providers.includes(provider)) return failResult('invalid');
     if (signedIn()) return failResult('already_signed_in');
@@ -886,6 +887,7 @@ export function createAccountManager({
     const { verifier, challenge } = pkcePair();
     const current = {
       provider,
+      intent: intent === 'sign_up' ? 'sign_up' : 'sign_in',
       startedAt: clock(),
       verifier,
       appState: randomBytes(24).toString('base64url'),
@@ -917,6 +919,7 @@ export function createAccountManager({
     try {
       const answer = await client.start({
         provider, challenge, port, state: current.appState, ...(provider === 'email' && hint ? { loginHint: hint } : {}),
+        ...(current.intent === 'sign_up' ? { intent: 'sign_up' } : {}),
       });
       if (typeof answer.url !== 'string' || !answer.url) throw new AccountServerError('server');
       url = answer.url;

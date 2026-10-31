@@ -72,8 +72,8 @@ export function createAccountClient({
   return {
     baseUrl: base,
     providers: () => call('/v1/account/auth/providers', { method: 'GET' }),
-    start: ({ provider, challenge, port, state, loginHint }) => call('/v1/account/auth/start', {
-      json: { provider, challenge, port, state, ...(loginHint ? { loginHint } : {}) },
+    start: ({ provider, challenge, port, state, loginHint, intent }) => call('/v1/account/auth/start', {
+      json: { provider, challenge, port, state, ...(loginHint ? { loginHint } : {}), ...(intent ? { intent } : {}) },
     }),
     token: ({ code, verifier, device, replaceDeviceId }) => call('/v1/account/auth/token', {
       json: { code, verifier, device, ...(replaceDeviceId ? { replaceDeviceId } : {}) },

@@ -141,8 +141,12 @@ export async function checkAccountPage({ page, open, screenshot }) {
   await page.waitForSelector('.acct-page.acct-page-open', { visible: true });
   await page.waitForFunction(() => !document.querySelector('.ag-pricing-card'));
   assert.deepEqual(await page.evaluate(() => window.sidebarPreview.plan.checkouts), [], 'no checkout while signed out');
+  // 가입을 고르면 단추가 가입이 되고, 그 길이 로그인 요청에 실린다.
+  await page.click('.acct-page [data-intent="sign_up"]');
+  assert.match(await page.$eval('.acct-page [data-provider="google"]', (node) => node.textContent), /가입/);
   await page.click('.acct-page [data-provider="google"]');
   await page.waitForFunction(() => !document.querySelector('.acct-page'), { timeout: 6000 });
+  assert.ok((await calls(page)).includes('signIn:google:sign_up'), 'sign-up is passed with the sign-in');
   await page.waitForSelector('.ag-pricing-col[data-plan="pro"][data-focus="true"]', { visible: true });
   await page.click('.ag-pricing-col[data-plan="hama"] [data-sku="hamaMonthly"]');
   await page.waitForSelector('.ag-pricing-card[data-view="waiting"]');

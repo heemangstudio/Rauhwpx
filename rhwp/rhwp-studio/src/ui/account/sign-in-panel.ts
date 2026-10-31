@@ -1,10 +1,11 @@
-// 로그인 판: 로그아웃(공급자 단추와 이메일), 로그인 중(브라우저를 기다림), 기기 고르기.
+// 로그인 판: 로그아웃(로그인·가입 전환, 공급자 단추와 이메일), 로그인 중(브라우저를 기다림), 기기 고르기.
 // 계정 페이지와 처음 설정의 계정 장이 같이 쓴다. 로그인을 마치면 부른 쪽이 다음 화면을 정한다.
+// 가입을 고르면 단추 글이 '가입'으로 바뀌고, 이메일은 AuthKit 의 가입 화면으로 연다.
 import './account-page.css';
 import { formatLastSeen, platformLabel } from './account-format.ts';
 import { PROVIDER_LABEL, platformGlyph, providerGlyph } from './account-glyphs.ts';
 import type { AccountStore } from './account-store.ts';
-import type { AccountDevice, AccountProvider, AccountStatus } from './account-types.ts';
+import type { AccountDevice, AccountProvider, AccountSignInIntent, AccountStatus } from './account-types.ts';
 
 type PanelView = 'signed_out' | 'signing_in' | 'choose_device' | null;
 
@@ -12,6 +13,8 @@ export interface SignInPanel {
   element: HTMLElement;
   /** 지금 보이는 판, 로그인했으면 null. */
   view(): PanelView;
+  /** 마지막으로 고른 길(로그인·가입). */
+  intent(): AccountSignInIntent;
   focusTarget(): HTMLElement | null;
   dispose(): void;
 }
@@ -45,25 +48,60 @@ export function setBusy(control: HTMLButtonElement, busy: boolean): void {
   if (busy) control.prepend(spinner('acct-btn-spinner'));
 }
 
-export function createSignInPanel(store: AccountStore, options: { variant: 'page' | 'setup' }): SignInPanel {
+const INTENT_LABEL: Record<AccountSignInIntent, string> = { sign_in: '로그인', sign_up: '가입' };
+
+export function createSignInPanel(
+  store: AccountStore,
+  options: { variant: 'page' | 'setup'; intent?: AccountSignInIntent },
+): SignInPanel {
   const api = store.api!;
   const root = el('div', `acct-signin acct-signin-${options.variant}`);
+  let intent: AccountSignInIntent = options.intent ?? 'sign_in';
 
   // ── 로그아웃 ──
   const out = el('div', 'acct-signin-out');
   if (options.variant === 'page') {
     const mark = el('span', 'ag-rau-icon acct-signin-mark');
     mark.setAttribute('aria-hidden', 'true');
-    out.append(mark, el('h2', 'acct-signin-title', '로그인'));
+    out.append(mark);
   }
+  const switcher = el('div', 'acct-signin-switch');
+  switcher.setAttribute('role', 'radiogroup');
+  switcher.setAttribute('aria-label', '로그인 또는 가입');
+  const intentButtons = new Map<AccountSignInIntent, HTMLButtonElement>();
+  for (const value of ['sign_in', 'sign_up'] as const) {
+    const control = button('acct-signin-switch-option', INTENT_LABEL[value]);
+    control.dataset.intent = value;
+    control.setAttribute('role', 'radio');
+    control.addEventListener('click', () => {
+      if (intent === value) return;
+      intent = value;
+      error = '';
+      render();
+    });
+    intentButtons.set(value, control);
+    switcher.append(control);
+  }
+  // 두 칸 사이는 화살표로 옮긴다(라디오 묶음).
+  switcher.addEventListener('keydown', (event) => {
+    if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return;
+    event.preventDefault();
+    intent = intent === 'sign_in' ? 'sign_up' : 'sign_in';
+    error = '';
+    render();
+    intentButtons.get(intent)?.focus();
+  });
   const socials = el('div', 'acct-signin-socials');
   const socialButtons = new Map<AccountProvider, HTMLButtonElement>();
+  const socialLabels = new Map<AccountProvider, HTMLElement>();
   for (const provider of SOCIAL) {
     const control = button('acct-btn acct-signin-provider');
     control.dataset.provider = provider;
-    control.append(providerGlyph(provider), el('span', '', `${PROVIDER_LABEL[provider]}로 계속하기`));
+    const label = el('span');
+    control.append(providerGlyph(provider), label);
     control.addEventListener('click', () => { void start(provider); });
     socialButtons.set(provider, control);
+    socialLabels.set(provider, label);
     socials.append(control);
   }
   const divider = el('div', 'acct-signin-or');
@@ -77,7 +115,7 @@ export function createSignInPanel(store: AccountStore, options: { variant: 'page
   emailInput.placeholder = '이메일 주소';
   emailInput.setAttribute('aria-label', '이메일 주소');
   emailInput.maxLength = 254;
-  const emailButton = el('button', 'acct-btn acct-btn-primary', '이메일로 계속하기');
+  const emailButton = el('button', 'acct-btn acct-btn-primary');
   emailButton.type = 'submit';
   emailForm.append(emailInput, emailButton);
   emailForm.addEventListener('submit', (event) => {
@@ -93,11 +131,11 @@ export function createSignInPanel(store: AccountStore, options: { variant: 'page
   const outError = el('p', 'acct-error', '');
   outError.setAttribute('role', 'alert');
   const unavailable = el('p', 'acct-signin-unavailable', '');
-  out.append(socials, divider, emailForm, outError, unavailable);
+  out.append(switcher, socials, divider, emailForm, outError, unavailable);
 
   // ── 로그인 중 ──
   const waiting = el('div', 'acct-signin-wait');
-  const waitTitle = el('p', 'acct-signin-wait-title', '브라우저에서 로그인을 마쳐 주세요');
+  const waitTitle = el('p', 'acct-signin-wait-title');
   waitTitle.setAttribute('role', 'status');
   const cancelWait = button('acct-btn', '취소');
   cancelWait.addEventListener('click', () => { void cancel(cancelWait); });
@@ -133,7 +171,7 @@ export function createSignInPanel(store: AccountStore, options: { variant: 'page
     error = '';
     render();
     try {
-      const result = await api.signIn(provider, loginHint);
+      const result = await api.signIn(provider, loginHint, intent);
       if (!result.ok) error = result.message;
     } catch {
       error = '로그인하지 못했어요. 다시 시도해 주세요.';
@@ -219,17 +257,29 @@ export function createSignInPanel(store: AccountStore, options: { variant: 'page
 
     const available = status?.available !== false;
     const providers = new Set(status?.providers ?? ['email', 'google']);
+    switcher.hidden = !available;
+    for (const [value, control] of intentButtons) {
+      const selected = value === intent;
+      control.classList.toggle('acct-active', selected);
+      control.setAttribute('aria-checked', selected ? 'true' : 'false');
+      control.tabIndex = selected ? 0 : -1;
+      control.disabled = busyProvider !== null;
+    }
+    const verb = INTENT_LABEL[intent];
     for (const [provider, control] of socialButtons) {
+      socialLabels.get(provider)!.textContent = `${PROVIDER_LABEL[provider]}로 ${verb}`;
       control.hidden = !available || !providers.has(provider);
       control.disabled = busyProvider !== null;
       setBusy(control, busyProvider === provider);
     }
+    emailButton.textContent = `이메일로 ${verb}`;
     const email = available && providers.has('email');
     emailForm.hidden = !email;
     divider.hidden = !email || ![...socialButtons].some(([, control]) => !control.hidden);
     emailInput.disabled = busyProvider !== null;
     emailButton.disabled = busyProvider !== null;
     setBusy(emailButton, busyProvider === 'email');
+    waitTitle.textContent = `브라우저에서 ${INTENT_LABEL[status?.signIn?.intent ?? intent]}을 마쳐 주세요`;
     unavailable.hidden = available;
     unavailable.textContent = available ? '' : (status?.lastError?.message ?? '계정 기능을 아직 쓸 수 없어요.');
     // 실패한 로그인(취소·시간 초과 등)은 main 이 lastError 로 알린다.
@@ -266,6 +316,7 @@ export function createSignInPanel(store: AccountStore, options: { variant: 'page
   return {
     element: root,
     view: () => shown,
+    intent: () => intent,
     focusTarget() {
       if (shown === 'signing_in') return cancelWait;
       if (shown === 'choose_device') return root.querySelector<HTMLElement>('.acct-device-remove') ?? cancelChoose;

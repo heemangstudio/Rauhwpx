@@ -387,6 +387,8 @@ export function createAccountsService({
       loginHint = typeof body.loginHint === 'string' ? body.loginHint.trim() : '';
       if (!loginHint || loginHint.length > 254 || !EMAIL_RE.test(loginHint)) throw invalid('loginHint');
     }
+    const intent = body.intent ?? 'sign_in';
+    if (intent !== 'sign_in' && intent !== 'sign_up') throw invalid('intent');
     const loginId = random(24).toString('base64url');
     const createdAt = now();
     const expiresAt = createdAt + LOGIN_TTL_MS;
@@ -399,7 +401,7 @@ export function createAccountsService({
       state.logins[loginId] = { challenge, port, appState, provider, createdAt: iso(createdAt), expiresAt: iso(expiresAt) };
       return {};
     });
-    return { ok: true, url: workos.authorizeUrl({ provider, state: loginId, loginHint }), expiresAt };
+    return { ok: true, url: workos.authorizeUrl({ provider, state: loginId, loginHint, signUp: intent === 'sign_up' }), expiresAt };
   }
 
   function loopbackUrl(port, params) {

@@ -260,13 +260,13 @@ export function createMockAccount(
       listeners.add(callback);
       return () => { listeners.delete(callback); };
     },
-    async signIn(provider, loginHint) {
-      calls.push(`signIn:${provider}${loginHint ? `:${loginHint}` : ''}`);
+    async signIn(provider, loginHint, intent = 'sign_in') {
+      calls.push(`signIn:${provider}${loginHint ? `:${loginHint}` : ''}${intent === 'sign_up' ? ':sign_up' : ''}`);
       if (status.state === 'signed_in') return fail('already_signed_in');
       if (!status.providers.includes(provider)) return fail('invalid');
       clearTimer();
       options.report(`Browser sign-in placeholder (${provider})`);
-      emit({ ...base(), state: 'signing_in', signIn: { provider, startedAt: Date.now() } });
+      emit({ ...base(), state: 'signing_in', signIn: { provider, startedAt: Date.now(), intent } });
       if (!options.hold) {
         timer = window.setTimeout(() => {
           timer = null;

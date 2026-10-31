@@ -200,7 +200,12 @@ test('the loopback rejects a wrong state and other paths, then still accepts the
 
 test('cancel closes the loopback port, and a provider error ends the sign-in with its message', async (t) => {
   const ctx = await setup(t);
+  // 가입으로 시작하면 서버에 그 길을 알리고 상태에도 남긴다.
+  const signUp = await ctx.manager.signIn('email', undefined, 'sign_up');
+  assert.deepEqual([signUp.status.signIn.intent, callsTo(ctx.server, '/v1/account/auth/start').at(-1).body.intent], ['sign_up', 'sign_up']);
+  await ctx.manager.cancelSignIn();
   await ctx.manager.signIn('google');
+  assert.equal(callsTo(ctx.server, '/v1/account/auth/start').at(-1).body.intent, undefined);
   const port = portOf(ctx.server);
   const cancelled = await ctx.manager.cancelSignIn();
   assert.deepEqual([cancelled.state, cancelled.signIn, cancelled.lastError], ['signed_out', null, null]);
@@ -544,6 +549,7 @@ test('the IPC host serves only trusted Studio senders and checks every argument'
   assert.throws(() => handlers.get('account:status')({ sender: 'web page' }), /Untrusted/);
   assert.equal((await invoke('account:sign-in', 'apple')).code, 'invalid');
   assert.equal((await invoke('account:sign-in', 'email', { hint: 1 })).code, 'invalid');
+  assert.equal((await invoke('account:sign-in', 'email', undefined, 'register')).code, 'invalid');
   await invoke('account:sign-in', 'email', 'me@example.com');
   assert.equal((await invoke('account:set-avatar', 'not bytes', 'image/png')).code, 'unsupported_type');
   assert.equal((await invoke('account:set-avatar', new Uint8Array(8), 'image/gif')).code, 'unsupported_type');
@@ -555,7 +561,7 @@ test('the IPC host serves only trusted Studio senders and checks every argument'
   listeners.get('account:record-activity')(trusted, 'bogus', 'chat-1');
   listeners.get('account:record-activity')(trusted, 'agent_session', 'chat-1');
   assert.deepEqual(calls.filter(([name]) => name !== 'getStatus').map(([name, ...args]) => [name, args.map((arg) => (arg instanceof Uint8Array ? 'bytes' : arg))]), [
-    ['signIn', ['email', 'me@example.com']],
+    ['signIn', ['email', 'me@example.com', undefined]],
     ['setAvatar', ['bytes', 'image/png']],
     ['recordActivity', ['agent_session', 'chat-1']],
   ]);

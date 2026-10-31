@@ -1,5 +1,5 @@
 /**
- * 처음 설정의 계정 장: Google·이메일 로그인(카카오는 서버가 알릴 때만). 편집은 로그인 없이 되므로 '나중에'로 넘어갈 수 있다.
+ * 처음 설정의 계정 장: Google·이메일 가입과 로그인(카카오는 서버가 알릴 때만). 처음 실행이라 가입 쪽을 먼저 보인다. 편집은 로그인 없이 되므로 '나중에'로 넘어갈 수 있다.
  *
  * 데스크톱에서 로그아웃 상태일 때만 뜬다. 로그인 판은 계정 페이지와 같은 것을 쓰고(브라우저 기다림, 기기 고르기 포함),
  * 로그인을 마치면 사진·이름을 잠깐 보인 뒤 다음 장으로 넘어간다. 설명은 하마가 한다.
@@ -39,7 +39,7 @@ export function createAccountStep(deps: AccountStepDeps): AccountStepUi {
 
   const panel = el('div', 'rhwp-setup-panel rhwp-setup-account');
   panel.dataset.step = 'account';
-  const signIn = createSignInPanel(store, { variant: 'setup' });
+  const signIn = createSignInPanel(store, { variant: 'setup', intent: 'sign_up' });
 
   // 로그인을 마친 자리: 사진·이름·이메일과 체크.
   const done = el('div', 'rhwp-setup-account-done');
@@ -69,7 +69,7 @@ export function createAccountStep(deps: AccountStepDeps): AccountStepUi {
     render();
     if (!signedIn && isSignedIn(status)) {
       signedIn = true;
-      deps.cheer('로그인했어요!');
+      deps.cheer(signIn.intent() === 'sign_up' ? '환영해요!' : '로그인했어요!');
       deps.onSignedIn(status!);
     }
     deps.onStateChange();

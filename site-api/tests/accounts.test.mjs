@@ -182,6 +182,10 @@ test('start validates its input and builds the AuthKit URL; providers come from 
   });
   assert.match(login.loginId, /^[A-Za-z0-9_-]{32}$/);
   assert.equal((await s.start({ provider: 'google' })).url.searchParams.get('provider'), 'GoogleOAuth');
+  // 가입은 AuthKit 화면만 가입 쪽으로 연다. Google 에는 그런 화면이 없다.
+  assert.equal((await s.start({ provider: 'email', intent: 'sign_up' })).url.searchParams.get('screen_hint'), 'sign-up');
+  assert.equal((await s.start({ provider: 'email', intent: 'sign_in' })).url.searchParams.has('screen_hint'), false);
+  assert.equal((await s.start({ provider: 'google', intent: 'sign_up' })).url.searchParams.has('screen_hint'), false);
   const stored = (await s.stored()).logins[login.loginId];
   assert.deepEqual(stored, { challenge: login.challenge, port: 49152, appState: login.appState, provider: 'email', createdAt: new Date(T0).toISOString(), expiresAt: new Date(T0 + 10 * MINUTE).toISOString() });
 
@@ -190,7 +194,7 @@ test('start validates its input and builds the AuthKit URL; providers come from 
   for (const provider of ['apple', 'kakao']) {
     assert.deepEqual(await refused({ ...good, provider }), { ok: false, error: 'provider_unavailable' }, provider);
   }
-  for (const [field, value] of [['provider', ''], ['challenge', 'short'], ['port', 80], ['port', '49152'], ['state', 'short'], ['loginHint', 'not-an-email']]) {
+  for (const [field, value] of [['provider', ''], ['challenge', 'short'], ['port', 80], ['port', '49152'], ['state', 'short'], ['loginHint', 'not-an-email'], ['intent', 'register']]) {
     assert.deepEqual(await refused({ ...good, [field]: value }), { ok: false, error: 'invalid', field }, `${field}=${value}`);
   }
 });

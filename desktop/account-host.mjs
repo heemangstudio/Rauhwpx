@@ -30,10 +30,11 @@ export function installAccountHost({
 
   const handlers = {
     'account:status': () => manager.getStatus(),
-    'account:sign-in': (_event, provider, loginHint) => {
+    'account:sign-in': (_event, provider, loginHint, intent) => {
       if (!ACCOUNT_PROVIDERS.includes(provider)) return rejected('invalid');
       if (loginHint !== undefined && loginHint !== null && typeof loginHint !== 'string') return rejected('invalid');
-      return manager.signIn(provider, typeof loginHint === 'string' ? loginHint.slice(0, 254) : undefined);
+      if (intent !== undefined && intent !== null && intent !== 'sign_in' && intent !== 'sign_up') return rejected('invalid');
+      return manager.signIn(provider, typeof loginHint === 'string' ? loginHint.slice(0, 254) : undefined, intent ?? undefined);
     },
     'account:cancel-sign-in': () => manager.cancelSignIn(),
     'account:replace-device': (_event, deviceId) => (

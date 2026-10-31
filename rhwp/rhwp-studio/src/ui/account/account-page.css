@@ -358,16 +358,52 @@ html:is(.desktop-mac, .desktop-windows) .acct-page {
   align-self: center;
   width: 36px;
   height: 36px;
-  margin-bottom: 14px;
+  margin-bottom: 20px;
   color: var(--n-ink);
 }
 
-.acct-signin-title {
-  margin: 0 0 18px;
-  font-size: var(--ag-fs-display);
-  font-weight: var(--ag-fw-strong);
-  letter-spacing: var(--ag-track-tight);
-  text-align: center;
+
+/* 로그인·가입 전환. 두 칸이 반씩 나누고, 고른 칸만 떠 보인다. */
+.acct-signin-switch {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px;
+  margin-bottom: 8px;
+  padding: 2px;
+  border-radius: var(--ag-r-row);
+  background: var(--n-ink-fill-hover);
+}
+
+.acct-signin-switch-option {
+  height: 32px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: calc(var(--ag-r-row) - 2px);
+  background: transparent;
+  color: var(--n-ink-secondary);
+  font-size: var(--ag-fs-secondary);
+  font-weight: var(--ag-fw-medium);
+  transition: var(--ag-transition-color);
+}
+
+.acct-signin-switch-option:hover:not(:disabled, .acct-active) {
+  color: var(--n-ink);
+}
+
+.acct-signin-switch-option.acct-active {
+  background: var(--n-surface-raised);
+  box-shadow: var(--n-elev-1);
+  color: var(--n-ink);
+}
+
+/* 어두운 화면에서는 고른 칸이 판보다 밝아야 떠 보인다. */
+:root[data-theme-effective='dark'] .acct-signin-switch {
+  background: var(--n-ink-fill-soft);
+}
+
+:root[data-theme-effective='dark'] .acct-signin-switch-option.acct-active {
+  background: var(--n-ink-fill-selected);
+  box-shadow: none;
 }
 
 .acct-signin-socials {

@@ -2,6 +2,8 @@
 // 이 꼴은 계약(§5)과 같다. 오류 글(message)은 main 이 한국어로 만들어 보내고, Studio 는 그대로 보인다.
 
 export type AccountProvider = 'email' | 'google' | 'kakao';
+/** 로그인 판에서 고른 길. 서버에서는 같은 로그인이고, 가입은 AuthKit 이메일 화면만 바꾼다. */
+export type AccountSignInIntent = 'sign_in' | 'sign_up';
 export type AccountState = 'signed_out' | 'signing_in' | 'choose_device' | 'signed_in';
 
 export interface AccountDevice {
@@ -60,7 +62,7 @@ export interface AccountStatus {
   /** 서버가 답하기 전에는 ['email','google']. */
   providers: AccountProvider[];
   /** signing_in·choose_device 동안. */
-  signIn: { provider: AccountProvider; startedAt: number } | null;
+  signIn: { provider: AccountProvider; startedAt: number; intent?: AccountSignInIntent } | null;
   /** 마지막으로 실패한 로그인이나 동작. 다음 성공에 지워진다. */
   lastError: { code: string; message: string } | null;
   /** choose_device 에서만. */
@@ -93,7 +95,8 @@ export interface DesktopAccountApi {
   getStatus(): Promise<AccountStatus>;
   onChange(callback: (status: AccountStatus) => void): () => void;
   /** 브라우저를 연 뒤에 끝난다. */
-  signIn(provider: AccountProvider, loginHint?: string): Promise<AccountResult>;
+  /** intent 'sign_up' 이면 가입 화면으로 연다(AuthKit 이메일). 같은 계정이면 그대로 로그인된다. */
+  signIn(provider: AccountProvider, loginHint?: string, intent?: AccountSignInIntent): Promise<AccountResult>;
   cancelSignIn(): Promise<AccountStatus>;
   /** choose_device 에서. */
   replaceDevice(deviceId: string): Promise<AccountResult>;

@@ -43,8 +43,11 @@ export function createWorkOSClient({
 }) {
   const base = apiBase.replace(/\/+$/, '');
 
-  /** The AuthKit authorize URL for one login; `state` is our login id. */
-  function authorizeUrl({ provider, state, loginHint }) {
+  /**
+   * The AuthKit authorize URL for one login; `state` is our login id. `signUp` opens the hosted
+   * page on its sign-up screen; OAuth providers have no such screen and ignore it.
+   */
+  function authorizeUrl({ provider, state, loginHint, signUp = false }) {
     const url = new URL(`${base}/user_management/authorize`);
     url.searchParams.set('response_type', 'code');
     url.searchParams.set('client_id', clientId);
@@ -52,6 +55,7 @@ export function createWorkOSClient({
     url.searchParams.set('provider', WORKOS_PROVIDERS[provider]);
     url.searchParams.set('state', state);
     if (loginHint) url.searchParams.set('login_hint', loginHint);
+    if (signUp && WORKOS_PROVIDERS[provider] === 'authkit') url.searchParams.set('screen_hint', 'sign-up');
     return url.toString();
   }
 
