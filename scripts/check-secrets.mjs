@@ -3,7 +3,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // Fails when a tracked file holds a key-shaped literal: an OpenRouter key, an Anthropic API,
-// OAuth or admin key, or an OpenAI-style `sk-` / `sk-proj-` key. Short fake test tokens such as
+// OAuth or admin key, an OpenAI-style `sk-` / `sk-proj-` key, or a WorkOS secret key (`sk_` + 75
+// letters/digits, or the older `sk_test_` / `sk_live_` form). Short fake test tokens such as
 // `sk-ant-oat01-token` or `sk-or-v1-leak` stay below the lengths below. Tests that need a
 // real-shaped key build it at runtime.
 //   node scripts/check-secrets.mjs [repo dir]
@@ -14,9 +15,10 @@ export const SECRET_PATTERNS = Object.freeze([
   { name: 'OpenRouter key', re: new RegExp(`${START}sk-or-v1-[A-Za-z0-9]{32,}`) },
   { name: 'Anthropic key', re: new RegExp(`${START}sk-ant-(?:api|oat|admin)\\d\\d-[A-Za-z0-9_-]{40,}`) },
   { name: 'OpenAI-style key', re: new RegExp(`${START}sk-(?!or-|ant-)(?:proj-)?[A-Za-z0-9_-]{32,}`) },
+  { name: 'WorkOS key', re: new RegExp(`${START}sk_(?:test_|live_)?[A-Za-z0-9]{40,}`) },
 ]);
 // Cheap prefilter for git grep (POSIX ERE); the patterns above decide.
-const PREFILTER = 'sk-(or-v1-|ant-|proj-)?[A-Za-z0-9_-]{32,}';
+const PREFILTER = 'sk-(or-v1-|ant-|proj-)?[A-Za-z0-9_-]{32,}|sk_(test_|live_)?[A-Za-z0-9]{40,}';
 
 /** Every key-shaped literal in `text` as `{ name, match }`. */
 export function findSecrets(text) {
