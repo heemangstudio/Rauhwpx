@@ -6,7 +6,7 @@
 //   expired 는 licenseExpiresAt·paymentFixUrl 도 준다. 결제가 실패한 연간 키는 licenseState 'payment_failed' 와
 //   paymentGraceEndsAt 을 함께 받고, 그 끝은 lease 에도 서명되어 있다. 권한은 lease 안의 서명한 licenseExpiresAt 으로 정하고, autoRenew 는 표시에만 쓴다.
 // tier 는 'paid' | 'beta'. 표시에만 쓰고 권한은 서명한 lease 로만 정한다.
-// edition('pro')·plan('monthly' | 'annual' | 'lifetime')·rau.eligible 도 표시에만 쓴다. 예전 서버는 보내지 않는다.
+// edition('pro' | 'hama')·plan('monthly' | 'annual' | 'lifetime')·rau.eligible 도 표시에만 쓴다. 예전 서버는 보내지 않는다.
 export const DEFAULT_LICENSE_API_BASE = 'https://rau-credits-production.up.railway.app';
 export const LICENSE_ERRORS = Object.freeze(['invalid_key', 'revoked', 'expired', 'device_limit', 'not_activated', 'device_id_invalid', 'server_not_configured', 'grandfather_disabled', 'not_eligible', 'install_id_invalid']);
 const REQUEST_TIMEOUT_MS = 10_000;

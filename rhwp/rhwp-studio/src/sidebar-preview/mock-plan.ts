@@ -1,14 +1,14 @@
 /**
  * 데스크톱 요금제 API(rhwpDesktop.plan)의 미리보기 대역. `?plan=free|pro|legacy|hama` (기본 off: 웹처럼 API 없음).
- * `&checkout=off` 면 결제 링크가 비어 모든 단추가 '곧 출시'다. 기본은 Pro 월간·연간만 열리고 Hama 는 준비 중,
- * `checkout=all` 이면 Hama 도 열린다. 결제를 시작하면 페이지는 열지 않고 보고만 하며, 2.4초 뒤 산 등급이 된다
+ * `&checkout=off` 면 결제 링크가 비어 모든 단추가 '곧 출시'다. 기본은 앱처럼 Pro·Hama 의 월간·연간이 모두 열린다.
+ * 결제를 시작하면 페이지는 열지 않고 보고만 하며, 2.4초 뒤 산 등급이 된다
  * (`&checkoutHold=1` 이면 확인 중에 머문다).
  */
 import type { DesktopPlanApi, PlanSku, PlanStatus, PlanTier } from '../ui/plan/plan-types.ts';
 import { tierForSku } from '../ui/plan/plan-types.ts';
 
 export const mockPlanTiers = ['free', 'pro', 'legacy', 'hama'] as const;
-export const mockCheckoutModes = ['pro', 'all', 'off'] as const;
+export const mockCheckoutModes = ['on', 'off'] as const;
 export type MockCheckoutMode = (typeof mockCheckoutModes)[number];
 
 const CHECKOUT_DELAY_MS = 2400;
@@ -20,7 +20,7 @@ export function mockPlanTier(params: URLSearchParams): PlanTier | null {
 
 export function mockCheckoutMode(params: URLSearchParams): MockCheckoutMode {
   const value = params.get('checkout');
-  return mockCheckoutModes.includes(value as MockCheckoutMode) ? (value as MockCheckoutMode) : 'pro';
+  return mockCheckoutModes.includes(value as MockCheckoutMode) ? (value as MockCheckoutMode) : 'on';
 }
 
 export interface MockPlan {
@@ -45,7 +45,8 @@ export function createMockPlan(
   const checkoutOptions = (): PlanStatus['checkout'] => ({
     proMonthly: { available: checkoutMode !== 'off', priceKrw: 3900 },
     proYearly: { available: checkoutMode !== 'off', priceKrw: 39000 },
-    hama: { available: checkoutMode === 'all', priceKrw: null },
+    hamaMonthly: { available: checkoutMode !== 'off', priceKrw: 12900 },
+    hamaYearly: { available: checkoutMode !== 'off', priceKrw: 139000 },
   });
   let status: PlanStatus = {
     tier,

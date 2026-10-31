@@ -28,7 +28,7 @@ export function mountHamaHomeEntry(
   const sync = (): void => {
     const status = store.status();
     entry.hidden = !showsHamaHomeEntry(status);
-    soon.hidden = status?.checkout.hama.available === true;
+    soon.hidden = status?.checkout.hamaMonthly.available === true;
     entry.setAttribute('aria-label', soon.hidden ? 'Hama 요금제 보기' : 'Hama 요금제 보기, 곧 출시');
   };
   sync();

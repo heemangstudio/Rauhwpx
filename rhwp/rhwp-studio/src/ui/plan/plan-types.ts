@@ -2,9 +2,9 @@
 // 이 꼴은 데스크톱 JSON 과 같다. 결제 주소와 ref 는 렌더러로 오지 않는다.
 
 export type PlanTier = 'free' | 'pro' | 'legacy' | 'hama';
-export type PlanSku = 'proMonthly' | 'proYearly' | 'hama';
+export type PlanSku = 'proMonthly' | 'proYearly' | 'hamaMonthly' | 'hamaYearly';
 
-export const PLAN_SKUS: readonly PlanSku[] = ['proMonthly', 'proYearly', 'hama'];
+export const PLAN_SKUS: readonly PlanSku[] = ['proMonthly', 'proYearly', 'hamaMonthly', 'hamaYearly'];
 
 export interface PlanCheckoutOption {
   available: boolean;
@@ -38,5 +38,5 @@ export interface DesktopPlanApi {
 
 /** 산 상품이 여는 요금제. */
 export function tierForSku(sku: PlanSku): PlanTier {
-  return sku === 'hama' ? 'hama' : 'pro';
+  return sku === 'hamaMonthly' || sku === 'hamaYearly' ? 'hama' : 'pro';
 }

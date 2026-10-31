@@ -1,6 +1,6 @@
 // 앱 요금제: 무료면 사이드바가 접힌 채로 있고, 펼치려 하면 요금제 카드가 열린다.
 // Pro·기존 라이선스는 문서 홈 위 막대의 Hama 입구로 카드를 연다.
-// 결제 링크가 비면 '곧 출시'로 막히고, 결제가 끝나면 다시 불러오지 않고 에이전트가 열린다.
+// 결제 링크가 비면 '곧 출시'로 막히고, 결제가 끝나면 다시 불러오지 않고 산 요금제로 에이전트가 열린다.
 import assert from 'node:assert/strict';
 
 const sentTexts = (page) => page.evaluate(() => window.sidebarPreview.snapshot().messageTexts);
@@ -60,7 +60,9 @@ export async function checkPlanCard({ page, open, screenshot }) {
   await page.$eval('.ag-collapse-tab', (tab) => tab.click());
   await cardOpen(page);
   assert.equal(await page.$eval('.ag-pricing-col[data-plan="free"]', (col) => col.dataset.current), 'true');
-  assert.equal(await page.$eval('.ag-pricing-col[data-plan="hama"] button', (b) => [b.disabled, b.textContent].join()), 'true,곧 출시');
+  const hamaButtons = await page.$$eval('.ag-pricing-col[data-plan="hama"] button', (buttons) => buttons.map((b) => [b.dataset.sku, b.disabled, b.textContent]));
+  assert.deepEqual(hamaButtons, [['hamaMonthly', false, '월간'], ['hamaYearly', false, '연간']]);
+  assert.match(await page.$eval('.ag-pricing-col[data-plan="hama"] .ag-pricing-price', (row) => row.textContent), /₩12,900.*₩139,000/);
   await page.click('.ag-pricing-col[data-plan="pro"] [data-sku="proMonthly"]');
   await page.waitForSelector('.ag-pricing-card[data-view="waiting"]');
   assert.deepEqual(await page.evaluate(() => window.sidebarPreview.plan.checkouts), ['proMonthly']);
@@ -81,7 +83,21 @@ export async function checkPlanCard({ page, open, screenshot }) {
   await cardOpen(page);
   const proButtons = await page.$$eval('.ag-pricing-col[data-plan="pro"] button', (buttons) => buttons.map((b) => [b.disabled, b.textContent]));
   assert.deepEqual(proButtons, [[true, '곧 출시']]);
+  const closedHama = await page.$$eval('.ag-pricing-col[data-plan="hama"] button', (buttons) => buttons.map((b) => [b.disabled, b.textContent]));
+  assert.deepEqual(closedHama, [[true, '곧 출시']]);
   await closeCard(page);
+
+  // Hama 연간을 사면 등급이 hama 가 되고 잠금이 풀린다.
+  await open('reset=1&plan=free');
+  await page.$eval('.ag-collapse-tab', (tab) => tab.click());
+  await cardOpen(page);
+  await page.click('.ag-pricing-col[data-plan="hama"] [data-sku="hamaYearly"]');
+  await page.waitForSelector('.ag-pricing-card[data-view="waiting"]');
+  assert.equal(await page.$eval('.ag-pricing-state-meta', (meta) => meta.textContent), 'Hama · 연간');
+  assert.deepEqual(await page.evaluate(() => window.sidebarPreview.plan.checkouts), ['hamaYearly']);
+  await page.waitForSelector('.ag-pricing-card[data-view="done"]', { timeout: 6000 });
+  await page.waitForFunction(() => !document.querySelector('.ag-pricing-card'), { timeout: 4000 });
+  assert.equal(await page.$eval('#agent-sidebar', (root) => root.dataset.tier), 'hama');
 
   // 호스팅 Rau 칩도 요금제 API 가 있으면 페이지 대신 카드를 연다.
   await open('reset=1&plan=legacy&rau=upgrade');
@@ -105,9 +121,12 @@ export async function checkPlanCard({ page, open, screenshot }) {
     [await homeEntry('free'), await homeEntry('hama'), await homeEntry('legacy'), await homeEntry('pro')],
     [false, false, true, true],
   );
-  assert.equal(await visible(page, '.plan-hama-soon'), true, 'Hama checkout not open yet');
+  assert.equal(await visible(page, '.plan-hama-soon'), false, 'Hama checkout is open');
   await page.click('.plan-hama-entry');
   await cardOpen(page);
   await page.waitForSelector('.ag-pricing-col[data-plan="hama"][data-focus="true"]');
   await closeCard(page);
+  await open('reset=1&home=1&plan=pro&checkout=off');
+  await page.waitForSelector('#document-home .dh-topbar');
+  assert.equal(await visible(page, '.plan-hama-soon'), true, 'an empty link reads as coming soon');
 }

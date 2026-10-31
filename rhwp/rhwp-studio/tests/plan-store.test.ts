@@ -13,7 +13,8 @@ function status(tier: PlanTier, agentUnlocked = tier !== 'free'): PlanStatus {
     checkout: {
       proMonthly: { available: true, priceKrw: 3900 },
       proYearly: { available: true, priceKrw: 39000 },
-      hama: { available: false, priceKrw: null },
+      hamaMonthly: { available: true, priceKrw: 12900 },
+      hamaYearly: { available: true, priceKrw: 139000 },
     },
     pendingCheckout: null,
     lastCheckout: null,
