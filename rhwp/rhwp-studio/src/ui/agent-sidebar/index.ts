@@ -5130,10 +5130,16 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     openCalibration: (options) => writingStyleCalibration.open(options),
     plan: planStore,
     openPlans: async () => {
-      const card = openPlanCard({ store: planStore, license: planLicenseApi });
+      let back = false;
+      const card = openPlanCard({
+        store: planStore,
+        license: planLicenseApi,
+        skipLabel: 'AI 없이 무료로 시작',
+        onBack: () => { back = true; },
+      });
       if (!card) return false;
       await card.closed;
-      return true;
+      return back ? 'back' : true;
     },
     onFinished: () => {
       adoptFirstRunDefaultAgent();

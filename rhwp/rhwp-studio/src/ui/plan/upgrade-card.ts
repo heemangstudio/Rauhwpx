@@ -51,6 +51,10 @@ export interface PlanCardOptions {
   /** 결제 전 로그인할 계정. 생략하면 창의 계정 상태를 쓴다. */
   account?: AccountStore;
   focus?: PlanCardFocus;
+  /** 요금제를 고르지 않고 닫는 단추의 글. 처음 설정에서만 넘긴다. */
+  skipLabel?: string;
+  /** 있으면 왼쪽 아래에 뒤로 단추를 두고, 누르면 카드를 닫은 뒤 부른다. 처음 설정에서만 넘긴다. */
+  onBack?: () => void;
 }
 
 export interface PlanCardHandle {
@@ -310,8 +314,24 @@ export function openPlanCard(options: PlanCardOptions): PlanCardHandle | null {
     const message = el('p', 'ag-pricing-notice', notice);
     message.setAttribute('role', 'status');
     message.hidden = !notice;
+    if (options.onBack) {
+      const back = button('ag-pricing-back', '');
+      back.setAttribute('aria-label', '뒤로');
+      back.title = '뒤로';
+      back.append(createIcon('arrowLeft'));
+      back.addEventListener('click', () => {
+        options.onBack!();
+        finish(false);
+      });
+      foot.append(back);
+    }
     foot.append(message);
-    if (notice) body.append(foot);
+    if (options.skipLabel) {
+      const skip = button('ag-pricing-skip', options.skipLabel);
+      skip.addEventListener('click', () => finish(false));
+      foot.append(skip);
+    }
+    if (notice || options.skipLabel || options.onBack) body.append(foot);
   }
 
   function renderWaiting(): void {

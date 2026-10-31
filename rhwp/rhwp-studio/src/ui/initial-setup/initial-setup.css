@@ -789,6 +789,12 @@
   color: var(--n-ink);
 }
 
+/* 무료로 나가는 단추는 눌러 보라고 권하지 않는다. */
+.rhwp-setup-primary[data-leave='true']:hover {
+  background: transparent;
+  color: var(--n-ink-secondary);
+}
+
 .rhwp-setup-primary:focus-visible {
   outline: var(--ag-focus-ring);
   outline-offset: var(--ag-focus-offset);
@@ -882,28 +888,4 @@
 
 .rhwp-setup-notice {
   margin: 0;
-}
-
-.rhwp-setup-plan-summary {
-  border: 1px solid var(--n-ink-hairline);
-  border-radius: var(--ag-r-card);
-  overflow: hidden;
-}
-
-.rhwp-setup-plan-row {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 18px;
-  color: var(--n-ink);
-  font-size: var(--ag-fs-body);
-}
-
-.rhwp-setup-plan-row + .rhwp-setup-plan-row {
-  border-top: 1px solid var(--n-ink-hairline);
-}
-
-.rhwp-setup-plan-row span {
-  color: var(--n-ink-secondary);
-  font-size: var(--ag-fs-secondary);
 }

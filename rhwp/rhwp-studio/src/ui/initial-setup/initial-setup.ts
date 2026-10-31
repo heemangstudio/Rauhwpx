@@ -119,8 +119,8 @@ export interface InitialSetupDeps {
   /** 데스크톱 계정. 생략하면 창의 계정 상태를 쓰고, null 이면 계정 장이 없다. */
   account?: AccountStore | null;
   plan?: PlanStore;
-  /** 기존 결제 카드가 닫힐 때까지 기다린다. 열 수 없으면 false. */
-  openPlans?: () => Promise<boolean>;
+  /** 기존 결제 카드가 닫힐 때까지 기다린다. 열 수 없으면 false, 뒤로 단추로 닫았으면 'back'. */
+  openPlans?: () => Promise<boolean | 'back'>;
   /** 끝내거나 건너뛰어 다시 열 일이 없어졌을 때. */
   onFinished?: () => void;
 }
@@ -156,6 +156,8 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   let accountStep = false;
   let ai = false;
   let choosingPlan = false;
+  /** 요금제 장에 들어올 때 카드를 한 번만 연다. 열지 못하면 이 장에서 다시 시도한다. */
+  let planCardTried = false;
   function rebuildSteps(preferred = currentStep()): void {
     const plan = deps.plan?.status();
     steps = planSteps(fontStep, {
@@ -387,26 +389,12 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   welcomePanel.append(freePath, aiPath, routeNotice);
 
   const plansPanel = el('div', 'rhwp-setup-panel rhwp-setup-plans');
-  const planSummary = el('div', 'rhwp-setup-plan-summary');
-  /** 체험을 쓸 수 있는 계정이면 Rau 줄이 체험을 알린다. 로그인한 뒤라 그릴 때마다 다시 본다. */
-  function renderPlanSummary(): void {
-    const trial = account?.status()?.trial?.state === 'available' && !!accountApi?.startRauTrial;
-    planSummary.replaceChildren(...([
-      ['Hama', '쓰던 AI 계정으로 문서 작업'],
-      ['Rau', trial ? 'Rau 모드 · 7일 무료 체험' : 'Hama에 Rau 모드를 더해요'],
-    ] as const).map(([name, copy]) => {
-      const row = el('div', 'rhwp-setup-plan-row');
-      row.append(el('strong', '', name), el('span', '', copy));
-      return row;
-    }));
-  }
-  renderPlanSummary();
   const planAction = button('rhwp-setup-upgrade-action', '요금제 선택');
   const planError = el('p', 'rhwp-setup-notice');
   planError.setAttribute('role', 'status');
   planError.hidden = true;
   planAction.addEventListener('click', () => { void choosePlan(); });
-  plansPanel.append(planSummary, planAction, planError);
+  plansPanel.append(planAction, planError);
 
   const rauPanel = el('div', 'rhwp-setup-panel rhwp-setup-upgrade');
   rauPanel.append(
@@ -436,6 +424,11 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     try {
       const opened = await deps.openPlans();
       if (disposed || !overlay.isConnected) return;
+      if (opened === 'back') {
+        stepIndex = Math.max(0, stepIndex - 1);
+        renderStep();
+        return;
+      }
       if (!opened) {
         planError.textContent = '요금제를 열지 못했어요. 다시 시도해 주세요.';
         planError.hidden = false;
@@ -527,7 +520,6 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   let spokenStep: SetupStep | null = null;
   function renderStep(): void {
     const step = currentStep();
-    if (step === 'plans') renderPlanSummary();
     for (const [name, panel] of Object.entries(panels) as Array<[SetupStep, HTMLElement]>) {
       panel.hidden = name !== step;
     }
@@ -552,13 +544,20 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     // 로그인하지 않고 넘어가면 무료로 쓴다.
     const leave = step === 'welcome' || step === 'plans' || (step === 'account' && !accountPanel?.signedIn());
     primary.hidden = step === 'welcome';
-    primary.textContent = step === 'intro' ? '시작하기' : leave ? '무료로 시작' : step === 'models' ? '연결 건너뛰기' : last ? '홈으로' : '다음';
+    primary.textContent = step === 'intro' ? '시작하기' : leave ? 'AI 없이 무료로 시작' : step === 'models' ? '연결 건너뛰기' : last ? '홈으로' : '다음';
     if (step === 'models' && configuredAgents().length > 0) primary.textContent = last ? '홈으로' : '다음';
     primary.setAttribute('aria-label', primary.textContent);
     primary.dataset.quiet = leave || step === 'models' ? 'true' : 'false';
+    primary.dataset.leave = leave ? 'true' : 'false';
     if (spokenStep !== step && overlay.isConnected) {
       spokenStep = step;
       hippo.say(lineFor(step));
+    }
+    if (step !== 'plans') {
+      planCardTried = false;
+    } else if (!planCardTried && !choosingPlan && overlay.isConnected) {
+      planCardTried = true;
+      void choosePlan();
     }
   }
 
@@ -629,6 +628,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     document.body.appendChild(overlay);
     overlay.setAttribute('aria-hidden', 'false');
     ai = false;
+    planCardTried = false;
     steps = planSteps(fontStep);
     stepIndex = 0;
     spokenStep = null;
