@@ -8,9 +8,9 @@ To preview it locally, run `python3 website/preview.py` from the repository root
 
 The editor is free. Paid plans add AI on top of it:
 
-- **무료**: open, edit and save HWP/HWPX. The AI agent runs on the user's own Codex, Claude or OpenRouter account.
-- **Pro**: monthly or yearly subscription on Groble. Adds hosted Rau-0.1 under a monthly fair-use cap (`site-api` handles the cap).
-- **Hama**: shown as 준비 중 with no buy button. Includes the hosted AI agent.
+- **무료**: open, edit and save HWP/HWPX. No AI agent; the app locks it on this plan.
+- **Pro**: monthly or yearly subscription on Groble. Adds the AI agent on the user's own Codex, Claude or OpenRouter account, and hosted Rau-0.1 under a monthly fair-use cap (`site-api` handles the cap).
+- **Hama**: shown as 준비 중 with no buy button. Everything in Pro, plus the hosted AI agent.
 
 Older yearly (GLJFC9), one-time and beta keys keep working; their products stay in `CHECKOUT_URLS` because the license server still validates them.
 
