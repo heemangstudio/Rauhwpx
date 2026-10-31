@@ -9,7 +9,11 @@ import { createFakeWorkOS } from './fake-workos.mjs';
 
 const port = Number(process.argv[2] ?? 5198);
 const email = process.argv[3] ?? 'live@example.com';
-const fake = createFakeWorkOS({ apiKey: 'sk_local', clientId: process.env.WORKOS_CLIENT_ID || DEFAULT_WORKOS_CLIENT_ID });
+const fake = createFakeWorkOS({
+  apiKey: 'sk_local',
+  clientId: process.env.WORKOS_CLIENT_ID || DEFAULT_WORKOS_CLIENT_ID,
+  onCall: (method, path) => process.stderr.write(`[fake-workos] ${method} ${path}\n`),
+});
 fake.setNextUser({ email, firstName: '하마' });
 const base = await fake.listen(port);
 process.stderr.write(`[fake-workos] ${base} (signs in ${email})\n`);
