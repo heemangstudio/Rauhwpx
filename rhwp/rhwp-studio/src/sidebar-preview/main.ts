@@ -219,8 +219,8 @@ const liveChat = reload === 'running' || reload === 'question' || reload === 'en
  * 앱처럼 키를 활성화한 뒤에야 선물이 보이고, 처음 설정 위에 선물 창이 뜬다.
  */
 /*
- * 앱 요금제. `plan=free|pro|legacy|hama` 면 데스크톱 요금제 API 가 생긴다(없으면 웹처럼 잠금·↑ 단추 없음).
- * 요금제 카드의 '키 직접 입력'이 쓰도록 라이선스 대역도 무료 상태로 함께 둔다(HAMA- 키가 Pro 를 연다).
+ * 앱 요금제. `plan=free|basic|legacy|hama` 면 데스크톱 요금제 API 가 생긴다(없으면 웹처럼 잠금·↑ 단추 없음).
+ * 요금제 카드의 '키 직접 입력'이 쓰도록 라이선스 대역도 무료 상태로 함께 둔다(HAMA- 키가 Basic 을 연다).
  */
 /*
  * 계정. `account=signed-out|signing-in|choose-device|free|pro|hama|legacy|payment-failed|offline` 이면 데스크톱
@@ -249,9 +249,9 @@ if (mockAccount) {
 const mockLicense = createMockLicense(
   mockPlan && mockLicenseMode(params) === 'off' ? 'free' : mockLicenseMode(params), report);
 mockLicense?.onLicensed(() => {
-  if (mockPlan && mockPlan.status().tier === 'free') mockPlan.setTier('pro');
+  if (mockPlan && mockPlan.status().tier === 'free') mockPlan.setTier('basic');
 });
-/* 호스팅 Rau(Pro). `rau=free|pro` 가 설정 → Rau-0.1 의 Pro 줄을, `rau=upgrade` 는 입력창 위 업그레이드 칩도 띄운다. */
+/* 호스팅 Rau(Basic). `rau=free|basic` 가 설정 → Rau-0.1 의 Basic 줄을, `rau=upgrade` 는 입력창 위 업그레이드 칩도 띄운다. */
 const mockRau = createMockRau(mockRauMode(params), report);
 const mockGift = createMockGift(mockGiftMode(params), {
   failClaim: params.get('claim') === 'fail',
@@ -673,7 +673,7 @@ const sidebar = initAgentSidebar({
 });
 mock.boot();
 if (params.get('hub') === 'down') mock.setConnection('disconnected');
-/* `home=1`: 문서 홈(표본 최근 문서). Pro·기존 라이선스면 위 막대에 Hama 입구가 선다. */
+/* `home=1`: 문서 홈(표본 최근 문서). Basic·기존 라이선스면 위 막대에 Hama 입구가 선다. */
 const home = params.get('home') === '1'
   ? mountHomeScene({
     plan: mockPlan ? createPlanStore(mockPlan.api) : null,

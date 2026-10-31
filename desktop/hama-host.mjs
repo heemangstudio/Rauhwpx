@@ -5,7 +5,7 @@ import { HamaServerError } from './hama-client.mjs';
 /**
  * 허브의 {type:'rhwp-hama-request', id, operation:'status'} 에 답한다. 다른 메시지면 null.
  * value: {availability:'active', lease, apiBase, status} | {availability:'not_enrolled'|'unavailable', reason}
- *   not_enrolled: 서버가 403 hama_not_enrolled 로 답했다 (Free·Pro 포함 Hama 플랜이 아닌 라이선스).
+ *   not_enrolled: 서버가 403 hama_not_enrolled 로 답했다 (Free·Basic 포함 Hama 플랜이 아닌 라이선스).
  *   unavailable: 라이선스 없음(no_license), 서버 꺼짐(not_configured), 네트워크·서버 오류, 거절된 lease.
  */
 export async function handleHamaRequest({ client, currentLease }, message) {

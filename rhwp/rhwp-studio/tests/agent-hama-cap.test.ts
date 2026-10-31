@@ -57,7 +57,7 @@ test('the countdown reads hours and minutes, then minutes', () => {
   assert.equal(hamaCountdownLine(NOW + 90_000, NOW), '2분 뒤 다시 쓸 수 있어요');
 });
 
-test('Hama is connected only for an active plan; not enrolled (Pro included) and unknown shapes are not', () => {
+test('Hama is connected only for an active plan; not enrolled (Basic included) and unknown shapes are not', () => {
   const active = readHamaStatus({
     availability: 'active',
     plan: { status: 'active', allowanceUsd: 15, periodStart: NOW - 21 * 24 * HOUR, periodEnd: NOW + 9 * 24 * HOUR },

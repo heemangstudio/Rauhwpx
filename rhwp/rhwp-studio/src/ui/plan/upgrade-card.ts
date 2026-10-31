@@ -1,7 +1,7 @@
-// 요금제 카드. 무료 / Pro / Hama 를 나란히 두고, 결제는 데스크톱 main 이 연다(rhwpDesktop.plan).
+// 요금제 카드. 무료 / Basic / Hama 를 나란히 두고, 결제는 데스크톱 main 이 연다(rhwpDesktop.plan).
 // 결제를 시작하면 카드는 확인을 기다리고, 요금제가 산 등급으로 바뀌면 잠깐 알리고 닫힌다.
 // 로그아웃 상태의 결제(sign_in_required)는 카드를 닫고 계정 페이지의 로그인으로 보낸 뒤, 로그인하면 카드로 돌아온다.
-// 어디서든 window 의 'rhwp:open-plan-card' 이벤트로 연다(detail.focus 로 Pro·Hama 칸을 짚는다).
+// 어디서든 window 의 'rhwp:open-plan-card' 이벤트로 연다(detail.focus 로 Basic·Hama 칸을 짚는다).
 import '../agent-sidebar/sheet.css';
 import './upgrade-card.css';
 import { createSheetFrame } from '../agent-sidebar/sheet.ts';
@@ -19,8 +19,8 @@ export type PlanCardFocus = PlanFamily;
 
 const SUCCESS_HOLD_MS = 1200;
 
-const TIER_LABEL: Record<PlanTier, string> = { free: '무료', pro: 'Pro', legacy: '기존 라이선스', hama: 'Hama' };
-const SKU_LABEL: Record<PlanSku, string> = { proMonthly: 'Pro · 월간', proYearly: 'Pro · 연간', hamaMonthly: 'Hama · 월간', hamaYearly: 'Hama · 연간' };
+const TIER_LABEL: Record<PlanTier, string> = { free: '무료', basic: 'Basic', legacy: '기존 라이선스', hama: 'Hama' };
+const SKU_LABEL: Record<PlanSku, string> = { basicMonthly: 'Basic · 월간', basicYearly: 'Basic · 연간', hamaMonthly: 'Hama · 월간', hamaYearly: 'Hama · 연간' };
 
 export interface PlanCardOptions {
   store: PlanStore;
@@ -176,7 +176,7 @@ export function openPlanCard(options: PlanCardOptions): PlanCardHandle | null {
     const current = tier === plan;
     if (current) column.dataset.current = 'true';
     if (focused === plan) column.dataset.focus = 'true';
-    const name = el('div', 'ag-pricing-name', plan === 'free' ? '무료' : plan === 'pro' ? 'Pro' : 'Hama');
+    const name = el('div', 'ag-pricing-name', plan === 'free' ? '무료' : plan === 'basic' ? 'Basic' : 'Hama');
     if (plan === 'hama') name.prepend(createHamaMark('ag-pricing-hama-mark'));
     const priceRow = el('div', 'ag-pricing-price');
     const features = el('ul', 'ag-pricing-features');
@@ -190,7 +190,7 @@ export function openPlanCard(options: PlanCardOptions): PlanCardHandle | null {
       const yearly = price(PLAN_CYCLES[plan].yearly);
       priceRow.append(el('span', 'ag-pricing-amount', monthly === null ? '—' : won(monthly)), el('span', 'ag-pricing-unit', '/월'));
       if (yearly !== null) priceRow.append(el('span', 'ag-pricing-alt', `연 ${won(yearly)}`));
-      if (plan === 'pro') lines.push('AI 연결(Codex, Claude)', 'Rau-0.1');
+      if (plan === 'basic') lines.push('AI 연결(Codex, Claude)', 'Rau-0.1');
       else lines.push('Hama 에이전트 크레딧 제공', 'Rau-0.1');
     }
     for (const line of lines) features.append(el('li', '', line));
@@ -222,7 +222,7 @@ export function openPlanCard(options: PlanCardOptions): PlanCardHandle | null {
   function renderPlans(): void {
     const tier = status()?.tier ?? null;
     const grid = el('div', 'ag-pricing-grid');
-    grid.append(planColumn('free', tier), planColumn('pro', tier), planColumn('hama', tier));
+    grid.append(planColumn('free', tier), planColumn('basic', tier), planColumn('hama', tier));
     body.append(grid);
     const foot = el('div', 'ag-pricing-foot');
     const message = el('p', 'ag-pricing-notice', notice);
@@ -253,8 +253,8 @@ export function openPlanCard(options: PlanCardOptions): PlanCardHandle | null {
     const done = el('div', 'ag-pricing-state ag-pricing-done');
     const mark = el('span', 'ag-pricing-done-mark');
     mark.append(createIcon('check'));
-    const tier = status()?.tier ?? 'pro';
-    const title = el('p', 'ag-pricing-state-title', `${TIER_LABEL[tier]}를 쓸 수 있어요`);
+    const tier = status()?.tier ?? 'basic';
+    const title = el('p', 'ag-pricing-state-title', `${TIER_LABEL[tier]}${tier === 'basic' ? '을' : '를'} 쓸 수 있어요`);
     title.setAttribute('role', 'status');
     done.append(mark, title);
     body.append(done);
@@ -321,7 +321,7 @@ export function listenForPlanCardEvents(options: Omit<PlanCardOptions, 'focus'>)
   detachPlanCardEvents?.();
   const onOpen = (event: Event): void => {
     const detail = (event as CustomEvent<{ focus?: unknown } | null>).detail;
-    const focus = detail?.focus === 'pro' || detail?.focus === 'hama' ? detail.focus : undefined;
+    const focus = detail?.focus === 'basic' || detail?.focus === 'hama' ? detail.focus : undefined;
     openPlanCard({ ...options, ...(focus ? { focus } : {}) });
   };
   window.addEventListener(OPEN_PLAN_CARD_EVENT, onOpen);

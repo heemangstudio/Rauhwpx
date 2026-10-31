@@ -1,4 +1,4 @@
-// 호스팅 Rau-0.1(Pro·Hama) 업그레이드 안내. 허브가 자격이 없다는 답(rau_requires_pro)을 받으면 rau-upgrade 를 한 번
+// 호스팅 Rau-0.1(Basic·Hama) 업그레이드 안내. 허브가 자격이 없다는 답(rau_requires_basic)을 받으면 rau-upgrade 를 한 번
 // 보내고, 사이드바는 입력창 위에 칩을 띄운다. 닫거나 업그레이드 페이지를 열면 그 거절에는 다시 띄우지 않는다.
 // 서버 호출과 lease 는 데스크톱 main 이 가진다. 여기서는 데스크톱의 rau API 로 자격을 묻고 페이지를 연다.
 import { createIcon } from './icons.ts';
@@ -11,7 +11,7 @@ const DISMISSED_KEY = 'rhwp.rau-upgrade.dismissed';
 export interface RauStatus {
   ok: boolean;
   eligible?: boolean;
-  reason?: 'rau_requires_pro' | 'no_license' | null;
+  reason?: 'rau_requires_basic' | 'no_license' | null;
   upgradeUrl?: string;
   capUsd?: number | null;
   usedUsd?: number | null;
@@ -44,7 +44,11 @@ function storage(): Storage | null {
 }
 
 export function rauUpgradeDismissed(reason: string, store: Storage | null = storage()): boolean {
-  try { return store?.getItem(DISMISSED_KEY) === reason; } catch { return false; }
+  try {
+    const dismissed = store?.getItem(DISMISSED_KEY);
+    // 예전 이름(rau_requires_pro)으로 닫은 거절도 같은 거절이다.
+    return (dismissed === 'rau_requires_pro' ? 'rau_requires_basic' : dismissed) === reason;
+  } catch { return false; }
 }
 
 export function dismissRauUpgrade(reason: string, store: Storage | null = storage()): void {
@@ -77,7 +81,7 @@ export function createRauUpgradeChip({
   open.className = 'ag-calibration-chip-open';
   const text = document.createElement('span');
   text.className = 'ag-calibration-chip-text';
-  text.textContent = 'Rau-0.1 호스팅은 Pro·Hama에서 써요';
+  text.textContent = 'Rau-0.1 호스팅은 Basic·Hama에서 써요';
   const action = document.createElement('span');
   action.className = 'ag-calibration-chip-action';
   action.textContent = RAU_UPGRADE_PRICE;

@@ -85,14 +85,22 @@ test('with a license the hosted route runs first and its text is learned like an
   assert.equal(h.frames[0].type, 'taste-learned');
 });
 
-test('a Pro refusal skips learning, prompts once, and is remembered until the license changes', async (t) => {
+test('the old rau_requires_pro name is the same Basic refusal', async (t) => {
   const source = fakeSource(refusal('rau_requires_pro', { upgradeUrl: 'https://heemangstudios.com/pricing.html' }));
+  const h = harness(t, { source });
+  await h.run();
+  assert.equal(h.calls.length, 0);
+  assert.deepEqual(h.frames.filter((frame) => frame.type === 'rau-upgrade').map((frame) => frame.reason), ['rau_requires_basic']);
+});
+
+test('a Basic refusal skips learning, prompts once, and is remembered until the license changes', async (t) => {
+  const source = fakeSource(refusal('rau_requires_basic', { upgradeUrl: 'https://heemangstudios.com/pricing.html' }));
   const h = harness(t, { source });
   await h.run();
   assert.equal(h.calls.length, 0);
   const upgrades = h.frames.filter((frame) => frame.type === 'rau-upgrade');
   assert.equal(upgrades.length, 1);
-  assert.deepEqual([upgrades[0].reason, upgrades[0].upgradeUrl, upgrades[0].documentId], ['rau_requires_pro', 'https://heemangstudios.com/pricing.html', 'doc-1']);
+  assert.deepEqual([upgrades[0].reason, upgrades[0].upgradeUrl, upgrades[0].documentId], ['rau_requires_basic', 'https://heemangstudios.com/pricing.html', 'doc-1']);
 
   await h.run();
   assert.equal(source.prompts.length, 1, 'the refusal is remembered');
@@ -159,8 +167,8 @@ test('the IPC source sends only the prompt and maps the desktop error back', asy
   assert.deepEqual(await ok, { text: '{"ops":[]}', model: 'rau' });
 
   const refused = source.learn('prompt-2');
-  processRef.emit('message', { type: 'rhwp-rau-response', id: sent[1].id, ok: false, error: 'rau_requires_pro', code: 'rau_requires_pro', upgradeUrl: 'https://heemangstudios.com/pricing.html' });
-  await assert.rejects(refused, (error) => error.code === 'rau_requires_pro' && error.upgradeUrl === 'https://heemangstudios.com/pricing.html');
+  processRef.emit('message', { type: 'rhwp-rau-response', id: sent[1].id, ok: false, error: 'rau_requires_basic', code: 'rau_requires_basic', upgradeUrl: 'https://heemangstudios.com/pricing.html' });
+  await assert.rejects(refused, (error) => error.code === 'rau_requires_basic' && error.upgradeUrl === 'https://heemangstudios.com/pricing.html');
 
   let changed = 0;
   source.onChange(() => { changed += 1; });

@@ -1,4 +1,4 @@
-// 문서 홈 위 막대의 Hama 입구. Pro·기존 라이선스에만 보인다(무료는 입력기의 ↑, Hama 는 이미 쓰는 중).
+// 문서 홈 위 막대의 Hama 입구. Basic·기존 라이선스에만 보인다(무료는 입력기의 ↑, Hama 는 이미 쓰는 중).
 // 누르면 요금제 카드를 Hama 칸에 맞춰 연다. 결제가 아직 열리지 않았으면 '곧 출시'를 조용히 붙인다.
 import './hama-home-entry.css';
 import { createHamaMark } from './hama-mark.ts';

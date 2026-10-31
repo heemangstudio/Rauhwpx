@@ -241,7 +241,7 @@ function status(agent: AgentName, partial: Partial<AgentSetupStatus> = {}): Agen
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-async function openWizard(tier?: 'pro' | 'hama') {
+async function openWizard(tier?: 'basic' | 'hama') {
   const storage = memoryStore();
   let finished = 0;
   const ui = createInitialSetup({
@@ -299,7 +299,7 @@ test('Esc in the provider connect dialog closes only that dialog; the first-run 
 });
 
 test('finishing first-run setup with only Codex connected makes Codex the provider of the untouched chat, not of a started one', async () => {
-  const { ui, storage, finished } = await openWizard('pro');
+  const { ui, storage, finished } = await openWizard('basic');
   ui.handleEvent({
     type: 'agent-setup-status',
     statuses: { claude: status('claude'), codex: status('codex', { available: true, installed: true, authenticated: true, connected: true }), pi: status('pi') },

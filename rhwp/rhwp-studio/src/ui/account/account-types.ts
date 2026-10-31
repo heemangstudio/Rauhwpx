@@ -20,7 +20,7 @@ export interface AccountLicense {
   keyId: string;
   maskedKey: string;
   tier: 'paid' | 'beta';
-  edition: 'pro' | 'hama' | 'signature' | null;
+  edition: 'basic' | 'hama' | 'signature' | null;
   plan: 'monthly' | 'annual' | 'lifetime' | null;
   status: 'active' | 'past_due' | 'expired' | 'revoked';
   expiresAt: number | null;
@@ -29,8 +29,8 @@ export interface AccountLicense {
 }
 
 export interface AccountPlan {
-  tier: 'free' | 'pro' | 'legacy' | 'hama';
-  edition: 'pro' | 'hama' | 'signature' | null;
+  tier: 'free' | 'basic' | 'legacy' | 'hama';
+  edition: 'basic' | 'hama' | 'signature' | null;
   plan: 'monthly' | 'annual' | 'lifetime' | null;
   expiresAt: number | null;
   autoRenew: boolean | null;

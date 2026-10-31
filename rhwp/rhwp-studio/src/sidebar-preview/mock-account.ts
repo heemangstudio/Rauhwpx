@@ -21,7 +21,7 @@ import type {
 import type { PlanTier } from '../ui/plan/plan-types.ts';
 
 export const mockAccountScenarios = [
-  'signed-out', 'signing-in', 'choose-device', 'free', 'pro', 'hama', 'legacy', 'payment-failed', 'offline',
+  'signed-out', 'signing-in', 'choose-device', 'free', 'basic', 'hama', 'legacy', 'payment-failed', 'offline',
 ] as const;
 export type MockAccountScenario = (typeof mockAccountScenarios)[number];
 
@@ -58,7 +58,7 @@ export function mockAccountScenario(params: URLSearchParams): MockAccountScenari
 export function mockAccountTier(scenario: MockAccountScenario): PlanTier {
   if (scenario === 'hama') return 'hama';
   if (scenario === 'legacy') return 'legacy';
-  if (scenario === 'pro' || scenario === 'payment-failed' || scenario === 'offline') return 'pro';
+  if (scenario === 'basic' || scenario === 'payment-failed' || scenario === 'offline') return 'basic';
   return 'free';
 }
 
@@ -118,7 +118,7 @@ function planFor(tier: PlanTier, scenario: MockAccountScenario | 'signed-in'): A
   const failed = scenario === 'payment-failed';
   return {
     tier,
-    edition: tier === 'hama' ? 'hama' : 'pro',
+    edition: tier === 'hama' ? 'hama' : 'basic',
     plan: failed ? 'annual' : 'monthly',
     expiresAt: now + (failed ? -2 : 24) * DAY_MS,
     autoRenew: true,
@@ -275,7 +275,7 @@ export function createMockAccount(
             emit({ ...status, state: 'choose_device', deviceChoice: { limit: 5, devices: fullDevices() } });
           } else {
             const newAccount = loginHint === 'new@example.com';
-            const next = signedIn(newAccount ? 'free' : 'pro', 'signed-in');
+            const next = signedIn(newAccount ? 'free' : 'basic', 'signed-in');
             emit({ ...next, account: { ...next.account!, provider,
               ...(newAccount ? { createdAt: Date.now(), email: loginHint } : {}) } });
           }
@@ -293,7 +293,7 @@ export function createMockAccount(
       calls.push(`replaceDevice:${deviceId}`);
       if (status.state !== 'choose_device') return fail('invalid');
       if (!status.deviceChoice?.devices.some((entry) => entry.id === deviceId)) return fail('device_not_found');
-      const next = signedIn('pro', 'signed-in');
+      const next = signedIn('basic', 'signed-in');
       const kept = status.deviceChoice.devices.filter((entry) => entry.id !== deviceId);
       emit({ ...next, devices: [device('dev-this', '지우의 MacBook Air', 'darwin', 0, true), ...kept] });
       return ok();
@@ -354,8 +354,8 @@ export function createMockAccount(
       if (normalized.startsWith('HAMA-ELSE')) return fail('key_linked_elsewhere');
       const masked = maskKey(normalized);
       if (status.licenses.some((entry) => entry.maskedKey === masked)) return linked(true);
-      const plan = status.plan.tier === 'free' ? planFor('pro', 'signed-in') : status.plan;
-      const license = { ...licenseFor(planFor('pro', 'signed-in'), masked), primary: status.licenses.length === 0 };
+      const plan = status.plan.tier === 'free' ? planFor('basic', 'signed-in') : status.plan;
+      const license = { ...licenseFor(planFor('basic', 'signed-in'), masked), primary: status.licenses.length === 0 };
       emit({ ...status, lastError: null, plan, licenses: [...status.licenses, license] });
       options.report('License linked (sample)');
       return linked(false);
@@ -365,8 +365,8 @@ export function createMockAccount(
       const blocked = signedInOnly();
       if (blocked) return blocked;
       if (orderId.includes('missing') || !email.includes('@')) return fail('order_not_found');
-      const plan = status.plan.tier === 'free' ? planFor('pro', 'signed-in') : status.plan;
-      const license = { ...licenseFor(planFor('pro', 'signed-in'), 'HAMA-Q8W3E-•••••-•••••-•••••-ORDER'), primary: status.licenses.length === 0 };
+      const plan = status.plan.tier === 'free' ? planFor('basic', 'signed-in') : status.plan;
+      const license = { ...licenseFor(planFor('basic', 'signed-in'), 'HAMA-Q8W3E-•••••-•••••-•••••-ORDER'), primary: status.licenses.length === 0 };
       emit({ ...status, lastError: null, plan, licenses: [...status.licenses, license] });
       return linked(false);
     }),

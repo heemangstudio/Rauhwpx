@@ -1,14 +1,14 @@
 /**
  * 데스크톱 요금제 API(rhwpDesktop.plan)의 미리보기 대역. `?plan=free|pro|legacy|hama` (기본 off: 웹처럼 API 없음).
  * `account=` 를 주면 계정 대역이 로그인 여부와 등급을 정하고, 로그아웃이면 결제가 sign_in_required 로 막힌다.
- * `&checkout=off` 면 결제 링크가 비어 모든 단추가 '곧 출시'다. 기본은 앱처럼 Pro·Hama 의 월간·연간이 모두 열린다.
+ * `&checkout=off` 면 결제 링크가 비어 모든 단추가 '곧 출시'다. 기본은 앱처럼 Basic·Hama 의 월간·연간이 모두 열린다.
  * 결제를 시작하면 페이지는 열지 않고 보고만 하며, 2.4초 뒤 산 등급이 된다
  * (`&checkoutHold=1` 이면 확인 중에 머문다).
  */
 import type { DesktopPlanApi, PlanSku, PlanStatus, PlanTier } from '../ui/plan/plan-types.ts';
 import { tierForSku } from '../ui/plan/plan-types.ts';
 
-export const mockPlanTiers = ['free', 'pro', 'legacy', 'hama'] as const;
+export const mockPlanTiers = ['free', 'basic', 'legacy', 'hama'] as const;
 export const mockCheckoutModes = ['on', 'off'] as const;
 export type MockCheckoutMode = (typeof mockCheckoutModes)[number];
 
@@ -46,8 +46,8 @@ export function createMockPlan(
   let timer: number | null = null;
 
   const checkoutOptions = (): PlanStatus['checkout'] => ({
-    proMonthly: { available: checkoutMode !== 'off', priceKrw: 3900 },
-    proYearly: { available: checkoutMode !== 'off', priceKrw: 39000 },
+    basicMonthly: { available: checkoutMode !== 'off', priceKrw: 3900 },
+    basicYearly: { available: checkoutMode !== 'off', priceKrw: 39000 },
     hamaMonthly: { available: checkoutMode !== 'off', priceKrw: 12900 },
     hamaYearly: { available: checkoutMode !== 'off', priceKrw: 139000 },
   });

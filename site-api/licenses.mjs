@@ -195,8 +195,8 @@ export function maskLicenseKey(key) {
 }
 
 /** Account tier by the primary license's rank (see accountEntitlements). */
-const RANK_TIERS = { 1: 'legacy', 2: 'pro', 3: 'hama' };
-const ACCOUNT_EDITIONS = new Set(['pro', 'hama', 'signature']);
+const RANK_TIERS = { 1: 'legacy', 2: 'basic', 3: 'hama' };
+const ACCOUNT_EDITIONS = new Set(['basic', 'hama', 'signature']);
 
 function normalizeState(state) {
   const base = emptyLicensesState();
@@ -1140,7 +1140,7 @@ export function createLicensesService({
         live,
         end,
         hamaActive,
-        rank: hamaActive || license.edition === 'hama' ? 3 : license.edition === 'pro' ? 2 : 1,
+        rank: hamaActive || license.edition === 'hama' ? 3 : editionOf(license) === 'basic' ? 2 : 1,
         rauPlan: live ? rauPlanOf(license, nowMs, paymentGraceMaxMs, hamaActive) : null,
       };
     }));
@@ -1159,8 +1159,9 @@ export function createLicensesService({
     return (await linkedOf(await read(), accountId)).filter((entry) => entry.live).sort(byPrimary);
   }
 
-  function editionOf(license) {
-    return ACCOUNT_EDITIONS.has(license.edition) ? license.edition : null;
+  function accountEditionOf(license) {
+    const edition = editionOf(license);
+    return ACCOUNT_EDITIONS.has(edition) ? edition : null;
   }
 
   function accountLicenseView({ license, live }, primaryKeyId) {
@@ -1173,7 +1174,7 @@ export function createLicensesService({
       keyId: license.keyId,
       maskedKey: maskLicenseKey(license.key),
       tier: tierOf(license),
-      edition: editionOf(license),
+      edition: accountEditionOf(license),
       plan: planOf(license),
       status,
       expiresAt: expiry,
@@ -1215,7 +1216,7 @@ export function createLicensesService({
       plan: {
         tier,
         keyId: license?.keyId ?? null,
-        edition: license ? editionOf(license) : null,
+        edition: license ? accountEditionOf(license) : null,
         plan: license ? planOf(license) : null,
         expiresAt: expiry,
         autoRenew: expiry === null ? null : license.subscription?.autoRenew !== false,
@@ -1322,7 +1323,7 @@ export function createLicensesService({
   /**
    * The principal of an account lease for a hosted service, the same shape as authenticateLease plus
    * `accountId`. The license is chosen now by purpose: `gift` a live beta key, `hama` a key with an
-   * active Hama plan or the Hama edition, `rau` the best Rau plan (hama over pro); else the primary.
+   * active Hama plan or the Hama edition, `rau` the best Rau plan (hama over basic); else the primary.
    * Without a live license, `allowInactive` answers `{ keyId: null, active: false }`; otherwise 401.
    */
   async function authenticateAccount(accountId, { deviceId, platform, purpose, allowInactive = false, withRauPlan = false } = {}) {
@@ -1330,7 +1331,7 @@ export function createLicensesService({
     const choices = {
       gift: () => live.find((entry) => tierOf(entry.license) === 'beta'),
       hama: () => live.find((entry) => entry.hamaActive || entry.license.edition === 'hama'),
-      rau: () => live.find((entry) => entry.rauPlan === 'hama') ?? live.find((entry) => entry.rauPlan === 'pro'),
+      rau: () => live.find((entry) => entry.rauPlan === 'hama') ?? live.find((entry) => entry.rauPlan === 'basic'),
     };
     const chosen = (Object.hasOwn(choices, purpose) ? choices[purpose]() : undefined) ?? live[0];
     if (!chosen && !allowInactive) throw licenseError('unauthorized', 401);

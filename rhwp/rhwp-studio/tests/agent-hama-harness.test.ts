@@ -36,10 +36,10 @@ function active(overrides: Partial<HamaStatus> = {}): HamaStatus {
   };
 }
 
-test('Hama entry: active opens it, Pro and legacy keys never see it, Free desktop sees it locked, web hides it', () => {
+test('Hama entry: active opens it, Basic and legacy keys never see it, Free desktop sees it locked, web hides it', () => {
   assert.equal(hamaEntry(active(), false), 'open');
   assert.equal(hamaEntry(active(), true), 'open');
-  // not_enrolled = a valid license without a Hama plan (Pro, legacy): their upgrade entry is on the home screen.
+  // not_enrolled = a valid license without a Hama plan (Basic, legacy): their upgrade entry is on the home screen.
   assert.equal(hamaEntry(inactiveHamaStatus('not_enrolled'), true), 'hidden');
   assert.equal(hamaEntry(inactiveHamaStatus('not_enrolled'), false), 'hidden');
   // unavailable = no license (Free) or the server is unreachable.
@@ -52,7 +52,7 @@ test('Hama entry: active opens it, Pro and legacy keys never see it, Free deskto
 test('Hama is the default only for connected Hama subscribers without another chosen or used harness', () => {
   const fresh = { choice: null, hasChats: false };
   assert.equal(hamaIsDefault(active(), fresh), true);
-  // Pro, Free and lapsed plans keep their provider.
+  // Basic, Free and lapsed plans keep their provider.
   assert.equal(hamaIsDefault(inactiveHamaStatus('not_enrolled'), fresh), false);
   assert.equal(hamaIsDefault(active({ ready: false }), fresh), false);
   // A recorded choice wins; Hama stays default only when Hama itself was the last choice.

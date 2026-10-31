@@ -96,9 +96,10 @@ export function createMockLicenseServer({
 
   /**
    * licenseExpiresAt (epoch ms) makes an annual subscription key; without it the key is lifetime, like beta keys.
-   * plan answers like the Pro server (edition, plan, rau.eligible); without it the answer matches the older server.
+   * plan answers like the Basic server (edition, plan, rau.eligible); without it the answer matches the older server.
+   * Like the real server, the edition is named 'basic' only for requests that send X-Hama-Plan-Names: basic, else 'pro'.
    */
-  function issueKey({ tier = 'paid', licenseExpiresAt = null, autoRenew = true, devices = tier === 'beta' ? BETA_DEVICE_LIMIT : deviceLimit, plan = null, edition = 'pro', rauEligible = true } = {}) {
+  function issueKey({ tier = 'paid', licenseExpiresAt = null, autoRenew = true, devices = tier === 'beta' ? BETA_DEVICE_LIMIT : deviceLimit, plan = null, edition = 'basic', rauEligible = true } = {}) {
     const raw = Array.from(randomBytes(25), n => '0123456789ABCDEFGHJKMNPQRSTVWXYZ'[n & 31]).join('');
     const key = `HAMA-${raw.slice(0, 5)}-${raw.slice(5, 10)}-${raw.slice(10, 15)}-${raw.slice(15, 20)}-${raw.slice(20, 25)}`;
     licenses.set(key, { id: `lic_${licenses.size + 1}`, key, tier, devices: new Set(), platforms: new Map(), revoked: false, licenseExpiresAt, autoRenew, paymentGraceEndsAt: null, deviceLimit: devices, plan, edition, rauEligible });
@@ -117,14 +118,14 @@ export function createMockLicenseServer({
     }, keypair);
   }
 
-  function leaseBody(key, deviceId, license) {
+  function leaseBody(key, deviceId, license, basicNames) {
     return {
       ok: true, lease: lease(key, deviceId), keyId: license.id, tier: license.tier, expiresAt: now() + ttl(license),
       licenseExpiresAt: license.licenseExpiresAt, autoRenew: license.licenseExpiresAt === null ? null : license.autoRenew,
       licenseState: license.paymentGraceEndsAt === null ? 'active' : 'payment_failed', paymentGraceEndsAt: license.paymentGraceEndsAt,
       ...(license.licenseExpiresAt === null ? {} : { paymentFixUrl: PAYMENT_FIX_URL }),
       devicesUsed: license.devices.size, deviceLimit: license.deviceLimit,
-      ...(license.plan ? { edition: license.edition, plan: license.plan, rau: { eligible: license.rauEligible } } : {}),
+      ...(license.plan ? { edition: license.edition === 'basic' && !basicNames ? 'pro' : license.edition, plan: license.plan, rau: { eligible: license.rauEligible } } : {}),
     };
   }
 
@@ -313,11 +314,11 @@ export function createMockLicenseServer({
       if (!license.devices.has(deviceId) && license.devices.size >= license.deviceLimit) return [409, { ok: false, error: 'device_limit' }];
       license.devices.add(deviceId);
       license.platforms.set(deviceId, typeof body.platform === 'string' ? body.platform : null);
-      return [200, leaseBody(normalizedKey, deviceId, license)];
+      return [200, leaseBody(normalizedKey, deviceId, license, headerValue(headers, 'x-hama-plan-names') === 'basic')];
     }
     if (path === '/v1/license/validate') {
       if (!license.devices.has(deviceId)) return [404, { ok: false, error: 'not_activated' }];
-      return [200, leaseBody(normalizedKey, deviceId, license)];
+      return [200, leaseBody(normalizedKey, deviceId, license, headerValue(headers, 'x-hama-plan-names') === 'basic')];
     }
     return [404, { ok: false, error: 'not_found' }];
   }

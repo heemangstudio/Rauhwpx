@@ -3,9 +3,9 @@ import type { AccountLicense, AccountPlan, AccountStatus } from './account-types
 
 const DAY_MS = 86_400_000;
 
-export const ACCOUNT_TIER_LABEL: Record<AccountPlan['tier'], string> = { free: '무료', pro: 'Pro', legacy: '기존 라이선스', hama: 'Hama' };
+export const ACCOUNT_TIER_LABEL: Record<AccountPlan['tier'], string> = { free: '무료', basic: 'Basic', legacy: '기존 라이선스', hama: 'Hama' };
 const CYCLE_LABEL: Record<NonNullable<AccountPlan['plan']>, string> = { monthly: '월간', annual: '연간', lifetime: '평생' };
-const EDITION_LABEL: Record<NonNullable<AccountLicense['edition']>, string> = { pro: 'Pro', hama: 'Hama', signature: 'Signature' };
+const EDITION_LABEL: Record<NonNullable<AccountLicense['edition']>, string> = { basic: 'Basic', hama: 'Hama', signature: 'Signature' };
 const LICENSE_STATUS_LABEL: Record<AccountLicense['status'], string> = { active: '', past_due: '결제 실패', expired: '만료', revoked: '해지' };
 
 /** 서버가 한국 시간 하루 끝까지로 정하므로 한국 시간으로 보인다. 예: 2026년 11월 30일 */
@@ -94,7 +94,7 @@ export function paymentFailedLine(plan: AccountPlan): string {
     : '결제가 되지 않았어요. 결제 수단을 바꿔 주세요.';
 }
 
-/** 라이선스 줄의 설명. 예: Pro · 연간 · 2027년 10월 20일까지 */
+/** 라이선스 줄의 설명. 예: Basic · 연간 · 2027년 10월 20일까지 */
 export function licenseLine(license: AccountLicense): string {
   const parts = [
     license.tier === 'beta' ? '베타' : license.edition ? EDITION_LABEL[license.edition] : '',
@@ -141,7 +141,7 @@ export function accountRenewalPrompt(status: AccountStatus | null): AccountRenew
     .filter((license) => license.status === 'expired' && license.expiresAt && (license.plan === 'monthly' || license.plan === 'annual'))
     .sort((a, b) => (b.expiresAt ?? 0) - (a.expiresAt ?? 0))[0];
   if (!lapsed?.expiresAt) return null;
-  const name = lapsed.edition === 'hama' ? 'Hama' : 'Pro';
+  const name = lapsed.edition === 'hama' ? 'Hama' : 'Basic';
   return {
     kind: 'lapsed',
     id: `lapsed:${lapsed.keyId}:${lapsed.expiresAt}`,

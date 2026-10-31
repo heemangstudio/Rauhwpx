@@ -388,7 +388,7 @@ export interface AgentSidebarDeps {
   license?: DesktopLicenseApi | null;
   /** 데스크톱 앱인가 — Hama 플랜이 없을 때 잠긴 Hama 항목을 보인다. 생략하면 rhwpDesktop 이 있는지로 정한다. */
   desktopApp?: boolean;
-  /** 호스팅 Rau-0.1(Pro) 자격과 업그레이드 페이지. 생략하면 rhwpDesktop.rau 를 쓰고, null 이면 없다. */
+  /** 호스팅 Rau-0.1(Basic) 자격과 업그레이드 페이지. 생략하면 rhwpDesktop.rau 를 쓰고, null 이면 없다. */
   rau?: DesktopRauApi | null;
   /** 앱 요금제. 생략하면 rhwpDesktop.plan 을 쓰고, null 이면 없다(잠금·업그레이드 단추 없음). */
   plan?: DesktopPlanApi | null;
@@ -1589,7 +1589,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   /** 잠겼으면 카드를 열고 true — 부른 쪽은 아무것도 보내지 않는다. */
   function planBlocksAgent(): boolean {
     if (!agentLockedByPlan()) return false;
-    openPlans('pro');
+    openPlans('basic');
     return true;
   }
 
@@ -3995,9 +3995,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   calibrationChipOpen.addEventListener('click', () => writingStyleCalibration.open());
   calibrationChipClose.addEventListener('click', () => settleCalibrationChip('skipped'));
 
-  /* 호스팅 Rau-0.1 업그레이드 칩 — 허브가 Pro 가 아니라는 거절을 받은 뒤 한 번. 닫으면 그 거절에는 다시 뜨지 않는다. */
+  /* 호스팅 Rau-0.1 업그레이드 칩 — 허브가 Basic 이 아니라는 거절을 받은 뒤 한 번. 닫으면 그 거절에는 다시 뜨지 않는다. */
   const rauApi = deps.rau === undefined ? desktopRauApi() : deps.rau;
-  const rauUpgradeChip = createRauUpgradeChip({ rau: rauApi, openPlans: planStore.api ? () => openPlans('pro') : null });
+  const rauUpgradeChip = createRauUpgradeChip({ rau: rauApi, openPlans: planStore.api ? () => openPlans('basic') : null });
 
   function settleCalibrationChip(step: 'done' | 'skipped'): void {
     saveInitialSetup({ calibrationStep: step });
@@ -5161,7 +5161,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     // ChatGPT·Claude 로그인은 앱 안 브라우저를 별도 창으로 연다(설정이 만들어진 뒤에 정의된다).
     openSignInWindow: (url) => openSignInWindow(url),
     agentLocked: agentLockedByPlan,
-    openPlans: () => openPlans('pro'),
+    openPlans: () => openPlans('basic'),
     projectSettings: bridge.projects?.service ?? null,
     eventBus,
     editorRuntime: editorSettingsRuntime ?? {
@@ -7204,7 +7204,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   /** 대기 메시지를 지금 보낼 수 없는 이유(단추 제목). null 이면 보낼 수 있다. */
   function followUpSendBlockedReason(): string | null {
-    if (agentLockedByPlan()) return 'Pro에서 쓸 수 있어요';
+    if (agentLockedByPlan()) return 'Basic에서 쓸 수 있어요';
     if (mergeResolverLocked) return '병합 검토가 끝나면 보낼 수 있어요';
     if (connState !== 'connected') return '연결되면 보낼 수 있어요';
     if (planningPhase === 'switching' || workflowTransitionPending || planActionPending
@@ -10130,7 +10130,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       input.disabled = false;
       send.disabled = false;
       composerSkillClear.disabled = false;
-      input.placeholder = 'Pro에서 쓸 수 있어요';
+      input.placeholder = 'Basic에서 쓸 수 있어요';
     } else {
       // disabled 는 구조적인 잠금(질문이 입력기를 넘겨받음)에만 쓴다. 연결·시작·전환처럼
       // 잠깐 지나가는 잠금은 400ms 를 넘긴 뒤에만 readOnly 로 보인다. 보내기는 언제나
@@ -14028,7 +14028,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   /** 선택 의견은 로컬에 남기고 입력기에 첨부한다. 실제 전송은 일반 보내기에서만 한다. */
   async function sendInlinePrompt(submission: InlinePromptSubmission): Promise<Awaited<InlinePromptSendResponse>> {
-    if (planBlocksAgent()) return { ok: false, reason: 'Pro에서 쓸 수 있어요' };
+    if (planBlocksAgent()) return { ok: false, reason: 'Basic에서 쓸 수 있어요' };
     const prompt = submission.prompt.trim();
     if (!prompt) return { ok: false, reason: '의견 입력 필요' };
     if (submission.signal?.aborted) return { ok: false, reason: '선택 자료 저장이 취소되었습니다.' };

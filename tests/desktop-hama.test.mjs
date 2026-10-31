@@ -46,7 +46,7 @@ test('an enrolled license gets its plan status and the lease the Hama harness ne
   assert.deepEqual(response.value.status.models.claude, ['anthropic/claude-haiku-5.5']);
 });
 
-test('a Pro or Free license is not enrolled and never hands the lease to the hub', async (t) => {
+test('a Basic or Free license is not enrolled and never hands the lease to the hub', async (t) => {
   for (const tier of ['paid', 'beta']) {
     const { ask } = await setup(t, { tier });
     const { value } = await ask();

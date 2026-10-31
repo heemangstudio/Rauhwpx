@@ -137,8 +137,8 @@ test('names follow the server rule of 1 to 30 characters without control charact
 
 test('the renewal notice follows the account plan', () => {
   assert.equal(accountRenewalPrompt(signedOut()), null);
-  assert.equal(accountRenewalPrompt(signedIn(null, { tier: 'pro' })), null);
-  assert.equal(accountRenewalPrompt(signedIn(null, { tier: 'pro', paymentFailed: true }))?.kind, 'payment_failed');
+  assert.equal(accountRenewalPrompt(signedIn(null, { tier: 'basic' })), null);
+  assert.equal(accountRenewalPrompt(signedIn(null, { tier: 'basic', paymentFailed: true }))?.kind, 'payment_failed');
   const lapsed = {
     ...signedIn(),
     licenses: [{

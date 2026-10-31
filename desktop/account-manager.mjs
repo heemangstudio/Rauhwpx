@@ -52,9 +52,11 @@ const DEVICE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0
 const SERVER_DEVICE_ID_RE = /^[A-Za-z0-9\-_.:]{8,128}$/;
 const SESSION_RE = /^hes_[A-Za-z0-9_-]{16,256}$/;
 const CONTROL_RE = /[\u0000-\u001f\u007f-\u009f]/g;
-const TIERS = new Set(['free', 'pro', 'legacy', 'hama']);
-const EDITIONS = new Set(['pro', 'hama', 'signature']);
+const TIERS = new Set(['free', 'basic', 'legacy', 'hama']);
+const EDITIONS = new Set(['basic', 'hama', 'signature']);
 const PLANS = new Set(['monthly', 'annual', 'lifetime']);
+/** Basic 의 예전 이름 'pro' 로 온 등급·에디션은 basic 으로 읽는다. */
+const basicName = (value) => (value === 'pro' ? 'basic' : value);
 const LICENSE_STATUSES = new Set(['active', 'past_due', 'expired', 'revoked']);
 /** 다시 시도해도 같은 답이 오는 키 연결 실패. */
 const INVALID_KEY_CODES = new Set(['invalid_key', 'revoked', 'invalid_format']);
@@ -222,8 +224,8 @@ function sanitizeAccount(raw) {
 function sanitizePlan(raw) {
   if (!isObject(raw)) return { ...FREE_PLAN };
   return {
-    tier: oneOf(raw.tier, TIERS) ?? 'free',
-    edition: oneOf(raw.edition, EDITIONS),
+    tier: oneOf(basicName(raw.tier), TIERS) ?? 'free',
+    edition: oneOf(basicName(raw.edition), EDITIONS),
     plan: oneOf(raw.plan, PLANS),
     expiresAt: epochOrNull(raw.expiresAt),
     autoRenew: boolOrNull(raw.autoRenew),
@@ -239,7 +241,7 @@ function sanitizeLicense(raw) {
     keyId: raw.keyId.slice(0, 64),
     maskedKey: text(raw.maskedKey, 64),
     tier: raw.tier === 'beta' ? 'beta' : 'paid',
-    edition: oneOf(raw.edition, EDITIONS),
+    edition: oneOf(basicName(raw.edition), EDITIONS),
     plan: oneOf(raw.plan, PLANS),
     status: oneOf(raw.status, LICENSE_STATUSES) ?? 'expired',
     expiresAt: epochOrNull(raw.expiresAt),
@@ -1408,7 +1410,7 @@ export function createAccountManager({
     async entitlement() {
       if (!state) await serialize(load);
       const payload = verifiedLease();
-      return { signedIn: signedIn(), accountId: signedIn() ? state.accountId : null, tier: payload?.tier ?? null };
+      return { signedIn: signedIn(), accountId: signedIn() ? state.accountId : null, tier: basicName(payload?.tier) ?? null };
     },
     /** 라이선스 관리자의 onChange 에서 부른다. 키가 바뀌었으면 계정에 연결한다. */
     licenseChanged: () => migrateLocalKey(),

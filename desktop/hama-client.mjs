@@ -1,6 +1,6 @@
 // Hama 플랜 HTTP 클라이언트. 키 서버와 같은 주소를 쓰고, 라이선스 lease 로 인증한다.
 //   GET /v1/hama/status (Bearer lease) → {ok, plan, caps, blocked, models, endpoints}
-//   실패: 401 unauthorized | 403 hama_not_enrolled (Hama 플랜이 아닌 모든 라이선스, Pro 포함)
+//   실패: 401 unauthorized | 403 hama_not_enrolled (Hama 플랜이 아닌 모든 라이선스, Basic 포함)
 //         | 404 Hama 가 꺼진 서버(not_configured)
 // 플랜·한도·모델은 서버만 정한다. 앱은 라이선스 등급으로 Hama 를 짐작하지 않는다.
 import { DEFAULT_LICENSE_API_BASE } from './license-client.mjs';

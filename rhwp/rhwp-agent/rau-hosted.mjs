@@ -1,11 +1,11 @@
 import crypto from 'node:crypto';
 
 /**
- * 호스팅 Rau-0.1 (Pro). 데스크톱 main 프로세스가 라이선스 lease 로 서버(/v1/rau/learn)에 묻고, 허브는 결과만 받는다.
+ * 호스팅 Rau-0.1 (Basic). 데스크톱 main 프로세스가 라이선스 lease 로 서버(/v1/rau/learn)에 묻고, 허브는 결과만 받는다.
  * lease 와 공급자 키는 허브로 오지 않는다. 데스크톱이 아니면(브라우저 Studio) 쓸 수 없고 내 계정 경로만 쓴다.
  *
  * 기억하는 것
- * - rau_requires_pro: 라이선스가 바뀌거나 REFUSAL_MS 가 지날 때까지 묻지 않는다. 업그레이드 안내는 거절마다 한 번.
+ * - rau_requires_basic(예전 이름 rau_requires_pro): 라이선스가 바뀌거나 REFUSAL_MS 가 지날 때까지 묻지 않는다. 업그레이드 안내는 거절마다 한 번.
  * - rau_cap_reached: 서버가 준 resetsAt 까지 묻지 않는다(없으면 CAP_FALLBACK_MS).
  * - no_license: 키가 없으면 데스크톱이 서버에 묻지 않고 바로 답한다. 기억하지 않는다.
  */
@@ -112,8 +112,9 @@ export function createHostedRau({ source, now = Date.now, refusalMs = RAU_REFUSA
       if (typeof value?.text !== 'string') return { ok: false, code: 'server' };
       return { ok: true, text: value.text, model: typeof value.model === 'string' && value.model ? value.model : 'rau' };
     } catch (error) {
-      const code = typeof error?.code === 'string' ? error.code : 'server';
-      if (code === 'rau_requires_pro') {
+      const raw = typeof error?.code === 'string' ? error.code : 'server';
+      const code = raw === 'rau_requires_pro' ? 'rau_requires_basic' : raw;
+      if (code === 'rau_requires_basic') {
         // 하루가 지나 다시 거절되면 그것도 새 거절이 아니다. 라이선스가 바뀌어야 다시 안내한다.
         refusedUntil = now() + refusalMs;
         const upgrade = refusalAnnounced ? undefined : { reason: code, upgradeUrl: typeof error.upgradeUrl === 'string' ? error.upgradeUrl : null };
