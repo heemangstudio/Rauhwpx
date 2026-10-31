@@ -521,7 +521,8 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     const step = currentStep();
     if (step === 'plans') mountPlanChooser();
     if (step === 'rau') {
-      const trial = account?.status()?.trial;
+      const current = account?.status();
+      const trial = current?.plan.rau?.source === 'trial' ? current.trial : null;
       rauTitle.textContent = trial?.state === 'active' ? `${trialButtonLabel(trial)}을 시작했어요` : '이제 Rau와 함께해요';
     }
     for (const [name, panel] of Object.entries(panels) as Array<[SetupStep, HTMLElement]>) {

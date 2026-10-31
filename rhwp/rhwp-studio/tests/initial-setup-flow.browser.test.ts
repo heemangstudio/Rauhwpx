@@ -82,6 +82,22 @@ test('setup gates provider connection by account and plan, and resumes after che
     await page.click('.rhwp-setup-primary');
     await finished();
 
+    // 체험 기간 안에 정식 Rau 를 등록해도, 남은 체험 이력으로 가입을 안내하지 않는다.
+    await start('rau-trial');
+    await page.evaluate(() => window.sidebarPreview.account.setTier('rau'));
+    await page.click('[data-path="ai"]');
+    await step('rau');
+    assert.equal(await page.$eval('.rhwp-setup-upgrade .rhwp-setup-upgrade-title', (node) => node.textContent), '이제 Rau와 함께해요');
+    await page.click('.rhwp-setup-primary');
+    await step('models');
+    await page.click('.rhwp-setup-primary');
+    await finished();
+    await page.evaluate(() => window.dispatchEvent(new CustomEvent('rhwp:open-plan-card')));
+    await page.waitForSelector('.ag-pricing-card');
+    assert.equal(await page.$('.ag-pricing-trial-tag'), null, 'paid Rau is not marked as a running trial');
+    await page.click('.ag-pricing-close');
+    await page.waitForFunction(() => !document.querySelector('.ag-pricing-card'));
+
     await start('free');
     await page.click('[data-path="ai"]');
     await step('plans');
