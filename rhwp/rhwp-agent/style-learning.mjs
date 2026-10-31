@@ -366,7 +366,6 @@ export function createStyleLearner({
       if ((code === 'rate_limited' || code === 'rau_rate_limited') && attempt === 0) {
         await new Promise((resolve) => {
           const timer = setTimeout(resolve, retryMs);
-          timer.unref?.();
           current.wake = () => { clearTimeout(timer); resolve(); };
         });
         current.wake = null;

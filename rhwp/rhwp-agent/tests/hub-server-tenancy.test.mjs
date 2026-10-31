@@ -199,6 +199,7 @@ test('two active provider turns route overlapping MCP ids only to their owning S
       RHWP_TEMPLATES_DIR: path.join(workRoot, 'templates'),
       RHWP_AGENT_INSTRUCTIONS_DIR: path.join(workRoot, 'agent-instructions'),
       RHWP_PI_DIR: piRoot,
+      RHWP_WRITING_STYLE_DIR: path.join(workRoot, 'writing-style'),
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -738,6 +739,7 @@ test('owner watchdog disposes the hub when its desktop owner exits', { timeout: 
       RHWP_ORPHAN_IDLE_SHUTDOWN_MS: '250',
       RHWP_WORK_DIR: workRoot, RHWP_REFERENCES_DIR: path.join(workRoot, 'references'), RHWP_PROJECTS_DIR: path.join(workRoot, 'projects'),
       RHWP_AGENT_INSTRUCTIONS_DIR: path.join(workRoot, 'agent-instructions'),
+      RHWP_WRITING_STYLE_DIR: path.join(workRoot, 'writing-style'),
       RHWP_OWN_WORK_DIR: '1',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -775,6 +777,7 @@ test('owner watchdog has an absolute deadline even while an orphan socket stays 
       RHWP_ORPHAN_HARD_SHUTDOWN_MS: '700',
       RHWP_WORK_DIR: workRoot, RHWP_REFERENCES_DIR: path.join(workRoot, 'references'), RHWP_PROJECTS_DIR: path.join(workRoot, 'projects'),
       RHWP_AGENT_INSTRUCTIONS_DIR: path.join(workRoot, 'agent-instructions'),
+      RHWP_WRITING_STYLE_DIR: path.join(workRoot, 'writing-style'),
       RHWP_OWN_WORK_DIR: '1',
     },
     stdio: ['ignore', 'pipe', 'pipe'],

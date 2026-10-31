@@ -201,7 +201,6 @@ export function createHostedRau({
     let timer;
     const late = new Promise((resolve) => {
       timer = setTimeout(() => resolve(null), Math.max(0, waitMs));
-      timer.unref?.();
     });
     const answer = await Promise.race([run, late]).finally(() => clearTimeout(timer));
     return answer ?? cachedEligibility();
