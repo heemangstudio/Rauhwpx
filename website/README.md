@@ -10,7 +10,7 @@ The editor is free. Two paid plans add the AI agent on top of it:
 
 - **무료**: open, edit and save HWP/HWPX. No AI agent; the app locks it on this plan. The pricing page mentions it in one line, without a card.
 - **Hama** (내 AI 연결, ₩3,900/month or ₩39,000/year): the AI agent on the user's own AI accounts. No hosted AI.
-- **Rau** (AI 포함, ₩14,900/month or ₩149,000/year): the hosted Rau agent and Rau mode (Rau-0.1 learning), with a monthly credit allowance that refills every month (`site-api` meters it). A 7-day trial runs once per account after signing in to the app; it takes no payment details.
+- **Rau** (₩14,900/month or ₩149,000/year): everything in Hama plus Rau mode (hosted Rau-0.1 learning of the user's writing taste), metered by a monthly credit allowance that refills every month (`site-api`). Agents still run on the user's own AI; there is no hosted chat agent. A 7-day trial runs once per account after signing in to the app; it takes no payment details.
 
 Plan copy never names a model or AI vendor; `purchase.test.cjs` checks the pricing page. Older yearly (GLJFC9), one-time, Signature and beta keys keep working as Hama; their products stay in `CHECKOUT_URLS` because the license server still validates them.
 

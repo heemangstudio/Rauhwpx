@@ -327,7 +327,7 @@ test('finishing first-run setup with only Codex connected makes Codex the provid
 });
 
 
-test('Rau subscribers who skip provider connection start with the hosted agent', async () => {
+test('Rau subscribers who skip provider connection see the Rau introduction and keep the regular default agent', async () => {
   const { ui, storage, finished } = await openWizard('rau');
   const primary = ui.element.querySelector('.rhwp-setup-primary')!;
   primary.click();
@@ -340,6 +340,6 @@ test('Rau subscribers who skip provider connection start with the hosted agent',
   primary.click();
   await tick();
   assert.equal(finished(), 1);
-  assert.equal(loadAgentPrefs(storage).defaultAgent, 'rau');
+  assert.equal(loadAgentPrefs(storage).defaultAgent, 'claude');
   ui.dispose();
 });

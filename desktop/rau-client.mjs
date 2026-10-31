@@ -1,12 +1,12 @@
 // 호스팅 Rau HTTP 클라이언트. 키 서버와 같은 주소를 쓰고, 계정 lease 로 인증한다.
 //   GET  /v1/rau/status (Bearer lease)           → {ok, eligible, source, reason, upgradeUrl, allowanceUsd, usedUsd,
-//                                                    remainingUsd, resetsAt(ISO), agent:{baseUrl, model, contextWindow, maxOutputTokens}}
+//                                                    remainingUsd, resetsAt(ISO)}
 //   POST /v1/rau/learn  (Bearer lease) {prompt}  → {ok, text, model, usage:{allowanceUsd, usedUsd, remainingUsd, resetsAt}}
 //   실패: {ok:false, error: 'unauthorized' 401 | 'rau_plan_required' 403 (+upgradeUrl)
 //          | 'rau_credits_exhausted' 402 (+allowanceUsd, usedUsd, resetsAt) | 'rate_limited' 429
 //          | 'upstream_unavailable' 502 | 'rau_not_configured' 503}
-// status 는 Rau 에이전트(rau-agent-host.mjs)와 Studio 의 rau:status 가 같이 쓰고, learn 은 Rau-0.1 학습이 쓴다.
-// lease 는 메인 프로세스 밖으로 나가지 않는다(Rau 에이전트에 줄 때만 rau-agent-host.mjs 가 넘긴다).
+// status 는 Studio 의 rau:status 가 쓰고, learn 은 Rau-0.1 학습이 쓴다.
+// lease 는 메인 프로세스 밖으로 나가지 않는다.
 import { DEFAULT_LICENSE_API_BASE } from './license-client.mjs';
 
 export const RAU_ERRORS = Object.freeze([
@@ -18,8 +18,6 @@ export const RAU_UPGRADE_URL = 'https://heemangstudios.com/pricing.html#rau';
 export const RAU_PROMPT_MAX_BYTES = 48 * 1024;
 /** 학습 한 번은 모델 호출이라 느리다. 허브의 IPC 대기(RAU_SOURCE_TIMEOUT_MS)보다 짧게 둔다. */
 export const RAU_LEARN_TIMEOUT_MS = 90_000;
-/** Rau 에이전트의 서버 경로. 다른 경로는 받지 않는다. */
-export const RAU_AGENT_PATH = '/v1/rau/agent';
 const STATUS_TIMEOUT_MS = 10_000;
 const UPGRADE_HOSTS = new Set(['heemangstudios.com', 'www.heemangstudios.com', 'groble.im', 'www.groble.im']);
 
@@ -59,7 +57,6 @@ export function resetsAtFrom(value) {
 }
 
 const usd = (value) => (Number.isFinite(value) && value >= 0 ? value : null);
-const positiveInt = (value, max) => (Number.isSafeInteger(value) && value > 0 ? Math.min(value, max) : null);
 
 function usageFrom(body) {
   return {
@@ -67,18 +64,6 @@ function usageFrom(body) {
     usedUsd: usd(body?.usedUsd),
     remainingUsd: usd(body?.remainingUsd),
     resetsAt: resetsAtFrom(body?.resetsAt),
-  };
-}
-
-/** status 답의 agent 칸. 경로는 /v1/rau/agent 만, 모델은 'rau' 만 받는다. 틀리면 null. */
-function agentFrom(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  if (value.baseUrl !== RAU_AGENT_PATH || (value.model !== undefined && value.model !== 'rau')) return null;
-  return {
-    baseUrl: RAU_AGENT_PATH,
-    model: 'rau',
-    contextWindow: positiveInt(value.contextWindow, 1_000_000),
-    maxOutputTokens: positiveInt(value.maxOutputTokens, 64_000),
   };
 }
 
@@ -138,8 +123,7 @@ export function createRauClient({
       };
     },
     /**
-     * 자격과 크레딧. eligible 이 아니면 source·사용량은 null 이다. agent 는 Rau 에이전트가 쓰는 경로(없거나 틀리면 null).
-     * 시각은 epoch ms.
+     * 자격과 크레딧. eligible 이 아니면 source·사용량은 null 이다. 시각은 epoch ms.
      */
     async status(lease) {
       const body = await request('GET', '/v1/rau/status', lease, undefined, statusTimeoutMs);
@@ -150,7 +134,6 @@ export function createRauClient({
         reason: eligible ? null : 'rau_plan_required',
         upgradeUrl: upgradeUrlFrom(body.upgradeUrl),
         ...(eligible ? usageFrom(body) : { allowanceUsd: null, usedUsd: null, remainingUsd: null, resetsAt: null }),
-        agent: eligible ? agentFrom(body.agent) : null,
       };
     },
   };

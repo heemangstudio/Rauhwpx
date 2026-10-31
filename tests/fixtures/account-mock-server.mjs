@@ -19,7 +19,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { normalizeLicenseKey, verifyAccountLease } from '../../desktop/license-lease.mjs';
-import { DEV_KEYPAIR, DEV_PUBLIC_KEYS, signLease, sseFrame } from './license-mock-server.mjs';
+import { DEV_KEYPAIR, DEV_PUBLIC_KEYS, signLease } from './license-mock-server.mjs';
 import { createRauMock, RAU_PLAN_ALLOWANCE_USD, RAU_TRIAL_ALLOWANCE_USD } from './rau-mock.mjs';
 
 export { DEV_KEYPAIR, DEV_PUBLIC_KEYS };
@@ -263,7 +263,7 @@ export function createMockAccountServer({
     return account && account.devices.has(result.payload.deviceId) ? { account } : null;
   }
 
-  const rau = createRauMock({ now, authenticate: leaseAccount, rauOf, spend: spendRau });
+  const rau = createRauMock({ authenticate: leaseAccount, rauOf, spend: spendRau });
 
   function authenticate(headers) {
     const match = /^Bearer\s+(hes_\S+)$/i.exec(headerValue(headers, 'authorization').trim());
@@ -493,16 +493,11 @@ export function createMockAccountServer({
     const authorization = headerValue(headers, 'authorization');
     calls.push({ method, path: parsed.pathname, body, bearer: authorization ? authorization.replace(/^Bearer\s+/i, '') : null });
     const [status, payloadBody, extra = {}] = route(method, parsed.pathname, parsed.searchParams, body, raw, headers);
-    if (log) log(`[account-mock] ${method} ${parsed.pathname} → ${status}${extra.sse ? ' stream' : ''}`);
-    // rau-mock 은 [status, body, {headers, sse}] 로, 나머지는 [status, body, headers] 로 답한다.
-    if (extra.sse || extra.headers) return { status, body: payloadBody, headers: extra.headers ?? {}, sse: extra.sse ?? null };
+    if (log) log(`[account-mock] ${method} ${parsed.pathname} → ${status}`);
     return { status, body: payloadBody, headers: extra };
   }
 
-  function toResponse({ status, body, headers, sse = null }) {
-    if (sse) {
-      return new Response(sse.map(sseFrame).join(''), { status, headers: { 'Content-Type': 'text/event-stream', ...headers } });
-    }
+  function toResponse({ status, body, headers }) {
     if (Buffer.isBuffer(body) || typeof body === 'string') {
       return new Response(status === 302 || body.length === 0 ? null : body, { status, headers });
     }
@@ -538,16 +533,6 @@ export function createMockAccountServer({
         return;
       }
       const answer = handle({ method: req.method, url: req.url, headers: req.headers, raw });
-      if (answer.sse) {
-        res.writeHead(answer.status, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive', ...answer.headers });
-        for (const frame of answer.sse) {
-          if (res.destroyed) return;
-          res.write(sseFrame(frame));
-          await new Promise((resolve) => setTimeout(resolve, 40));
-        }
-        res.end();
-        return;
-      }
       const isRaw = Buffer.isBuffer(answer.body) || typeof answer.body === 'string';
       res.writeHead(answer.status, isRaw ? answer.headers : { 'Content-Type': 'application/json', ...answer.headers });
       res.end(isRaw ? answer.body : JSON.stringify(answer.body));

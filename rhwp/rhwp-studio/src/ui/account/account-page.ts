@@ -560,7 +560,7 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
     if (family === 'hama') head.append(createHamaScene('acct-hama-scene'));
     const copy = el('p', 'acct-offer-description', family === 'hama'
       ? '쓰던 AI 계정을 연결해 에이전트를 써요.'
-      : 'AI가 포함돼 연결 없이 바로 써요. Rau 모드도 함께예요.');
+      : 'Hama의 모든 기능에 Rau 모드를 더해요.');
     const monthlyPrice = planPrice(planStatus, monthly);
     const yearlyPrice = planPrice(planStatus, yearly);
     const price = el('p', 'acct-offer-price');

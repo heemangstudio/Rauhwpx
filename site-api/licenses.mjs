@@ -1107,7 +1107,7 @@ export function createLicensesService({
       } : {}),
       ...(isPlanEdition(license.edition) ? { edition: editionOf(license) } : {}),
       plan: planOf(license),
-      // Hosted Rau (the agent and Rau-0.1) answers live Rau keys and keys with an active legacy plan.
+      // Hosted Rau (Rau-0.1) answers live Rau keys and keys with an active legacy plan.
       // A license lease never carries the account's trial.
       rau: { eligible: rau !== null },
     };

@@ -1,5 +1,5 @@
 // 호스팅 Rau 를 Electron 에 연결한다: Studio IPC(자격·크레딧·업그레이드 페이지)와 허브의 Rau-0.1 학습 요청.
-// lease 는 여기서만 쓰고 Studio·허브로 보내지 않는다. Rau 에이전트에 lease 를 주는 길은 rau-agent-host.mjs 다.
+// lease 는 여기서만 쓰고 Studio·허브로 보내지 않는다.
 import { RAU_UPGRADE_URL, RauServerError, upgradeUrlFrom } from './rau-client.mjs';
 
 /** 키가 없거나 lease 가 지금 검증되지 않을 때(무료 lease 포함). 서버에 묻지 않는다. */
@@ -11,8 +11,7 @@ async function statusFor({ client, currentLease }) {
   const lease = await currentLease();
   if (!lease) return { ok: true, eligible: false, source: null, reason: NO_LICENSE, upgradeUrl: RAU_UPGRADE_URL, ...NO_USAGE };
   try {
-    const { agent: _agent, ...status } = await client.status(lease);
-    return { ok: true, ...status };
+    return { ok: true, ...(await client.status(lease)) };
   } catch (error) {
     if (error?.code === 'rau_plan_required') {
       return { ok: true, eligible: false, source: null, reason: 'rau_plan_required', upgradeUrl: upgradeUrlFrom(error.upgradeUrl), ...NO_USAGE };

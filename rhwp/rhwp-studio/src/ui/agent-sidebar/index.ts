@@ -8,7 +8,6 @@
  */
 import './motion.css';
 import './agent-sidebar.css';
-import './rau-harness.css';
 import './plan-presentation.css';
 import '../../styles/inline-rename.css';
 import '../../styles/worktree-chip.css';
@@ -36,7 +35,6 @@ import type {
   AgentWorkflowState,
   CompactionSupport,
   CompactionTrigger,
-  RauAgentStatus,
   PermissionProfile,
   ServiceTier,
   PendingChangeSet,
@@ -215,7 +213,6 @@ import { createChatScrollRail } from './chat-scroll-rail.ts';
 import { formatTokens } from './usage-format.ts';
 import { createComposerRestingMotion } from './composer-resting.ts';
 import { createChatHama, type ChatHama } from './chat-hama.ts';
-import { rauEntry, rauIsDefault, readHarnessChoice, recordHarnessChoice } from './rau-harness.ts';
 import { createArrivalGuard, typingActivity as windowTypingActivity, type TypingActivity } from './typing-guard.ts';
 import { createDelayedStatus, revealAfterDelay } from './delayed-status.ts';
 import { ownsTextInput } from '../../command/shortcut-target.ts';
@@ -385,8 +382,6 @@ export interface AgentSidebarDeps {
   gift?: DesktopGiftApi | null;
   /** 처음 설정의 라이선스 장. 생략하면 rhwpDesktop.license 를 쓰고, null 이면 장이 없다. */
   license?: DesktopLicenseApi | null;
-  /** 데스크톱 앱인가 — Rau 를 쓸 수 없을 때 잠긴 Rau 항목을 보인다. 생략하면 rhwpDesktop 이 있는지로 정한다. */
-  desktopApp?: boolean;
   /** 호스팅 Rau-0.1(Rau 요금제·체험) 자격과 업그레이드 페이지. 생략하면 rhwpDesktop.rau 를 쓰고, null 이면 없다. */
   rau?: DesktopRauApi | null;
   /** 앱 요금제. 생략하면 rhwpDesktop.plan 을 쓰고, null 이면 없다(잠금·업그레이드 단추 없음). */
@@ -1479,16 +1474,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     openSettings: () => requestSettingsOpen('ai-connection'),
     restartSession: () => restartAgentSession(),
     resend: (retry, failure) => resendFailedRequest(retry, failure),
-    rauTrial: () => bridge.rauAgentStatus?.().source === 'trial',
-    switchToByok: () => {
-      // 키가 있으면 프로바이더 전환과 같은 길(기록 전달)로 옮기고, 없으면 BYOK 설정을 연다.
-      if (connectedProviders.has('pi')) {
-        selectAgent('pi');
-        return;
-      }
-      requestSettingsOpen('ai-connection');
-      settingsPanel.openAgentSetup('pi');
-    },
     ...(deps.reportIssue ? { reportIssue: deps.reportIssue } : {}),
     ...(deps.failureResumeGraceMs !== undefined ? { resumeGraceMs: deps.failureResumeGraceMs } : {}),
     autofix: { ready: autofixReady, create: createAutofixButton },
@@ -1959,14 +1944,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   providerMenu.setAttribute('aria-hidden', 'true');
   const providerItems = new Map<AgentName, HTMLButtonElement>();
 
-  /** 호스팅 Rau 상태 (rau-agent-status). 피커의 Rau 항목과 기본 하네스가 읽는다. */
-  let rauStatus: RauAgentStatus | null = bridge.rauAgentStatus?.() ?? null;
-  const desktopApp = deps.desktopApp
-    ?? typeof (window as Window & { rhwpDesktop?: unknown }).rhwpDesktop !== 'undefined';
-
   function selectAgent(agent: AgentName): void {
     if (isSelectionLocked()) return;
-    recordHarnessChoice(agent);
     setSelectedAgent(agent);
     selectedModel = resolveModelForAgent(agent, selectedModel);
     selectedEffort = resolveEffortForAgent(agent, selectedEffort, selectedModel);
@@ -1979,8 +1958,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     providerTrigger.focus();
   }
 
-  const rauLock = el('span', 'ag-provider-lock');
-  rauLock.append(createIcon('lock'));
   for (const agent of PROVIDER_ORDER) {
     const item = el('button', 'ag-model-item ag-provider-item');
     item.type = 'button';
@@ -1990,16 +1967,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     item.title = AGENT_LABEL[agent];
     item.setAttribute('aria-label', AGENT_LABEL[agent]);
     item.append(createProviderIcon(agent), el('span', 'ag-provider-name', AGENT_LABEL[agent]));
-    if (agent === 'rau') item.append(rauLock);
-    item.addEventListener('click', () => {
-      if (agent === 'rau' && item.dataset.locked === 'true') {
-        // 잠긴 Rau — 하네스를 바꾸지 않고 요금제 카드의 Rau 칸을 연다(카드는 앱 쪽이 이 이벤트로 띄운다).
-        setConfigPanelOpen(false);
-        window.dispatchEvent(new CustomEvent('rhwp:open-plan-card', { detail: { focus: 'rau' } }));
-        return;
-      }
-      selectAgent(agent);
-    });
+    item.addEventListener('click', () => selectAgent(agent));
     providerItems.set(agent, item);
     providerMenu.appendChild(item);
   }
@@ -2012,23 +1980,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
 
   function syncProviderMenu(): void {
-    for (const [agent, item] of providerItems) {
-      if (agent !== 'rau') {
-        item.hidden = !connectedProviders.has(agent);
-        continue;
-      }
-      const entry = rauEntry(rauStatus, desktopApp);
-      const locked = entry === 'locked';
-      item.hidden = entry === 'hidden';
-      item.dataset.locked = locked ? 'true' : 'false';
-      item.setAttribute('role', locked ? 'menuitem' : 'menuitemradio');
-      if (locked) item.removeAttribute('aria-checked');
-      else if (!item.hasAttribute('aria-checked')) item.setAttribute('aria-checked', String(selectedAgent === 'rau'));
-      if (locked) item.setAttribute('aria-haspopup', 'dialog');
-      else item.removeAttribute('aria-haspopup');
-      item.setAttribute('aria-label', locked ? `${AGENT_LABEL.rau} (잠김)` : AGENT_LABEL.rau);
-      rauLock.hidden = !locked;
-    }
+    for (const [agent, item] of providerItems) item.hidden = !connectedProviders.has(agent);
     if (document.activeElement instanceof HTMLButtonElement
       && document.activeElement.hidden
       && providerMenu.contains(document.activeElement)) {
@@ -4084,8 +4036,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
 
   function providerNeedsLogin(agent: AgentName): boolean {
-    // Rau 는 로그인하지 않는다 — 쓸 수 없으면 피커에서 잠길 뿐이다.
-    if (agent === 'rau' || !(PROVIDER_ORDER as readonly AgentName[]).includes(agent)) return false;
+    if (!(PROVIDER_ORDER as readonly AgentName[]).includes(agent)) return false;
     const status = setupStatuses?.[agent];
     if (!status || status.authenticating) return false;
     // 설치만 됐고 한 번도 연결하지 않은 프로바이더는 입력기 메뉴에 없다.
@@ -7409,8 +7360,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     const requestText = decorateRequestText(request.requestText, currentThread.id, request.carriesContinuation === true);
     failureNotices.noteSend(currentThread.id, request.retryPayload, request.source ?? null);
     const mentions = splitThreadMentions(request.mentions);
-    // 이 하네스로 대화해 봤다 — 다음 새 채팅의 기본 하네스 판단에 쓴다.
-    recordHarnessChoice(selectedAgent);
     const sent = bridge.sendUserMessage(
       requestText,
       request.skillName,
@@ -9365,32 +9314,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     }
   }
 
-  /** 새 채팅을 Rau 로 열지 — Rau 를 쓸 수 있고 다른 하네스를 고르거나 써 본 적이 없을 때. */
-  function rauIsDefaultNow(): boolean {
-    return rauIsDefault(rauStatus, { choice: readHarnessChoice(), hasChats: peekThreads().length > 0 });
-  }
-
-  /**
-   * Rau 상태가 연결로 처음 닿으면, 아직 아무것도 보내지 않은 빈 채팅을 Rau 로 세운다. 일하는 채팅·보낸
-   * 채팅·열람 중인 채팅은 바꾸지 않는다.
-   */
-  function adoptRauDefault(): void {
-    if (selectedAgent === 'rau' || !rauIsDefaultNow()) return;
-    const next = firstRunAgentForChat('rau', {
-      selectedAgent,
-      userMessages: currentThread.messages.filter((message) => message.role === 'user').length,
-      working: agentWorking() || bridge.isTurnRunning() || bridge.getPendingUserQuestion() !== null,
-      readOnly: readOnlyDocLabel !== null,
-    });
-    if (!next) return;
-    applyDefaultSelection();
-    startCurrentBridgeChat();
-    refreshSidebarWidthMin();
-  }
-
   /** 저장된 기본값을 지금 선택으로 세운다 (새 대화 진입점에서만 부른다). */
   function applyDefaultSelection(): void {
-    const nextAgent = rauIsDefaultNow() ? 'rau' : agentPrefs.defaultAgent;
+    const nextAgent = agentPrefs.defaultAgent;
     const nextModel = resolveModelForAgent(nextAgent, agentPrefs.defaultModel);
     const nextEffort = resolveEffortForAgent(nextAgent, agentPrefs.defaultEffort, nextModel);
     selectedModel = nextModel;
@@ -10596,8 +10522,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   /** 설정 탭에서 저장된 기본값 — 새 대화부터 적용된다. */
   function applyAgentPrefs(prefs: AgentPrefs): void {
-    // 기본 프로바이더를 바꿔 저장했다 — 직접 고른 것이다(Rau 기본값이 덮지 않는다).
-    if (prefs.defaultAgent !== agentPrefs.defaultAgent) recordHarnessChoice(prefs.defaultAgent);
     agentPrefs = prefs;
     rebuildLlmMenu();
   }
@@ -12664,8 +12588,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         }
       case 'connection':
         setConnection(e.state, { attempt: e.attempt, retryInMs: e.retryInMs });
-        // 허브에 붙을 때마다 호스팅 Rau 상태를 묻는다(답은 rau-agent-status 로 온다).
-        if (e.state === 'connected') void bridge.requestRauAgentStatus?.().catch(() => null);
         permissionController.setConnection(e.state === 'connected');
         // 재연결 시 진행 상태를 브리지와 다시 동기화한다. 붙이지 않은 허브 턴은 초안의 일이 아니다.
         setTurnRunning(bridge.isTurnRunning() && !hubChatUnbound());
@@ -12827,20 +12749,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         renderActiveTemplate();
         persistCurrentThread();
         if (e.reason === 'deleted') systemMessage('템플릿이 삭제되어 해제했습니다.');
-        break;
-      case 'rau-agent-status':
-        rauStatus = e.status;
-        syncProviderMenu();
-        if (selectedAgent === 'rau') {
-          // 브리지가 Rau 모델 레지스트리를 먼저 바꿨다. 지금 선택도 새 목록으로 접는다.
-          selectedModel = resolveModelForAgent('rau', selectedModel);
-          selectedEffort = resolveEffortForAgent('rau', selectedEffort, selectedModel);
-          rebuildLlmMenu();
-          rebuildEffortMenu();
-          scheduleSidebarWidthMin();
-        }
-        failureNotices.refresh();
-        adoptRauDefault();
         break;
       case 'pi-status':
         syncProviderMenu();
@@ -13917,9 +13825,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   setSelectedAgent(selectedAgent);
   setConnection(connState);
   setTurnRunning(turnRunning);
-  // 호스팅 Rau 상태 — 이미 받아 둔 것이 있으면 바로 쓰고, 붙어 있으면 다시 묻는다.
-  adoptRauDefault();
-  if (connState === 'connected') void bridge.requestRauAgentStatus?.().catch(() => null);
   updateWorkflowControl();
   updateDocumentContext();
   /**

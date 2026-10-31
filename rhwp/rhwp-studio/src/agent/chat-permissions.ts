@@ -81,7 +81,7 @@ export function readChatPermissionRequest(value: unknown): ChatPermissionRequest
     || !(request['documentId'] === null || text(request['documentId'], 256))
     || !text(request['turnId'], 256)
     || typeof request['agent'] !== 'string'
-    || !['claude', 'codex', 'pi', 'rau'].includes(request['agent'])
+    || !['claude', 'codex', 'pi'].includes(request['agent'])
     || !capability
     // 브라우저 카드는 사이트가 곧 이유다. 에이전트가 이유를 빼도 카드를 보인다. 일반 권한은 이유가 있어야 한다.
     || !(text(request['reason'], 1000) || kind && request['reason'] === '')

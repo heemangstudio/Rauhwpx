@@ -56,8 +56,8 @@ import { waitlistMapper } from './mappers/waitlist.mjs';
 import { webhookLogMapper } from './mappers/webhook-log.mjs';
 import { renderAccountLoginErrorPage, renderUniqueInstallsPage } from './pages.mjs';
 import { createPostgresStore } from './pg-store.mjs';
-import { MAX_RAU_BODY_BYTES, createRauService, emptyRauState, rauRateLimited } from './rau.mjs';
-import { RAU_AGENT_PREFIX, createRauAgentProxy, createRauUpstream, leaseOf } from './rau-proxy.mjs';
+import { MAX_RAU_BODY_BYTES, createRauService, emptyRauState, leaseOf, rauRateLimited } from './rau.mjs';
+import { createRauUpstream } from './rau-upstream.mjs';
 import { createRateLimiter } from './rate-limit.mjs';
 import { createFileStore } from './store.mjs';
 import { createTelegramSender } from './telegram.mjs';
@@ -327,19 +327,6 @@ export function siteRequestListener({
           log(`[site-api] gift proxy failed: ${error?.message ?? error}`);
           if (res.headersSent) res.destroy();
           else send(500, { error: { code: 500, message: 'server_error' } });
-        }
-        return;
-      }
-      if (pathname.startsWith(`${RAU_AGENT_PREFIX}/`)) {
-        // The Rau agent (rau-proxy.mjs). Streams its own response (SSE), so it never goes through send().
-        // Per-principal limits live there; this per-IP one only stops floods.
-        allow('rau-agent', 600, MINUTE);
-        try {
-          await rau.agent.handle(req, res, pathname.slice(RAU_AGENT_PREFIX.length));
-        } catch (error) {
-          log(`[site-api] rau agent failed: ${error?.message ?? error}`);
-          if (res.headersSent) res.destroy();
-          else send(500, { type: 'error', error: { type: 'api_error', message: 'Server error.' } });
         }
         return;
       }
@@ -984,8 +971,8 @@ export function createSiteServer(env = process.env, options = {}) {
     now: options.now,
     log,
   });
-  const rauUpstream = createRauUpstream({ config: rauConfig, fetchImpl: options.fetchImpl, now: options.now, log });
-  const rauService = createRauService({
+  const rauUpstream = createRauUpstream({ config: rauConfig, fetchImpl: options.fetchImpl, log });
+  rau = createRauService({
     store: domainStore(rauMapper, resolveRauDbPath(env), emptyRauState),
     // A revoked or expired key still authenticates here, so it hears rau_plan_required instead of 401.
     authenticate: (lease) => accounts.authenticateLease(lease, { allowInactive: true, withRau: true, purpose: 'rau' }),
@@ -996,7 +983,6 @@ export function createSiteServer(env = process.env, options = {}) {
     now: options.now,
     log,
   });
-  rau = { ...rauService, agent: createRauAgentProxy({ rau: rauService, upstream: rauUpstream, now: options.now, log }) };
   const feedback = createFeedbackService({
     dir: resolveFeedbackDir(env),
     index: domainStore(feedbackMapper, path.join(resolveFeedbackDir(env), 'index.json'), emptyFeedbackIndex),

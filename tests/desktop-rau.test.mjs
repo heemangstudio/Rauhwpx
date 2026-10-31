@@ -87,12 +87,12 @@ test('the hub gets the result or the error code, never the lease, and nothing is
   assert.equal(await handleRauRequest(licensed, { type: 'rhwp-gift-request', id: 'g' }), null);
 });
 
-test('Studio gets eligibility and credits without the agent route, and opens only our upgrade pages', async () => {
+test('Studio gets eligibility and credits, and opens only our upgrade pages', async () => {
   const handlers = new Map();
   const opened = [];
   const answers = [
-    [200, { ok: true, eligible: false, source: null, reason: 'rau_plan_required', upgradeUrl: 'https://groble.im/rau', allowanceUsd: null, usedUsd: null, remainingUsd: null, resetsAt: null, agent: { baseUrl: '/v1/rau/agent', model: 'rau' } }],
-    [200, { ok: true, eligible: true, source: 'trial', reason: null, upgradeUrl: RAU_UPGRADE_URL, allowanceUsd: 2, usedUsd: 0.5, remainingUsd: 1.5, resetsAt: RESETS_AT, agent: { baseUrl: '/v1/rau/agent', model: 'rau', contextWindow: 200000, maxOutputTokens: 16000 } }],
+    [200, { ok: true, eligible: false, source: null, reason: 'rau_plan_required', upgradeUrl: 'https://groble.im/rau', allowanceUsd: null, usedUsd: null, remainingUsd: null, resetsAt: null }],
+    [200, { ok: true, eligible: true, source: 'trial', reason: null, upgradeUrl: RAU_UPGRADE_URL, allowanceUsd: 2, usedUsd: 0.5, remainingUsd: 1.5, resetsAt: RESETS_AT }],
     [403, { ok: false, error: 'rau_plan_required', upgradeUrl: 'https://heemangstudios.com/pricing.html#rau' }],
   ];
   const { calls, fetchImpl } = fakeFetch(() => answers.shift());

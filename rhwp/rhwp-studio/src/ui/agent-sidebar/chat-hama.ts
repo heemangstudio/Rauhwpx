@@ -623,7 +623,6 @@ export class Hama implements ActionHost {
   constructor(fixedFacing?: Facing) {
     this.fixedFacing = fixedFacing;
     this.el = document.createElement('div');
-    // .ag-hama 는 Hama 하네스의 에이전트 클래스(ag-${agent})라 하마 그림은 다른 이름을 쓴다.
     this.el.className = 'ag-hama-hippo';
     this.el.setAttribute('aria-hidden', 'true');
     this.el.style.marginLeft = `${OX * SCALE}px`;

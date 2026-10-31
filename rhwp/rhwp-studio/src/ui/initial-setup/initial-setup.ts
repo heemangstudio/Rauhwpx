@@ -21,7 +21,7 @@ import { getThemeMode, setThemeMode } from '../../core/theme.ts';
 import type { ThemeMode } from '../../core/user-settings.ts';
 import { chooseFontFolder } from '../../core/font-folder.ts';
 import { createIcon } from '../agent-sidebar/icons.ts';
-import { AGENT_LABEL, CONNECTABLE_PROVIDERS, createProviderIcon } from '../agent-sidebar/providers.ts';
+import { AGENT_LABEL, createProviderIcon, PROVIDER_ORDER } from '../agent-sidebar/providers.ts';
 import { afterBootScreen, bootLaunchedWithFile } from '../boot-screen.ts';
 import {
   isProviderConfigured,
@@ -238,7 +238,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   const grid = el('div', 'rhwp-setup-grid');
   grid.setAttribute('role', 'list');
   const cards = new Map<AgentName, { root: HTMLElement; action: HTMLButtonElement }>();
-  for (const agent of CONNECTABLE_PROVIDERS) {
+  for (const agent of PROVIDER_ORDER) {
     const card = el('div', 'rhwp-setup-card');
     card.setAttribute('role', 'listitem');
     card.dataset.agent = agent;
@@ -385,7 +385,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     const trial = account?.status()?.trial?.state === 'available' && !!accountApi?.startRauTrial;
     planSummary.replaceChildren(...([
       ['Hama', '쓰던 AI 계정으로 문서 작업'],
-      ['Rau', trial ? 'AI 포함 · 7일 무료 체험' : 'AI 포함 · Rau 모드'],
+      ['Rau', trial ? 'Rau 모드 · 7일 무료 체험' : 'Hama에 Rau 모드를 더해요'],
     ] as const).map(([name, copy]) => {
       const row = el('div', 'rhwp-setup-plan-row');
       row.append(el('strong', '', name), el('span', '', copy));
@@ -404,8 +404,8 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   rauPanel.append(
     createPartyHama(),
     el('h2', 'rhwp-setup-upgrade-title', '이제 Rau와 함께해요'),
-    el('p', 'rhwp-setup-upgrade-copy', 'Rau 에이전트는 연결 없이 바로 쓸 수 있어요. 매달 크레딧과 Rau 모드도 준비됐어요.'),
-    el('p', 'rhwp-setup-hint', '쓰던 AI 계정도 설정에서 언제든 연결할 수 있어요.'),
+    el('p', 'rhwp-setup-upgrade-copy', 'Rau 모드가 작업하면서 내 글 취향을 배워요.'),
+    el('p', 'rhwp-setup-hint', '배운 취향은 언제든 보고 되돌릴 수 있어요.'),
   );
   const modelsHint = el('p', 'rhwp-setup-hint', '연결은 나중에 설정에서도 할 수 있어요.');
   modelsPanel.append(modelsHint);
@@ -463,7 +463,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   overlay.appendChild(dialog);
 
   function configuredAgents(): AgentName[] {
-    return CONNECTABLE_PROVIDERS.filter((agent) => isProviderConfigured(agent, setupStatuses));
+    return PROVIDER_ORDER.filter((agent) => isProviderConfigured(agent, setupStatuses));
   }
 
   function renderTheme(): void {
@@ -474,7 +474,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   }
 
   function renderCards(): void {
-    for (const agent of CONNECTABLE_PROVIDERS) {
+    for (const agent of PROVIDER_ORDER) {
       const card = cards.get(agent);
       if (!card) continue;
       const configured = isProviderConfigured(agent, setupStatuses);
@@ -570,9 +570,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   function save(): void {
     if (saved) return;
     saved = true;
-    const connected = configuredAgents();
-    const defaults = connected.length === 0 && deps.plan?.status()?.tier === 'rau' ? ['rau' as const] : connected;
-    applyFirstRunDefaultAgent(defaults, storage ?? null);
+    applyFirstRunDefaultAgent(configuredAgents(), storage ?? null);
     record = completeInitialSetup({
       themeStep: themeStep === 'done' ? 'done' : 'skipped',
       providerStep: configuredAgents().length > 0 ? 'configured' : 'skipped',

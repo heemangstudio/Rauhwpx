@@ -52,7 +52,8 @@ test('hosted Rau on Postgres answers and stores exactly what the memory store do
     trial: { keyId: null, deviceId: 'dev-b', active: false, accountId: 'acct_trial', rau: { source: 'trial', ledgerId: 'acct_trial', startedAt: iso(T0 - DAY), endsAt: iso(T0 + 6 * DAY) } },
     hama: { keyId: 'lic_hama', deviceId: 'dev-c', active: true, rau: null },
   };
-  const next = { costUsd: 0.25 };
+  // The next learn call's cost, and fields of its billing record to override (id, model, route).
+  const next = { costUsd: 0.25, call: {} };
   function world(store) {
     let n = 0;
     const upstream = {
@@ -60,7 +61,7 @@ test('hosted Rau on Postgres answers and stores exactly what the memory store do
       routes: [{ id: 'openrouter-haiku', model: 'haiku', via: 'openrouter' }],
       async complete() {
         n += 1;
-        return { text: '{"ops":[]}', call: { id: `msg_${n}`, model: 'haiku', route: 'openrouter', inputTokens: 1200, outputTokens: 80, cacheReadTokens: 3e9, cacheWriteTokens: 0, costUsd: next.costUsd } };
+        return { text: '{"ops":[]}', call: { id: `msg_${n}`, model: 'haiku', route: 'openrouter', inputTokens: 1200, outputTokens: 80, cacheReadTokens: 3e9, cacheWriteTokens: 0, costUsd: next.costUsd, ...next.call } };
       },
     };
     const rau = createRauService({ store, authenticate: authenticateFrom(leases), upstream, config: { allowanceUsd: 8 }, adminToken: ADMIN, now: () => clock.now, log: () => {} });
@@ -74,11 +75,10 @@ test('hosted Rau on Postgres answers and stores exactly what the memory store do
   const orderOf = (_name, state) => [Object.keys(state.allowances ?? {}), Object.keys(state.ledgers ?? {}), Object.keys(state.spend ?? {})];
   const step = differential(worlds, { orderOf });
   const learn = (lease, prompt = 'Rau-0.1 prompt') => (w) => w.rau.learn(lease, Buffer.from(JSON.stringify({ prompt })));
-  /** One agent call as rau-proxy.mjs bills it: admitted, then recorded against the admitted period. */
-  const agentCall = (lease, call) => async (w) => {
-    const { principal, refusal } = await w.rau.admit(lease);
-    if (refusal) return { refusal };
-    return w.rau.record(principal, { model: 'haiku', route: 'anthropic', inputTokens: 10, outputTokens: 5, cacheReadTokens: 0, cacheWriteTokens: 2, ...call });
+  /** One learn call billed with `call` as its record's id, model and route. */
+  const learnAs = (lease, call) => (w) => {
+    next.call = call;
+    return learn(lease)(w).finally(() => { next.call = {}; });
   };
 
   assert.deepEqual((await step('status before any call', (w) => w.rau.status('plan'))).value.usedUsd, 0);
@@ -87,9 +87,11 @@ test('hosted Rau on Postgres answers and stores exactly what the memory store do
   assert.equal((await step('bad prompt', (w) => w.rau.learn('plan', Buffer.from('{"prompt":""}')))).error.code, 'invalid');
   assert.equal((await step('first learn', learn('plan'))).value.text, '{"ops":[]}');
   clock.now += MINUTE;
-  await step('agent call', agentCall('plan', { id: 'msg_agent_1', costUsd: 0.4 }));
-  assert.equal((await step('agent call repeated', agentCall('plan', { id: 'msg_agent_1', costUsd: 0.4 }))).value.duplicate, true);
-  await step('agent call without id', agentCall('plan', { costUsd: 0.000000123, model: undefined, route: null }));
+  next.costUsd = 0.4;
+  const billedOnce = (await step('learn with an id', learnAs('plan', { id: 'msg_same_1', model: 'haiku', route: 'anthropic' }))).value.usage.usedUsd;
+  assert.equal((await step('the same id again', learnAs('plan', { id: 'msg_same_1', model: 'haiku', route: 'anthropic' }))).value.usage.usedUsd, billedOnce, 'billed once');
+  next.costUsd = 0.000000123;
+  await step('learn without id', learnAs('plan', { id: undefined, model: undefined, route: null }));
   await step('status', (w) => w.rau.status('plan'));
   await step('usage', (w) => w.rau.usage(leases.plan.rau));
 
@@ -99,7 +101,6 @@ test('hosted Rau on Postgres answers and stores exactly what the memory store do
   next.costUsd = 0.6;
   await step('trial learn over', learn('trial'));
   assert.equal((await step('trial exhausted', learn('trial'))).error.code, 'rau_credits_exhausted');
-  assert.notEqual((await step('trial admit refused', agentCall('trial', { id: 'msg_t' }))).value.refusal, undefined);
   clock.now = T0 + 7 * DAY;
   assert.equal((await step('trial over', (w) => w.rau.status('trial'))).value.eligible, false);
 
@@ -107,7 +108,7 @@ test('hosted Rau on Postgres answers and stores exactly what the memory store do
   next.costUsd = 0.01;
   for (let week = 0; week < 28; week += 1) {
     clock.now = T0 + 7 * DAY + week * 7 * DAY;
-    await step(`week ${week}`, agentCall('plan', { id: `msg_w${week}`, costUsd: 0.01, model: week % 3 ? 'haiku' : 'deepseek', route: week % 2 ? 'openrouter' : 'anthropic' }));
+    await step(`week ${week}`, learnAs('plan', { id: `msg_w${week}`, model: week % 3 ? 'haiku' : 'deepseek', route: week % 2 ? 'openrouter' : 'anthropic' }));
   }
   await step('learn later', learn('plan'));
   await step('admin list', (w) => w.rau.admin.list(ADMIN));

@@ -2,7 +2,6 @@ import type { SidebarBridge } from '../../agent/bridge.ts';
 import type { UsageSummary } from '../../agent/types.ts';
 import { formatRelativeTime, formatResetAt } from './usage-format.ts';
 import { createIcon } from './icons.ts';
-import { formatRauDate, formatRauUsd, rauCreditGauge } from './rau-harness.ts';
 
 function node<K extends keyof HTMLElementTagNameMap>(tag: K, className: string, text = '') {
   const element = document.createElement(tag);
@@ -61,51 +60,6 @@ export function createProviderQuota(bridge: SidebarBridge, accept: (usage: Usage
       busy = false;
       if (!disposed) render(summary);
     }
-  }
-
-  /** 호스팅 Rau 의 이번 기간 크레딧 — Rau 를 쓸 수 없으면 카드도 없다. */
-  function rauCard(): HTMLElement | null {
-    const gauge = rauCreditGauge(bridge.rauAgentStatus?.());
-    if (!gauge) return null;
-    const card = node('section', 'ag-settings-quota-card');
-    card.dataset.provider = 'rau';
-    const header = node('div', 'ag-settings-quota-header');
-    const identity = node('div', 'ag-settings-quota-identity');
-    identity.append(node('h3', 'ag-settings-quota-title', 'Rau'));
-    if (gauge.trial) identity.append(node('span', 'ag-settings-row-detail', '무료 체험'));
-    const actions = node('div', 'ag-settings-quota-header-actions');
-    const refreshButton = node('button', 'ag-settings-quota-refresh');
-    refreshButton.type = 'button';
-    refreshButton.dataset.action = 'refresh-usage';
-    refreshButton.title = 'Rau 사용량 새로고침';
-    refreshButton.setAttribute('aria-label', refreshButton.title);
-    refreshButton.disabled = refreshing;
-    refreshButton.setAttribute('aria-busy', String(refreshing));
-    refreshButton.append(createIcon('refresh'));
-    refreshButton.onclick = refresh;
-    actions.append(refreshButton);
-    header.append(identity, actions);
-    const meter = node('div', 'ag-settings-quota-meter');
-    meter.dataset.cap = 'credits';
-    meter.append(node('div', 'ag-settings-quota-caption', `${formatRauUsd(gauge.allowanceUsd)} 중 ${formatRauUsd(gauge.remainingUsd)} 남음`));
-    const track = node('div', 'ag-settings-quota-track');
-    track.setAttribute('role', 'meter');
-    track.setAttribute('aria-label', 'Rau 남은 크레딧');
-    track.setAttribute('aria-valuemin', '0');
-    track.setAttribute('aria-valuemax', '100');
-    track.setAttribute('aria-valuenow', String(gauge.percent));
-    const fill = node('div', 'ag-settings-quota-fill');
-    fill.style.width = `${gauge.percent}%`;
-    fill.dataset.health = gauge.exhausted || gauge.percent <= 15 ? 'low' : gauge.percent <= 40 ? 'medium' : 'high';
-    track.append(fill);
-    meter.append(track);
-    if (gauge.resetsAt) {
-      meter.append(node('div', 'ag-settings-usage-updated', gauge.trial
-        ? `${formatRauDate(gauge.resetsAt)} 체험 끝`
-        : `${formatRauDate(gauge.resetsAt)} 초기화`));
-    }
-    card.append(header, meter);
-    return card;
   }
 
   function render(value: UsageSummary | null) {
@@ -271,17 +225,13 @@ export function createProviderQuota(bridge: SidebarBridge, accept: (usage: Usage
       cards.push(card);
     }
     feedback.hidden = !feedback.textContent;
-    const rau = rauCard();
-    element.replaceChildren(...(rau ? [rau] : []), ...cards, feedback);
+    element.replaceChildren(...cards, feedback);
   }
-  const stopRauStatus = bridge.onEvent?.((event) => {
-    if (event.type === 'rau-agent-status') render(summary);
-  });
   return { element, render, setRefreshing(value: boolean) {
     refreshing = value;
     for (const button of element.querySelectorAll<HTMLButtonElement>('.ag-settings-quota-refresh')) {
       button.disabled = value;
       button.setAttribute('aria-busy', String(value));
     }
-  }, dispose() { disposed = true; confirmation = null; stopRauStatus?.(); } };
+  }, dispose() { disposed = true; confirmation = null; } };
 }

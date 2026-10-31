@@ -57,7 +57,7 @@ export type AgentPrefsSaveResult =
   | { ok: false; value: AgentPrefs; error: string };
 
 function isAgentName(value: unknown): value is AgentName {
-  return value === 'claude' || value === 'codex' || value === 'pi' || value === 'rau';
+  return value === 'claude' || value === 'codex' || value === 'pi';
 }
 
 /** 첫 실행·빈 프로필의 기본 프로바이더. 저장된 선택은 건드리지 않는다. */
@@ -96,9 +96,7 @@ export function defaultAgentPrefs(): AgentPrefs {
 /** 어떤 입력이 와도 쓸 수 있는 조합으로 접는다. */
 export function normalizeAgentPrefs(raw: unknown): AgentPrefs {
   const src = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
-  // 예전 이름 'hama'(호스팅 하네스)는 'rau' 로 읽는다.
-  const storedAgent = src['defaultAgent'] === 'hama' ? 'rau' : src['defaultAgent'];
-  const agent: AgentName = isAgentName(storedAgent) ? storedAgent : DEFAULT_CHAT_AGENT;
+  const agent: AgentName = isAgentName(src['defaultAgent']) ? src['defaultAgent'] : DEFAULT_CHAT_AGENT;
   const selectedModels = normalizeSelectedModels(src['selectedModels']);
   const requested = typeof src['defaultModel'] === 'string' ? src['defaultModel'] : null;
   let model: string;
@@ -238,8 +236,7 @@ export function hasExplicitDefaultAgent(storage?: AgentPrefsStorage | null): boo
     if (!raw) return false;
     const parsed = JSON.parse(raw) as unknown;
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return false;
-    const agent = (parsed as Record<string, unknown>)['defaultAgent'];
-    return agent === 'hama' || isAgentName(agent);
+    return isAgentName((parsed as Record<string, unknown>)['defaultAgent']);
   } catch {
     return false;
   }

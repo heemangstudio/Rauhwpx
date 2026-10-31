@@ -554,14 +554,12 @@ function saveLegacyThreads(threads: ChatThread[]) {
 function isStoredChatThread(v: unknown): v is StoredChatThread {
   if (!v || typeof v !== 'object') return false;
   const t = v as Record<string, unknown>;
-  // 예전 이름 'hama'(호스팅 하네스)는 'rau' 로 읽는다.
-  if (t.agent === 'hama') t.agent = 'rau';
   return (
     typeof t.id === 'string'
     && typeof t.title === 'string'
     && typeof t.createdAt === 'number'
     && typeof t.updatedAt === 'number'
-    && (t.agent === 'claude' || t.agent === 'codex' || t.agent === 'pi' || t.agent === 'rau')
+    && (t.agent === 'claude' || t.agent === 'codex' || t.agent === 'pi')
     && typeof t.model === 'string'
     && typeof t.effort === 'string'
     && Array.isArray(t.messages)
@@ -569,7 +567,6 @@ function isStoredChatThread(v: unknown): v is StoredChatThread {
 }
 
 function parseAgentName(value: unknown): AgentName | undefined {
-  if (value === 'hama') return 'rau';
   return isAgentName(value) ? value : undefined;
 }
 
@@ -664,7 +661,7 @@ function parseThreadTask(value: unknown): ThreadTaskRecord | null {
 }
 
 function isAgentName(value: unknown): value is AgentName {
-  return value === 'claude' || value === 'codex' || value === 'pi' || value === 'rau';
+  return value === 'claude' || value === 'codex' || value === 'pi';
 }
 
 function normalizeRetryPayload(value: unknown): ThreadRetryPayload | undefined {

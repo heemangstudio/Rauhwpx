@@ -11,7 +11,6 @@ export const AGENT_LABEL: Record<AgentName, string> = {
   claude: 'Claude',
   codex: 'Codex',
   pi: 'BYOK',
-  rau: 'Rau',
   grok: 'Grok',
   cursor: 'Cursor',
   opencode: 'OpenCode',
@@ -22,23 +21,15 @@ export const PROVIDER_ORDER = [
   'claude',
   'codex',
   'pi',
-  'rau',
 ] as const satisfies readonly AgentName[];
 
 /* 새 프로바이더가 순서에서 빠지면 여기서 컴파일이 깨진다. */
 void PROVIDER_ORDER;
 
-/**
- * 사용자가 직접 연결하는(CLI 로그인·키) 프로바이더. Rau 는 요금제라 연결 단계가 없다 — 처음 설정·연결 목록·
- * 글쓰기 보정에서 빠진다. 입력기 피커는 PROVIDER_ORDER 를 쓴다.
- */
-export const CONNECTABLE_PROVIDERS = PROVIDER_ORDER.filter((agent) => agent !== 'rau');
-
 /** 단색 로고는 마스크로 그린다 — currentColor 를 타고 테마에 맞는다. */
 export const MASK_ICON_AGENTS: readonly AgentName[] = [
   'codex',
   'pi',
-  'rau',
 ];
 
 export const PROVIDER_ICON_SRC: Partial<Record<AgentName, string>> = {

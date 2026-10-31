@@ -19,7 +19,7 @@ export function mountRauHomeEntry(
   name.textContent = 'Rau';
   const line = document.createElement('span');
   line.className = 'plan-rau-line';
-  line.textContent = 'AI 포함 · Rau 모드';
+  line.textContent = 'Rau 모드 · 취향 학습';
   const soon = document.createElement('span');
   soon.className = 'plan-rau-soon';
   soon.textContent = '곧 출시';
