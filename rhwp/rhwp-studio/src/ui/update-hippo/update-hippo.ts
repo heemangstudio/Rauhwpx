@@ -5,34 +5,30 @@ import { isInitialSetupActive, onInitialSetupInactive } from '../initial-setup/a
  * 문서 홈 오른쪽 아래 가장자리의 업데이트 하마. 가장자리 위로 고개를 내밀고 팻말 막대를 물어
  * 들고 있다. 팻말 내용은 update-sign.ts 가 업데이트 상태에서 정한다.
  *
- * 그림은 scripts/generate-update-hippo-art.py 가 만든 update-hippo-sprites.png 의 칸이다.
- * 칸 순서(FRAMES)·칸 크기·막대 열(STICK_X)을 바꾸면 여기도 같이 바꾼다. 팻말은 한글과 단추를
- * 담아야 해서 HTML 이고, 그림과 같은 3px 칸으로 테두리를 그린다.
+ * 그림은 채팅 하마와 같은 그림(update-hippo-art.ts)을 캔버스에 그린다. 팻말은 한글과 단추를
+ * 담아야 해서 HTML 이고, 3px 칸으로 테두리를 그린다.
  *
  * 업데이트 팻말이 없으면 새 버전의 첫 실행에 릴리스 노트(release-notes.ts)를 잠깐 든다.
  *
  * 팻말이 바뀌면 하마가 가장자리 밑으로 내려갔다가 새 팻말을 들고 올라온다. 하마를 누르면 귀만
- * 남기고 숨고, 귀를 누르면 다시 올라온다(이 페이지가 떠 있는 동안 기억한다). 움직임은 3px 칸
- * 단위로만 끊고, 동작 줄이기 설정이면 움직이지 않는다.
+ * 남기고 숨고, 귀를 누르면 다시 올라온다(이 페이지가 떠 있는 동안 기억한다). 움직임은 그림
+ * 한 칸 단위로만 끊고, 동작 줄이기 설정이면 움직이지 않는다.
  */
 import './update-hippo.css';
 import type { DesktopUpdateState, DesktopUpdatesApi, UpdateAllState } from '../../desktop-integration.ts';
 import { updateSign, type UpdateSign, type UpdateSignAction, type UpdateSignIcon } from './update-sign.ts';
 import { markReleaseNotesSeen, pendingReleaseNotes, RELEASE_NOTES, releaseNotesSign } from './release-notes.ts';
+import { COLS, EAR_ROW, PEEK_ROWS, PX, ROWS, STICK_COL, drawUpdateHippo, type UpdateHippoFrame as Frame } from './update-hippo-art.ts';
 
-const FRAMES = ['idle', 'blink', 'ear', 'dip', 'peek'] as const;
-type Frame = (typeof FRAMES)[number];
-
+/** 팻말 테두리·아이콘·내려받기 막대의 칸. 그림 한 칸(PX)의 절반이다. */
 const SCALE = 3;
-const CELL_WIDTH = 36;
-const CELL_HEIGHT = 26;
-/** 막대 왼쪽 열(두 칸 굵기). 팻말은 이 막대 가운데에 맞춘다. */
-const STICK_X = 1;
-/** 귀 끝 위의 막대 줄. 귀만 남길 때 이 줄들은 비어 있다. */
-const STICK_ROWS = 12;
-/** 숨었을 때 가장자리 위에 남는 줄: 귀와 눈. */
-const PEEK_ROWS = 3;
-const STEP_MS = 34;
+const WIDTH = COLS * PX;
+const HEIGHT = ROWS * PX;
+/** 팻말이 덮는 막대 위 끝의 줄. */
+const BOARD_OVER = 2;
+/** 하마가 창 오른쪽 끝에서 떨어진 칸. */
+const RIGHT_COLS = 1;
+const STEP_MS = 40;
 /** 팻말이 창 오른쪽 끝에 닿지 않게 남기는 틈. */
 const EDGE_GAP = 6;
 /** 내려받기 막대의 폭(update-hippo.css 의 .uh-bar). */
@@ -93,9 +89,9 @@ function reducedMotion(): boolean {
   return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
 }
 
-/** 3px 칸에 맞춘다. */
-function snap(px: number): number {
-  return Math.round(px / SCALE) * SCALE;
+/** 칸에 맞춘다. 하마의 높이는 그림 한 칸(PX), 팻말의 자리는 3px 이다. */
+function snap(px: number, unit = SCALE): number {
+  return Math.round(px / unit) * unit;
 }
 
 export interface UpdateHippo {
@@ -122,22 +118,31 @@ export function createUpdateSignHippo(
   board.setAttribute('role', 'group');
   board.setAttribute('aria-label', '업데이트');
 
-  const sprite = document.createElement('span');
+  Object.assign(rig.style, { width: `${WIDTH}px`, height: `${HEIGHT}px`, right: `${RIGHT_COLS * PX}px` });
+  board.style.bottom = `${(ROWS - BOARD_OVER) * PX}px`;
+
+  const sprite = document.createElement('canvas');
   sprite.className = 'uh-sprite';
+  sprite.width = COLS;
+  sprite.height = ROWS;
   sprite.setAttribute('aria-hidden', 'true');
+  const paint = sprite.getContext('2d');
   // 그림 위에 겹친 투명한 단추. 숨으면 귀 자리의 단추로 바뀐다.
   const hippo = document.createElement('button');
   hippo.type = 'button';
   hippo.className = 'uh-hippo';
   hippo.setAttribute('aria-label', '하마 숨기기');
+  // 막대 뒤 머리와 몸: 귀부터 아래까지.
+  hippo.style.top = `${(EAR_ROW - 1) * PX}px`;
   rig.append(sprite, hippo, board);
 
-  // 숨었을 때 귀 둘레를 누르는 자리. 귀 세 줄보다 넉넉하다.
+  // 숨었을 때 귀 둘레를 누르는 자리. 보이는 세 줄보다 넉넉하다.
   const ears = document.createElement('button');
   ears.type = 'button';
   ears.className = 'uh-ears';
   ears.setAttribute('aria-label', '하마 부르기');
   ears.hidden = true;
+  Object.assign(ears.style, { right: `${RIGHT_COLS * PX}px`, width: `${WIDTH}px`, height: `${(PEEK_ROWS + 2) * PX}px` });
 
   const spoken = document.createElement('span');
   spoken.className = 'visually-hidden';
@@ -160,24 +165,24 @@ export function createUpdateSignHippo(
   let transientArmed = false;
 
   function show(frame: Frame): void {
-    sprite.style.backgroundPositionX = `${-FRAMES.indexOf(frame) * CELL_WIDTH * SCALE}px`;
+    if (paint) drawUpdateHippo(paint, frame);
     element.dataset.frame = frame;
   }
 
   function place(next: number): void {
-    y = snap(next);
+    y = snap(next, PX);
     rig.style.transform = y ? `translateY(${y}px)` : '';
   }
 
   /** 팻말까지 가장자리 밑으로 완전히 들어간 높이. 팻말은 그림 위로 솟아 있다. */
   function sunkY(): number {
     const above = board.hidden ? 0 : Math.max(0, -board.offsetTop);
-    return Math.ceil((CELL_HEIGHT * SCALE + above + SCALE * 2) / SCALE) * SCALE;
+    return Math.ceil((HEIGHT + above + SCALE * 2) / PX) * PX;
   }
 
   /** 서 있는 높이. 숨었으면 귀만 남는다. */
   function restY(): number {
-    return ducked ? (CELL_HEIGHT - STICK_ROWS - PEEK_ROWS) * SCALE : 0;
+    return ducked ? (ROWS - EAR_ROW - PEEK_ROWS) * PX : 0;
   }
 
   function move(to: number, curve: readonly number[], frame: Frame, done: () => void): void {
@@ -200,7 +205,7 @@ export function createUpdateSignHippo(
         return;
       }
       // SINK 는 출발점에서 잰 진행, RISE 는 도착점까지 남은 몫이다(음수는 그만큼 칸을 넘친다).
-      if (curve === RISE) place(t < 0 ? to + t * SCALE : to + (from - to) * t);
+      if (curve === RISE) place(t < 0 ? to + t * PX : to + (from - to) * t);
       else place(from + (to - from) * t);
       moveTimer = window.setTimeout(step, STEP_MS);
     };
@@ -317,8 +322,8 @@ export function createUpdateSignHippo(
 
   /** 팻말 가운데를 막대에 맞추되, 창 오른쪽 끝을 넘으면 그만큼 왼쪽으로 민다. */
   function alignBoard(): void {
-    const stickCenter = (STICK_X + 1) * SCALE;
-    const room = CELL_WIDTH * SCALE - stickCenter + rightInset() - EDGE_GAP;
+    const stickCenter = (STICK_COL + 0.5) * PX;
+    const room = WIDTH - stickCenter + rightInset() - EDGE_GAP;
     const half = board.offsetWidth / 2;
     const shift = Math.ceil(Math.max(0, half - room) / SCALE) * SCALE;
     board.style.left = `${snap(stickCenter - half) - shift}px`;
@@ -446,18 +451,24 @@ export function createUpdateSignHippo(
     });
   });
 
-  /* ── 가만히 있을 때: 가끔 눈을 깜빡이거나 귀를 턴다 ── */
+  /* ── 가만히 있을 때: 가끔 귀를 세우거나 팻말째 한 칸 까딱한다 ── */
 
   function scheduleIdle(): void {
     window.clearTimeout(idleTimer);
     if (reducedMotion() || disposed) return;
     idleTimer = window.setTimeout(() => {
       if (element.isConnected && !element.hidden && !moving && !ducked && element.offsetParent) {
-        const frame: Frame = Math.random() < 0.7 ? 'blink' : 'ear';
-        show(frame);
-        blinkTimer = window.setTimeout(() => {
-          if (!moving && !ducked) show('idle');
-        }, frame === 'blink' ? 140 : 220);
+        if (Math.random() < 0.75) {
+          show('ear');
+          blinkTimer = window.setTimeout(() => {
+            if (!moving && !ducked) show('idle');
+          }, 220);
+        } else {
+          place(restY() + PX);
+          blinkTimer = window.setTimeout(() => {
+            if (!moving && !ducked) place(restY());
+          }, 180);
+        }
       }
       scheduleIdle();
     }, 2600 + Math.random() * 2600);
