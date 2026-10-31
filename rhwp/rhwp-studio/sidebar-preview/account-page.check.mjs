@@ -213,7 +213,7 @@ export async function checkAccountPage({ page, open, screenshot }) {
   await page.waitForFunction(() => !document.querySelector('.ag-pricing-card'), { timeout: 5000 });
   await page.waitForFunction(() => document.querySelector('.acct-plan-tier')?.textContent === 'Rau');
   assert.ok((await calls(page)).includes('startRauTrial'));
-  assert.equal(await page.$eval('.acct-rau-credits-meta', (node) => node.textContent), '무료 체험 · 7일 남음');
+  assert.equal(await page.$eval('.acct-rau-credits-meta', (node) => node.textContent), '무료 체험 7일 남음');
   assert.match(await page.$eval('.acct-rau-credits-value', (node) => node.textContent), /\$2\.00 남음 \/ \$2\.00/);
   assert.equal(await page.$eval('.acct-upgrade', (node) => node.hidden), false);
 
@@ -227,7 +227,7 @@ export async function checkAccountPage({ page, open, screenshot }) {
   // 체험 중: 남은 날과 크레딧.
   await open('reset=1&account=rau-trial&open=account');
   await page.waitForSelector('.acct-page .acct-rau-credits:not([hidden])', { visible: true });
-  assert.equal(await page.$eval('.acct-rau-credits-meta', (node) => node.textContent), '무료 체험 · 5일 남음');
+  assert.equal(await page.$eval('.acct-rau-credits-meta', (node) => node.textContent), '무료 체험 5일 남음');
   await screenshot('account-page-rau-trial');
   // 체험이 끝난 무료 계정: 체험 단추 없이 구독을 권한다.
   await open('reset=1&account=trial-ended&open=account');
@@ -269,6 +269,20 @@ export async function checkAccountPage({ page, open, screenshot }) {
   await page.click('#ag-settings-tab-account');
   await page.waitForSelector('#ag-settings-pane-account .acct-profile', { visible: true });
   assert.equal(await page.$eval('#ag-settings-pane-account .acct-name', node => node.textContent), '설정 사용자');
+  // 로그아웃해도 계정 탭 안에서 가입 판을 보여 주고 팝업은 열지 않는다.
+  await page.click('#ag-settings-pane-account .acct-exit .acct-btn');
+  await page.waitForSelector('#ag-settings-pane-account .acct-page[data-state="signed_out"]');
+  assert.equal(await page.$('.acct-page:not(.acct-embedded)'), null);
+  assert.equal(await page.$eval('#ag-settings-pane-account .acct-signin', (node) => node.checkVisibility()), true);
+  await screenshot('settings-account-signed-out');
   await page.click('button[aria-label="설정 닫기"]');
   await page.waitForFunction(() => !document.querySelector('.acct-embedded'));
+  // 전체 계정 페이지에서 나가도 작은 로그인 팝업으로 줄어들지 않는다.
+  await open('reset=1&account=free&open=account');
+  await page.click('.acct-exit .acct-btn');
+  await page.waitForSelector('.acct-page[data-state="signed_out"]');
+  assert.equal(await page.$eval('.acct-page', (node) => node.getBoundingClientRect().width >= window.innerWidth * 0.9), true,
+    'the signed-out account page keeps its full-width layout');
+  assert.equal(await page.$eval('.acct-signin', (node) => node.checkVisibility()), true);
+  await screenshot('account-page-signed-out');
 }

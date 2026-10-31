@@ -34,9 +34,9 @@ export function rauStateLine(status: RauStatus, timeZone?: string): string {
     if (trial) return '체험 크레딧 소진';
     return reset ? `${date(reset)}까지 크레딧 소진` : '크레딧 소진';
   }
-  if (remaining === null) return trial ? '무료 체험' : '켜짐';
+  if (trial) return reset ? `무료 체험 ${date(reset)}까지` : '무료 체험';
+  if (remaining === null) return '켜짐';
   const left = `$${(Math.round(remaining * 100) / 100).toFixed(2)} 남음`;
-  if (trial) return reset ? `무료 체험 · ${left} · ${date(reset)}까지` : `무료 체험 · ${left}`;
   return reset ? `${left} · ${date(reset)} 초기화` : left;
 }
 

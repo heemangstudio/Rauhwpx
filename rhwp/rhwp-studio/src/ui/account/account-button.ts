@@ -1,4 +1,4 @@
-// 문서 홈 위 막대의 계정 단추: 24px 둥근 사진과 이름(로그아웃이면 '로그인'). 누르면 계정 페이지를 열고, 열려 있으면 닫는다.
+// 문서 홈 위 막대의 계정 단추: 20px 둥근 사진과 이름(로그아웃이면 '로그인'). 누르면 계정 페이지를 열고, 열려 있으면 닫는다.
 // 데스크톱 계정 API 가 있을 때만 단다(웹 Studio 에는 없다).
 import './account-button.css';
 import { accountDisplayName } from './account-format.ts';

@@ -10,9 +10,10 @@ import { installAccountHost } from '../desktop/account-host.mjs';
 import {
   ACCOUNT_OFFLINE_RETRY_MS, ACTIVITY_FLUSH_MS, AVATAR_MAX_BYTES, createAccountManager, SIGN_IN_TIMEOUT_MS,
 } from '../desktop/account-manager.mjs';
-import { licenseKeyHash, verifyAccountLease, verifyLease } from '../desktop/license-lease.mjs';
+import { licenseKeyHash, normalizeGiftCode, verifyAccountLease, verifyLease } from '../desktop/license-lease.mjs';
 import { createMockAccountServer, DEV_KEYPAIR, DEV_PUBLIC_KEYS } from './fixtures/account-mock-server.mjs';
 import { signLease } from './fixtures/license-mock-server.mjs';
+import { generateGiftCode, normalizeGiftCode as normalizeServerGiftCode } from '../site-api/gift-codes.mjs';
 
 const HOUR = 60 * 60 * 1000;
 const DAY = 24 * HOUR;
@@ -103,6 +104,46 @@ async function waitFor(check, label) {
 
 const callsTo = (server, path) => server.calls.filter((call) => call.path === path);
 const portOf = (server) => callsTo(server, '/v1/account/auth/start').at(-1).body.port;
+
+test('desktop and server normalize generated gift codes identically', () => {
+  const code = generateGiftCode();
+  for (const input of [code, code.toLowerCase(), code.slice(5).replaceAll('-', ' '),
+    'gift-o1il-0000-0000-000O', 'GIFT-0000-0000-0000-000', 'GIFT-UUUU-0000-0000-0000',
+    '', null, 42, 'x'.repeat(65)]) {
+    assert.equal(normalizeGiftCode(input), normalizeServerGiftCode(input));
+  }
+  assert.equal(normalizeGiftCode(code), code);
+});
+
+test('gift codes reach the gift-code endpoint and update the signed account entitlement', async (t) => {
+  const ctx = await setup(t);
+  const code = 'GIFT-0000-0000-0000-0000';
+  const key = ctx.server.issueKey({ edition: 'rau', plan: 'monthly' });
+  const giftCalls = [];
+  const fetchImpl = async (url, options) => {
+    if (new URL(url).pathname === '/v1/account/gift-codes/redeem') {
+      giftCalls.push(JSON.parse(options.body));
+      assert.deepEqual(JSON.parse(options.body), { code });
+      const response = await ctx.server.fetch('https://accounts.test/v1/account/redeem', {
+        ...options, body: JSON.stringify({ key }),
+      });
+      const body = await response.json();
+      return Response.json({ ...body, alreadyRedeemed: body.alreadyLinked });
+    }
+    return ctx.server.fetch(url, options);
+  };
+  ctx.manager = ctx.make({ client: createAccountClient({ baseUrl: 'https://accounts.test', fetchImpl }) });
+  await signIn(ctx);
+  for (const input of [code, 'gift oooo oooo oooo oooo', '0000000000000000']) {
+    const result = await ctx.manager.redeem(input);
+    assert.equal(result.ok, true, result.code);
+    assert.equal(result.status.plan.tier, 'rau');
+    assert.equal(result.alreadyLinked, giftCalls.length > 1);
+  }
+  assert.equal(giftCalls.length, 3);
+  assert.equal((await ctx.manager.redeem('GIFT-invalid')).code, 'invalid_format');
+  assert.equal(giftCalls.length, 3, 'malformed codes never reach the server');
+});
 
 test('account leases v2 verify offline and never pass as v1 leases', () => {
   const payload = {

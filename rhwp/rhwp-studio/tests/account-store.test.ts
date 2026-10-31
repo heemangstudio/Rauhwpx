@@ -176,8 +176,8 @@ test('Rau credits show what is left of the allowance, with the reset day or the 
   const trialCredits = rauCredits({ eligible: true, source: 'trial', allowanceUsd: 2, usedUsd: 0.65, remainingUsd: 1.35, resetsAt: now + 5 * day })!;
   assert.equal(rauResetLine(trialCredits), '');
   const trial = { state: 'active' as const, startedAt: now - 2 * day, endsAt: now + 5 * day - 1000, days: 7, allowanceUsd: 2 };
-  assert.equal(trialLine(trial, now), '무료 체험 · 5일 남음');
-  assert.equal(trialLine({ ...trial, endsAt: now + 3_600_000 }, now), '무료 체험 · 1일 남음');
+  assert.equal(trialLine(trial, now), '무료 체험 5일 남음');
+  assert.equal(trialLine({ ...trial, endsAt: now + 3_600_000 }, now), '무료 체험 1일 남음');
   assert.equal(trialLine({ ...trial, state: 'ended' }, now), '');
 });
 

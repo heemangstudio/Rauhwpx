@@ -258,7 +258,7 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
   devicesSection.root.append(deviceList, deviceError);
 
   // ── 라이선스 ────────────────────────────────────────
-  const licensesSection = section('licenses', '라이선스');
+  const licensesSection = section('licenses', '프로모션 코드');
   const licenseList = el('ul', 'acct-license-list');
   const localKeyNote = el('p', 'acct-meta acct-local-key');
   const redeemForm = el('form', 'acct-inline-form acct-redeem');
@@ -268,9 +268,9 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
   redeemInput.autocomplete = 'off';
   redeemInput.spellcheck = false;
   redeemInput.setAttribute('autocapitalize', 'characters');
-  redeemInput.placeholder = 'HAMA-…';
-  redeemInput.setAttribute('aria-label', '라이선스 키');
-  const redeemSubmit = el('button', 'acct-btn', '키 등록');
+  redeemInput.placeholder = '프로모션 코드';
+  redeemInput.setAttribute('aria-label', '프로모션 코드');
+  const redeemSubmit = el('button', 'acct-btn', '등록');
   redeemSubmit.type = 'submit';
   redeemForm.append(redeemInput, redeemSubmit);
   const redeemError = alertLine();
@@ -327,6 +327,7 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
   let signOutBusy = false;
   let manageBusy = false;
   let deleting = false;
+  let hasShownProfile = false;
 
   const status = (): AccountStatus | null => store.status();
 
@@ -438,7 +439,7 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
     redeemBusy = false;
     if (!message) redeemInput.value = '';
     say(redeemError, message);
-    say(redeemNote, alreadyLinked ? '이미 이 계정에 있는 키예요.' : '');
+    say(redeemNote, alreadyLinked ? '이미 이 계정에 등록되어 있어요.' : '');
     render();
     if (message) redeemInput.focus();
   }
@@ -483,7 +484,7 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
     const fragment = document.createDocumentFragment();
     const tier = current.plan.tier;
     fragment.append(...planMark(tier));
-    fragment.append(el('span', 'acct-plan-current', '현재 요금제'), el('span', 'acct-plan-tier', ACCOUNT_TIER_LABEL[tier]));
+    fragment.append(el('span', 'acct-plan-tier', ACCOUNT_TIER_LABEL[tier]));
     const cycle = planCycleLabel(current.plan);
     if (cycle) fragment.append(el('span', 'acct-plan-cycle', cycle));
     return fragment;
@@ -684,8 +685,10 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
       else void openPostLogin(current!, store, plan, newAccount);
       return;
     }
-    layer.dataset.modal = !embedded && !signedIn ? 'true' : 'false';
-    page.dataset.authPopup = !embedded && !signedIn ? 'true' : 'false';
+    if (signedIn) hasShownProfile = true;
+    const authPopup = !embedded && !signedIn && !hasShownProfile;
+    layer.dataset.modal = authPopup ? 'true' : 'false';
+    page.dataset.authPopup = authPopup ? 'true' : 'false';
     back.setAttribute('aria-label', signedIn ? '돌아가기' : '닫기');
     back.title = signedIn ? '돌아가기' : '닫기';
     back.replaceChildren(createIcon(signedIn ? 'browserBack' : 'close'));

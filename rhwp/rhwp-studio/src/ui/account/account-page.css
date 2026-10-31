@@ -23,6 +23,7 @@ html:is(.desktop-mac, .desktop-windows) .acct-layer {
 
 .acct-page {
   --plan-hama: #3d9bd1;
+  --plan-rau: #a81e2a;
   --acct-err: var(--ag-err, var(--ui-danger, #c4372b));
   position: fixed;
   inset: 0;
@@ -46,6 +47,7 @@ html:is(.desktop-mac, .desktop-windows) .acct-layer {
 
 :root[data-theme-effective='dark'] .acct-page {
   --plan-hama: #62b3e2;
+  --plan-rau: #c2303b;
 }
 
 /* 데스크톱 창: 신호등과 제목 막대는 그대로 두고 그 아래부터 덮는다. */
@@ -872,6 +874,11 @@ html:is(.desktop-mac, .desktop-windows) .acct-page.acct-embedded {
   mask: url('/icons/rau.png') center / contain no-repeat;
 }
 
+.acct-section[data-tier='rau'] .acct-plan-name .acct-rau-mark,
+.acct-section[data-tier='rau'] .acct-plan-tier {
+  color: var(--plan-rau);
+}
+
 /* Rau 크레딧 */
 .acct-rau-credits {
   margin-top: 16px;
@@ -940,11 +947,6 @@ html:is(.desktop-mac, .desktop-windows) .acct-page.acct-embedded {
   padding: 24px;
   border: 1px solid var(--n-ink-hairline);
   border-radius: var(--ag-r-card);
-}
-
-.acct-plan-current {
-  color: var(--n-ink-secondary);
-  font-size: var(--ag-fs-secondary);
 }
 
 .acct-plan-tier {

@@ -1,14 +1,15 @@
 /* ─── 문서 홈의 계정 단추 ─────────────────────────────
-   Rau 입구와 새 채팅 사이. 사진과 이름(로그아웃이면 '로그인'). 높이·모서리·눌림은 이웃과 같고, 사진 원이 왼쪽 안쪽 여백을 채운다. */
+   Rau 입구와 새 채팅 사이. 사진과 이름(로그아웃이면 '로그인'). 높이·모서리·눌림은 이웃과 같고, 사진과 글자는 같은 중심선에 놓는다. */
 
 .acct-button {
   display: inline-flex;
   flex: none;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
+  box-sizing: border-box;
   height: 28px;
-  margin-right: 4px;
-  padding: 0 10px 0 2px;
+  margin: 0;
+  padding: 4px 8px;
   border: 0;
   border-radius: var(--ag-r-row, 8px);
   background: transparent;
@@ -54,8 +55,8 @@
 }
 
 .acct-button-avatar {
-  width: 24px;
-  height: 24px;
+  width: 20px;
+  height: 20px;
 }
 
 .acct-button-avatar .acct-avatar-initial {

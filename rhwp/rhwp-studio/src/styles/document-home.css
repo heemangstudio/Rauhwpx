@@ -98,6 +98,7 @@ html.document-home-open :is(#studio-root, #agent-sidebar) *::after {
 html:is(.desktop-mac, .desktop-windows) .dh-topbar {
   height: var(--desktop-titlebar-height, 38px);
   padding-left: calc(var(--desktop-home-reserve, 98px) + 2px);
+  padding-right: 8px;
   -webkit-app-region: drag;
 }
 
@@ -226,10 +227,10 @@ html:is(.desktop-mac, .desktop-windows) .dh-topbar :is(button, a, input, [role='
 .dh-settings .ag-icon,
 .dh-new-chat .ag-icon { width: 15px; height: 15px; }
 
-/* 새 채팅은 위 막대 모서리에서 위·오른쪽 여백이 같게 선다(막대 오른쪽 안쪽 여백 16px 를 덜어 낸다). */
-.dh-new-chat { margin-right: calc((48px - 32px) / 2 - 16px); }
-html:is(.desktop-mac, .desktop-windows) .dh-new-chat {
-  margin-right: calc((var(--desktop-titlebar-height, 38px) - 32px) / 2 - 16px);
+.dh-new-chat {
+  width: 28px;
+  height: 28px;
+  margin: 0;
 }
 
 /* 에이전트 집중 화면의 설정 행과 같은 자리: 아이콘 중심이 왼쪽·아래에서 22px. */

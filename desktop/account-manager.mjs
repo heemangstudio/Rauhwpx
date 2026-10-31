@@ -25,7 +25,7 @@ import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { AccountServerError } from './account-client.mjs';
 import {
-  licenseKeyHash, normalizeLicenseKey, PRODUCTION_LICENSE_PUBLIC_KEYS, verifyAccountLease,
+  licenseKeyHash, normalizeGiftCode, normalizeLicenseKey, PRODUCTION_LICENSE_PUBLIC_KEYS, verifyAccountLease,
 } from './license-lease.mjs';
 import { DEFAULT_PAYMENT_FIX_URL } from './license-manager.mjs';
 
@@ -78,7 +78,11 @@ export const ACCOUNT_MESSAGES = Object.freeze({
   grant_invalid: '로그인 시간이 지났어요. 다시 시도해 주세요.',
   device_not_found: '그 기기는 이미 빠졌어요.',
   session_invalid: '이 기기는 계정에서 빠졌어요. 다시 로그인해 주세요.',
-  invalid_format: '라이선스 키 형식이 아니에요.',
+  invalid_format: '프로모션 코드 형식이 아니에요.',
+  invalid_code: '선물 코드를 찾을 수 없어요.',
+  code_redeemed: '다른 계정에서 이미 사용한 선물 코드예요.',
+  code_expired: '사용 기한이 지난 선물 코드예요.',
+  code_revoked: '취소된 선물 코드예요.',
   invalid_key: '라이선스 키를 찾을 수 없어요.',
   revoked: '해지된 라이선스 키예요.',
   key_linked_elsewhere: '다른 계정에 연결된 키예요.',
@@ -1209,11 +1213,13 @@ export function createAccountManager({
       const body = await run(session);
       acceptPayload(body);
       await syncAvatar();
-      return { alreadyLinked: body.alreadyLinked === true };
+      return { alreadyLinked: body.alreadyLinked === true || body.alreadyRedeemed === true };
     }, { refreshAfter: false });
   }
 
   async function redeem(rawKey) {
+    const code = normalizeGiftCode(rawKey);
+    if (code) return linkAction((session) => client.redeemGiftCode(session, code));
     const key = normalizeLicenseKey(rawKey);
     if (!key) {
       await serialize(load);
