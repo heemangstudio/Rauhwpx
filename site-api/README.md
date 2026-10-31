@@ -1,6 +1,6 @@
 # site-api
 
-Small Node service behind the website beta form, the desktop install counter, accounts, licenses and issue reports. Its one dependency is `pg`. Without `DATABASE_URL` it stores everything as files in one data directory; with it, licenses, accounts and the webhook log live in Postgres (see Data).
+Small Node service behind the website beta form, the desktop install counter, accounts, licenses and issue reports. Its one dependency is `pg`. Without `DATABASE_URL` it stores everything as files in one data directory; with it, everything but issue-report attachments lives in Postgres (see Data).
 
 ## Routes
 
@@ -221,23 +221,31 @@ Open owner calls, deliberately not decided in code: which plan and term each bat
 
 All files live in `RAU_SITE_DATA`. On Railway it defaults to the `/data` volume; locally it defaults to the current directory.
 
-With `DATABASE_URL` set, these files move to Postgres and the server never reads or writes them (`migrations/001_licenses_accounts.sql` has the schema):
+With `DATABASE_URL` set, these files move to Postgres and the server never reads or writes them (the schema is in `migrations/001_licenses_accounts.sql` and `migrations/002_stores.sql`):
 
 | File | Tables |
 | --- | --- |
-| `licenses.json` | `licenses`, `license_subscriptions`, `license_devices`, `groble_orders` (one row per `merchantUid`), `groble_refs`, `groble_webhook_deliveries` (by idempotency key), `grandfathered_installs`. `keyIndex` is derived from `licenses.key` |
+| `licenses.json` | `licenses`, `license_subscriptions`, `license_devices`, `groble_orders` (one row per `merchantUid`), `groble_refs`, `groble_webhook_deliveries` (by idempotency key), `grandfathered_installs`, `gift_code_batches`, `gift_codes`. `keyIndex` is derived from `licenses.key` |
 | `webhook-log.json` | `webhook_log` |
 | `accounts.json` | `accounts`, `account_devices`, `account_sessions`, `account_logins`, `account_grants`, `account_email_index` (`byEmail`), `account_workos_index` (`byWorkosUser`) |
 | `avatars/` | `account_avatars` (bytes, one row per account) |
+| `hama.json` | `hama_plans`, `hama_ledgers` (buckets, call ids and the period as json) |
+| `hama-usage/` | `hama_usage`, one row per billed call, read newest first. Rows are never rotated away |
+| `rau.json` | `rau_allowances` (the monthly ledger as json) |
+| `gifts.json` | `gift_credit_events`, `gift_credit_grants`, `gift_credit_allocations` |
+| `waitlist.json` | `waitlist_entries` (by lowercased email) |
+| `unique-installs.json` | `unique_installs` (by install digest) |
+| `downloads.json` | `download_counts`, one row per KST day and `platform\|version` |
+| `feedback/index.json` | `feedback_reports`. Each report's `feedback/<id>/` directory stays on the volume, and pruning removes the row first, then the directory |
 
-Every other file stays on the volume in both modes. Each service writes only its own tables, in one transaction per change under a per-domain advisory lock, with `site_store_versions` telling processes when to reload. Foreign keys stay inside one domain. A record's fields that have no column, or whose value does not fit theirs exactly (a time that is not a canonical ISO string, an explicit `null`), are kept verbatim in its `extra` json column, so a table row reads back as exactly the JSON it came from. `schema_migrations` records the applied migrations, and `site_meta` holds markers such as a finished import.
+Only `feedback/<id>/` stays on the volume in Postgres mode, and the 8 MiB limit of a JSON file does not apply to tables. Each service writes only its own tables, in one transaction per change under a per-domain advisory lock, with `site_store_versions` telling processes when to reload. Foreign keys stay inside one domain. A record's fields that have no column, or whose value does not fit theirs exactly (a time that is not a canonical ISO string, an explicit `null`), are kept verbatim in its `extra` json column, so a table row reads back as exactly the JSON it came from. `schema_migrations` records the applied migrations, and `site_meta` holds markers such as a finished import.
 
 ## Variables
 
 | Name | Purpose |
 | --- | --- |
 | `RAU_SITE_DATA` | Data directory (`/data` on Railway) |
-| `DATABASE_URL` | Optional `postgres://` URL. Set, licenses, accounts and the webhook log run on Postgres (Data above); unset, everything stays on files. `sslmode` follows libpq (`require` encrypts without checking the certificate, `verify-full` checks it). On startup the server migrates the database, and refuses to start while a moved JSON file still holds data that was never imported |
+| `DATABASE_URL` | Optional `postgres://` URL. Set, every store runs on Postgres and only issue-report attachments stay files (Data above); unset, everything stays on files. `sslmode` follows libpq (`require` encrypts without checking the certificate, `verify-full` checks it). On startup the server migrates the database, and refuses to start while a moved JSON file still holds data that was never imported |
 | `RAU_WAITLIST_ADMIN_TOKEN` | Bearer token for reading the waitlist |
 | `RAU_WAITLIST_TELEGRAM_BOT_TOKEN`, `RAU_WAITLIST_TELEGRAM_CHAT_ID` | Optional Telegram message for each new signup and issue report |
 | `RAU_UNIQUE_INSTALL_PING_KEY` | Optional override of the desktop ping key |

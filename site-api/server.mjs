@@ -1,4 +1,4 @@
-import { readFile, stat } from 'node:fs/promises';
+import { readFile, readdir, stat } from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,6 +10,7 @@ import {
   resolveAccountConfig,
   resolveAccountsDbPath,
   resolveAvatarDir,
+  resolveDataDir,
   resolveDatabaseUrl,
   resolveFeedbackDir,
   resolveFeedbackMaxBytes,
@@ -34,18 +35,27 @@ import {
   DEFAULT_FEEDBACK_PROOF_KEY,
   MAX_FEEDBACK_BODY_BYTES,
   createFeedbackService,
+  emptyFeedbackIndex,
   feedbackError,
 } from './feedback.mjs';
 import { GIFT_PROXY_PREFIX, createGiftsService, emptyGiftsState, parseGiftAmount } from './gifts.mjs';
 import { verifyGrobleWebhook } from './groble-webhook.mjs';
 import { HAMA_ANTHROPIC_PREFIX, HAMA_OPENAI_PREFIX, createHamaService, emptyHamaState } from './hama.mjs';
 import { createHamaProxy } from './hama-proxy.mjs';
+import { createFileUsageLog, createPostgresUsageLog } from './hama-usage.mjs';
 import { createHeldAlerter } from './held-alert.mjs';
 import { createEmailProvider, resendProviderFromEnv } from './license-email.mjs';
 import { parseSigningPrivateKey, publicKeyFromPrivate, rawPublicKeyBase64 } from './license-lease.mjs';
 import { createLicensesService, emptyLicensesState, licenseError } from './licenses.mjs';
 import { accountsMapper } from './mappers/accounts.mjs';
+import { downloadsMapper } from './mappers/downloads.mjs';
+import { feedbackMapper } from './mappers/feedback.mjs';
+import { giftsMapper } from './mappers/gifts.mjs';
+import { hamaMapper } from './mappers/hama.mjs';
 import { licensesMapper } from './mappers/licenses.mjs';
+import { rauMapper } from './mappers/rau.mjs';
+import { uniqueInstallsMapper } from './mappers/unique-installs.mjs';
+import { waitlistMapper } from './mappers/waitlist.mjs';
 import { webhookLogMapper } from './mappers/webhook-log.mjs';
 import { renderAccountLoginErrorPage, renderUniqueInstallsPage } from './pages.mjs';
 import { createPostgresStore } from './pg-store.mjs';
@@ -912,24 +922,27 @@ export function siteRequestListener({
 }
 
 export function createSiteServer(env = process.env, options = {}) {
-  const uniqueInstallsStore = createFileStore(resolveUniqueInstallsDbPath(env), {
-    emptyState: emptyUniqueInstallsState,
-  });
+  const log = options.log ?? ((line) => process.stderr.write(`${line}\n`));
+  // With a database every store runs there and never touches its JSON file (feedback attachments
+  // stay files in both modes). `options.db` (tests, main) wins over DATABASE_URL.
+  const db = options.db !== undefined ? options.db : databaseFromEnv(env, log);
+  const domainStore = (mapper, filePath, emptyState) => (db
+    ? createPostgresStore({ db, mapper })
+    : createFileStore(filePath, { emptyState }));
+  const uniqueInstallsStore = domainStore(uniqueInstallsMapper, resolveUniqueInstallsDbPath(env), emptyUniqueInstallsState);
   const uniqueInstalls = createUniqueInstallsService({
     store: uniqueInstallsStore,
     pingKey: resolveUniqueInstallPingKey(env) || DEFAULT_UNIQUE_INSTALL_PING_KEY,
   });
   const waitlist = createWaitlistService({
-    store: createFileStore(resolveWaitlistDbPath(env), {
-      emptyState: emptyWaitlistState,
-    }),
+    store: domainStore(waitlistMapper, resolveWaitlistDbPath(env), emptyWaitlistState),
     adminToken: env.RAU_WAITLIST_ADMIN_TOKEN ?? '',
     telegramBotToken: env.RAU_WAITLIST_TELEGRAM_BOT_TOKEN ?? '',
     telegramChatId: env.RAU_WAITLIST_TELEGRAM_CHAT_ID ?? '',
   });
   const licenseConfig = resolveLicenseConfig(env);
   const downloads = createDownloadsService({
-    store: createFileStore(resolveDownloadsDbPath(env), { emptyState: emptyDownloadsState }),
+    store: domainStore(downloadsMapper, resolveDownloadsDbPath(env), emptyDownloadsState),
     adminToken: licenseConfig.adminToken,
     now: options.now,
   });
@@ -939,13 +952,6 @@ export function createSiteServer(env = process.env, options = {}) {
     licenseConfig.publicKeyDerBase64 = publicKey.export({ format: 'der', type: 'spki' }).toString('base64');
     licenseConfig.publicKeyRawBase64 = rawPublicKeyBase64(publicKey);
   }
-  const log = options.log ?? ((line) => process.stderr.write(`${line}\n`));
-  // With a database every store that has a Postgres mapping runs there and never touches its JSON
-  // file; the others stay on files until they get one. `options.db` (tests, main) wins over DATABASE_URL.
-  const db = options.db !== undefined ? options.db : databaseFromEnv(env, log);
-  const domainStore = (mapper, filePath, emptyState) => (db
-    ? createPostgresStore({ db, mapper })
-    : createFileStore(filePath, { emptyState }));
   const accountConfig = resolveAccountConfig(env);
   const accountsStore = domainStore(accountsMapper, resolveAccountsDbPath(env), emptyAccountsState);
   const webhookLog = createWebhookLog({
@@ -1009,7 +1015,7 @@ export function createSiteServer(env = process.env, options = {}) {
     log,
   });
   const gifts = createGiftsService({
-    store: createFileStore(resolveGiftsDbPath(env), { emptyState: emptyGiftsState }),
+    store: domainStore(giftsMapper, resolveGiftsDbPath(env), emptyGiftsState),
     authenticate: (lease) => accounts.authenticateLease(lease, { purpose: 'gift' }),
     config: resolveGiftConfig(env),
     adminToken: licenseConfig.adminToken,
@@ -1019,21 +1025,21 @@ export function createSiteServer(env = process.env, options = {}) {
   });
   const hamaConfig = resolveHamaConfig(env);
   const hamaService = hamaConfig.enabled ? createHamaService({
-    store: createFileStore(resolveHamaDbPath(env), { emptyState: emptyHamaState }),
+    store: domainStore(hamaMapper, resolveHamaDbPath(env), emptyHamaState),
     authenticate: (lease) => accounts.authenticateLease(lease, { purpose: 'hama' }),
     subscriptions: () => licenses.hamaSubscriptions(),
     config: hamaConfig,
     adminToken: licenseConfig.adminToken,
     now: options.now,
     log,
-    usageLogDir: resolveHamaUsageDir(env),
+    usageLog: db ? createPostgresUsageLog(db) : createFileUsageLog(resolveHamaUsageDir(env)),
   }) : null;
   const hama = hamaService && {
     ...hamaService,
     proxy: createHamaProxy({ hama: hamaService, config: hamaConfig, fetchImpl: options.fetchImpl, now: options.now, log }),
   };
   const rau = createRauService({
-    store: createFileStore(resolveRauDbPath(env), { emptyState: emptyRauState }),
+    store: domainStore(rauMapper, resolveRauDbPath(env), emptyRauState),
     // A revoked or expired key still authenticates here, so it hears rau_requires_basic instead of 401.
     authenticate: (lease) => accounts.authenticateLease(lease, { allowInactive: true, withRauPlan: true, purpose: 'rau' }),
     config: resolveRauConfig(env),
@@ -1045,6 +1051,7 @@ export function createSiteServer(env = process.env, options = {}) {
   });
   const feedback = createFeedbackService({
     dir: resolveFeedbackDir(env),
+    index: domainStore(feedbackMapper, path.join(resolveFeedbackDir(env), 'index.json'), emptyFeedbackIndex),
     proofKey: resolveFeedbackProofKey(env) || DEFAULT_FEEDBACK_PROOF_KEY,
     maxStorageBytes: resolveFeedbackMaxBytes(env),
     adminToken: licenseConfig.adminToken,
@@ -1092,13 +1099,38 @@ function databaseFromEnv(env, log) {
   return url ? createDatabase(url, { log }) : null;
 }
 
-/** Domains with a Postgres mapping and the JSON file each one replaces. */
+/**
+ * Domains with a Postgres mapping and the JSON files each one replaces. The Hama usage log
+ * (`hama-usage/*.jsonl`) goes with the hama domain: every billed call writes the ledger first.
+ * Avatars go with accounts; feedback attachments stay files.
+ */
 function mappedFiles(env) {
   return [
     [licensesMapper.domain, resolveLicensesDbPath(env)],
     [accountsMapper.domain, resolveAccountsDbPath(env)],
     [webhookLogMapper.domain, resolveWebhookLogDbPath(env)],
+    [hamaMapper.domain, resolveHamaDbPath(env)],
+    [hamaMapper.domain, resolveHamaUsageDir(env), { jsonl: true }],
+    [rauMapper.domain, resolveRauDbPath(env)],
+    [giftsMapper.domain, resolveGiftsDbPath(env)],
+    [waitlistMapper.domain, resolveWaitlistDbPath(env)],
+    [uniqueInstallsMapper.domain, resolveUniqueInstallsDbPath(env)],
+    [downloadsMapper.domain, resolveDownloadsDbPath(env)],
+    [feedbackMapper.domain, path.join(resolveFeedbackDir(env), 'index.json')],
   ];
+}
+
+/** Whether `file` is a non-empty file, or with `jsonl` a directory holding a non-empty `*.jsonl`. */
+async function holdsData(file, { jsonl = false } = {}) {
+  if (!jsonl) {
+    const info = await stat(file).catch(() => null);
+    return Boolean(info?.isFile() && info.size > 0);
+  }
+  const names = await readdir(file).catch(() => []);
+  for (const name of names.filter((n) => n.endsWith('.jsonl'))) {
+    if (await holdsData(path.join(file, name))) return true;
+  }
+  return false;
 }
 
 /**
@@ -1109,10 +1141,9 @@ export async function checkImported(db, env = process.env) {
   const { rows } = await db.query('SELECT domain FROM site_store_versions');
   const written = new Set(rows.map((row) => row.domain));
   const missing = [];
-  for (const [domain, file] of mappedFiles(env)) {
+  for (const [domain, file, options] of mappedFiles(env)) {
     if (written.has(domain)) continue;
-    const info = await stat(file).catch(() => null);
-    if (info?.isFile() && info.size > 0) missing.push(path.basename(file));
+    if (await holdsData(file, options)) missing.push(`${path.relative(resolveDataDir(env), file)}${options?.jsonl ? '/' : ''}`);
   }
   if (missing.length) {
     throw new Error(`DATABASE_URL is set but ${missing.join(', ')} was never imported into Postgres. Import it first, or unset DATABASE_URL to keep the JSON files.`);

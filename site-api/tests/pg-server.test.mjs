@@ -4,8 +4,11 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
+import { createDatabase } from '../db.mjs';
+import { createFeedbackProof } from '../feedback.mjs';
 import { generateLeaseKeyPair } from '../license-lease.mjs';
 import { checkImported, createSiteServer } from '../server.mjs';
+import { createUniqueInstallProof } from '../unique-installs.mjs';
 import { BASIC_ENV, basicPaid, signedGroblePost } from './fixtures/groble-basic.mjs';
 import { postgresSuite } from './helpers/postgres.mjs';
 
@@ -14,15 +17,16 @@ const ADMIN = 'admin-token-for-pg-server';
 const SECRET = 'whsec_test_pg_server';
 const PAIR = generateLeaseKeyPair();
 
-async function listen(t, db, directory) {
+async function listen(t, db, directory, log = () => {}) {
   const server = createSiteServer({
     RAU_SITE_DATA: directory,
     GROBLE_WEBHOOK_SECRET: SECRET,
     ADMIN_TOKEN: ADMIN,
     RAU_WAITLIST_ADMIN_TOKEN: ADMIN,
     LICENSE_SIGNING_PRIVATE_KEY: PAIR.privateKeyDerBase64,
+    HAMA_ENABLED: 'true',
     ...BASIC_ENV,
-  }, { db, log: () => {}, alertProvider: null, emailProvider: { name: 'test', async send() { return { status: 'sent' }; } } });
+  }, { db, log, alertProvider: null, emailProvider: { name: 'test', async send() { return { status: 'sent' }; } } });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   t.after(() => { server.closeAllConnections?.(); return new Promise((resolve) => server.close(resolve)); });
   return `http://127.0.0.1:${server.address().port}`;
@@ -34,7 +38,7 @@ async function tempDir(t) {
   return directory;
 }
 
-test('server with a database: licenses and the webhook log live in Postgres, the rest stays on files', async (t) => {
+test('server with a database: every store lives in Postgres, only feedback attachments are files', async (t) => {
   const db = pgSuite.db(t);
   if (!db) return;
   await pgSuite.reset();
@@ -61,18 +65,68 @@ test('server with a database: licenses and the webhook log live in Postgres, the
     if (!rejected.length) await new Promise((resolve) => setTimeout(resolve, 20));
   }
   assert.equal(rejected.length, 1);
-  assert.equal((await fetch(`${origin}/v1/waitlist`, { method: 'POST', body: JSON.stringify({ email: 'wait@example.com' }) })).status, 200);
+  const post = (route, body, headers = {}) => fetch(`${origin}${route}`, { method: 'POST', headers, body: JSON.stringify(body) });
+  assert.equal((await post('/v1/waitlist', { email: 'wait@example.com' })).status, 200);
+  const ping = { installId: '33333333-3333-4333-8333-333333333333', appVersion: '2.1.0', os: 'darwin', arch: 'arm64' };
+  assert.equal((await (await post('/v1/unique-installs', { ...ping, proof: createUniqueInstallProof(ping) })).json()).created, true);
+  assert.equal((await post('/v1/downloads', { platform: 'mac-arm64', version: 'latest' })).status, 200);
+  const report = { v: 1, installId: ping.installId, createdAt: new Date().toISOString(), message: '저장이 안 돼요', log: 'trace' };
+  const submitted = await (await post('/v1/feedback', { ...report, proof: createFeedbackProof(report) })).json();
+  assert.equal(submitted.ok, true);
+  const { keyId } = await activated.json();
+  assert.equal((await (await post('/v1/admin/hama/enroll', { keyId }, admin)).json()).plan.status, 'active');
 
-  const { rows } = await db.query('SELECT (SELECT count(*) FROM licenses) AS licenses, (SELECT count(*) FROM license_devices) AS devices, (SELECT count(*) FROM webhook_log) AS log');
-  assert.deepEqual(rows[0], { licenses: 1, devices: 1, log: 1 });
-  // Mapped domains never touch their files; unmapped ones still use theirs.
-  assert.deepEqual((await fs.readdir(directory)).sort(), ['waitlist.json']);
+  const { rows } = await db.query(`SELECT (SELECT count(*) FROM licenses) AS licenses, (SELECT count(*) FROM license_devices) AS devices,
+    (SELECT count(*) FROM webhook_log) AS log, (SELECT count(*) FROM waitlist_entries) AS waitlist, (SELECT count(*) FROM unique_installs) AS installs,
+    (SELECT count(*) FROM download_counts) AS downloads, (SELECT count(*) FROM feedback_reports) AS feedback, (SELECT count(*) FROM hama_plans) AS hama`);
+  assert.deepEqual(rows[0], { licenses: 1, devices: 1, log: 1, waitlist: 1, installs: 1, downloads: 1, feedback: 1, hama: 1 });
+  // No store touches its JSON file; a report's attachments are the only files.
+  assert.deepEqual(await fs.readdir(directory), ['feedback']);
+  assert.deepEqual(await fs.readdir(path.join(directory, 'feedback')), [submitted.id]);
 
   // Another process on the same database answers from what this one wrote.
   const other = await listen(t, await pgSuite.otherProcess(t), await tempDir(t));
   assert.equal((await (await fetch(`${other}/v1/license/by-ref?ref=hama-pro-1`)).json()).key, key);
   const customers = await (await fetch(`${other}/v1/admin/licenses/customers`, { headers: admin })).json();
   assert.deepEqual(customers.customers.map((c) => c.devices.length), [1]);
+  assert.deepEqual((await (await fetch(`${other}/v1/waitlist`, { headers: admin })).json()).entries.map((e) => e.email), ['wait@example.com']);
+  assert.deepEqual((await (await fetch(`${other}/v1/admin/hama`, { headers: admin })).json()).plans.map((p) => p.keyId), [keyId]);
+});
+
+test('activate and validate read the Hama plan inside the licenses update without stalling, even on a pool of two connections', async (t) => {
+  if (!pgSuite.db(t)) return;
+  await pgSuite.reset();
+  // A licenses update holds one connection while its Hama read takes the other; Hama, waitlist and
+  // download writes compete for the same two. A stall would end in the 10 s connect timeout, which
+  // the licenses service logs as an unreadable Hama plan.
+  const db = createDatabase(pgSuite.url, { searchPath: pgSuite.schema, max: 2, applicationName: 'site-api-test-two', log: () => {} });
+  t.after(() => db.close());
+  const logs = [];
+  const origin = await listen(t, db, await tempDir(t), (line) => logs.push(line));
+  const admin = { Authorization: `Bearer ${ADMIN}` };
+  const post = async (route, body, headers = {}) => {
+    const res = await fetch(`${origin}${route}`, { method: 'POST', headers, body: JSON.stringify(body) });
+    return { route, status: res.status, body: await res.json() };
+  };
+  // A lifetime key is eligible for Rau only through an active Hama plan, so its lease shows the read.
+  const { license } = (await post('/v1/admin/licenses/issue', {}, admin)).body;
+  const device = { key: license.key, deviceId: 'device-pg-pool-01', platform: 'darwin', appVersion: '2.1.0' };
+  assert.equal((await post('/v1/license/activate', device)).body.rau.eligible, false);
+  assert.equal((await post('/v1/admin/hama/enroll', { keyId: license.keyId }, admin)).status, 200);
+
+  const answers = await Promise.all(Array.from({ length: 8 }, (_, i) => [
+    post('/v1/license/validate', device),
+    post(i % 2 ? '/v1/admin/hama/disable' : '/v1/admin/hama/enroll', { keyId: license.keyId }, admin),
+    post('/v1/waitlist', { email: `pool${i}@example.com` }),
+    post('/v1/downloads', { platform: 'mac-arm64', version: 'latest' }),
+  ]).flat());
+  assert.deepEqual(answers.filter((answer) => answer.status !== 200), []);
+  assert.deepEqual(logs.filter((line) => line.includes('unreadable')), []);
+
+  assert.equal((await post('/v1/admin/hama/enroll', { keyId: license.keyId }, admin)).status, 200);
+  assert.equal((await post('/v1/license/validate', device)).body.rau.eligible, true);
+  assert.equal((await post('/v1/admin/hama/disable', { keyId: license.keyId }, admin)).status, 200);
+  assert.equal((await post('/v1/license/validate', device)).body.rau.eligible, false);
 });
 
 test('startup refuses Postgres while a mapped JSON file was never imported', async (t) => {
@@ -85,5 +139,20 @@ test('startup refuses Postgres while a mapped JSON file was never imported', asy
   await fs.writeFile(path.join(directory, 'webhook-log.json'), '');
   await assert.rejects(checkImported(db, { RAU_SITE_DATA: directory }), /licenses\.json was never imported/);
   await db.query("INSERT INTO site_store_versions (domain, version) VALUES ('licenses', 1)");
+  await checkImported(db, { RAU_SITE_DATA: directory });
+
+  // The other stores, the feedback index and the Hama usage log (which goes with the hama domain).
+  await fs.mkdir(path.join(directory, 'feedback', 'fb_leftover0000'), { recursive: true });
+  await fs.mkdir(path.join(directory, 'hama-usage'));
+  await fs.writeFile(path.join(directory, 'hama-usage', 'lic_a.jsonl'), '');
+  await checkImported(db, { RAU_SITE_DATA: directory });
+  await fs.writeFile(path.join(directory, 'hama-usage', 'lic_a.1.jsonl'), '{"at":"2026-10-31T00:00:00.000Z"}\n');
+  await fs.writeFile(path.join(directory, 'feedback', 'index.json'), '{"reports":[]}');
+  await fs.writeFile(path.join(directory, 'gifts.json'), '{"events":{}}');
+  await assert.rejects(checkImported(db, { RAU_SITE_DATA: directory }), (error) => {
+    assert.match(error.message, /hama-usage\/, gifts\.json, feedback\/index\.json was never imported/);
+    return true;
+  });
+  await db.query("INSERT INTO site_store_versions (domain, version) VALUES ('hama', 1), ('gifts', 1), ('feedback', 1)");
   await checkImported(db, { RAU_SITE_DATA: directory });
 });
