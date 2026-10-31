@@ -24,6 +24,8 @@ test('setup gates provider connection by account and plan, and resumes after che
     const step = (name: string) => page.waitForSelector(`.rhwp-setup-dialog[data-step="${name}"]`, { visible: true });
     const start = async (account: string) => {
       await page.goto(`http://127.0.0.1:${address.port}/?reset=1&initial-setup=1&account=${account}`);
+      await step('intro');
+      await page.click('.rhwp-setup-primary');
       await step('theme');
       await page.click('.rhwp-setup-dot[aria-label="시작 방법"]');
       await step('welcome');

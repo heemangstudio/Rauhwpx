@@ -1,5 +1,5 @@
 /**
- * 첫 실행 설정 — 화면·글꼴 뒤 무료 편집과 AI 경로를 나누고, AI 는 로그인·요금제·선택적 연결 순서로 안내한다.
+ * 첫 실행 설정 — 안내 카드와 화면·글꼴 뒤 무료 편집과 AI 경로를 나누고, AI 는 로그인·요금제·선택적 연결 순서로 안내한다.
  *
  * 화면에는 고를 것만 두고 설명은 하마의 말풍선 한 줄로 한다. 실제 로그인·설치는 설정 모달이
  * 맡는다. 문체 보정은 여기서 묻지 않고 첫 대화 뒤 사이드바의 작은 칩이 권한다.
@@ -198,6 +198,14 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   skip.appendChild(createIcon('close'));
   head.append(hippo.element, skip);
 
+  // ── 안내: 무엇을 하는지와 걸리는 시간을 먼저 알린다. ──
+  const introPanel = el('div', 'rhwp-setup-panel rhwp-setup-intro');
+  introPanel.dataset.step = 'intro';
+  introPanel.append(
+    el('h2', 'rhwp-setup-upgrade-title', '처음 설정을 시작할게요'),
+    el('p', 'rhwp-setup-upgrade-copy', '앱을 사용하기 위해서는 몇 가지를 설정해야 해요. 1분 정도 걸려요'),
+  );
+
   // ── 테마 ──
   const themePanel = el('div', 'rhwp-setup-panel');
   themePanel.dataset.step = 'theme';
@@ -358,14 +366,14 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   const welcomePanel = el('div', 'rhwp-setup-panel rhwp-setup-paths');
   const freePath = button('rhwp-setup-path');
   freePath.dataset.path = 'free';
-  freePath.append(createIcon('document'), el('strong', '', '문서부터 시작'), el('span', '', '로그인 없이 무료로 편집하세요.'));
+  freePath.append(createIcon('document'), el('strong', '', '문서부터 시작'), el('span', '', 'AI 편집 기능 없이 무료로 문서만 편집하세요'));
   freePath.addEventListener('click', finish);
   const aiPath = button('rhwp-setup-path');
   aiPath.dataset.path = 'ai';
   const routeNotice = el('p', 'rhwp-setup-notice');
   routeNotice.setAttribute('role', 'status');
   routeNotice.hidden = true;
-  aiPath.append(createIcon('sparkles'), el('strong', '', 'AI와 함께 시작'), el('span', '', '로그인하고 나에게 맞는 요금제를 고르세요.'));
+  aiPath.append(createIcon('botAntenna'), el('strong', '', 'AI와 함께 시작'), el('span', '', '남들보다 빠르고 정확하게 문서를 편집하세요'));
   aiPath.addEventListener('click', () => {
     if (!accountApi && !deps.plan?.status()?.signedIn) {
       routeNotice.textContent = 'AI 설정은 데스크톱 앱에서 시작할 수 있어요.';
@@ -409,9 +417,9 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   );
   const modelsHint = el('p', 'rhwp-setup-hint', '연결은 나중에 설정에서도 할 수 있어요.');
   modelsPanel.append(modelsHint);
-  body.append(themePanel, fontsPanel, welcomePanel, accountElement, plansPanel, modelsPanel, rauPanel);
+  body.append(introPanel, themePanel, fontsPanel, welcomePanel, accountElement, plansPanel, modelsPanel, rauPanel);
   const panels: Record<SetupStep, HTMLElement> = {
-    theme: themePanel, fonts: fontsPanel, welcome: welcomePanel,
+    intro: introPanel, theme: themePanel, fonts: fontsPanel, welcome: welcomePanel,
     account: accountElement, plans: plansPanel, models: modelsPanel, rau: rauPanel,
   };
 
@@ -502,6 +510,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   }
 
   function lineFor(step: SetupStep): string {
+    if (step === 'intro') return HIPPO_LINES.intro;
     if (step === 'theme') return HIPPO_LINES.theme;
     if (step === 'models') {
       return configuredAgents().length > 0 ? HIPPO_LINES.modelConnected : HIPPO_LINES.models;
@@ -524,7 +533,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     }
     dialog.dataset.step = step;
     const labels: Record<SetupStep, string> = {
-      theme: '화면 테마', models: 'AI 연결', fonts: '글꼴', account: '계정',
+      intro: '안내', theme: '화면 테마', models: 'AI 연결', fonts: '글꼴', account: '계정',
       welcome: '시작 방법', plans: '요금제', rau: 'Rau 소개',
     };
     dots.replaceChildren(...steps.map((name, index) => {
@@ -543,7 +552,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     // 로그인하지 않고 넘어가면 무료로 쓴다.
     const leave = step === 'welcome' || step === 'plans' || (step === 'account' && !accountPanel?.signedIn());
     primary.hidden = step === 'welcome';
-    primary.textContent = leave ? '무료로 시작' : step === 'models' ? '연결 건너뛰기' : last ? '홈으로' : '다음';
+    primary.textContent = step === 'intro' ? '시작하기' : leave ? '무료로 시작' : step === 'models' ? '연결 건너뛰기' : last ? '홈으로' : '다음';
     if (step === 'models' && configuredAgents().length > 0) primary.textContent = last ? '홈으로' : '다음';
     primary.setAttribute('aria-label', primary.textContent);
     primary.dataset.quiet = leave || step === 'models' ? 'true' : 'false';

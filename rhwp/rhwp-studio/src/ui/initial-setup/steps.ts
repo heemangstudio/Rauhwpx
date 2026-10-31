@@ -23,13 +23,14 @@ import {
   isLocalFontAccessSupported,
 } from '../../core/local-fonts.ts';
 
-export type SetupStep = 'theme' | 'fonts' | 'welcome' | 'account' | 'plans' | 'models' | 'rau';
+export type SetupStep = 'intro' | 'theme' | 'fonts' | 'welcome' | 'account' | 'plans' | 'models' | 'rau';
 /** missing: 데스크톱에서 색인에 한컴 글꼴이 없다. discover: 브라우저에서 아직 못 찾았다. */
 export type FontStepKind = 'missing' | 'discover';
 
 export const HANCOM_OFFICE_URL = 'https://www.hancom.com/product/office/officeViewer';
 
 export const HIPPO_LINES = {
+  intro: '반가워요!',
   theme: '화면은 어떤 게 편해요?',
   welcome: '어떻게 시작할까요?',
   plans: '나에게 맞는 요금제를 골라 주세요.',
@@ -89,7 +90,7 @@ export function planSteps(
   fontStep: FontStepKind | null,
   options: { ai?: boolean; account?: boolean; signedIn?: boolean; tier?: PlanTier } = {},
 ): SetupStep[] {
-  const steps: SetupStep[] = ['theme'];
+  const steps: SetupStep[] = ['intro', 'theme'];
   if (fontStep) steps.push('fonts');
   steps.push('welcome');
   if (!options.ai) return steps;

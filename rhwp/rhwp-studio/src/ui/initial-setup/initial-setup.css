@@ -121,6 +121,19 @@
   outline-offset: var(--ag-focus-offset);
 }
 
+/* ── 안내 카드 ── */
+
+.rhwp-setup-intro {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 0 12px;
+}
+
+.rhwp-setup-intro .rhwp-setup-upgrade-copy {
+  max-width: none;
+}
+
 /* ── 하마와 말풍선 ── */
 
 .rhwp-setup-head {
@@ -799,19 +812,29 @@
   display: none;
 }
 
-.rhwp-setup-paths,
 .rhwp-setup-plans {
   display: flex;
   flex-direction: column;
   gap: 12px;
 }
 
-.rhwp-setup-path {
+/* 두 시작 방법을 나란히 둔다. 알림은 두 칸을 함께 쓴다. */
+.rhwp-setup-paths {
   display: grid;
-  grid-template-columns: 28px 1fr;
-  align-items: center;
-  gap: 6px 14px;
-  padding: 18px;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+}
+
+.rhwp-setup-paths .rhwp-setup-notice {
+  grid-column: 1 / -1;
+}
+
+.rhwp-setup-path {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  min-width: 0;
+  padding: 18px 16px;
   border: 1px solid var(--n-ink-hairline);
   border-radius: var(--ag-r-card);
   background: var(--n-ink-fill-soft);
@@ -823,13 +846,14 @@
 }
 
 .rhwp-setup-path > svg {
-  grid-row: span 2;
   width: 24px;
   height: 24px;
+  margin: 0 0 14px -4px;
   color: var(--n-ink-secondary);
 }
 
 .rhwp-setup-path strong {
+  margin-bottom: 6px;
   font-size: 15px;
   font-weight: 600;
 }
