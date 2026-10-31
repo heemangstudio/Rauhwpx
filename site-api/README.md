@@ -1,6 +1,6 @@
 # site-api
 
-Small Node service behind the website beta form, the desktop install counter, accounts, licenses and issue reports. It has no dependencies and stores everything as files in one data directory.
+Small Node service behind the website beta form, the desktop install counter, accounts, licenses and issue reports. Its one dependency is `pg`. Without `DATABASE_URL` it stores everything as files in one data directory; with it, licenses, accounts and the webhook log live in Postgres (see Data).
 
 ## Routes
 
@@ -154,7 +154,7 @@ HamaEditor accounts sign in with WorkOS AuthKit (email magic link on the AuthKit
 - `POST /v1/account/redeem {key}` links a key the user typed (any spacing or case; the `HAMA-` prefix is optional) → `{ok, alreadyLinked, license, ...account}`, where `license` is the key as `licenses` lists it. Errors: 400 `invalid_format`, 404 `invalid_key`, 403 `revoked`, 409 `key_linked_elsewhere`. 20 per account per hour (429 `rate_limited`, failures count).
 - `POST /v1/account/claim {orderId, email}` links the key of a Groble order bought with another email: `orderId` is the Groble order number (`merchantUid`) and `email` the buyer email on that order (any case). Same answer as redeem. An unknown order, a wrong email or an order without a key is 404 `order_not_found` (one code, so neither can be probed); a held order is 409 `order_not_ready`; also 403 `revoked` and 409 `key_linked_elsewhere`. 10 per account per hour.
 - `POST /v1/account/profile {name}` → `{ok, account}`. 1–30 characters, no control characters (400 `name_invalid`). A name the user set is never replaced by a later sign-in.
-- `PUT /v1/account/avatar` with the picture as the raw body (`Content-Type` `image/jpeg`, `image/png` or `image/webp`, at most 1 MiB) → `{ok, avatar:{rev, type, bytes}}`. The first bytes must match the type. Errors: 413 `too_large` (a body declared past 2 MiB is refused unread), 415 `unsupported_type`, 429 `rate_limited` (30 per account per hour). It is stored as `avatars/<accountId>.<ext>` (temp file and rename, mode 0600) and `rev` goes up by one on every upload, also after a removal. `GET /v1/account/avatar` → the bytes with `Content-Type`, `ETag: "<rev>"` (304 for a matching `If-None-Match`) and `Cache-Control: private, no-cache`; 404 `no_avatar`. `POST /v1/account/avatar/remove` → `{ok}`.
+- `PUT /v1/account/avatar` with the picture as the raw body (`Content-Type` `image/jpeg`, `image/png` or `image/webp`, at most 1 MiB) → `{ok, avatar:{rev, type, bytes}}`. The first bytes must match the type. Errors: 413 `too_large` (a body declared past 2 MiB is refused unread), 415 `unsupported_type`, 429 `rate_limited` (30 per account per hour). It is stored as `avatars/<accountId>.<ext>` (temp file and rename, mode 0600), or in `account_avatars` with `DATABASE_URL`, and `rev` goes up by one on every upload, also after a removal. `GET /v1/account/avatar` → the bytes with `Content-Type`, `ETag: "<rev>"` (304 for a matching `If-None-Match`) and `Cache-Control: private, no-cache`; 404 `no_avatar`. `POST /v1/account/avatar/remove` → `{ok}`.
 - `POST /v1/account/stats {batchId, agentSessions, documentsEdited}` → `{ok, stats}` adds the app's activity counts (integers 0–1000; `batchId` `[A-Za-z0-9_-]{8,64}`). A batch id among the account's last 50 is a no-op, so a retried flush counts once. 400 `invalid` with `field`.
 - `POST /v1/account/delete {confirm}` → `{ok}`. `confirm` is the account email (any case; 400 `confirm_mismatch`). While a linked key is live and auto-renewing (`subscription.autoRenew` not false and not terminated) it answers 409 `subscription_active {manageUrl}` (`GROBLE_PAYMENT_FIX_URL`) and changes nothing; a cancel request, a terminated subscription, a lifetime key or a gift key does not block. Then, without holding both locks: the keys are unlinked (`unlinkedBy: 'delete'`, so the same email links them to a new account), the account with its devices, sessions, picture and stats is removed, and the WorkOS user is deleted best effort (a failure is logged and the answer is still 200). Hama ledgers stay on their license keys.
 - The account payload: `account {id, email, name, avatar, provider, createdAt}`, `plan {tier, keyId, edition, plan, expiresAt, autoRenew, paymentFailed, paymentGraceEndsAt, manageUrl, rau:{eligible}}`, `licenses` (masked keys, primary first), `devices` (newest first, `current` marks the caller), `deviceLimit`, `stats {agentSessions, documentsEdited, since, hama}`, `lease` and `leaseExpiresAt`. `stats.hama` is `{usedUsd, allowanceUsd, periodEndsAt, calls}` for the current billing period of the account's Hama key (the key Hama itself would use), and `null` without an active plan or with `HAMA_ENABLED` off. Times are epoch ms except `account.createdAt` (ISO).
@@ -221,11 +221,23 @@ Open owner calls, deliberately not decided in code: which plan and term each bat
 
 All files live in `RAU_SITE_DATA`. On Railway it defaults to the `/data` volume; locally it defaults to the current directory.
 
+With `DATABASE_URL` set, these files move to Postgres and the server never reads or writes them (`migrations/001_licenses_accounts.sql` has the schema):
+
+| File | Tables |
+| --- | --- |
+| `licenses.json` | `licenses`, `license_subscriptions`, `license_devices`, `groble_orders` (one row per `merchantUid`), `groble_refs`, `groble_webhook_deliveries` (by idempotency key), `grandfathered_installs`. `keyIndex` is derived from `licenses.key` |
+| `webhook-log.json` | `webhook_log` |
+| `accounts.json` | `accounts`, `account_devices`, `account_sessions`, `account_logins`, `account_grants`, `account_email_index` (`byEmail`), `account_workos_index` (`byWorkosUser`) |
+| `avatars/` | `account_avatars` (bytes, one row per account) |
+
+Every other file stays on the volume in both modes. Each service writes only its own tables, in one transaction per change under a per-domain advisory lock, with `site_store_versions` telling processes when to reload. Foreign keys stay inside one domain. A record's fields that have no column, or whose value does not fit theirs exactly (a time that is not a canonical ISO string, an explicit `null`), are kept verbatim in its `extra` json column, so a table row reads back as exactly the JSON it came from. `schema_migrations` records the applied migrations, and `site_meta` holds markers such as a finished import.
+
 ## Variables
 
 | Name | Purpose |
 | --- | --- |
 | `RAU_SITE_DATA` | Data directory (`/data` on Railway) |
+| `DATABASE_URL` | Optional `postgres://` URL. Set, licenses, accounts and the webhook log run on Postgres (Data above); unset, everything stays on files. `sslmode` follows libpq (`require` encrypts without checking the certificate, `verify-full` checks it). On startup the server migrates the database, and refuses to start while a moved JSON file still holds data that was never imported |
 | `RAU_WAITLIST_ADMIN_TOKEN` | Bearer token for reading the waitlist |
 | `RAU_WAITLIST_TELEGRAM_BOT_TOKEN`, `RAU_WAITLIST_TELEGRAM_CHAT_ID` | Optional Telegram message for each new signup and issue report |
 | `RAU_UNIQUE_INSTALL_PING_KEY` | Optional override of the desktop ping key |
@@ -292,9 +304,14 @@ All files live in `RAU_SITE_DATA`. On Railway it defaults to the `/data` volume;
 ## Run and deploy
 
 ```sh
+npm ci
 npm test
 npm start          # http://127.0.0.1:5180
 ```
+
+`npm test` (`scripts/test.mjs`) runs every `tests/*.test.mjs`. The Postgres tests use `SITE_API_TEST_DATABASE_URL`, one throwaway schema per test file. Without it the script starts a temporary cluster with `initdb` and `pg_ctl` from `PATH`, Homebrew's `postgresql@*` or `/usr/lib/postgresql/*` on a free port, and removes it afterwards. With no Postgres binaries those tests skip; `SITE_API_REQUIRE_POSTGRES=1` (set in CI, with a `postgres:17` service) makes them fail instead.
+
+Production stays on the JSON files until `DATABASE_URL` is set on `rau-credits`. Do not set it before the files are imported into Postgres: the server would refuse to start. With `DATABASE_URL` the server finishes its requests and closes the pool on SIGTERM, and `GET /healthz` answers `{ok: true, storage: 'postgres'}` (`'files'` without it).
 
 Production is the Railway project `rau-credits`, service `rau-credits` (`https://rau-credits-production.up.railway.app`), with a volume mounted at `/data`. Deploys go through the GitHub Actions workflow below. Keep the service's GitHub source disconnected (Railway → rau-credits → Settings → Source) so a merge deploys once. For a manual deploy, link this directory once with `railway link` and run `railway up` from `site-api/`. `railway.toml` sets the start command and the `/healthz` health check.
 
@@ -308,4 +325,4 @@ GROBLE_SIGNATURE_MIN_AMOUNT=29000
 
 Leave `GROBLE_SUBSCRIPTION_PRODUCT_IDS=GLJFC9` and `GROBLE_EXPECTED_PRICE=9900`. Leave `GROBLE_ONETIME_PRODUCT_IDS=uRshdR` so old refunds still resolve. Do not start the Groble sale from this repo.
 
-On main, `.github/workflows/site-api-deploy.yml` does this automatically for any change under `site-api/`: it runs the tests, runs `railway up site-api --path-as-root --service rau-credits --environment production --ci` with the `RAILWAY_TOKEN` repository secret (a Railway **project** token for the production environment), then waits up to 10 minutes for `GET /v1/groble/webhook` to answer 200 (404 = the old deployment is still live, 503 = webhook secret missing) and checks that `/v1/license/public-key` answers 200 (503 = signing key missing). Roll back with Railway → service → Deployments → previous deployment → Redeploy; `licenses.json` on the volume is untouched by a rollback.
+On main, `.github/workflows/site-api-deploy.yml` does this automatically for any change under `site-api/`: it runs the tests (with a throwaway `postgres:17` service for the Postgres tests), runs `railway up site-api --path-as-root --service rau-credits --environment production --ci` with the `RAILWAY_TOKEN` repository secret (a Railway **project** token for the production environment), then waits up to 10 minutes for `GET /v1/groble/webhook` to answer 200 (404 = the old deployment is still live, 503 = webhook secret missing) and checks that `/v1/license/public-key` answers 200 (503 = signing key missing). Roll back with Railway → service → Deployments → previous deployment → Redeploy; `licenses.json` on the volume is untouched by a rollback. Once `DATABASE_URL` is set, roll back only to a build that reads it: an older one would serve the stale JSON files. A build that finds a migration newer than its own logs it and starts.
