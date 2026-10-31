@@ -118,11 +118,11 @@ export function daysLeft(endsAt: number, now = Date.now()): number {
   return Math.max(0, Math.ceil((endsAt - now) / DAY_MS));
 }
 
-/** 예: 무료 체험 · 5일 남음 */
+/** 예: 무료 체험 5일 남음 */
 export function trialLine(trial: AccountTrial, now = Date.now()): string {
   if (trial.state !== 'active' || !trial.endsAt) return '';
   const left = daysLeft(trial.endsAt, now);
-  return left > 0 ? `무료 체험 · ${left}일 남음` : '무료 체험 · 오늘 끝나요';
+  return left > 0 ? `무료 체험 ${left}일 남음` : '무료 체험 오늘 끝나요';
 }
 
 /** 체험을 시작할 수 있는 계정. 이미 Rau 이면 권하지 않는다. */

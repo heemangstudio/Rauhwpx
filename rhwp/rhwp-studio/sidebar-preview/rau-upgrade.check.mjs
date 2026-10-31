@@ -42,7 +42,7 @@ export async function checkRauUpgrade({ page, open, screenshot }) {
   assert.equal(plan.upgrade, false);
   assert.match(plan.text, /\$5\.20 남음 · \d+월 \d+일 초기화/);
   await open('reset=1&rau=trial');
-  assert.match((await rauRow()).text, /무료 체험 · \$1\.35 남음 · \d+월 \d+일까지/);
+  assert.match((await rauRow()).text, /무료 체험 \d+월 \d+일까지/);
   await open('reset=1&rau=exhausted');
   assert.match((await rauRow()).text, /\d+월 \d+일까지 크레딧 소진/);
 }

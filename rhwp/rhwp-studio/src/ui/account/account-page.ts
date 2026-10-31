@@ -8,10 +8,9 @@ import loginNeurons from './login-neurons.txt?raw';
 import { createIcon } from '../agent-sidebar/icons.ts';
 import { createSheetFrame } from '../agent-sidebar/sheet.ts';
 import { createHamaMark } from '../plan/hama-mark.ts';
-import { createHamaScene } from '../plan/hama-scene.ts';
-import { PLAN_CYCLES, PLAN_FAMILY_LABEL, planPrice, planSkuAvailable, upgradeFamilies, won, type PlanFamily } from '../plan/plan-offers.ts';
+import { upgradeFamilies, type PlanFamily } from '../plan/plan-offers.ts';
 import { sharedPlanStore, type PlanStore } from '../plan/plan-store.ts';
-import type { PlanSku } from '../plan/plan-types.ts';
+import { openPlanCard } from '../plan/upgrade-card.ts';
 import {
   ACCOUNT_TIER_LABEL,
   deleteConfirmMatches,
@@ -177,7 +176,11 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
   const avatarButton = button('acct-profile-avatar');
   avatarButton.setAttribute('aria-label', '사진 변경');
   const avatar = createAvatar('acct-avatar-large');
-  avatarButton.append(avatar.element);
+  avatarButton.title = '사진 변경';
+  const avatarBadge = el('span', 'acct-avatar-badge');
+  avatarBadge.setAttribute('aria-hidden', 'true');
+  avatarBadge.append(createIcon('pencil'));
+  avatarButton.append(avatar.element, avatarBadge);
   const fileInput = el('input', 'acct-file');
   fileInput.type = 'file';
   fileInput.accept = 'image/*';
@@ -207,20 +210,20 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
   const emailText = el('span', 'acct-email');
   const offline = el('span', 'acct-offline', '오프라인');
   emailRow.append(emailText, offline);
-  const photoActions = el('div', 'acct-photo-actions');
-  const photoChange = button('acct-link', '사진 변경');
-  const photoRemove = button('acct-link', '사진 삭제');
-  photoActions.append(photoChange, photoRemove);
+  const profilePlan = el('p', 'acct-profile-plan');
   const photoError = alertLine();
-  profileCopy.append(nameRow, nameForm, nameError, emailRow, photoActions, photoError);
+  profileCopy.append(nameRow, nameForm, nameError, emailRow, profilePlan, photoError);
   profile.append(avatarButton, profileCopy, fileInput);
 
   // ── 요금제 ──────────────────────────────────────────
   const planSection = section('plan', '요금제');
   const planHead = el('div', 'acct-plan-head');
   const planName = el('p', 'acct-plan-name');
+  const planActions = el('div', 'acct-plan-actions');
+  const upgrade = button('acct-btn acct-btn-primary acct-upgrade', '업그레이드');
   const manage = button('acct-btn', '구독 관리');
-  planHead.append(planName, manage);
+  planActions.append(upgrade, manage);
+  planHead.append(planName, planActions);
   const planTerm = el('p', 'acct-meta acct-plan-term');
   // Rau 크레딧: 남은 금액, 막대, 초기화 날짜(체험은 남은 날).
   const credits = el('div', 'acct-rau-credits');
@@ -238,9 +241,8 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
   planAlertText.setAttribute('role', 'alert');
   const fixPayment = button('acct-btn acct-btn-primary', '결제 수단 바꾸기');
   planAlert.append(planAlertText, fixPayment);
-  const offers = el('div', 'acct-offers');
   const planError = alertLine();
-  planSection.root.append(planHead, planTerm, credits, planAlert, offers, planError);
+  planSection.root.append(planHead, planTerm, credits, planAlert, planError);
 
   // ── 사용량 ──────────────────────────────────────────
   const statsSection = section('stats', '사용량');
@@ -256,7 +258,7 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
   devicesSection.root.append(deviceList, deviceError);
 
   // ── 라이선스 ────────────────────────────────────────
-  const licensesSection = section('licenses', '라이선스');
+  const licensesSection = section('licenses', '프로모션 코드');
   const licenseList = el('ul', 'acct-license-list');
   const localKeyNote = el('p', 'acct-meta acct-local-key');
   const redeemForm = el('form', 'acct-inline-form acct-redeem');
@@ -266,9 +268,9 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
   redeemInput.autocomplete = 'off';
   redeemInput.spellcheck = false;
   redeemInput.setAttribute('autocapitalize', 'characters');
-  redeemInput.placeholder = 'HAMA-…';
-  redeemInput.setAttribute('aria-label', '라이선스 키');
-  const redeemSubmit = el('button', 'acct-btn', '키 등록');
+  redeemInput.placeholder = '프로모션 코드';
+  redeemInput.setAttribute('aria-label', '프로모션 코드');
+  const redeemSubmit = el('button', 'acct-btn', '등록');
   redeemSubmit.type = 'submit';
   redeemForm.append(redeemInput, redeemSubmit);
   const redeemError = alertLine();
@@ -315,9 +317,9 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
   // ── 상태 ────────────────────────────────────────────
   let nameEditing = false;
   let nameBusy = false;
-  let photoBusy: 'set' | 'remove' | null = null;
-  let checkoutBusy: PlanSku | null = null;
-  let trialBusy = false;
+  let photoBusy = false;
+  /** 올라갈 요금제가 하나면 카드에서 그 칸을 짚는다. */
+  let upgradeFocus: PlanFamily | undefined;
   let deviceConfirm: string | null = null;
   let deviceBusy: string | null = null;
   let redeemBusy = false;
@@ -325,6 +327,7 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
   let signOutBusy = false;
   let manageBusy = false;
   let deleting = false;
+  let hasShownProfile = false;
 
   const status = (): AccountStatus | null => store.status();
 
@@ -398,59 +401,13 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
 
   async function changePhoto(file: File): Promise<void> {
     if (photoBusy) return;
-    photoBusy = 'set';
+    photoBusy = true;
     say(photoError, '');
     render();
     const prepared = await prepareAvatar(file);
     const message = prepared.ok ? await run(() => api.setAvatar(prepared.bytes, prepared.type)) : prepared.message;
-    photoBusy = null;
+    photoBusy = false;
     say(photoError, message);
-    render();
-  }
-
-  async function removePhoto(): Promise<void> {
-    if (photoBusy) return;
-    photoBusy = 'remove';
-    say(photoError, '');
-    render();
-    const message = await run(() => api.removeAvatar());
-    photoBusy = null;
-    say(photoError, message);
-    render();
-  }
-
-  async function checkout(sku: PlanSku): Promise<void> {
-    const planApi = plan?.api;
-    if (!planApi || checkoutBusy) return;
-    checkoutBusy = sku;
-    say(planError, '');
-    render();
-    try {
-      const result = await planApi.startCheckout(sku);
-      if (result.code === 'sign_in_required') say(planError, '먼저 로그인해 주세요.');
-      else if (!result.ok && result.code === 'not_available') say(planError, '아직 살 수 없는 요금제예요.');
-    } catch {
-      say(planError, '결제 페이지를 열지 못했어요.');
-    } finally {
-      checkoutBusy = null;
-      render();
-    }
-  }
-
-  async function startTrial(): Promise<void> {
-    if (trialBusy || !api.startRauTrial) return;
-    trialBusy = true;
-    say(planError, '');
-    render();
-    const message = await run(() => api.startRauTrial!());
-    trialBusy = false;
-    say(planError, message);
-    render();
-  }
-
-  async function cancelCheckout(control: HTMLButtonElement): Promise<void> {
-    control.disabled = true;
-    try { await plan?.api?.cancelCheckout(); } catch { /* 다음 상태가 다시 그린다 */ }
     render();
   }
 
@@ -482,7 +439,7 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
     redeemBusy = false;
     if (!message) redeemInput.value = '';
     say(redeemError, message);
-    say(redeemNote, alreadyLinked ? '이미 이 계정에 있는 키예요.' : '');
+    say(redeemNote, alreadyLinked ? '이미 이 계정에 등록되어 있어요.' : '');
     render();
     if (message) redeemInput.focus();
   }
@@ -518,89 +475,25 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
   }
 
   // ── 그리기 ──────────────────────────────────────────
+  function planMark(tier: AccountStatus['plan']['tier']): Element[] {
+    if (tier === 'hama') return [createHamaMark('acct-hama-mark')];
+    return tier === 'rau' ? [rauMark()] : [];
+  }
+
   function planNameNode(current: AccountStatus): DocumentFragment {
     const fragment = document.createDocumentFragment();
     const tier = current.plan.tier;
-    if (tier === 'hama') fragment.append(createHamaMark('acct-hama-mark'));
-    if (tier === 'rau') fragment.append(rauMark());
-    fragment.append(el('span', 'acct-plan-current', '현재 요금제'), el('span', 'acct-plan-tier', ACCOUNT_TIER_LABEL[tier]));
+    fragment.append(...planMark(tier));
+    fragment.append(el('span', 'acct-plan-tier', ACCOUNT_TIER_LABEL[tier]));
     const cycle = planCycleLabel(current.plan);
     if (cycle) fragment.append(el('span', 'acct-plan-cycle', cycle));
     return fragment;
-  }
-
-  /** 결제를 기다리는 동안 결제 단추 자리에 둔다. */
-  function checkoutWait(): HTMLElement[] {
-    const waiting = el('span', 'acct-offer-wait');
-    waiting.setAttribute('role', 'status');
-    const spin = el('span', 'ui-spinner');
-    spin.setAttribute('aria-hidden', 'true');
-    waiting.append(spin, el('span', '', '결제 확인 중'));
-    const cancel = button('acct-btn acct-btn-quiet', '취소');
-    cancel.addEventListener('click', () => { void cancelCheckout(cancel); });
-    return [waiting, cancel];
   }
 
   function rauMark(): HTMLElement {
     const mark = el('span', 'acct-rau-mark');
     mark.setAttribute('aria-hidden', 'true');
     return mark;
-  }
-
-  /** 두 요금제를 같은 크기로 비교하고 Hama 를 먼저 둔다. Rau 칸은 체험을 쓸 수 있으면 체험을 먼저 권한다. */
-  function offerRow(family: PlanFamily, current: AccountStatus): HTMLElement {
-    const planStatus = plan?.status() ?? null;
-    const { monthly, yearly } = PLAN_CYCLES[family];
-    const row = el('div', `acct-offer${family === 'hama' ? ' acct-hama-offer' : ''}`);
-    row.dataset.plan = family;
-    const head = el('div', 'acct-offer-head');
-    const name = el('h3', 'acct-offer-name', PLAN_FAMILY_LABEL[family]);
-    if (family === 'rau') name.prepend(rauMark());
-    head.append(name);
-    if (family === 'hama') head.append(createHamaScene('acct-hama-scene'));
-    const copy = el('p', 'acct-offer-description', family === 'hama'
-      ? '쓰던 AI 계정을 연결해 에이전트를 써요.'
-      : 'Hama의 모든 기능에 Rau 모드를 더해요.');
-    const monthlyPrice = planPrice(planStatus, monthly);
-    const yearlyPrice = planPrice(planStatus, yearly);
-    const price = el('p', 'acct-offer-price');
-    if (monthlyPrice !== null) price.append(el('strong', '', won(monthlyPrice)), el('span', '', ' / 월'));
-    const annual = el('p', 'acct-offer-annual', yearlyPrice === null ? '' : `연간 ${won(yearlyPrice)}`);
-    const actions = el('div', 'acct-offer-actions');
-    const pending = planStatus?.pendingCheckout?.sku;
-    const trial = family === 'rau' && !!api.startRauTrial && trialAvailable(current);
-    if (pending === monthly || pending === yearly) actions.append(...checkoutWait());
-    else {
-      if (trial) {
-        const start = button('acct-btn acct-btn-primary acct-offer-trial', trialButtonLabel(current.trial));
-        start.disabled = trialBusy || checkoutBusy !== null || pending != null;
-        if (trialBusy) setBusy(start, true);
-        start.addEventListener('click', () => { void startTrial(); });
-        actions.append(start);
-      }
-      const skus = [monthly, yearly].filter((sku) => planSkuAvailable(planStatus, sku));
-      if (skus.length === 0 && !trial) {
-        const soon = button('acct-btn', '곧 출시');
-        soon.disabled = true;
-        actions.append(soon);
-      }
-      for (const sku of skus) {
-        const primary = sku === monthly && !trial;
-        const buy = button(sku === yearly ? 'acct-link acct-offer-yearly' : `acct-btn${primary ? ' acct-btn-primary' : ''}`, sku === monthly ? '월간 구독' : '연간 구독');
-        buy.dataset.sku = sku;
-        buy.setAttribute('aria-label', `${PLAN_FAMILY_LABEL[family]} ${sku === monthly ? '월간' : '연간'} 구독`);
-        buy.disabled = checkoutBusy !== null || pending != null || trialBusy;
-        if (checkoutBusy === sku) setBusy(buy, true);
-        buy.addEventListener('click', () => { void checkout(sku); });
-        actions.append(buy);
-      }
-    }
-    row.append(head, copy, price, annual);
-    if (family === 'rau' && current.trial?.state === 'ended' && current.plan.tier !== 'rau') {
-      row.append(el('p', 'acct-meta acct-offer-trial-ended', '무료 체험이 끝났어요'));
-    }
-    row.append(actions);
-    return row;
   }
 
   /** Rau 크레딧 칸을 채운다. Rau 자격이 없으면 숨긴다. */
@@ -703,8 +596,8 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
   function renderSigned(current: AccountStatus): void {
     const account = current.account!;
     avatar.paint(current, store.avatar());
-    avatarButton.disabled = photoBusy !== null;
-    avatarButton.dataset.busy = photoBusy === 'set' ? 'true' : 'false';
+    avatarButton.disabled = photoBusy;
+    avatarButton.dataset.busy = photoBusy ? 'true' : 'false';
     nameText.textContent = account.name;
     nameRow.hidden = nameEditing;
     nameForm.hidden = !nameEditing;
@@ -714,18 +607,15 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
     setBusy(nameSave, nameBusy);
     emailText.textContent = account.email;
     offline.hidden = !current.sync.offline;
-    photoChange.disabled = photoBusy !== null;
-    photoRemove.disabled = photoBusy !== null;
-    photoRemove.hidden = account.avatarRev === null;
-    setBusy(photoChange, photoBusy === 'set');
-    setBusy(photoRemove, photoBusy === 'remove');
+    profilePlan.replaceChildren(...planMark(current.plan.tier), ACCOUNT_TIER_LABEL[current.plan.tier]);
 
     const planInfo = current.plan;
     planName.replaceChildren(planNameNode(current));
     planSection.root.dataset.tier = planInfo.tier;
     manage.hidden = !planInfo.manageUrl || planInfo.paymentFailed;
     // 결제가 실패한 동안은 지난 결제일 대신 안내 한 줄만 둔다.
-    const term = planInfo.paymentFailed ? '' : planTermLine(planInfo);
+    const trialEnded = current.trial?.state === 'ended' && planInfo.tier !== 'rau';
+    const term = planInfo.paymentFailed ? '' : trialEnded ? '무료 체험이 끝났어요' : planTermLine(planInfo);
     planTerm.textContent = term;
     planTerm.hidden = !term;
     planAlert.hidden = !planInfo.paymentFailed;
@@ -736,10 +626,10 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
     const families: PlanFamily[] = plan?.api && !planInfo.paymentFailed
       ? (onTrial ? ['rau'] : upgradeFamilies(planInfo.tier))
       : [];
-    keepFocus(offers, () => offers.replaceChildren(...families.map((family) => offerRow(family, current))));
-    offers.hidden = families.length === 0;
+    upgrade.hidden = families.length === 0;
+    upgradeFocus = families.length === 1 ? families[0]! : undefined;
     if (plan?.status()?.pendingCheckout) say(planError, '');
-    else if (!checkoutBusy && plan?.status()?.lastCheckout?.code === 'timed_out') {
+    else if (plan?.status()?.lastCheckout?.code === 'timed_out') {
       say(planError, '결제 확인 시간이 지났어요. 잠시 후 다시 시도해 주세요.');
     }
 
@@ -795,8 +685,10 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
       else void openPostLogin(current!, store, plan, newAccount);
       return;
     }
-    layer.dataset.modal = !embedded && !signedIn ? 'true' : 'false';
-    page.dataset.authPopup = !embedded && !signedIn ? 'true' : 'false';
+    if (signedIn) hasShownProfile = true;
+    const authPopup = !embedded && !signedIn && !hasShownProfile;
+    layer.dataset.modal = authPopup ? 'true' : 'false';
+    page.dataset.authPopup = authPopup ? 'true' : 'false';
     back.setAttribute('aria-label', signedIn ? '돌아가기' : '닫기');
     back.title = signedIn ? '돌아가기' : '닫기';
     back.replaceChildren(createIcon(signedIn ? 'browserBack' : 'close'));
@@ -821,8 +713,6 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
 
   // ── 사건 ────────────────────────────────────────────
   avatarButton.addEventListener('click', () => fileInput.click());
-  photoChange.addEventListener('click', () => fileInput.click());
-  photoRemove.addEventListener('click', () => { void removePhoto(); });
   fileInput.addEventListener('change', () => {
     const file = fileInput.files?.[0];
     fileInput.value = '';
@@ -836,6 +726,10 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
     void saveName();
   });
   nameInput.addEventListener('input', () => { if (!nameError.hidden) say(nameError, ''); });
+  upgrade.addEventListener('click', () => {
+    if (!plan) return;
+    openPlanCard({ store: plan, license: null, account: store, ...(upgradeFocus ? { focus: upgradeFocus } : {}) });
+  });
   manage.addEventListener('click', () => { void openManage(manage, planError); });
   fixPayment.addEventListener('click', () => { void openManage(fixPayment, planError); });
   redeemInput.addEventListener('input', () => {

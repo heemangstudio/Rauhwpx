@@ -363,7 +363,7 @@ import type { DesktopLicenseApi } from './settings-license.ts';
 import { createPlanStore, desktopPlanApi, planLocksAgent } from '../plan/plan-store.ts';
 import { recordAccountActivity } from '../account/account-store.ts';
 import type { DesktopPlanApi } from '../plan/plan-types.ts';
-import { listenForPlanCardEvents, openPlanCard, type PlanCardFocus } from '../plan/upgrade-card.ts';
+import { listenForPlanCardEvents, createPlanChooser, openPlanCard, type PlanCardFocus } from '../plan/upgrade-card.ts';
 import '../plan/plan-lock.css';
 import { agentModeFor, agentModeTarget, planTodoTitle, type AgentMode } from '../../agent/types.ts';
 import { formatThreadTranscript } from '../issue-report/transcript.ts';
@@ -5129,12 +5129,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     beginAgentConnect: (agent) => settingsPanel.beginAgentConnect(agent),
     openCalibration: (options) => writingStyleCalibration.open(options),
     plan: planStore,
-    openPlans: async () => {
-      const card = openPlanCard({ store: planStore, license: planLicenseApi });
-      if (!card) return false;
-      await card.closed;
-      return true;
-    },
+    createPlanChooser: (hooks) => (planStore.api ? createPlanChooser({ store: planStore, ...hooks }) : null),
     onFinished: () => {
       adoptFirstRunDefaultAgent();
       updateReconnectChip();
