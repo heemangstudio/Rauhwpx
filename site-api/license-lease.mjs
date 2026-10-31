@@ -22,9 +22,17 @@ import {
  * Groble is retrying a failed renewal: the key works until then. keyHash is the hex SHA-256 of the
  * license key as the app normalizes it (trim, uppercase, no whitespace), so a lease
  * cannot be moved onto another key.
+ *
+ * Account leases (v2) use the same encoding and signing key, with an account instead of a key:
+ *   payload = { v: 2, kid, accountId, deviceId, keyId (primary license or null), tier, plan,
+ *               issuedAt, expiresAt[, licenseExpiresAt][, paymentGraceEndsAt] }
+ * Each version's verifier rejects the other as malformed.
  */
 
 export const LEASE_VERSION = 1;
+export const ACCOUNT_LEASE_VERSION = 2;
+export const ACCOUNT_LEASE_TIERS = Object.freeze(['free', 'pro', 'legacy', 'hama']);
+export const ACCOUNT_LEASE_PLANS = Object.freeze(['monthly', 'annual', 'lifetime']);
 export const LEASE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 /** Beta keys get a shorter lease so a revoked tester key stops working within 3 days offline. */
 export const BETA_LEASE_TTL_MS = 3 * 24 * 60 * 60 * 1000;
@@ -116,9 +124,58 @@ export function signLease({
     ...(Number.isSafeInteger(licenseExpiresAt) ? { licenseExpiresAt } : {}),
     ...(Number.isSafeInteger(paymentGraceEndsAt) ? { paymentGraceEndsAt } : {}),
   };
+  return signPayload(payload, privateKey);
+}
+
+function signPayload(payload, privateKey) {
   const encoded = b64url(Buffer.from(JSON.stringify(payload), 'utf8'));
   const signature = sign(null, Buffer.from(encoded, 'ascii'), privateKey);
   return { lease: `${encoded}.${b64url(signature)}`, payload };
+}
+
+/** Splits a lease and parses its payload object; null when it is not one. */
+function decodeLease(lease) {
+  if (typeof lease !== 'string' || lease.length > MAX_LEASE_CHARS) return null;
+  const parts = lease.split('.');
+  if (parts.length !== 2 || !parts[0] || !parts[1]) return null;
+  let payload;
+  try {
+    payload = JSON.parse(Buffer.from(parts[0], 'base64url').toString('utf8'));
+  } catch {
+    return null;
+  }
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+  return { parts, payload };
+}
+
+/** The payload's `v`, or null for anything that is not a lease. Routes v1 and v2 without verifying. */
+export function leaseVersion(lease) {
+  const v = decodeLease(lease)?.payload.v;
+  return Number.isSafeInteger(v) ? v : null;
+}
+
+function validTimes({ issuedAt, expiresAt }) {
+  return Number.isSafeInteger(issuedAt) && Number.isSafeInteger(expiresAt) && expiresAt > issuedAt
+    && expiresAt - issuedAt <= LEASE_TTL_MS + ISSUED_AT_SKEW_MS;
+}
+
+/** kid lookup and signature check shared by both versions; null when the signature holds. */
+function signatureProblem(parts, kid, publicKeys) {
+  const publicKey = publicKeys && Object.hasOwn(publicKeys, kid) ? publicKeys[kid] : null;
+  if (!publicKey) return 'unknown_kid';
+  let valid = false;
+  try {
+    valid = verify(null, Buffer.from(parts[0], 'ascii'), parseLeasePublicKey(publicKey), Buffer.from(parts[1], 'base64url'));
+  } catch {
+    valid = false;
+  }
+  return valid ? null : 'bad_signature';
+}
+
+function timeProblem({ issuedAt, expiresAt }, now) {
+  if (issuedAt - ISSUED_AT_SKEW_MS > now) return 'not_yet_valid';
+  if (now >= expiresAt) return 'expired';
+  return null;
 }
 
 /**
@@ -127,35 +184,76 @@ export function signLease({
  * reason: malformed | unknown_kid | bad_signature | wrong_device | wrong_key | expired | not_yet_valid.
  */
 export function verifyLease(lease, publicKeys, { deviceId, key, now = Date.now() } = {}) {
-  if (typeof lease !== 'string' || lease.length > MAX_LEASE_CHARS) return { ok: false, reason: 'malformed' };
-  const parts = lease.split('.');
-  if (parts.length !== 2 || !parts[0] || !parts[1]) return { ok: false, reason: 'malformed' };
-  let payload;
-  try {
-    payload = JSON.parse(Buffer.from(parts[0], 'base64url').toString('utf8'));
-  } catch {
-    return { ok: false, reason: 'malformed' };
-  }
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return { ok: false, reason: 'malformed' };
-  const { v, kid, keyHash, issuedAt, expiresAt } = payload;
+  const decoded = decodeLease(lease);
+  if (!decoded) return { ok: false, reason: 'malformed' };
+  const { parts, payload } = decoded;
+  const { v, kid, keyHash } = payload;
   if (v !== LEASE_VERSION || typeof kid !== 'string' || typeof keyHash !== 'string'
-    || typeof payload.keyId !== 'string' || typeof payload.deviceId !== 'string'
-    || !Number.isSafeInteger(issuedAt) || !Number.isSafeInteger(expiresAt) || expiresAt <= issuedAt
-    || expiresAt - issuedAt > LEASE_TTL_MS + ISSUED_AT_SKEW_MS) {
+    || typeof payload.keyId !== 'string' || typeof payload.deviceId !== 'string' || !validTimes(payload)) {
     return { ok: false, reason: 'malformed' };
   }
-  const publicKey = publicKeys && Object.hasOwn(publicKeys, kid) ? publicKeys[kid] : null;
-  if (!publicKey) return { ok: false, reason: 'unknown_kid' };
-  let valid = false;
-  try {
-    valid = verify(null, Buffer.from(parts[0], 'ascii'), parseLeasePublicKey(publicKey), Buffer.from(parts[1], 'base64url'));
-  } catch {
-    valid = false;
-  }
-  if (!valid) return { ok: false, reason: 'bad_signature' };
+  const signed = signatureProblem(parts, kid, publicKeys);
+  if (signed) return { ok: false, reason: signed };
   if (deviceId !== undefined && payload.deviceId !== deviceId) return { ok: false, reason: 'wrong_device' };
   if (key !== undefined && keyHash !== licenseKeyHash(key)) return { ok: false, reason: 'wrong_key' };
-  if (issuedAt - ISSUED_AT_SKEW_MS > now) return { ok: false, reason: 'not_yet_valid' };
-  if (now >= expiresAt) return { ok: false, reason: 'expired' };
-  return { ok: true, payload };
+  const timing = timeProblem(payload, now);
+  return timing ? { ok: false, reason: timing } : { ok: true, payload };
+}
+
+/** Signs an account lease (v2). `ttlMs` is 7 days, or 3 days when the primary license is a beta key. */
+export function signAccountLease({
+  kid = DEFAULT_LEASE_KID,
+  accountId,
+  deviceId,
+  keyId = null,
+  tier = 'free',
+  plan = null,
+  now = Date.now(),
+  ttlMs = LEASE_TTL_MS,
+  licenseExpiresAt = null,
+  paymentGraceEndsAt = null,
+}, privateKey) {
+  return signPayload({
+    v: ACCOUNT_LEASE_VERSION,
+    kid,
+    accountId,
+    deviceId,
+    keyId,
+    tier,
+    plan,
+    issuedAt: now,
+    expiresAt: now + ttlMs,
+    ...(Number.isSafeInteger(licenseExpiresAt) ? { licenseExpiresAt } : {}),
+    ...(Number.isSafeInteger(paymentGraceEndsAt) ? { paymentGraceEndsAt } : {}),
+  }, privateKey);
+}
+
+function validAccountPayload(payload) {
+  const optionalTime = (value) => value === undefined || Number.isSafeInteger(value);
+  return payload.v === ACCOUNT_LEASE_VERSION
+    && typeof payload.kid === 'string'
+    && typeof payload.accountId === 'string' && payload.accountId !== ''
+    && typeof payload.deviceId === 'string' && payload.deviceId !== ''
+    && (payload.keyId === null || typeof payload.keyId === 'string')
+    && ACCOUNT_LEASE_TIERS.includes(payload.tier)
+    && (payload.plan === null || ACCOUNT_LEASE_PLANS.includes(payload.plan))
+    && validTimes(payload)
+    && optionalTime(payload.licenseExpiresAt)
+    && optionalTime(payload.paymentGraceEndsAt);
+}
+
+/**
+ * Verify an account lease (v2). Same rules as verifyLease, with the account in place of the key.
+ * reason: malformed | unknown_kid | bad_signature | wrong_device | wrong_account | expired | not_yet_valid.
+ */
+export function verifyAccountLease(lease, publicKeys, { deviceId, accountId, now = Date.now() } = {}) {
+  const decoded = decodeLease(lease);
+  if (!decoded || !validAccountPayload(decoded.payload)) return { ok: false, reason: 'malformed' };
+  const { parts, payload } = decoded;
+  const signed = signatureProblem(parts, payload.kid, publicKeys);
+  if (signed) return { ok: false, reason: signed };
+  if (deviceId !== undefined && payload.deviceId !== deviceId) return { ok: false, reason: 'wrong_device' };
+  if (accountId !== undefined && payload.accountId !== accountId) return { ok: false, reason: 'wrong_account' };
+  const timing = timeProblem(payload, now);
+  return timing ? { ok: false, reason: timing } : { ok: true, payload };
 }
