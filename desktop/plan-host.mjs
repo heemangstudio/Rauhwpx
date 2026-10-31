@@ -10,7 +10,8 @@ export function installPlanHost({
 }) {
   const handlers = {
     'plan:status': () => manager.getStatus(),
-    // 렌더러는 상품 이름만 넘긴다. 주소는 메인이 설정에서 고른다.
+    // 렌더러는 상품 이름만 넘긴다. 주소는 메인이 설정에서 고른다. 실패 코드(not_available·busy·open_failed·
+    // sign_in_required)는 그대로 돌려준다.
     'plan:start-checkout': (_event, sku) => manager.startCheckout(PLAN_SKUS.includes(sku) ? sku : null),
     'plan:cancel-checkout': () => manager.cancelCheckout(),
   };
