@@ -2489,6 +2489,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   function updateDocumentContext(): void {
     const context = getDocumentContext?.();
     const currentDocumentName = paintDocumentNames();
+    focusGreeting.setDocumentName(context?.documentName || null);
     updateDocumentWorktreeChips();
     syncDocumentHeader();
     updateEnvironmentFilename(currentDocumentName);
@@ -4674,6 +4675,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
      같은 채팅 안에서만 입력기가 아래로 미끄러진다 — 채팅을 바꾸거나 전체 화면을
      오갈 때는 즉시 바뀌고, 새 빈 채팅마다 새 장면을 고른다. */
   const focusGreeting = createFocusGreeting({ page: chatPage, composer, conversation: messages });
+  focusGreeting.documentButton.addEventListener('click', () => {
+    openDocumentPalette(focusGreeting.documentButton, { link: true });
+  });
   let focusGreetingThreadId: string | null = null;
   function syncFocusGreeting(): void {
     const threadChanged = focusGreetingThreadId !== currentThread.id;

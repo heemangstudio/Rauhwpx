@@ -1,7 +1,7 @@
 /** 전체 화면의 빈 채팅 무대.
  *
  *  대화가 비어 있으면 입력기를 대화면 가운데로 모으고, 그 위에 픽셀 장면
- *  (pixel-greeting.ts)을 띄운다. 첫 메시지를 보내면 배치는 한 번에 바뀌고 움직임은
+ *  (pixel-greeting.ts)과 문서 이름을 띄운다. 첫 메시지를 보내면 배치는 한 번에 바뀌고 움직임은
  *  FLIP 으로 이어 붙인다 — 입력기는 가운데에서 아래 자리로 미끄러져 내려가고, 장면은
  *  떠나기 직전 자리에 남은 채 칸이 빠져 사라진다. transform·opacity 만 움직이므로
  *  대화 영역은 첫 프레임부터 최종 크기다. */
@@ -16,9 +16,12 @@ const CLEANUP_BUFFER_MS = 50;
 export interface FocusGreeting {
   readonly root: HTMLElement;
   readonly active: boolean;
+  /** 문서 이름. 누르면 문서 선택기가 열린다. */
+  readonly documentButton: HTMLButtonElement;
   /** 빈 채팅 배치를 켜고 끈다. 켜질 때와 `reroll` 일 때 새 장면을 고른다.
       `animate` 는 끌 때만 뜻이 있다 — 첫 메시지를 보낸 순간의 전환이다. */
   setActive(active: boolean, opts?: { animate?: boolean; reroll?: boolean }): void;
+  setDocumentName(name: string | null): void;
   dispose(): void;
 }
 
@@ -35,7 +38,13 @@ export function createFocusGreeting(opts: {
 
   // 동작 줄이기 설정에서는 움직임 토큰이 1ms 로 줄어든다.
   const art = createPixelGreeting({ reducedMotion: () => cssMs('--ag-dur-slow', 320) < 20 });
-  root.append(art.canvas);
+  const documentLine = document.createElement('button');
+  documentLine.type = 'button';
+  documentLine.setAttribute('aria-haspopup', 'dialog');
+  documentLine.setAttribute('aria-expanded', 'false');
+  documentLine.className = 'ag-focus-greeting-doc';
+  documentLine.hidden = true;
+  root.append(art.canvas, documentLine);
 
   let active = false;
   let tweens: Animation[] = [];
@@ -121,10 +130,19 @@ export function createFocusGreeting(opts: {
     else if (!next) art.stop();
   }
 
+  function setDocumentName(name: string | null): void {
+    documentLine.hidden = false;
+    documentLine.textContent = name || '문서 선택';
+    documentLine.title = '문서 전환';
+    documentLine.setAttribute('aria-label', `${name || '문서 없음'}: 문서 전환`);
+  }
+
   return {
     root,
+    documentButton: documentLine,
     get active() { return active; },
     setActive,
+    setDocumentName,
     dispose() {
       stop();
       art.stop();

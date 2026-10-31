@@ -97,6 +97,7 @@ const focusedChecks = {
       return {
         gapBelow: Math.round(chat.bottom - composer.bottom),
         greeting: greeting.checkVisibility() ? greeting.querySelector('canvas')?.getAttribute('aria-label') ?? '' : '',
+        document: greeting.querySelector('.ag-focus-greeting-doc')?.textContent ?? '',
         composerHama: document.querySelector('.ag-hama-hippo')?.checkVisibility({ visibilityProperty: true }) ?? false,
       };
     });
@@ -104,6 +105,11 @@ const focusedChecks = {
     assert(centered.gapBelow > 200, `centered composer leaves ${centered.gapBelow}px below`);
     assert(centered.greeting, 'the empty chat shows a pixel scene');
     assert.equal(centered.composerHama, false, 'the composer hippo hides while the stage hippo is shown');
+    assert(centered.document.includes('사업 제안서'), `the stage shows the document: ${centered.document}`);
+    await page.click('.ag-focus-greeting-doc');
+    await page.waitForSelector('.ag-rail-popover[aria-label="문서 열기"]');
+    await page.keyboard.press('Escape');
+    await page.waitForFunction(() => !document.querySelector('.ag-rail-popover[aria-label="문서 열기"]'));
     await page.type('.ag-input', '요약해 줘');
     await page.click('.ag-send');
     await page.waitForSelector('.ag-msg-user');
