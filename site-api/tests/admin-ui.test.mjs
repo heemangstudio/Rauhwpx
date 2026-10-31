@@ -167,3 +167,25 @@ test('admin page: customer, device, renewal and attention routes forward only th
     ['POST', '/v1/admin/attention/ack', { id: 'wh_1', merchantUid: 'm_3' }],
   ]);
 });
+
+test('admin page: gift code routes forward only their fields, with plan and term passed through as chosen', async (t) => {
+  const upstream = await fakeUpstream(t);
+  const port = await listen(t, createAdminUiServer({ port: 0, base: upstream.base, envToken: 'admin-secret', keychain: { read: async () => '' } }));
+  const session = (await request(port)).text.match(/name="admin-session" content="([^"]+)"/)[1];
+  const headers = { 'X-Admin-Session': session, 'Content-Type': 'application/json' };
+  const calls = [
+    ['GET', '/api/gift-codes?batchId=gcb_1&status=active&code=GIFT-0000-0000-0000-0000'],
+    ['POST', '/api/gift-codes/issue', { plan: 'hama', durationDays: 14, count: 3, note: '베타', redeemBy: '2026-12-31', codes: ['GIFT-0000-0000-0000-0000'], durationMonths: '' }],
+    ['POST', '/api/gift-codes/issue', { plan: 'basic', durationMonths: 3, count: 1 }],
+    ['POST', '/api/gift-codes/revoke', { codeHash: 'a'.repeat(64), reason: 'leaked', code: 'GIFT-0000-0000-0000-0000' }],
+    ['POST', '/api/gift-codes/revoke', { batchId: 'gcb_1', keyId: 'lic_1' }],
+  ];
+  for (const [method, path, body] of calls) assert.equal((await request(port, { method, path, headers, body })).status, 200, path);
+  assert.deepEqual(upstream.calls.map((c) => [c.method, c.url, c.auth, c.body]), [
+    ['GET', '/v1/admin/gift-codes?batchId=gcb_1&status=active', 'Bearer admin-secret', null],
+    ['POST', '/v1/admin/gift-codes/issue', 'Bearer admin-secret', { plan: 'hama', durationDays: 14, count: 3, note: '베타', redeemBy: '2026-12-31' }],
+    ['POST', '/v1/admin/gift-codes/issue', 'Bearer admin-secret', { plan: 'basic', durationMonths: 3, count: 1 }],
+    ['POST', '/v1/admin/gift-codes/revoke', 'Bearer admin-secret', { codeHash: 'a'.repeat(64), reason: 'leaked' }],
+    ['POST', '/v1/admin/gift-codes/revoke', 'Bearer admin-secret', { batchId: 'gcb_1' }],
+  ]);
+});
