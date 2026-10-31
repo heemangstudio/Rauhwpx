@@ -129,6 +129,11 @@ export function createHamaService({
     return { who, plan, ledger: own(state.ledgers, who.keyId) };
   }
 
+  /** Whether `keyId` holds an active plan. Hosted Rau reads this for its eligibility and cap. */
+  async function planActive(keyId) {
+    return own((await read()).plans, keyId)?.status === 'active';
+  }
+
   function models() {
     return {
       default: HAMA_CLAUDE_MODEL,
@@ -350,5 +355,5 @@ export function createHamaService({
     },
   };
 
-  return { status, admit, record, models, admin, config: settings };
+  return { status, admit, record, models, planActive, admin, config: settings };
 }

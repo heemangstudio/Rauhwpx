@@ -400,7 +400,10 @@ export function resolveRauConfig(env = process.env) {
     model,
     reasoningEffort,
     maxOutputTokens,
-    monthlyCapUsd: positiveNumber('RAU_MONTHLY_CAP_USD', trimmed(env.RAU_MONTHLY_CAP_USD), 1),
+    monthlyCapsUsd: {
+      pro: positiveNumber('RAU_MONTHLY_CAP_USD_PRO', trimmed(env.RAU_MONTHLY_CAP_USD_PRO), 2),
+      hama: positiveNumber('RAU_MONTHLY_CAP_USD_HAMA', trimmed(env.RAU_MONTHLY_CAP_USD_HAMA), 5),
+    },
     apiBase: (trimmed(env.OPENROUTER_API_BASE) || DEFAULT_OPENROUTER_API_BASE).replace(/\/+$/, ''),
   };
 }

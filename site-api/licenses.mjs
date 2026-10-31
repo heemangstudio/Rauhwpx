@@ -161,13 +161,16 @@ export function planOf(license) {
 }
 
 /**
- * Hosted Rau-0.1 is for active Pro keys only: a Pro subscription key, not revoked, before its
- * expiry or inside its payment grace. Lifetime, Signature, GLJFC9, beta, grandfathered and manual keys never qualify.
+ * The plan hosted Rau-0.1 serves a license on, or null: 'hama' for any live key with an active Hama
+ * plan, 'pro' for a Pro subscription key. Live means not revoked, before its expiry or inside its
+ * payment grace. Without a Hama plan, lifetime, Signature, GLJFC9, beta, grandfathered and manual keys never qualify.
  */
-export function rauEligible(license, nowMs, graceMaxMs) {
-  if (!license || license.status !== 'active' || license.edition !== 'pro') return false;
+export function rauPlanOf(license, nowMs, graceMaxMs, hamaActive = false) {
+  if (!license || license.status !== 'active') return null;
   const end = accessEndOf(license, graceMaxMs);
-  return end !== null && nowMs < end;
+  if (end !== null && nowMs >= end) return null;
+  if (hamaActive) return 'hama';
+  return license.edition === 'pro' && end !== null ? 'pro' : null;
 }
 
 function normalizeState(state) {
@@ -308,6 +311,7 @@ export function createLicensesService({
   grandfatherPlatforms = ['darwin'],
   adminToken = '',
   downloadUrl = 'https://heemangstudios.com/',
+  hamaPlanActive = async () => false,
   webhookLog = createWebhookLog({ now }),
   log = (line) => process.stderr.write(`${line}\n`),
 } = {}) {
@@ -918,8 +922,17 @@ export function createLicensesService({
     return license;
   }
 
+  /** A Hama store that cannot be read leaves the key's other entitlements in place. */
+  async function rauPlanFor(license) {
+    const hamaActive = await Promise.resolve(hamaPlanActive(license.keyId)).catch((error) => {
+      log(`[site-api] hama plan of ${license.keyId} unreadable: ${error?.message ?? error}`);
+      return false;
+    });
+    return rauPlanOf(license, now(), paymentGraceMaxMs, hamaActive);
+  }
+
   /** `submittedKey` is what the app sent; the lease's keyHash is over the app's normalization of it. */
-  function leaseResponse(license, deviceId, submittedKey) {
+  function leaseResponse(license, deviceId, submittedKey, rauPlan) {
     const licenseExpiresAt = expiryOf(license);
     const paymentGraceEndsAt = graceEndOf(license);
     const { lease, payload } = signLease({
@@ -955,8 +968,8 @@ export function createLicensesService({
       } : {}),
       ...(license.edition === 'pro' ? { edition: 'pro' } : {}),
       plan: planOf(license),
-      // Hosted Rau-0.1 (POST /v1/rau/learn) answers only active Pro keys.
-      rau: { eligible: rauEligible(license, now(), paymentGraceMaxMs) },
+      // Hosted Rau-0.1 (POST /v1/rau/learn) answers only active Pro keys and active Hama plans.
+      rau: { eligible: rauPlan !== null },
     };
   }
 
@@ -977,7 +990,7 @@ export function createLicensesService({
         appVersion: str(body?.appVersion, 32),
         platform: str(body?.platform, 32),
       };
-      return { value: leaseResponse(license, deviceId, body.key) };
+      return { value: leaseResponse(license, deviceId, body.key, await rauPlanFor(license)) };
     });
   }
 
@@ -989,7 +1002,7 @@ export function createLicensesService({
       const device = license.devices?.[deviceId];
       if (!device) throw licenseError('not_activated', 404);
       device.lastSeenAt = new Date(now()).toISOString();
-      return { value: leaseResponse(license, deviceId, body.key) };
+      return { value: leaseResponse(license, deviceId, body.key, await rauPlanFor(license)) };
     });
   }
 
@@ -1010,11 +1023,12 @@ export function createLicensesService({
   /**
    * Check a lease the app presents as a bearer token: our own signature, not expired, the
    * license still active, the device still activated and the key unchanged. Read-only.
-   * Returns `{ keyId, deviceId, platform, source, tier, edition, active, rauEligible }`; anything else is
+   * Returns `{ keyId, deviceId, platform, source, tier, edition, active }`; anything else is
    * `unauthorized` (401). `allowInactive` also answers for a revoked or expired key (`active: false`),
    * so hosted Rau can tell such a key to upgrade; the lease itself must still be ours and unexpired.
+   * `withRauPlan` adds `rauPlan` ('hama', 'pro' or null).
    */
-  async function authenticateLease(lease, { allowInactive = false } = {}) {
+  async function authenticateLease(lease, { allowInactive = false, withRauPlan = false } = {}) {
     if (!signingKey) throw licenseError('unauthorized', 401);
     leasePublicKeys ??= { [leaseKid]: publicKeyFromPrivate(signingKey) };
     const checked = verifyLease(lease, leasePublicKeys, { now: now() });
@@ -1035,7 +1049,7 @@ export function createLicensesService({
       tier: tierOf(license),
       edition: license.edition ?? null,
       active,
-      rauEligible: rauEligible(license, now(), paymentGraceMaxMs),
+      ...(withRauPlan ? { rauPlan: await rauPlanFor(license) } : {}),
     };
   }
 

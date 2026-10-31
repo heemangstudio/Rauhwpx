@@ -49,7 +49,7 @@ export function createTasteSettingsSection(deps: TasteSettingsSectionDeps): Tast
   pro.dataset.tasteField = 'pro';
   const proCopy = el('span', 'ag-settings-control-copy');
   const proDetail = el('span', 'ag-settings-control-description');
-  proCopy.append(el('span', 'ag-settings-control-label', 'Pro 호스팅'), proDetail);
+  proCopy.append(el('span', 'ag-settings-control-label', 'Pro·Hama 호스팅'), proDetail);
   const proState = el('span', 'ag-settings-control-description ag-taste-pro-state');
   const upgrade = el('button', 'ag-settings-btn', '업그레이드');
   upgrade.type = 'button';

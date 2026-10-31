@@ -197,7 +197,7 @@ export function openPlanCard(options: PlanCardOptions): PlanCardHandle | null {
       lines.push('AI 연결(Codex, Claude)', 'Rau-0.1');
     } else {
       priceRow.append(el('span', 'ag-pricing-amount ag-pricing-amount-soon', '준비 중'));
-      lines.push('Hama 에이전트 크레딧 제공');
+      lines.push('Hama 에이전트 크레딧 제공', 'Rau-0.1');
     }
     for (const line of lines) features.append(el('li', '', line));
 

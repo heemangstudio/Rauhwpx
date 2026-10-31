@@ -23,6 +23,7 @@ const UPGRADE = 'https://heemangstudios.com/pricing.html#pro';
 const PINNED = 'deepseek/deepseek-v4.1-flash';
 const CLI = fileURLToPath(new URL('../scripts/license-admin.mjs', import.meta.url));
 // Rau-0.1 answers JSON-ish text; the server returns it as is.
+const HAMA = { HAMA_ENABLED: 'true' };
 const REPLY = '```json\n{"ops":[{"op":"add","text":"표는 가운데 정렬"}]}\n```';
 
 async function setup(t, env = {}, { dir, clock = { now: T0 } } = {}) {
@@ -69,28 +70,32 @@ async function setup(t, env = {}, { dir, clock = { now: T0 } } = {}) {
   const auth = (lease) => ({ Authorization: `Bearer ${lease}` });
   const learn = (lease, body = { prompt: 'Rau-0.1 prompt' }) => post('/v1/rau/learn', body, auth(lease));
   const status = (lease) => fetch(`${origin}/v1/rau/status`, { headers: auth(lease) });
+  const enroll = async (keyId) => assert.equal((await admin('/v1/admin/hama/enroll', { keyId })).ok, true);
+  /** What the app hears when it renews its lease. */
+  const leaseAnswer = async ({ key, deviceId }) => (await post('/v1/license/validate', { key, deviceId })).json();
   const chats = () => upstream.calls.filter((c) => c.path === '/api/v1/chat/completions');
   const creates = () => upstream.calls.filter((c) => c.method === 'POST' && c.path === '/api/v1/keys');
   const patches = () => upstream.calls.filter((c) => c.method === 'PATCH');
-  return { origin, directory, upstream, clock, post, admin, licensesFile, activate, pro, auth, learn, status, chats, creates, patches };
+  return { origin, directory, upstream, clock, post, admin, licensesFile, activate, pro, enroll, leaseAnswer, auth, learn, status, chats, creates, patches };
 }
 
 test('config: pinned model and reasoning effort by default, overrides honored, aliases and bad efforts refused at startup', () => {
   const defaults = resolveRauConfig({});
-  assert.deepEqual([defaults.model, defaults.reasoningEffort, defaults.maxOutputTokens, defaults.monthlyCapUsd, defaults.enabled], [PINNED, 'low', 2000, 1, true]);
-  const custom = resolveRauConfig({ RAU_MODEL: 'deepseek/deepseek-v4.2-flash', RAU_REASONING_EFFORT: 'Minimal', RAU_MONTHLY_CAP_USD: '2.5', RAU_ENABLED: 'false' });
-  assert.deepEqual([custom.model, custom.reasoningEffort, custom.monthlyCapUsd, custom.enabled], ['deepseek/deepseek-v4.2-flash', 'minimal', 2.5, false]);
+  assert.deepEqual([defaults.model, defaults.reasoningEffort, defaults.maxOutputTokens, defaults.monthlyCapsUsd, defaults.enabled], [PINNED, 'low', 2000, { pro: 2, hama: 5 }, true]);
+  const custom = resolveRauConfig({ RAU_MODEL: 'deepseek/deepseek-v4.2-flash', RAU_REASONING_EFFORT: 'Minimal', RAU_MONTHLY_CAP_USD_PRO: '2.5', RAU_MONTHLY_CAP_USD_HAMA: '7', RAU_ENABLED: 'false' });
+  assert.deepEqual([custom.model, custom.reasoningEffort, custom.monthlyCapsUsd, custom.enabled], ['deepseek/deepseek-v4.2-flash', 'minimal', { pro: 2.5, hama: 7 }, false]);
   assert.throws(() => resolveRauConfig({ RAU_MODEL: '~deepseek/deepseek-flash-latest' }), /pinned/);
   assert.throws(() => resolveRauConfig({ RAU_REASONING_EFFORT: 'max' }), /RAU_REASONING_EFFORT must be one of/);
   assert.throws(() => resolveRauConfig({ RAU_ENABLED: 'maybe' }), /RAU_ENABLED/);
-  assert.throws(() => resolveRauConfig({ RAU_MONTHLY_CAP_USD: '0' }), /positive/);
+  assert.throws(() => resolveRauConfig({ RAU_MONTHLY_CAP_USD_PRO: '0' }), /positive/);
+  assert.throws(() => resolveRauConfig({ RAU_MONTHLY_CAP_USD_HAMA: '0' }), /positive/);
 });
 
 test('a Pro key learns through the server: one capped monthly key, the pinned model with low reasoning, text verbatim, the key never sent', async (t) => {
   const s = await setup(t);
   const { lease, keyId } = await s.pro();
   assert.deepEqual(await (await s.status(lease)).json(), {
-    ok: true, eligible: true, reason: null, upgradeUrl: UPGRADE, capUsd: 1, usedUsd: 0, remainingUsd: 1, resetsAt: '2026-11-01T00:00:00.000Z',
+    ok: true, eligible: true, reason: null, upgradeUrl: UPGRADE, capUsd: 2, usedUsd: 0, remainingUsd: 2, resetsAt: '2026-11-01T00:00:00.000Z',
   });
   assert.equal(s.creates().length, 0, 'status never creates a key');
 
@@ -99,9 +104,9 @@ test('a Pro key learns through the server: one capped monthly key, the pinned mo
   assert.equal(res.status, 200, text);
   assert.deepEqual(JSON.parse(text), {
     ok: true, text: REPLY, model: PINNED,
-    usage: { usedUsd: 0.0003, capUsd: 1, remainingUsd: 0.9997, resetsAt: '2026-11-01T00:00:00.000Z' },
+    usage: { usedUsd: 0.0003, capUsd: 2, remainingUsd: 1.9997, resetsAt: '2026-11-01T00:00:00.000Z' },
   });
-  assert.deepEqual(s.creates().map((c) => c.body), [{ name: `hama-rau-${keyId}`, limit: 1, limit_reset: 'monthly', include_byok_in_limit: true }]);
+  assert.deepEqual(s.creates().map((c) => c.body), [{ name: `hama-rau-${keyId}`, limit: 2, limit_reset: 'monthly', include_byok_in_limit: true }]);
   const [stored] = [...s.upstream.keys.values()];
   const [chat] = s.chats();
   assert.equal(chat.auth, `Bearer ${stored.key}`, 'the per-license key, not the management key');
@@ -114,13 +119,13 @@ test('a Pro key learns through the server: one capped monthly key, the pinned mo
   for (const body of [text, statusText, adminText]) assert.ok(!body.includes(stored.key));
   assert.ok(!adminText.includes(PROVISIONING) && !text.includes(PROVISIONING));
   const listed = JSON.parse(adminText);
-  assert.deepEqual([listed.count, listed.allowances[0].keyId, listed.allowances[0].usedUsd, listed.allowances[0].capUsd, listed.allowances[0].openrouterKey], [1, keyId, 0.0006, 1, undefined]);
+  assert.deepEqual([listed.count, listed.allowances[0].keyId, listed.allowances[0].usedUsd, listed.allowances[0].capUsd, listed.allowances[0].openrouterKey], [1, keyId, 0.0006, 2, undefined]);
   const file = JSON.parse(await fs.readFile(path.join(s.directory, 'rau.json'), 'utf8'));
   assert.equal(file.allowances[keyId].openrouterKey, stored.key, 'the key stays in rau.json');
   assert.deepEqual(file.allowances[keyId].ledger, { '2026-10': 0.0006 });
 
   const cli = await promisify(execFile)(process.execPath, [CLI, 'rau'], { env: { ...process.env, SITE_API_BASE: s.origin, ADMIN_TOKEN: ADMIN } });
-  assert.match(cli.stdout, new RegExp(`${keyId} active · \\$0.0006 / \\$1\n$`));
+  assert.match(cli.stdout, new RegExp(`${keyId} active · \\$0.0006 / \\$2\n$`));
   assert.ok(!cli.stdout.includes(stored.key));
 });
 
@@ -178,7 +183,7 @@ test('every key that is not an active Pro key gets rau_requires_pro with the upg
 });
 
 test('the cap is enforced from our own ledger even when OpenRouter undercounts, without calling upstream', async (t) => {
-  const s = await setup(t);
+  const s = await setup(t, { RAU_MONTHLY_CAP_USD_PRO: '1' });
   const { lease } = await s.pro();
   s.upstream.setChatSpend({ credit: 0.6 });
   assert.equal((await (await s.learn(lease)).json()).usage.usedUsd, 0.6);
@@ -201,7 +206,7 @@ test('the cap is enforced from our own ledger even when OpenRouter undercounts, 
 });
 
 test('the cap is enforced from OpenRouter usage, and an upstream key-limit refusal answers rau_cap_reached', async (t) => {
-  const s = await setup(t);
+  const s = await setup(t, { RAU_MONTHLY_CAP_USD_PRO: '1' });
   const { lease } = await s.pro();
   assert.equal((await s.learn(lease)).status, 200);
   // Usage OpenRouter counted that our ledger missed (e.g. a call that timed out after it was billed).
@@ -231,7 +236,7 @@ test('the cap is enforced from OpenRouter usage, and an upstream key-limit refus
 });
 
 test('a new month sets the key limit again exactly once and starts a fresh ledger', async (t) => {
-  const s = await setup(t);
+  const s = await setup(t, { RAU_MONTHLY_CAP_USD_PRO: '1' });
   const first = await s.pro();
   s.upstream.setChatSpend({ credit: 0.6 });
   await s.learn(first.lease);
@@ -257,7 +262,7 @@ test('a new month sets the key limit again exactly once and starts a fresh ledge
   assert.equal(file.allowances[first.keyId].period, '2026-11');
 });
 
-test('RAU_MONTHLY_CAP_USD sets new keys and re-limits existing ones once after a restart', async (t) => {
+test('RAU_MONTHLY_CAP_USD_PRO sets new keys and re-limits existing ones once after a restart', async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'site-api-rau-cap-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true, maxRetries: 5 }));
   const clock = { now: T0 };
@@ -267,7 +272,7 @@ test('RAU_MONTHLY_CAP_USD sets new keys and re-limits existing ones once after a
   const keyHash = [...before.upstream.keys.keys()][0];
 
   // Same data, new cap. The restarted server talks to a fresh fake, so seed it with the existing key.
-  const after = await setup(t, { RAU_MONTHLY_CAP_USD: '2.5' }, { dir, clock });
+  const after = await setup(t, { RAU_MONTHLY_CAP_USD_PRO: '2.5' }, { dir, clock });
   after.upstream.keys.set(keyHash, { ...before.upstream.keys.get(keyHash) });
   const fresh = (await (await after.post('/v1/license/validate', { key, deviceId })).json()).lease;
   assert.equal((await (await after.status(fresh)).json()).capUsd, 2.5);
@@ -280,6 +285,128 @@ test('RAU_MONTHLY_CAP_USD sets new keys and re-limits existing ones once after a
   const other = await after.pro({ n: 2 });
   await after.learn(other.lease);
   assert.equal(after.creates()[0].body.limit, 2.5);
+});
+
+test('each plan gets its own cap: Pro $2, Hama $5, both $5, in status, usage, the OpenRouter limit and the license answer', async (t) => {
+  const s = await setup(t, HAMA);
+  const pro = await s.pro();
+  const hama = await s.activate((await s.admin('/v1/admin/licenses/issue', {})).license.key);
+  await s.enroll(hama.keyId);
+  const both = await s.pro({ n: 2 });
+  await s.enroll(both.keyId);
+  const legacy = await s.activate((await s.admin('/v1/admin/licenses/issue', {})).license.key);
+
+  for (const [who, cap] of [[pro, 2], [hama, 5], [both, 5]]) {
+    const st = await (await s.status(who.lease)).json();
+    assert.deepEqual([st.eligible, st.reason, st.capUsd, st.remainingUsd], [true, null, cap, cap]);
+    const res = await (await s.learn(who.lease)).json();
+    assert.equal(res.usage.capUsd, cap);
+    const created = s.creates().find((c) => c.body.name === `hama-rau-${who.keyId}`);
+    assert.deepEqual([created.body.limit, created.body.limit_reset], [cap, 'monthly']);
+    assert.equal((await s.leaseAnswer(who)).rau.eligible, true);
+  }
+
+  // No plan: refused, nothing created, and the license answer agrees.
+  const refused = await s.learn(legacy.lease);
+  assert.deepEqual([refused.status, (await refused.json()).error], [403, 'rau_requires_pro']);
+  assert.equal((await s.leaseAnswer(legacy)).rau.eligible, false);
+  const st = await (await s.status(legacy.lease)).json();
+  assert.deepEqual([st.eligible, st.capUsd], [false, 2]);
+  assert.ok(!s.creates().some((c) => c.body.name === `hama-rau-${legacy.keyId}`));
+
+  const listed = await (await fetch(`${s.origin}/v1/admin/rau`, { headers: s.auth(ADMIN) })).json();
+  assert.deepEqual(listed.capsUsd, { pro: 2, hama: 5 });
+  const remaining = Object.fromEntries(listed.allowances.map((a) => [a.keyId, [a.capUsd, a.remainingUsd]]));
+  assert.deepEqual(remaining[hama.keyId], [5, 4.9997]);
+  assert.deepEqual(remaining[pro.keyId], [2, 1.9997]);
+});
+
+test('RAU_MONTHLY_CAP_USD_HAMA overrides the Hama cap only', async (t) => {
+  const s = await setup(t, { ...HAMA, RAU_MONTHLY_CAP_USD_HAMA: '7.5' });
+  const pro = await s.pro();
+  const both = await s.pro({ n: 2 });
+  await s.enroll(both.keyId);
+  assert.equal((await (await s.status(pro.lease)).json()).capUsd, 2);
+  assert.equal((await (await s.status(both.lease)).json()).capUsd, 7.5);
+});
+
+test('the cap answers 402 with the cap of the plan, before calling upstream', async (t) => {
+  const s = await setup(t, HAMA);
+  const hama = await s.activate((await s.admin('/v1/admin/licenses/issue', {})).license.key);
+  await s.enroll(hama.keyId);
+  const pro = await s.pro();
+  s.upstream.setChatSpend({ credit: 2.5 });
+  // Pro: $2.50 is over its cap; Hama: the same spend is under $5 until the second call.
+  assert.equal((await s.learn(pro.lease)).status, 200);
+  assert.equal((await (await s.learn(hama.lease)).json()).usage.remainingUsd, 2.5);
+  assert.equal((await s.learn(hama.lease)).status, 200);
+  const before = s.chats().length;
+  for (const [who, capUsd, usedUsd] of [[pro, 2, 2.5], [hama, 5, 5]]) {
+    const refused = await s.learn(who.lease);
+    assert.equal(refused.status, 402);
+    assert.deepEqual(await refused.json(), { ok: false, error: 'rau_cap_reached', capUsd, usedUsd, resetsAt: '2026-11-01T00:00:00.000Z' });
+  }
+  assert.equal(s.chats().length, before);
+});
+
+test('a plan change moves the limit once in each direction, and a disabled plan leaves what the key had', async (t) => {
+  const s = await setup(t, HAMA);
+  const pro = await s.pro();
+  const legacy = await s.activate((await s.admin('/v1/admin/licenses/issue', {})).license.key);
+  await s.learn(pro.lease);
+  await s.enroll(pro.keyId);
+  await s.enroll(legacy.keyId);
+  await s.learn(legacy.lease);
+  await s.learn(pro.lease);
+  await s.learn(pro.lease);
+  assert.deepEqual(s.patches().map((c) => c.body.limit), [5]);
+
+  await s.admin('/v1/admin/hama/disable', { keyId: pro.keyId });
+  await s.admin('/v1/admin/hama/disable', { keyId: legacy.keyId });
+  assert.equal((await (await s.learn(pro.lease)).json()).usage.capUsd, 2);
+  assert.deepEqual(s.patches().map((c) => c.body.limit), [5, 2]);
+  assert.equal((await s.learn(legacy.lease)).status, 403);
+  assert.equal((await s.leaseAnswer(legacy)).rau.eligible, false);
+});
+
+test('a raised cap whose PATCH failed is retried, and the key\'s old limit does not fill the ledger', async (t) => {
+  const s = await setup(t, HAMA);
+  const pro = await s.pro();
+  await s.learn(pro.lease);
+  await s.enroll(pro.keyId);
+  s.upstream.failNextPatch(500);
+  s.upstream.failNextChat(403, { error: { code: 403, message: 'Key limit exceeded (monthly limit).', metadata: { limit_source: 'openrouter_key_limit' } } });
+  const failed = await s.learn(pro.lease);
+  assert.deepEqual([failed.status, await failed.json()], [502, { ok: false, error: 'upstream_unavailable' }]);
+  const retried = await s.learn(pro.lease);
+  assert.equal(retried.status, 200);
+  assert.equal((await retried.json()).usage.capUsd, 5);
+  assert.deepEqual(s.patches().map((c) => c.body.limit).at(-1), 5);
+});
+
+test('a Hama plan needs a live license and HAMA_ENABLED', async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'site-api-rau-hama-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true, maxRetries: 5 }));
+  const clock = { now: T0 };
+  const s = await setup(t, HAMA, { dir, clock });
+  const revoked = await s.activate((await s.admin('/v1/admin/licenses/issue', {})).license.key);
+  await s.enroll(revoked.keyId);
+  await s.admin('/v1/admin/licenses/revoke', { key: revoked.key, reason: 'test' });
+  assert.equal((await s.learn(revoked.lease)).status, 403);
+
+  const expiring = await s.activate((await s.admin('/v1/admin/licenses/issue', { years: 1 })).license.key);
+  await s.enroll(expiring.keyId);
+  assert.equal((await s.learn(expiring.lease)).status, 200);
+  const state = JSON.parse(await fs.readFile(s.licensesFile, 'utf8'));
+  state.licenses[expiring.keyId].expiresAt = new Date(T0 - 1000).toISOString();
+  await fs.writeFile(s.licensesFile, JSON.stringify(state));
+  assert.equal((await s.learn(expiring.lease)).status, 403);
+
+  const lifetime = await s.activate((await s.admin('/v1/admin/licenses/issue', {})).license.key);
+  await s.enroll(lifetime.keyId);
+  assert.equal((await s.learn(lifetime.lease)).status, 200);
+  const off = await setup(t, {}, { dir, clock });
+  assert.equal((await off.learn(lifetime.lease)).status, 403);
 });
 
 test('prompt limits: at most 48 KB of UTF-8, a non-empty string, a JSON object; none reaches upstream', async (t) => {
