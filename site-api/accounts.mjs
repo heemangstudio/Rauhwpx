@@ -1,7 +1,6 @@
-import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
-import { promises as fs } from 'node:fs';
-import path from 'node:path';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 
+import { AVATAR_TYPES, createFileAvatars } from './avatars.mjs';
 import {
   ACCOUNT_LEASE_VERSION,
   BETA_LEASE_TTL_MS,
@@ -14,17 +13,18 @@ import {
 } from './license-lease.mjs';
 import { licenseError, tokenEquals } from './licenses.mjs';
 import { createRateLimiter } from './rate-limit.mjs';
-import { createMemoryStore, syncDirectory } from './store.mjs';
+import { createMemoryStore } from './store.mjs';
 import { maskedEmail } from './workos.mjs';
 
 /**
  * HamaEditor accounts: WorkOS AuthKit sign-in, devices, sessions and the account lease (v2). The
  * app-facing contract is in README.md, "Accounts".
  *
- * accounts.json = { accounts, byWorkosUser, byEmail (verified emails only), sessions, logins, grants }
- * Sessions and grants are stored only as sha256 hex. The license ↔ account link lives on the license
- * record in licenses.json. Lock rule: this service never awaits the licenses lock while it holds its
- * own, and licenses.mjs reads accounts.json only as a plain file. Assumes ONE replica.
+ * State = { accounts, byWorkosUser, byEmail (verified emails only), sessions, logins, grants }, in
+ * accounts.json or the accounts tables. Sessions and grants are stored only as sha256 hex. The
+ * license ↔ account link lives on the license record. Lock rule: this service never awaits the
+ * licenses lock while it holds its own, and licenses.mjs only reads this store. Rate limits are in
+ * memory, so it assumes ONE replica.
  */
 
 export const DEVICE_LIMIT_PER_ACCOUNT = 5;
@@ -55,9 +55,6 @@ const GIFT_CODE_REDEEMS_PER_HOUR = 10;
 const AVATARS_PER_HOUR = 30;
 const STATS_PER_HOUR = 120;
 export const MAX_AVATAR_BYTES = 1024 * 1024;
-/** Accepted picture types and their file extensions. */
-const AVATAR_TYPES = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' };
-const ACCOUNT_ID_RE = /^acct_[0-9a-f]{18}$/;
 const BATCH_ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
 const MAX_STAT_COUNT = 1000;
 const STATS_BATCHES_KEPT = 50;
@@ -129,8 +126,9 @@ export function createAccountsService({
   workos = null,
   signingKey = null,
   leaseKid = DEFAULT_LEASE_KID,
-  // Profile pictures live here as `<accountId>.<ext>`.
+  // Profile pictures live here as `<accountId>.<ext>` unless `avatars` (avatars.mjs) says otherwise.
   avatarDir,
+  avatars = createFileAvatars(avatarDir),
   // keyId → this billing period of its active Hama plan, or null (hama.usageSummary; null with HAMA_ENABLED off).
   hamaUsage = async () => null,
   // Brings hama.json in line after a gift code created a Hama key (hama.syncSubscriptions; a no-op with HAMA_ENABLED off).
@@ -145,13 +143,6 @@ export function createAccountsService({
   // Account leases are signed with the license key, so both must be set.
   const configured = Boolean(workos && signingKey);
 
-  let mutation = Promise.resolve();
-  function withLock(fn) {
-    const result = mutation.then(fn, fn);
-    mutation = result.then(() => undefined, () => undefined);
-    return result;
-  }
-
   function prune(state) {
     const at = now();
     for (const [id, login] of Object.entries(state.logins)) if (!(ms(login?.expiresAt) > at)) delete state.logins[id];
@@ -160,18 +151,16 @@ export function createAccountsService({
 
   /** `fn` returns `{ value, dirty }`; the state is saved unless `dirty` is false. Expired logins and grants go on every write. */
   async function mutate(fn) {
-    return withLock(async () => {
-      const state = normalize(await store.load());
-      prune(state);
-      const result = await fn(state);
-      if (result?.dirty !== false) await store.save(state);
-      return result?.value;
+    const result = await store.update((state) => {
+      const next = normalize(state);
+      prune(next);
+      return fn(next);
     });
+    return result?.value;
   }
 
   async function read() {
-    await mutation.catch(() => {});
-    return normalize(await store.load());
+    return normalize(await store.read());
   }
 
   function requireConfigured() {
@@ -624,40 +613,18 @@ export function createAccountsService({
     return { ok: true, account: accountView(account) };
   }
 
-  function avatarPath(accountId, ext) {
-    if (!avatarDir || !ACCOUNT_ID_RE.test(accountId)) throw new Error('avatar path unavailable');
-    return path.join(avatarDir, `${accountId}.${ext}`);
-  }
-
-  /** Temp file, fsync, rename, mode 0600: a reader never sees half a picture. */
-  async function writeAvatarFile(file, bytes) {
-    await fs.mkdir(avatarDir, { recursive: true, mode: 0o700 });
-    const temp = `${file}.tmp-${process.pid}-${randomUUID()}`;
-    let handle;
-    try {
-      handle = await fs.open(temp, 'wx', 0o600);
-      await handle.writeFile(bytes);
-      await handle.sync();
-      await handle.close();
-      handle = undefined;
-      await fs.rename(temp, file);
-      await syncDirectory(avatarDir);
-    } catch (error) {
-      await handle?.close().catch(() => {});
-      await fs.rm(temp, { force: true }).catch(() => {});
-      throw error;
-    }
-  }
-
-  async function removeAvatarFiles(accountId, { except } = {}) {
-    for (const ext of Object.values(AVATAR_TYPES)) {
-      if (ext !== except) await fs.rm(avatarPath(accountId, ext), { force: true });
-    }
+  /** Removes every picture of the account but the one its record names, in the accounts lock. */
+  async function pruneAvatars(accountId) {
+    await store.update(async (state, tx) => {
+      const account = own(normalize(state).accounts, accountId);
+      await avatars.prune(accountId, account?.avatar?.type ?? null, tx);
+      return { dirty: false };
+    });
   }
 
   /**
    * Stores a new picture. `readBody` reads the upload only after the session and type are checked.
-   * The file and the record change together in the accounts lock; the other type's file goes after the save.
+   * The picture and the record change together in the accounts lock; the other type's picture goes after the save.
    */
   async function setAvatar(bearer, contentType, readBody) {
     const context = await sessionOf(bearer);
@@ -666,23 +633,20 @@ export function createAccountsService({
     const bytes = await readBody();
     if (bytes.length > MAX_AVATAR_BYTES) throw accountError('too_large', 413);
     if (sniffImageType(bytes) !== contentType) throw accountError('unsupported_type', 415);
-    const ext = AVATAR_TYPES[contentType];
-    const avatar = await withLock(async () => {
-      const state = normalize(await store.load());
-      const account = own(state.accounts, context.account.id);
-      if (!account) return null;
-      await writeAvatarFile(avatarPath(account.id, ext), bytes);
+    const { value: avatar } = await store.update(async (state, tx) => {
+      const account = own(normalize(state).accounts, context.account.id);
+      if (!account) return { dirty: false, value: null };
+      await avatars.put(account.id, contentType, bytes, tx);
       account.avatar = {
         rev: Math.max(account.avatar?.rev ?? 0, account.lastAvatarRev ?? 0) + 1,
         type: contentType,
         bytes: bytes.length,
         updatedAt: iso(now()),
       };
-      await store.save(state);
-      await removeAvatarFiles(account.id, { except: ext });
-      return account.avatar;
+      return { value: account.avatar };
     });
     if (!avatar) throw sessionInvalid();
+    await pruneAvatars(context.account.id);
     return { ok: true, avatar: { rev: avatar.rev, type: avatar.type, bytes: avatar.bytes } };
   }
 
@@ -690,25 +654,22 @@ export function createAccountsService({
   async function getAvatar(bearer) {
     const { account } = await sessionOf(bearer);
     const avatar = account.avatar;
-    const bytes = avatar && Object.hasOwn(AVATAR_TYPES, avatar.type)
-      ? await fs.readFile(avatarPath(account.id, AVATAR_TYPES[avatar.type])).catch(() => null)
-      : null;
+    const bytes = avatar && Object.hasOwn(AVATAR_TYPES, avatar.type) ? await avatars.get(account.id, avatar.type) : null;
     if (!bytes) throw accountError('no_avatar', 404);
     return { bytes, type: avatar.type, rev: avatar.rev };
   }
 
   async function removeAvatar(bearer) {
     const context = await sessionOf(bearer);
-    await withLock(async () => {
-      const state = normalize(await store.load());
-      const account = own(state.accounts, context.account.id);
-      if (!account?.avatar) return;
+    const { value: removed } = await store.update((state) => {
+      const account = own(normalize(state).accounts, context.account.id);
+      if (!account?.avatar) return { dirty: false, value: false };
       // The next upload still gets a higher rev, so no app keeps showing a stale cached picture.
       account.lastAvatarRev = account.avatar.rev;
       account.avatar = null;
-      await store.save(state);
-      await removeAvatarFiles(account.id);
+      return { value: true };
     });
+    if (removed) await pruneAvatars(context.account.id);
     return { ok: true };
   }
 
@@ -774,7 +735,7 @@ export function createAccountsService({
     if (!removed) throw sessionInvalid();
     // A refresh or a purchase that linked a key between (1) and (2) is undone here.
     await licenses.unlinkAccount(accountId).catch((error) => log(`[site-api] license unlink after deleting ${accountId} failed: ${error?.message ?? error}`));
-    await removeAvatarFiles(accountId).catch((error) => log(`[site-api] avatar of deleted ${accountId} not removed: ${error?.message ?? error}`));
+    await avatars.prune(accountId, null).catch((error) => log(`[site-api] avatar of deleted ${accountId} not removed: ${error?.message ?? error}`));
     try {
       await workos.deleteUser(removed.workosUserId);
     } catch (error) {

@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { MAX_AVATAR_BYTES, accountError, accountIdForEmail, createAccountsService, emptyAccountsState } from './accounts.mjs';
+import { createFileAvatars, createPostgresAvatars } from './avatars.mjs';
 import {
   DEFAULT_PORT,
   resolveAccountConfig,
@@ -43,6 +44,7 @@ import { createHeldAlerter } from './held-alert.mjs';
 import { createEmailProvider, resendProviderFromEnv } from './license-email.mjs';
 import { parseSigningPrivateKey, publicKeyFromPrivate, rawPublicKeyBase64 } from './license-lease.mjs';
 import { createLicensesService, emptyLicensesState, licenseError } from './licenses.mjs';
+import { accountsMapper } from './mappers/accounts.mjs';
 import { licensesMapper } from './mappers/licenses.mjs';
 import { webhookLogMapper } from './mappers/webhook-log.mjs';
 import { renderAccountLoginErrorPage, renderUniqueInstallsPage } from './pages.mjs';
@@ -945,7 +947,7 @@ export function createSiteServer(env = process.env, options = {}) {
     ? createPostgresStore({ db, mapper })
     : createFileStore(filePath, { emptyState }));
   const accountConfig = resolveAccountConfig(env);
-  const accountsStore = createFileStore(resolveAccountsDbPath(env), { emptyState: emptyAccountsState });
+  const accountsStore = domainStore(accountsMapper, resolveAccountsDbPath(env), emptyAccountsState);
   const webhookLog = createWebhookLog({
     store: domainStore(webhookLogMapper, resolveWebhookLogDbPath(env), emptyWebhookLogState),
     now: options.now,
@@ -996,7 +998,7 @@ export function createSiteServer(env = process.env, options = {}) {
     }) : null,
     signingKey,
     leaseKid: licenseConfig.signingKeyId,
-    avatarDir: resolveAvatarDir(env),
+    avatars: db ? createPostgresAvatars(db) : createFileAvatars(resolveAvatarDir(env)),
     // Bound late like hamaPlanActive: the Hama service is created after this one.
     hamaUsage: async (keyId) => (hamaService ? hamaService.usageSummary(keyId) : null),
     syncHamaPlans: async () => hamaService?.syncSubscriptions(),
@@ -1094,6 +1096,7 @@ function databaseFromEnv(env, log) {
 function mappedFiles(env) {
   return [
     [licensesMapper.domain, resolveLicensesDbPath(env)],
+    [accountsMapper.domain, resolveAccountsDbPath(env)],
     [webhookLogMapper.domain, resolveWebhookLogDbPath(env)],
   ];
 }
