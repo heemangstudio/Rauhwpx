@@ -133,7 +133,33 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
     getStatus: () => ipcRenderer.invoke('rau:status'),
     openUpgrade: (url) => ipcRenderer.invoke('rau:open-upgrade', typeof url === 'string' ? url : ''),
   },
-  // 앱 요금제와 앱 안 결제. 결제 확인과 키 활성화는 메인이 하고, 렌더러는 요금제와 진행 상태만 받는다.
+  // 계정. 로그인(브라우저와 루프백)·세션·lease 는 메인이 다루고, 렌더러는 상태(AccountStatus)와 결과만 받는다.
+  account: {
+    getStatus: () => ipcRenderer.invoke('account:status'),
+    onChange: (callback) => {
+      const listener = (_event, status) => callback(status);
+      ipcRenderer.on('account:changed', listener);
+      return () => ipcRenderer.removeListener('account:changed', listener);
+    },
+    signIn: (provider, loginHint) => ipcRenderer.invoke('account:sign-in', provider, loginHint),
+    cancelSignIn: () => ipcRenderer.invoke('account:cancel-sign-in'),
+    replaceDevice: (deviceId) => ipcRenderer.invoke('account:replace-device', deviceId),
+    refresh: () => ipcRenderer.invoke('account:refresh'),
+    signOut: () => ipcRenderer.invoke('account:sign-out'),
+    removeDevice: (deviceId) => ipcRenderer.invoke('account:remove-device', deviceId),
+    updateName: (name) => ipcRenderer.invoke('account:update-name', name),
+    // 사진 바이트는 Uint8Array 로 보낸다. 형식과 1 MiB 한도는 메인이 다시 확인한다.
+    setAvatar: (bytes, type) => ipcRenderer.invoke('account:set-avatar', bytes instanceof ArrayBuffer ? new Uint8Array(bytes) : bytes, type),
+    removeAvatar: () => ipcRenderer.invoke('account:remove-avatar'),
+    getAvatar: () => ipcRenderer.invoke('account:get-avatar'),
+    redeem: (key) => ipcRenderer.invoke('account:redeem', key),
+    claim: (orderId, email) => ipcRenderer.invoke('account:claim', orderId, email),
+    deleteAccount: (confirm) => ipcRenderer.invoke('account:delete', confirm),
+    openManage: () => ipcRenderer.invoke('account:open-manage'),
+    // 답을 기다리지 않는다.
+    recordActivity: (kind, id) => ipcRenderer.send('account:record-activity', kind, id),
+  },
+  // 앱 요금제와 앱 안 결제. 결제 확인과 키 연결은 메인이 하고, 렌더러는 요금제와 진행 상태만 받는다.
   plan: {
     getStatus: () => ipcRenderer.invoke('plan:status'),
     startCheckout: (sku) => ipcRenderer.invoke('plan:start-checkout', String(sku ?? '')),
