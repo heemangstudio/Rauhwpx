@@ -14,9 +14,7 @@ import {
   resolveFeedbackProofKey,
   resolveGiftConfig,
   resolveGiftsDbPath,
-  resolveHamaConfig,
   resolveHamaDbPath,
-  resolveHamaUsageDir,
   resolveLicenseConfig,
   resolveLicensesDbPath,
   resolveRauConfig,
@@ -26,6 +24,7 @@ import {
   resolveWaitlistDbPath,
   resolveWebhookLogDbPath,
   resolveDownloadsDbPath,
+  retiredEnvNames,
 } from './config.mjs';
 import {
   DEFAULT_FEEDBACK_PROOF_KEY,
@@ -35,14 +34,13 @@ import {
 } from './feedback.mjs';
 import { GIFT_PROXY_PREFIX, createGiftsService, emptyGiftsState, parseGiftAmount } from './gifts.mjs';
 import { verifyGrobleWebhook } from './groble-webhook.mjs';
-import { HAMA_ANTHROPIC_PREFIX, HAMA_OPENAI_PREFIX, createHamaService, emptyHamaState } from './hama.mjs';
-import { createHamaProxy } from './hama-proxy.mjs';
 import { createHeldAlerter } from './held-alert.mjs';
 import { createEmailProvider, resendProviderFromEnv } from './license-email.mjs';
 import { parseSigningPrivateKey, publicKeyFromPrivate, rawPublicKeyBase64 } from './license-lease.mjs';
 import { createLicensesService, emptyLicensesState, licenseError } from './licenses.mjs';
 import { renderAccountLoginErrorPage, renderUniqueInstallsPage } from './pages.mjs';
 import { MAX_RAU_BODY_BYTES, createRauService, emptyRauState, rauRateLimited } from './rau.mjs';
+import { RAU_AGENT_PREFIX, createRauAgentProxy, createRauUpstream, leaseOf } from './rau-proxy.mjs';
 import { createRateLimiter } from './rate-limit.mjs';
 import { createFileStore } from './store.mjs';
 import { createTelegramSender } from './telegram.mjs';
@@ -216,26 +214,6 @@ async function readAccountJson(req) {
   }
 }
 
-/**
- * Basic was called Pro until 2026-10-31. An app that sends `X-Hama-Plan-Names: basic` hears the new
- * names; every other client (shipped apps, the website) still hears `edition: 'pro'` and
- * `rau_requires_pro`, the names it matches on.
- */
-export const PLAN_NAMES_HEADER = 'x-hama-plan-names';
-
-function acceptsBasicPlanName(req) {
-  return String(req.headers?.[PLAN_NAMES_HEADER] ?? '').toLowerCase().split(',').some((name) => name.trim() === 'basic');
-}
-
-export function legacyPlanNames(body) {
-  if (!body || typeof body !== 'object' || Array.isArray(body)) return body;
-  const out = { ...body };
-  if (out.edition === 'basic') out.edition = 'pro';
-  if (out.error === 'rau_requires_basic') out.error = 'rau_requires_pro';
-  if (out.reason === 'rau_requires_basic') out.reason = 'rau_requires_pro';
-  return out;
-}
-
 export function siteRequestListener({
   uniqueInstalls,
   waitlist,
@@ -243,7 +221,6 @@ export function siteRequestListener({
   licenses,
   accounts,
   gifts,
-  hama,
   rau,
   feedback,
   licenseConfig = {},
@@ -261,7 +238,6 @@ export function siteRequestListener({
   });
   return async (req, res) => {
     const ip = clientIp(req);
-    const planNames = acceptsBasicPlanName(req) ? (body) => body : legacyPlanNames;
     // 웹사이트는 text/plain 으로 보내 preflight 없이 다른 origin 에서 호출한다.
     let cors = {};
     const send = (status, body, headers = {}) => {
@@ -272,7 +248,7 @@ export function siteRequestListener({
         ...cors,
         ...headers,
       });
-      res.end(isHtml ? body : JSON.stringify(planNames(body)));
+      res.end(isHtml ? body : JSON.stringify(body));
     };
     const allow = (bucket, max, windowMs) => {
       if (limiter.check(`${bucket}:${ip}`, max, windowMs)) return;
@@ -322,7 +298,7 @@ export function siteRequestListener({
         if (!licenses) throw siteError('NOT_FOUND', 'not found');
       }
       if (pathname.startsWith('/v1/gift/') && !gifts) throw siteError('NOT_FOUND', 'not found');
-      if ((pathname.startsWith('/v1/rau/') || pathname === '/v1/admin/rau') && !rau) throw siteError('NOT_FOUND', 'not found');
+      if ((pathname.startsWith('/v1/rau/') || pathname === '/v1/admin/rau' || pathname.startsWith('/v1/admin/rau/')) && !rau) throw siteError('NOT_FOUND', 'not found');
       if (pathname.startsWith(`${GIFT_PROXY_PREFIX}/`)) {
         // Streams its own response (SSE), so it never goes through send().
         allow('gift-proxy', 600, MINUTE);
@@ -335,52 +311,18 @@ export function siteRequestListener({
         }
         return;
       }
-      if (pathname.startsWith('/v1/hama/') || pathname === '/v1/admin/hama' || pathname.startsWith('/v1/admin/hama/')) {
-        // Hama plan (hama.mjs). Every route is 404 while HAMA_ENABLED is off.
-        if (!hama) throw siteError('NOT_FOUND', 'not found');
-        if (pathname.startsWith(`${HAMA_ANTHROPIC_PREFIX}/`) || pathname.startsWith(`${HAMA_OPENAI_PREFIX}/`)) {
-          // Streams its own response (SSE), so it never goes through send().
-          allow('hama-proxy', 600, MINUTE);
-          try {
-            await hama.proxy.handle(req, res, pathname);
-          } catch (error) {
-            log(`[site-api] hama proxy failed: ${error?.message ?? error}`);
-            if (res.headersSent) res.destroy();
-            else send(500, { error: { code: 500, message: 'server_error' } });
-          }
-          return;
+      if (pathname.startsWith(`${RAU_AGENT_PREFIX}/`)) {
+        // The Rau agent (rau-proxy.mjs). Streams its own response (SSE), so it never goes through send().
+        // Per-principal limits live there; this per-IP one only stops floods.
+        allow('rau-agent', 600, MINUTE);
+        try {
+          await rau.agent.handle(req, res, pathname.slice(RAU_AGENT_PREFIX.length));
+        } catch (error) {
+          log(`[site-api] rau agent failed: ${error?.message ?? error}`);
+          if (res.headersSent) res.destroy();
+          else send(500, { type: 'error', error: { type: 'api_error', message: 'Server error.' } });
         }
-        switch (route) {
-          case 'GET /v1/hama/status':
-            allow('hama-status', 120, MINUTE);
-            req.resume?.();
-            send(200, await hama.status(bearerToken(req) || String(req.headers['x-api-key'] ?? '').trim()));
-            return;
-          case 'GET /v1/admin/hama':
-            allow('admin', 120, TEN_MINUTES);
-            send(200, await hama.admin.list(bearerToken(req), Object.fromEntries(searchParams)));
-            return;
-          case 'GET /v1/admin/hama/usage':
-            allow('admin', 120, TEN_MINUTES);
-            send(200, await hama.admin.usage(bearerToken(req), Object.fromEntries(searchParams)));
-            return;
-          case 'POST /v1/admin/hama/enroll': {
-            allow('admin', 120, TEN_MINUTES);
-            const token = bearerToken(req);
-            const body = await readJson(req);
-            // Only an existing license can be enrolled; the lookup also checks the token.
-            const keyId = typeof body?.keyId === 'string' ? body.keyId.trim() : '';
-            if (!keyId || !(await licenses.admin.lookup(token, { keyId })).licenses[0]) throw licenseError('invalid_key', 404);
-            send(200, await hama.admin.enroll(token, { ...body, keyId }));
-            return;
-          }
-          case 'POST /v1/admin/hama/disable':
-            allow('admin', 120, TEN_MINUTES);
-            send(200, await hama.admin.disable(bearerToken(req), await readJson(req)));
-            return;
-          default:
-            throw siteError('NOT_FOUND', 'not found');
-        }
+        return;
       }
       if (pathname.startsWith('/v1/account/')) {
         // App routes (no CORS). Every one answers accounts_not_configured until WORKOS_API_KEY is set.
@@ -488,6 +430,11 @@ export function siteRequestListener({
             allowAccount('account', 300, TEN_MINUTES);
             send(200, await accounts.recordStats(bearerToken(req), await readAccountJson(req)));
             return;
+          case 'POST /v1/account/rau-trial':
+            allowAccount('account', 300, TEN_MINUTES);
+            await readAccountJson(req);
+            send(200, await accounts.startRauTrial(bearerToken(req)));
+            return;
           case 'POST /v1/account/delete':
             allowAccount('account', 300, TEN_MINUTES);
             send(200, await accounts.deleteAccount(bearerToken(req), await readAccountJson(req)));
@@ -553,10 +500,6 @@ export function siteRequestListener({
             return;
           }
           log(`[site-api] groble ${event?.type} ${result.duplicate ? 'duplicate' : result.action}`);
-          // The key is saved either way; a failed sync heals on the key's next Hama call.
-          if (hama && result.keyId && !result.duplicate) {
-            await hama.syncSubscriptions().catch((error) => log(`[site-api] hama plan sync failed: ${error?.message ?? error}`));
-          }
           send(200, { ok: true, duplicate: result.duplicate, action: result.action });
           // Held orders and events we could not use (unknown type, unmatched subscription) stay visible in
           // `webhooks --held` and on the dashboard, and each one is emailed to management.
@@ -631,10 +574,11 @@ export function siteRequestListener({
           await readJson(req);
           send(200, await gifts.claim(bearerToken(req)));
           return;
-        // Hosted Rau-0.1. Per-license limits live in rau.mjs; these per-IP ones only stop floods.
+        // Hosted Rau. Per-principal limits live in rau.mjs; these per-IP ones only stop floods.
         case 'GET /v1/rau/status':
           if (!limiter.check(`rau-status:${ip}`, 120, MINUTE)) throw rauRateLimited(60);
-          send(200, await rau.status(bearerToken(req)));
+          req.resume?.();
+          send(200, await rau.status(leaseOf(req)));
           return;
         case 'POST /v1/rau/learn': {
           if (Number(req.headers['content-length']) > 4 * MAX_RAU_BODY_BYTES) {
@@ -644,12 +588,16 @@ export function siteRequestListener({
           }
           if (!limiter.check(`rau-learn:${ip}`, 120, MINUTE)) { req.resume?.(); throw rauRateLimited(60); }
           const raw = await readOrNull(req, MAX_RAU_BODY_BYTES);
-          send(200, await rau.learn(bearerToken(req), raw));
+          send(200, await rau.learn(leaseOf(req), raw));
           return;
         }
         case 'GET /v1/admin/rau':
           allow('admin', 120, TEN_MINUTES);
           send(200, await rau.admin.list(bearerToken(req)));
+          return;
+        case 'GET /v1/admin/rau/spend':
+          allow('admin', 120, TEN_MINUTES);
+          send(200, await rau.admin.spend(bearerToken(req), Object.fromEntries(searchParams)));
           return;
         case 'GET /v1/admin/gifts':
           allow('admin', 120, TEN_MINUTES);
@@ -916,6 +864,10 @@ export function createSiteServer(env = process.env, options = {}) {
     licenseConfig.publicKeyRawBase64 = rawPublicKeyBase64(publicKey);
   }
   const log = options.log ?? ((line) => process.stderr.write(`${line}\n`));
+  const retired = retiredEnvNames(env);
+  if (retired.length) log(`[site-api] retired variables are set and ignored: ${retired.join(', ')}`);
+  const rauConfig = resolveRauConfig(env);
+  for (const warning of rauConfig.warnings) log(`[site-api] ${warning}`);
   const accountConfig = resolveAccountConfig(env);
   const accountsStore = createFileStore(resolveAccountsDbPath(env), { emptyState: emptyAccountsState });
   const webhookLog = createWebhookLog({
@@ -925,6 +877,23 @@ export function createSiteServer(env = process.env, options = {}) {
   const alertProvider = options.alertProvider !== undefined ? options.alertProvider : resendProviderFromEnv(env);
   const webhookAlerts = createWebhookAlerter({ provider: alertProvider, now: options.now, log });
   const heldAlerts = createHeldAlerter({ provider: alertProvider, log });
+  // The old hosted Hama plan's hama.json is frozen: read once, never written. Its active plans keep Rau.
+  const legacyHamaStore = createFileStore(resolveHamaDbPath(env), { emptyState: () => ({ plans: {} }) });
+  let legacyPlans = null;
+  async function legacyRauPlan(keyId) {
+    legacyPlans ??= legacyHamaStore.load().then((state) => (state?.plans && typeof state.plans === 'object' ? state.plans : {}));
+    let plans;
+    try {
+      plans = await legacyPlans;
+    } catch (error) {
+      legacyPlans = null;
+      throw error;
+    }
+    const plan = Object.hasOwn(plans, keyId) ? plans[keyId] : undefined;
+    return plan?.status === 'active' ? { periodAnchor: plan.periodAnchor ?? null } : null;
+  }
+  // Created after accounts (it authenticates through them); accounts read it late.
+  let rau = null;
   const licenses = createLicensesService({
     store: createFileStore(resolveLicensesDbPath(env), { emptyState: emptyLicensesState }),
     uniqueInstallsStore: uniqueInstallsStore,
@@ -934,8 +903,8 @@ export function createSiteServer(env = process.env, options = {}) {
     onetimeProductIds: licenseConfig.onetimeProductIds,
     subscriptionProductIds: licenseConfig.subscriptionProductIds,
     signatureProductIds: licenseConfig.signatureProductIds,
-    basicProducts: licenseConfig.basicProducts,
     hamaProducts: licenseConfig.hamaProducts,
+    rauProducts: licenseConfig.rauProducts,
     products: licenseConfig.products,
     paymentGraceMs: licenseConfig.paymentGraceMs,
     paymentGraceMaxMs: licenseConfig.paymentGraceMaxMs,
@@ -948,8 +917,7 @@ export function createSiteServer(env = process.env, options = {}) {
     grandfatherPlatforms: licenseConfig.grandfatherPlatforms,
     adminToken: licenseConfig.adminToken,
     downloadUrl: licenseConfig.downloadUrl,
-    // Bound late: the Hama service authenticates through this one. With HAMA_ENABLED off no plan is active.
-    hamaPlanActive: async (keyId) => hamaService?.planActive(keyId) ?? false,
+    legacyRauPlan,
     accountForEmail: async (emailLower) => accountIdForEmail(await accountsStore.load(), emailLower),
     webhookLog,
     now: options.now,
@@ -969,8 +937,9 @@ export function createSiteServer(env = process.env, options = {}) {
     signingKey,
     leaseKid: licenseConfig.signingKeyId,
     avatarDir: resolveAvatarDir(env),
-    // Bound late like hamaPlanActive: the Hama service is created after this one.
-    hamaUsage: async (keyId) => (hamaService ? hamaService.usageSummary(keyId) : null),
+    // Bound late: the Rau service authenticates through this one.
+    rauConfigured: () => Boolean(rau?.configured),
+    rauUsage: async (principal) => (rau ? rau.usage(principal) : null),
     providers: accountConfig.providers,
     deviceLimit: accountConfig.deviceLimit,
     adminToken: licenseConfig.adminToken,
@@ -986,32 +955,19 @@ export function createSiteServer(env = process.env, options = {}) {
     now: options.now,
     log,
   });
-  const hamaConfig = resolveHamaConfig(env);
-  const hamaService = hamaConfig.enabled ? createHamaService({
-    store: createFileStore(resolveHamaDbPath(env), { emptyState: emptyHamaState }),
-    authenticate: (lease) => accounts.authenticateLease(lease, { purpose: 'hama' }),
-    subscriptions: () => licenses.hamaSubscriptions(),
-    config: hamaConfig,
-    adminToken: licenseConfig.adminToken,
-    now: options.now,
-    log,
-    usageLogDir: resolveHamaUsageDir(env),
-  }) : null;
-  const hama = hamaService && {
-    ...hamaService,
-    proxy: createHamaProxy({ hama: hamaService, config: hamaConfig, fetchImpl: options.fetchImpl, now: options.now, log }),
-  };
-  const rau = createRauService({
+  const rauUpstream = createRauUpstream({ config: rauConfig, fetchImpl: options.fetchImpl, now: options.now, log });
+  const rauService = createRauService({
     store: createFileStore(resolveRauDbPath(env), { emptyState: emptyRauState }),
-    // A revoked or expired key still authenticates here, so it hears rau_requires_basic instead of 401.
-    authenticate: (lease) => accounts.authenticateLease(lease, { allowInactive: true, withRauPlan: true, purpose: 'rau' }),
-    config: resolveRauConfig(env),
-    upgradeUrl: licenseConfig.basicUpgradeUrl,
+    // A revoked or expired key still authenticates here, so it hears rau_plan_required instead of 401.
+    authenticate: (lease) => accounts.authenticateLease(lease, { allowInactive: true, withRau: true, purpose: 'rau' }),
+    upstream: rauUpstream,
+    config: rauConfig,
+    upgradeUrl: licenseConfig.rauUpgradeUrl,
     adminToken: licenseConfig.adminToken,
-    fetchImpl: options.fetchImpl,
     now: options.now,
     log,
   });
+  rau = { ...rauService, agent: createRauAgentProxy({ rau: rauService, upstream: rauUpstream, now: options.now, log }) };
   const feedback = createFeedbackService({
     dir: resolveFeedbackDir(env),
     proofKey: resolveFeedbackProofKey(env) || DEFAULT_FEEDBACK_PROOF_KEY,
@@ -1026,7 +982,7 @@ export function createSiteServer(env = process.env, options = {}) {
       log,
     }),
   });
-  const listener = siteRequestListener({ uniqueInstalls, waitlist, downloads, licenses, accounts, gifts, hama, rau, feedback, licenseConfig, webhookLog, webhookAlerts, heldAlerts, log });
+  const listener = siteRequestListener({ uniqueInstalls, waitlist, downloads, licenses, accounts, gifts, rau, feedback, licenseConfig, webhookLog, webhookAlerts, heldAlerts, log });
   setImmediate(() => { void feedback.prune().catch((error) => log(`[site-api] feedback prune failed: ${error?.message ?? error}`)); });
   // Retry any key email that was queued before a restart.
   setImmediate(() => { void licenses.deliverPendingEmails().catch(() => {}); });

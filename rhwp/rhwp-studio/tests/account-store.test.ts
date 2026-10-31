@@ -1,7 +1,16 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { accountRenewalPrompt, deleteConfirmMatches, validateAccountName } from '../src/ui/account/account-format.ts';
+import {
+  accountRenewalPrompt,
+  deleteConfirmMatches,
+  rauCredits,
+  rauCreditsLine,
+  rauResetLine,
+  trialAvailable,
+  trialLine,
+  validateAccountName,
+} from '../src/ui/account/account-format.ts';
 import { createAccountStore, desktopAccountApi, recordAccountActivity, setAccountApi } from '../src/ui/account/account-store.ts';
 import type { AccountActivityKind, AccountStatus, DesktopAccountApi } from '../src/ui/account/account-types.ts';
 import { AVATAR_MAX_BYTES, AVATAR_SIZE, avatarCrop, encodeAvatar } from '../src/ui/account/avatar-image.ts';
@@ -137,8 +146,8 @@ test('names follow the server rule of 1 to 30 characters without control charact
 
 test('the renewal notice follows the account plan', () => {
   assert.equal(accountRenewalPrompt(signedOut()), null);
-  assert.equal(accountRenewalPrompt(signedIn(null, { tier: 'basic' })), null);
-  assert.equal(accountRenewalPrompt(signedIn(null, { tier: 'basic', paymentFailed: true }))?.kind, 'payment_failed');
+  assert.equal(accountRenewalPrompt(signedIn(null, { tier: 'hama' })), null);
+  assert.equal(accountRenewalPrompt(signedIn(null, { tier: 'hama', paymentFailed: true }))?.kind, 'payment_failed');
   const lapsed = {
     ...signedIn(),
     licenses: [{
@@ -147,7 +156,39 @@ test('the renewal notice follows the account plan', () => {
     }],
   };
   assert.equal(accountRenewalPrompt(lapsed)?.kind, 'lapsed');
+  assert.equal(accountRenewalPrompt(lapsed)?.title, 'Hama 기간이 끝났어요');
+  assert.equal(accountRenewalPrompt({ ...lapsed, licenses: [{ ...lapsed.licenses[0]!, edition: 'rau' }] })?.title, 'Rau 기간이 끝났어요');
   assert.equal(accountRenewalPrompt({ ...lapsed, licenses: [{ ...lapsed.licenses[0]!, plan: 'lifetime' }] }), null);
+});
+
+test('Rau credits show what is left of the allowance, with the reset day or the trial days', () => {
+  const day = 86_400_000;
+  const now = Date.UTC(2026, 10, 1, 3);
+  assert.equal(rauCredits(null), null);
+  assert.equal(rauCredits({ eligible: false, source: null, allowanceUsd: null, usedUsd: null, remainingUsd: null, resetsAt: null }), null);
+  const plan = rauCredits({ eligible: true, source: 'plan', allowanceUsd: 8, usedUsd: 2.8, remainingUsd: 5.2, resetsAt: Date.UTC(2026, 10, 30, 3) })!;
+  assert.equal(rauCreditsLine(plan), '$5.20 남음');
+  assert.equal(rauResetLine(plan), '11월 30일 초기화');
+  // 남은 값이 없으면 쓴 값으로 셈하고, 넘치는 값은 한도로 자른다.
+  assert.equal(rauCredits({ eligible: true, source: 'plan', allowanceUsd: 8, usedUsd: 3, remainingUsd: null, resetsAt: null })!.remainingUsd, 5);
+  assert.equal(rauCredits({ eligible: true, source: 'plan', allowanceUsd: 8, usedUsd: 0, remainingUsd: 12, resetsAt: null })!.remainingUsd, 8);
+  // 체험은 다시 차지 않아서 초기화 날짜를 보이지 않고, 남은 날을 센다.
+  const trialCredits = rauCredits({ eligible: true, source: 'trial', allowanceUsd: 2, usedUsd: 0.65, remainingUsd: 1.35, resetsAt: now + 5 * day })!;
+  assert.equal(rauResetLine(trialCredits), '');
+  const trial = { state: 'active' as const, startedAt: now - 2 * day, endsAt: now + 5 * day - 1000, days: 7, allowanceUsd: 2 };
+  assert.equal(trialLine(trial, now), '무료 체험 · 5일 남음');
+  assert.equal(trialLine({ ...trial, endsAt: now + 3_600_000 }, now), '무료 체험 · 1일 남음');
+  assert.equal(trialLine({ ...trial, state: 'ended' }, now), '');
+});
+
+test('the Rau trial is offered once, only to signed-in accounts that are not on Rau', () => {
+  const available = { state: 'available' as const, startedAt: null, endsAt: null, days: 7, allowanceUsd: 2 };
+  assert.equal(trialAvailable(signedOut()), false);
+  assert.equal(trialAvailable({ ...signedIn(), trial: available }), true);
+  assert.equal(trialAvailable({ ...signedIn(null, { tier: 'hama' }), trial: available }), true);
+  assert.equal(trialAvailable({ ...signedIn(null, { tier: 'rau' }), trial: available }), false);
+  assert.equal(trialAvailable({ ...signedIn(), trial: { ...available, state: 'ended' } }), false);
+  assert.equal(trialAvailable({ ...signedIn(), trial: null }), false);
 });
 
 test('the avatar crop takes the centered square and never upscales', () => {

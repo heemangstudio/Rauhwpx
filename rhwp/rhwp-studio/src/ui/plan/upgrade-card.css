@@ -18,19 +18,6 @@
   flex: 0 1 auto;
 }
 
-.ag-pricing-badge {
-  padding: 2px 6px;
-  border-radius: var(--ag-r-chip);
-  background: var(--n-ink-fill-hover);
-  color: var(--n-ink-secondary);
-  font-size: var(--ag-fs-meta);
-  line-height: var(--ag-lh-tight);
-}
-
-.ag-pricing-badge[hidden] {
-  display: none;
-}
-
 .ag-pricing-close {
   display: inline-flex;
   align-items: center;
@@ -83,7 +70,7 @@
   box-shadow: inset 0 0 0 1.5px var(--n-ink-secondary);
 }
 
-/* Hama 칸은 앱 하마의 파랑을 마크와 짚은 테두리에만 쓴다. */
+/* Hama 칸은 앱 하마의 파랑을 마크와 짚은 테두리에만 쓴다. Rau 칸은 잉크색 Rau 마크만 둔다. */
 .ag-pricing-col[data-plan='hama'] {
   --plan-hama: #3d9bd1;
 }
@@ -96,12 +83,25 @@
   box-shadow: inset 0 0 0 1.5px color-mix(in oklab, var(--plan-hama) 70%, transparent);
 }
 
-.ag-pricing-hama-mark {
+.ag-pricing-mark {
+  display: inline-block;
   width: 14px;
   height: 14px;
   margin-right: 6px;
-  color: var(--plan-hama);
   vertical-align: -1px;
+}
+
+.ag-pricing-mark-hama {
+  color: var(--plan-hama);
+}
+
+.ag-pricing-mark-rau {
+  width: 16px;
+  height: 16px;
+  vertical-align: -3px;
+  background-color: currentColor;
+  -webkit-mask: url('/icons/rau.png') center / contain no-repeat;
+  mask: url('/icons/rau.png') center / contain no-repeat;
 }
 
 .ag-pricing-name {
@@ -155,9 +155,16 @@
 
 .ag-pricing-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
   min-height: 32px;
   align-items: center;
+}
+
+/* 체험 단추와 체험 중 표시는 한 줄을 다 쓰고, 결제 단추는 그 아래에 둘이 선다. */
+.ag-pricing-actions .ag-pricing-btn-trial,
+.ag-pricing-actions .ag-pricing-trial-tag {
+  flex: 1 0 100%;
 }
 
 .ag-pricing-current {

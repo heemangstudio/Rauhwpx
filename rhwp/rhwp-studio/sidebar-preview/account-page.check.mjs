@@ -93,9 +93,9 @@ export async function checkAccountPage({ page, open, screenshot }) {
   assert.equal(await page.$('.acct-signed .acct-device-list [data-device-id="dev-office"]'), null, 'the removed device is gone');
 
   // 이름: 비우면 막고, 새 이름은 저장된다.
-  await open('reset=1&home=1&account=basic');
+  await open('reset=1&home=1&account=hama');
   await openFromButton(page);
-  await screenshot('account-page-pro');
+  await screenshot('account-page-hama');
   await page.click('.acct-name-edit');
   await page.$eval('.acct-name-input', (input) => { input.value = '   '; });
   await page.click('.acct-name-form button[type="submit"]');
@@ -169,9 +169,9 @@ export async function checkAccountPage({ page, open, screenshot }) {
 
   // 로그아웃 상태의 결제: 카드가 닫히고 로그인으로 간 뒤, 로그인하면 같은 칸의 카드로 돌아온다.
   await open('reset=1&home=1&account=signed-out');
-  await page.evaluate(() => window.dispatchEvent(new CustomEvent('rhwp:open-plan-card', { detail: { focus: 'basic' } })));
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent('rhwp:open-plan-card', { detail: { focus: 'hama' } })));
   await page.waitForSelector('.ag-pricing-card', { visible: true });
-  await page.click('.ag-pricing-col[data-plan="basic"] [data-sku="basicMonthly"]');
+  await page.click('.ag-pricing-col[data-plan="hama"] [data-sku="hamaMonthly"]');
   await page.waitForSelector('.acct-page.acct-page-open', { visible: true });
   await page.waitForFunction(() => !document.querySelector('.ag-pricing-card'));
   assert.deepEqual(await page.evaluate(() => window.sidebarPreview.plan.checkouts), [], 'no checkout while signed out');
@@ -184,28 +184,61 @@ export async function checkAccountPage({ page, open, screenshot }) {
   await page.click('.acct-page [data-provider="google"]');
   await page.waitForFunction(() => !document.querySelector('.acct-page'), { timeout: 6000 });
   assert.ok((await calls(page)).includes('signIn:google:sign_up'), 'sign-up is passed with the sign-in');
-  await page.waitForSelector('.ag-pricing-col[data-plan="basic"][data-focus="true"]', { visible: true });
-  await page.click('.ag-pricing-col[data-plan="hama"] [data-sku="hamaMonthly"]');
+  // 로그인한 계정은 Hama 라 Rau 만 남는다.
+  await page.waitForSelector('.ag-pricing-col[data-plan="hama"][data-focus="true"]', { visible: true });
+  await page.click('.ag-pricing-col[data-plan="rau"] [data-sku="rauMonthly"]');
   await page.waitForSelector('.ag-pricing-card[data-view="waiting"]');
-  assert.deepEqual(await page.evaluate(() => window.sidebarPreview.plan.checkouts), ['hamaMonthly']);
+  assert.deepEqual(await page.evaluate(() => window.sidebarPreview.plan.checkouts), ['rauMonthly']);
 
-  // 계정 페이지의 Hama 자리: 연간을 누르면 그 자리에서 결제 확인을 기다린다.
-  await open('reset=1&home=1&account=basic&checkoutHold=1');
+  // 계정 페이지의 Rau 자리(Hama 계정): 체험 단추가 먼저 서고, 연간을 누르면 그 자리에서 결제 확인을 기다린다.
+  await open('reset=1&home=1&account=hama&checkoutHold=1');
   await openFromButton(page);
-  await page.click('.acct-hama-offer [data-sku="hamaYearly"]');
-  await page.waitForSelector('.acct-hama-offer .acct-offer-wait', { visible: true });
-  assert.deepEqual(await page.evaluate(() => window.sidebarPreview.plan.checkouts), ['hamaYearly']);
+  assert.deepEqual(await page.$$eval('.acct-offer', (nodes) => nodes.map((node) => node.dataset.plan)), ['rau']);
+  assert.equal(await page.$eval('.acct-offer[data-plan="rau"] .acct-offer-trial', (node) => node.textContent), '7일 무료 체험');
+  await page.click('.acct-offer[data-plan="rau"] [data-sku="rauYearly"]');
+  await page.waitForSelector('.acct-offer[data-plan="rau"] .acct-offer-wait', { visible: true });
+  assert.deepEqual(await page.evaluate(() => window.sidebarPreview.plan.checkouts), ['rauYearly']);
   await page.evaluate(() => window.sidebarPreview.plan.expireCheckout());
   await page.waitForFunction(() => !document.querySelector('.acct-offer-wait'));
   assert.match(await sectionError(page, 'plan'), /결제 확인 시간이 지났어요/);
-  await page.click('.acct-hama-offer [data-sku="hamaMonthly"]');
-  await page.waitForSelector('.acct-hama-offer .acct-offer-wait', { visible: true });
-  assert.deepEqual(await page.evaluate(() => window.sidebarPreview.plan.checkouts), ['hamaYearly', 'hamaMonthly']);
+  await page.click('.acct-offer[data-plan="rau"] [data-sku="rauMonthly"]');
+  await page.waitForSelector('.acct-offer[data-plan="rau"] .acct-offer-wait', { visible: true });
+  assert.deepEqual(await page.evaluate(() => window.sidebarPreview.plan.checkouts), ['rauYearly', 'rauMonthly']);
 
-  // 무료 계정에서도 Pro 와 Hama 가 같은 카드 안에 나란히 놓인다.
+  // 무료 계정에서도 Hama 와 Rau 가 같은 카드 안에 나란히 놓인다. 사용량에는 Rau 크레딧이 없다.
   await open('reset=1&home=1&account=free');
   await openFromButton(page);
+  assert.deepEqual(await page.$$eval('.acct-offer', (nodes) => nodes.map((node) => node.dataset.plan)), ['hama', 'rau']);
+  assert.equal(await page.$eval('.acct-rau-credits', (node) => node.hidden), true);
+  assert.deepEqual(await page.$$eval('.acct-stat', (nodes) => nodes.map((node) => node.dataset.stat)), ['sessions', 'documents']);
+  assert.doesNotMatch(await page.$eval('.acct-section[data-section="plan"]', (node) => node.textContent), /Haiku|Claude|DeepSeek|Codex|OpenRouter/);
   await screenshot('account-plan-comparison');
+  // 체험을 시작하면 그 자리에서 Rau 체험 중이 되고, 계속 쓸 Rau 결제를 권한다.
+  await page.click('.acct-offer-trial');
+  await page.waitForFunction(() => document.querySelector('.acct-plan-tier')?.textContent === 'Rau');
+  assert.ok((await calls(page)).includes('startRauTrial'));
+  assert.equal(await page.$eval('.acct-rau-credits-meta', (node) => node.textContent), '무료 체험 · 7일 남음');
+  assert.match(await page.$eval('.acct-rau-credits-value', (node) => node.textContent), /\$2\.00 남음 \/ \$2\.00/);
+  assert.deepEqual(await page.$$eval('.acct-offer', (nodes) => nodes.map((node) => node.dataset.plan)), ['rau']);
+  assert.equal(await page.$('.acct-offer-trial'), null);
+
+  // Rau 요금제: 크레딧 남은 금액과 초기화 날짜, 더 올라갈 요금제는 없다.
+  await open('reset=1&account=rau&open=account');
+  await page.waitForSelector('.acct-page .acct-rau-credits:not([hidden])', { visible: true });
+  assert.match(await page.$eval('.acct-rau-credits-value', (node) => node.textContent), /\$5\.20 남음 \/ \$8\.00/);
+  assert.match(await page.$eval('.acct-rau-credits-meta', (node) => node.textContent), /초기화$/);
+  assert.equal(await page.$('.acct-offer'), null);
+  await screenshot('account-page-rau');
+  // 체험 중: 남은 날과 크레딧.
+  await open('reset=1&account=rau-trial&open=account');
+  await page.waitForSelector('.acct-page .acct-rau-credits:not([hidden])', { visible: true });
+  assert.equal(await page.$eval('.acct-rau-credits-meta', (node) => node.textContent), '무료 체험 · 5일 남음');
+  await screenshot('account-page-rau-trial');
+  // 체험이 끝난 무료 계정: 체험 단추 없이 구독을 권한다.
+  await open('reset=1&account=trial-ended&open=account');
+  await page.waitForSelector('.acct-page .acct-offer[data-plan="rau"]', { visible: true });
+  assert.equal(await page.$('.acct-offer-trial'), null);
+  assert.equal(await page.$eval('.acct-offer-trial-ended', (node) => node.textContent), '무료 체험이 끝났어요');
 
   // plan 을 넘기지 않고 열어도 데스크톱 API 에서 업그레이드 칸을 복원한다.
   await open('reset=1&home=1&account=free&checkoutHold=1');
@@ -214,11 +247,11 @@ export async function checkAccountPage({ page, open, screenshot }) {
     const { openAccountPage } = await import('/src/ui/account/account-page.ts');
     openAccountPage();
   });
-  await page.waitForSelector('.acct-offer[data-plan="basic"] [data-sku="basicMonthly"]:not(:disabled)', { visible: true });
+  await page.waitForSelector('.acct-offer[data-plan="hama"] [data-sku="hamaMonthly"]:not(:disabled)', { visible: true });
   assert.equal(await page.$$eval('.acct-offer', (nodes) => nodes.length), 2, 'default account page shows both upgrades');
-  await page.click('.acct-offer[data-plan="basic"] [data-sku="basicMonthly"]');
-  await page.waitForSelector('.acct-offer[data-plan="basic"] .acct-offer-wait', { visible: true });
-  assert.deepEqual(await page.evaluate(() => window.sidebarPreview.plan.checkouts), ['basicMonthly']);
+  await page.click('.acct-offer[data-plan="hama"] [data-sku="hamaMonthly"]');
+  await page.waitForSelector('.acct-offer[data-plan="hama"] .acct-offer-wait', { visible: true });
+  assert.deepEqual(await page.evaluate(() => window.sidebarPreview.plan.checkouts), ['hamaMonthly']);
 
   // 설정의 계정 탭은 요약 단추 대신 전체 계정 화면을 안에 붙인다.
   await open('reset=1&fullscreen=1&account=free&checkoutHold=1');
@@ -233,9 +266,9 @@ export async function checkAccountPage({ page, open, screenshot }) {
   await page.click('#ag-settings-pane-account .acct-name-form button[type="submit"]');
   await page.waitForFunction(() => document.querySelector('#ag-settings-pane-account .acct-name')?.textContent === '설정 사용자');
   await screenshot('settings-account-full');
-  await page.click('#ag-settings-pane-account [data-sku="basicMonthly"]');
+  await page.click('#ag-settings-pane-account [data-sku="hamaMonthly"]');
   await page.waitForSelector('#ag-settings-pane-account .acct-offer-wait', { visible: true });
-  assert.deepEqual(await page.evaluate(() => window.sidebarPreview.plan.checkouts), ['basicMonthly']);
+  assert.deepEqual(await page.evaluate(() => window.sidebarPreview.plan.checkouts), ['hamaMonthly']);
   await page.click('#ag-settings-tab-theme');
   await page.waitForFunction(() => !document.querySelector('.acct-embedded'));
   await page.click('#ag-settings-tab-account');

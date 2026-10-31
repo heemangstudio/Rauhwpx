@@ -1,6 +1,8 @@
 /**
  * 데스크톱 계정 API(rhwpDesktop.account)의 미리보기 대역. `?account=` 로 시작 장면을 고른다(없으면 웹처럼 API 없음):
- * signed-out · signing-in · choose-device · free · pro · hama · legacy · payment-failed · offline.
+ * signed-out · signing-in · choose-device · free · hama · rau · rau-trial · trial-ended · payment-failed · offline.
+ * free·hama 는 Rau 체험을 쓸 수 있고(trial available), rau-trial 은 체험 중, trial-ended 는 체험이 끝난 무료 계정이다.
+ * 체험 시작(startRauTrial)은 0.35초 뒤 Rau 체험 중이 된다. `&trialFail=trial_used` 처럼 주면 그 코드로 거절한다.
  *
  * 로그인은 브라우저를 열지 않고 1.2초 뒤에 끝난다(이메일에 `limit` 이 들면 기기 고르기, `fail` 이면 실패).
  * `&accountHold=1` 이면 로그인 중에 머문다. 키 등록은 `HAMA-` 키를 받고 `HAMA-FAIL…`(없는 키), `HAMA-ELSE…`
@@ -16,12 +18,13 @@ import type {
   AccountProfile,
   AccountResult,
   AccountStatus,
+  AccountTrial,
   DesktopAccountApi,
 } from '../ui/account/account-types.ts';
 import type { PlanTier } from '../ui/plan/plan-types.ts';
 
 export const mockAccountScenarios = [
-  'signed-out', 'signing-in', 'choose-device', 'free', 'basic', 'hama', 'legacy', 'payment-failed', 'offline',
+  'signed-out', 'signing-in', 'choose-device', 'free', 'hama', 'rau', 'rau-trial', 'trial-ended', 'payment-failed', 'offline',
 ] as const;
 export type MockAccountScenario = (typeof mockAccountScenarios)[number];
 
@@ -45,6 +48,10 @@ const MESSAGES: Record<string, string> = {
   confirm_mismatch: '이메일이 맞지 않아요.',
   subscription_active: '구독을 먼저 해지해 주세요.',
   sign_in_required: '먼저 로그인해 주세요.',
+  trial_used: '이미 무료 체험을 썼어요.',
+  rau_active: '이미 Rau를 쓰고 있어요.',
+  rau_unavailable: '지금은 Rau 체험을 시작할 수 없어요. 잠시 후 다시 시도해 주세요.',
+  rate_limited: '잠시 후 다시 시도해 주세요.',
   already_signed_in: '이미 로그인했어요.',
   invalid: '요청을 처리하지 못했어요.',
 };
@@ -56,10 +63,26 @@ export function mockAccountScenario(params: URLSearchParams): MockAccountScenari
 
 /** 장면이 정하는 요금제 등급. 로그아웃은 무료. */
 export function mockAccountTier(scenario: MockAccountScenario): PlanTier {
-  if (scenario === 'hama') return 'hama';
-  if (scenario === 'legacy') return 'legacy';
-  if (scenario === 'basic' || scenario === 'payment-failed' || scenario === 'offline') return 'basic';
+  if (scenario === 'rau' || scenario === 'rau-trial') return 'rau';
+  if (scenario === 'hama' || scenario === 'payment-failed' || scenario === 'offline') return 'hama';
   return 'free';
+}
+
+const TRIAL_DAYS = 7;
+const TRIAL_ALLOWANCE_USD = 2;
+const RAU_ALLOWANCE_USD = 8;
+
+function trialFor(state: AccountTrial['state'], now = Date.now()): AccountTrial {
+  if (state === 'available') return { state, startedAt: null, endsAt: null, days: TRIAL_DAYS, allowanceUsd: TRIAL_ALLOWANCE_USD };
+  // 진행 중은 이틀째(5일 남음), 끝난 체험은 열흘 전에 시작했다.
+  const startedAt = now - (state === 'active' ? 2 : 10) * DAY_MS;
+  return { state, startedAt, endsAt: startedAt + TRIAL_DAYS * DAY_MS, days: TRIAL_DAYS, allowanceUsd: TRIAL_ALLOWANCE_USD };
+}
+
+function scenarioTrial(scenario: MockAccountScenario | 'signed-in'): AccountTrial['state'] {
+  if (scenario === 'rau-trial') return 'active';
+  if (scenario === 'trial-ended' || scenario === 'rau') return 'ended';
+  return 'available';
 }
 
 export function mockAccountSignedIn(scenario: MockAccountScenario): boolean {
@@ -109,22 +132,35 @@ function fullDevices(): AccountDevice[] {
 
 function planFor(tier: PlanTier, scenario: MockAccountScenario | 'signed-in'): AccountPlan {
   const now = Date.now();
+  const noRau = { eligible: false, source: null, allowanceUsd: null, usedUsd: null, remainingUsd: null, resetsAt: null } as const;
   if (tier === 'free') {
-    return { tier, edition: null, plan: null, expiresAt: null, autoRenew: null, paymentFailed: false, paymentGraceEndsAt: null, manageUrl: null };
+    return {
+      tier, keyId: null, edition: null, plan: null, expiresAt: null, autoRenew: null, paymentFailed: false, paymentGraceEndsAt: null,
+      manageUrl: null, rau: noRau,
+    };
   }
-  if (tier === 'legacy') {
-    return { tier, edition: 'signature', plan: 'lifetime', expiresAt: null, autoRenew: null, paymentFailed: false, paymentGraceEndsAt: null, manageUrl: null };
+  if (scenario === 'rau-trial') {
+    const trial = trialFor('active', now);
+    return {
+      tier, keyId: null, edition: null, plan: null, expiresAt: null, autoRenew: null, paymentFailed: false, paymentGraceEndsAt: null,
+      manageUrl: null,
+      rau: { eligible: true, source: 'trial', allowanceUsd: TRIAL_ALLOWANCE_USD, usedUsd: 0.65, remainingUsd: 1.35, resetsAt: trial.endsAt },
+    };
   }
   const failed = scenario === 'payment-failed';
   return {
     tier,
-    edition: tier === 'hama' ? 'hama' : 'basic',
+    keyId: tier === 'rau' ? 'key-PLAN1' : 'key-H8YJA',
+    edition: tier,
     plan: failed ? 'annual' : 'monthly',
     expiresAt: now + (failed ? -2 : 24) * DAY_MS,
     autoRenew: true,
     paymentFailed: failed,
     paymentGraceEndsAt: failed ? now + 5 * DAY_MS : null,
     manageUrl: 'https://groble.im/manage/purchase',
+    rau: tier === 'rau'
+      ? { eligible: true, source: 'plan', allowanceUsd: RAU_ALLOWANCE_USD, usedUsd: 2.8, remainingUsd: 5.2, resetsAt: now + 24 * DAY_MS }
+      : noRau,
   };
 }
 
@@ -155,13 +191,15 @@ export interface MockAccount {
   setScenario(scenario: MockAccountScenario): void;
   /** 결제가 끝나 요금제가 바뀐 것처럼 등급을 바꾼다(로그인했을 때만). */
   setTier(tier: PlanTier): void;
+  /** 다음 체험 시작을 이 코드로 거절한다(null 이면 받는다). */
+  setTrialFailure(code: string | null): void;
   readonly activity: Array<{ kind: AccountActivityKind; id: string }>;
   readonly calls: string[];
 }
 
 export function createMockAccount(
   scenario: MockAccountScenario | null,
-  options: { report: (message: string) => void; hold: boolean },
+  options: { report: (message: string) => void; hold: boolean; trialFailure?: string | null },
 ): MockAccount | null {
   if (!scenario) return null;
   const listeners = new Set<(status: AccountStatus) => void>();
@@ -169,6 +207,7 @@ export function createMockAccount(
   const calls: string[] = [];
   let avatarUrl: string | null = null;
   let timer: number | null = null;
+  let trialFailure = options.trialFailure ?? null;
   let status: AccountStatus = build(scenario);
 
   function base(): AccountStatus {
@@ -185,6 +224,7 @@ export function createMockAccount(
       devices: [],
       deviceLimit: 5,
       stats: null,
+      trial: null,
       sync: { lastSyncAt: null, offline: false, error: null },
       localKey: null,
     };
@@ -193,7 +233,7 @@ export function createMockAccount(
   function signedIn(tier: PlanTier, from: MockAccountScenario | 'signed-in'): AccountStatus {
     const now = Date.now();
     const plan = planFor(tier, from);
-    avatarUrl = tier === 'free' || tier === 'legacy' ? null : sampleAvatar();
+    avatarUrl = tier === 'free' ? null : sampleAvatar();
     const account: AccountProfile = {
       id: 'acct_0f3a9c21b7d4e58a6c',
       email: 'jiwoo@example.com',
@@ -207,14 +247,14 @@ export function createMockAccount(
       state: 'signed_in',
       account,
       plan,
-      licenses: tier === 'free' ? [] : [licenseFor(plan)],
+      licenses: plan.edition ? [licenseFor(plan)] : [],
       devices: sampleDevices(),
       stats: {
         agentSessions: tier === 'free' ? 0 : 128,
         documentsEdited: tier === 'free' ? 3 : 46,
         since: account.createdAt,
-        hama: tier === 'hama' ? { usedUsd: 6.42, allowanceUsd: 20, periodEndsAt: now + 18 * DAY_MS, calls: 412 } : null,
       },
+      trial: trialFor(scenarioTrial(from), now),
       sync: { lastSyncAt: now - 60_000, offline: from === 'offline', error: null },
       localKey: tier === 'free' ? { maskedKey: 'HAMA-…2000', state: 'linked_elsewhere' } : null,
     };
@@ -275,7 +315,7 @@ export function createMockAccount(
             emit({ ...status, state: 'choose_device', deviceChoice: { limit: 5, devices: fullDevices() } });
           } else {
             const newAccount = loginHint === 'new@example.com';
-            const next = signedIn(newAccount ? 'free' : 'basic', 'signed-in');
+            const next = signedIn(newAccount ? 'free' : 'hama', 'signed-in');
             emit({ ...next, account: { ...next.account!, provider,
               ...(newAccount ? { createdAt: Date.now(), email: loginHint } : {}) } });
           }
@@ -293,7 +333,7 @@ export function createMockAccount(
       calls.push(`replaceDevice:${deviceId}`);
       if (status.state !== 'choose_device') return fail('invalid');
       if (!status.deviceChoice?.devices.some((entry) => entry.id === deviceId)) return fail('device_not_found');
-      const next = signedIn('basic', 'signed-in');
+      const next = signedIn('hama', 'signed-in');
       const kept = status.deviceChoice.devices.filter((entry) => entry.id !== deviceId);
       emit({ ...next, devices: [device('dev-this', '지우의 MacBook Air', 'darwin', 0, true), ...kept] });
       return ok();
@@ -354,8 +394,8 @@ export function createMockAccount(
       if (normalized.startsWith('HAMA-ELSE')) return fail('key_linked_elsewhere');
       const masked = maskKey(normalized);
       if (status.licenses.some((entry) => entry.maskedKey === masked)) return linked(true);
-      const plan = status.plan.tier === 'free' ? planFor('basic', 'signed-in') : status.plan;
-      const license = { ...licenseFor(planFor('basic', 'signed-in'), masked), primary: status.licenses.length === 0 };
+      const plan = status.plan.tier === 'free' ? planFor('hama', 'signed-in') : status.plan;
+      const license = { ...licenseFor(planFor('hama', 'signed-in'), masked), primary: status.licenses.length === 0 };
       emit({ ...status, lastError: null, plan, licenses: [...status.licenses, license] });
       options.report('License linked (sample)');
       return linked(false);
@@ -365,8 +405,8 @@ export function createMockAccount(
       const blocked = signedInOnly();
       if (blocked) return blocked;
       if (orderId.includes('missing') || !email.includes('@')) return fail('order_not_found');
-      const plan = status.plan.tier === 'free' ? planFor('basic', 'signed-in') : status.plan;
-      const license = { ...licenseFor(planFor('basic', 'signed-in'), 'HAMA-Q8W3E-•••••-•••••-•••••-ORDER'), primary: status.licenses.length === 0 };
+      const plan = status.plan.tier === 'free' ? planFor('hama', 'signed-in') : status.plan;
+      const license = { ...licenseFor(planFor('hama', 'signed-in'), 'HAMA-Q8W3E-•••••-•••••-•••••-ORDER'), primary: status.licenses.length === 0 };
       emit({ ...status, lastError: null, plan, licenses: [...status.licenses, license] });
       return linked(false);
     }),
@@ -383,6 +423,28 @@ export function createMockAccount(
       return ok();
     }),
     openManage: async () => { calls.push('openManage'); options.report('Groble buyer page placeholder'); },
+    startRauTrial: () => delay(() => {
+      calls.push('startRauTrial');
+      const blocked = signedInOnly();
+      if (blocked) return blocked;
+      if (trialFailure) return fail(trialFailure);
+      if (status.plan.tier === 'rau' && status.plan.rau?.source === 'plan') return fail('rau_active');
+      if (status.trial?.state !== 'available') return fail('trial_used');
+      const trial = trialFor('active');
+      const startedAt = Date.now();
+      const active: AccountTrial = { ...trial, startedAt, endsAt: startedAt + TRIAL_DAYS * DAY_MS };
+      emit({
+        ...status,
+        lastError: null,
+        trial: active,
+        plan: {
+          ...planFor('rau', 'rau-trial'),
+          rau: { eligible: true, source: 'trial', allowanceUsd: TRIAL_ALLOWANCE_USD, usedUsd: 0, remainingUsd: TRIAL_ALLOWANCE_USD, resetsAt: active.endsAt },
+        },
+      });
+      options.report('Rau trial started (sample)');
+      return ok();
+    }),
     recordActivity(kind, id) {
       activity.push({ kind, id });
     },
@@ -396,10 +458,13 @@ export function createMockAccount(
       emit(build(next));
     },
     setTier(tier) {
-      if (status.state !== 'signed_in' || status.plan.tier === tier) return;
+      if (status.state !== 'signed_in' || (status.plan.tier === tier && status.plan.rau?.source !== 'trial')) return;
       const plan = planFor(tier, 'signed-in');
-      const licenses = tier === 'free' ? [] : [licenseFor(plan, tier === 'hama' ? 'HAMA-H4M4X-•••••-•••••-•••••-PLAN1' : undefined)];
+      const licenses = tier === 'free' ? [] : [licenseFor(plan, tier === 'rau' ? 'HAMA-R4UXX-•••••-•••••-•••••-PLAN1' : undefined)];
       emit({ ...status, plan, licenses });
+    },
+    setTrialFailure(code) {
+      trialFailure = code;
     },
     activity,
     calls,

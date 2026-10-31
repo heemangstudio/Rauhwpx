@@ -1,6 +1,6 @@
 /**
  * `?home=1`: 문서 홈을 표본 최근 문서로 띄운다. 첫 쪽 그림은 열린 문서처럼 캔버스로 그린 표본 종이다.
- * 위 막대의 Hama 입구는 `plan=` 의 요금제 대역을 따르고(Basic·기존 라이선스에만 보인다), 계정 단추는 `account=` 가 있을 때 선다.
+ * 위 막대의 Rau 입구는 `plan=` 의 요금제 대역을 따르고(Hama 요금제에만 보인다), 계정 단추는 `account=` 가 있을 때 선다.
  * 문서 열기·만들기 같은 동작은 보고만 한다.
  */
 import { createDocumentHome, type DocumentHome } from '../home/document-home.ts';
@@ -8,7 +8,7 @@ import type { RecentDoc } from '../recent/recent-store.ts';
 import type { DesktopLicenseApi } from '../ui/agent-sidebar/settings-license.ts';
 import { mountAccountButton } from '../ui/account/account-button.ts';
 import type { AccountStore } from '../ui/account/account-store.ts';
-import { mountHamaHomeEntry } from '../ui/plan/hama-home-entry.ts';
+import { mountRauHomeEntry } from '../ui/plan/rau-home-entry.ts';
 import type { PlanStore } from '../ui/plan/plan-store.ts';
 import { openPlanCard } from '../ui/plan/upgrade-card.ts';
 import { sampleRecentDocuments } from './fixtures.ts';
@@ -72,7 +72,7 @@ export function mountHomeScene(options: {
     openSettings: () => report('Settings placeholder'),
     newChat: () => report('New chat placeholder'),
     mountTopbarTrailing: (slot) => {
-      if (plan) mountHamaHomeEntry(slot, { store: plan, open: () => { openPlanCard({ store: plan, license, focus: 'hama' }); } });
+      if (plan) mountRauHomeEntry(slot, { store: plan, open: () => { openPlanCard({ store: plan, license, focus: 'rau' }); } });
       if (account) mountAccountButton(slot, { store: account, plan });
     },
     toast: report,

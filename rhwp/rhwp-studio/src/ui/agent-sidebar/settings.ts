@@ -97,7 +97,7 @@ const API_KEY_PLACEHOLDER: Record<AgentName, string> = {
   claude: 'sk-ant-…',
   codex: 'sk-proj-…',
   pi: 'sk-or-…',
-  hama: '',
+  rau: '',
   grok: 'xai-…',
   cursor: 'API 키',
   opencode: 'API 키',
@@ -356,7 +356,7 @@ export interface SettingsPanelDeps {
   deleteArchivedThread?: (thread: ThreadSummary) => Promise<boolean>;
   /** 선물 크레딧(macOS 데스크톱만). 없으면 Pi 카드에 선물 줄이 없다. */
   gift?: DesktopGiftApi | null;
-  /** 호스팅 Rau-0.1(Basic) 자격. 데스크톱만. 없으면 Rau-0.1 에 Basic 줄이 없다. */
+  /** 호스팅 Rau(Rau 요금제·체험) 자격. 데스크톱만. 없으면 Rau-0.1 에 Rau 줄이 없다. */
   rau?: DesktopRauApi | null;
   /** 주소를 앱 안 브라우저의 별도 창으로 연다(ChatGPT·Claude 로그인). */
   openSignInWindow?: (url: string) => Promise<SignInWindow>;
@@ -491,6 +491,10 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     bridge,
     isDisposed: () => disposed,
     rau: deps.rau ?? null,
+    // 요금제 카드가 있으면 Rau 칸에 맞춰 연다(카드는 사이드바가 이 이벤트로 띄운다).
+    openPlans: deps.plan?.api
+      ? () => { window.dispatchEvent(new CustomEvent('rhwp:open-plan-card', { detail: { focus: 'rau' } })); }
+      : null,
   });
   let piCatalog: PiCatalogModel[] = [];
   let piCatalogLoading = false;
@@ -1745,7 +1749,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   function syncPlanLock(): void {
     const locked = aiLocked();
     aiGroupHeader.classList.toggle('ag-settings-ai-locked', locked);
-    if (locked) aiGroupHeader.title = 'Basic에서 쓸 수 있어요';
+    if (locked) aiGroupHeader.title = 'Hama에서 쓸 수 있어요';
     else aiGroupHeader.removeAttribute('title');
     if (!locked) return;
     aiGroupExpanded = false;
@@ -2142,8 +2146,8 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   function selectableAgents(): readonly AgentName[] {
     return PROVIDER_ORDER.filter((agent) => {
       if (agent === 'pi') return piStatus?.setupComplete === true;
-      // Hama 는 서버가 살아 있는 플랜이라고 답했을 때만 고를 수 있다.
-      if (agent === 'hama') return setupStatuses?.hama?.connected === true;
+      // Rau 는 서버가 쓸 수 있다고(Rau 플랜·체험) 답했을 때만 고를 수 있다.
+      if (agent === 'rau') return setupStatuses?.rau?.connected === true;
       return true;
     });
   }
@@ -3433,7 +3437,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     usageViews.setLimitsRefreshing(true);
     usageFeedback.textContent = '';
     usageFeedback.hidden = true;
-    void bridge.requestHamaStatus?.(refresh).catch(() => null);
+    void bridge.requestRauAgentStatus?.(refresh).catch(() => null);
     try {
       const result = await bridge.requestUsage(refresh);
       if (disposed) return;

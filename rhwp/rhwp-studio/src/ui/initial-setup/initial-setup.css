@@ -61,11 +61,11 @@
   transform: none;
 }
 
-.rhwp-setup-dialog[data-step='hama'] .rhwp-setup-hippo {
+.rhwp-setup-dialog[data-step='rau'] .rhwp-setup-hippo {
   display: none;
 }
 
-.rhwp-setup-dialog[data-step='hama'] .rhwp-setup-head {
+.rhwp-setup-dialog[data-step='rau'] .rhwp-setup-head {
   justify-content: flex-end;
 }
 
@@ -483,10 +483,10 @@
   mask-image: url('/icons/provider-pi.svg');
 }
 
-/* Hama 마크 — 앱 하마의 하품하는 자세. */
-.rhwp-setup-card-logo .ag-provider-icon-mask[data-agent='hama'] {
-  -webkit-mask-image: url('/icons/provider-hama.svg');
-  mask-image: url('/icons/provider-hama.svg');
+/* 호스팅 Rau 마크. */
+.rhwp-setup-card-logo .ag-provider-icon-mask[data-agent='rau'] {
+  -webkit-mask-image: url('/icons/rau.png');
+  mask-image: url('/icons/rau.png');
 }
 
 .rhwp-setup-card-logo .ag-provider-icon-mask[data-agent='grok'] {

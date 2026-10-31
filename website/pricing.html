@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>가격 | HamaEditor</title>
-<meta name="description" content="HamaEditor 편집기는 무료예요. Basic은 내 계정으로 쓰는 AI 에이전트와 글 취향을 배우는 Rau-0.1을 더하고, Hama는 AI 사용량까지 포함해요.">
+<meta name="description" content="HamaEditor 편집기는 무료예요. Hama는 쓰던 AI를 에이전트로 연결하고, Rau는 AI 사용량과 Rau 모드까지 포함해요. Rau는 7일 무료 체험이 있어요.">
 <meta name="theme-color" content="#16191b">
 <link rel="icon" type="image/png" href="assets/hamaeditor-logo.png?v=hippo">
 <link rel="apple-touch-icon" href="assets/hamaeditor-logo.png?v=hippo">
@@ -27,25 +27,28 @@ html, body { overflow-x: clip; }
 .netart.is-lit .netart__glow { opacity: .9; }
 .price-head { padding: var(--space-2xl) 48px 0; text-align: center; }
 .price-head .h1 { font-size: clamp(44px, 5vw, 68px); }
-.plans { gap: var(--space-lg); padding: var(--space-xl) 48px 0; align-items: stretch; }
+.plans { gap: var(--space-lg); max-width: 960px; margin-inline: auto; padding: var(--space-xl) 48px 0; align-items: stretch; }
 .plans .cell { padding: 0; }
 .plan .card { display: flex; flex-direction: column; height: 100%; padding: 28px; background: color-mix(in srgb, var(--paper) 90%, transparent); outline: 1px solid var(--line-strong); outline-offset: -1px; }
-.plan--basic .card { outline-color: var(--accent); background: color-mix(in srgb, var(--paper-2) 92%, transparent); }
+.plan--rau .card { outline-color: var(--accent); background: color-mix(in srgb, var(--paper-2) 92%, transparent); }
 .plan__top { display: flex; align-items: center; justify-content: space-between; gap: var(--space-sm); min-height: 36px; }
 .plan__name { font-size: 28px; line-height: 1.2; color: var(--text); }
 .plan__tag { padding: 2px 10px; border: 1px dashed var(--line-strong); border-radius: 3px 6px 4px 5px; font-size: 13px; font-weight: 600; color: var(--meta); }
 .plan__price { display: flex; align-items: baseline; gap: 6px; margin-top: var(--space-md); font-family: var(--font-hand); font-weight: 700; font-size: clamp(44px, 3.6vw, 54px); line-height: 1.1; letter-spacing: -.035em; }
 .plan__price small { font: 500 16px/1 var(--font); letter-spacing: 0; color: var(--meta); }
-.plan--soon .plan__price { color: var(--muted); }
 .plan .meta { margin-top: var(--space-xs); min-height: 1.7em; }
 .plan ul { margin: var(--space-lg) 0 var(--space-xl); padding-left: 1.1em; }
 .plan li { color: var(--muted); }
 .plan li + li { margin-top: var(--space-xs); }
 .plan li b { color: var(--text); font-weight: 600; }
 .plan .check { margin-top: auto; }
+.plan__trial { margin-top: auto; font-size: 15px; color: var(--muted); }
+.plan__trial b { color: var(--text); font-weight: 600; }
+.price-free { margin-top: var(--space-lg); text-align: center; color: var(--muted); }
 .plan .check[hidden] { display: none; }
 .plan .check + .btn { margin-top: var(--space-md); }
 .plan .btn--block { margin-top: auto; }
+.plan__trial ~ .check, .plan__trial ~ .btn--block { margin-top: var(--space-sm); }
 .plan [data-buy-note] { margin-top: var(--space-xs); font-size: 14px; color: var(--meta); }
 .plan [data-buy-note]:empty { display: none; }
 .cycle { display: inline-flex; padding: 3px; border: 1px solid var(--line-strong); border-radius: 4px 7px 5px 6px; }
@@ -54,8 +57,8 @@ html, body { overflow-x: clip; }
 .cycle label:has(input:checked) { background: var(--accent-wash); color: var(--text); }
 .cycle label:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
 .cycle__save { font-size: 12px; font-weight: 700; color: var(--accent); }
-.plan--basic:has([value="monthly"]:checked) [data-cycle="yearly"],
-.plan--basic:has([value="yearly"]:checked) [data-cycle="monthly"] { display: none; }
+.plan:has([value="monthly"]:checked) [data-cycle="yearly"],
+.plan:has([value="yearly"]:checked) [data-cycle="monthly"] { display: none; }
 .faq { padding: var(--space-2xl) 48px var(--space-3xl); }
 .faq .h2 { font-size: clamp(32px, 3.4vw, 46px); }
 .faq__list { max-width: 760px; margin-top: var(--space-lg); border-top: 1px solid var(--line-strong); }
@@ -67,7 +70,7 @@ html, body { overflow-x: clip; }
 .faq details p { max-width: 42em; padding-bottom: 22px; color: var(--muted); }
 .faq details p + p { margin-top: calc(var(--space-xs) - 22px); }
 @media (max-width: 1020px) {
-  .plans.cells--3 { grid-template-columns: minmax(0, 1fr); max-width: 520px; margin-inline: auto; }
+  .plans { grid-template-columns: minmax(0, 1fr); max-width: 520px; }
 }
 @media (max-width: 760px) {
   .price-head { padding: 40px var(--space-md) 0; }
@@ -101,7 +104,7 @@ html, body { overflow-x: clip; }
       <a href="pricing.html" aria-current="page">가격</a>
     </nav>
     <div class="btn-row">
-      <a class="btn btn--primary" href="#basic">Basic 알아보기</a>
+      <a class="btn btn--primary" href="#rau">Rau 알아보기</a>
       <a class="btn btn--secondary" href="download.html"><span class="btn__icons" aria-hidden="true"><svg class="btn__icon" viewBox="0 0 384 512" width="15" height="18"><path fill="currentColor" d="M318.7 268.7c-.2-36.7 16.4-64.4 50-84.8-18.8-26.9-47.2-41.7-84.7-44.6-35.5-2.8-74.3 20.7-88.5 20.7-15 0-49.4-19.7-76.4-19.7C63.3 141.2 4 184.8 4 273.5q0 39.3 14.4 81.2c12.8 36.7 59 126.7 107.2 125.2 25.2-.6 43-17.9 75.8-17.9 31.8 0 48.3 17.9 76.4 17.9 48.6-.7 90.4-82.5 102.6-119.3-65.2-30.7-61.7-90-61.7-91.9zm-56.6-164.2c27.3-32.4 24.8-61.9 24-72.5-24.1 1.4-52 16.4-67.9 34.9-17.5 19.8-27.8 44.3-25.6 71.9 26.1 2 49.9-11.4 69.5-34.3z"/></svg><svg class="btn__icon" viewBox="0 0 16 16" width="13" height="13"><path fill="currentColor" d="M0 0h7.3v7.3H0zM8.7 0H16v7.3H8.7zM0 8.7h7.3V16H0zM8.7 8.7H16V16H8.7z"/></svg></span>다운로드</a>
     </div>
   </div>
@@ -209,61 +212,66 @@ html, body { overflow-x: clip; }
       <div class="price-head">
         <h1 id="price-title" class="h1">가격</h1>
       </div>
-      <div class="cells cells--3 plans">
-        <article class="cell cell--open plan" id="free" aria-labelledby="free-title">
-          <div class="card">
-            <div class="plan__top"><h2 id="free-title" class="plan__name">무료</h2></div>
-            <p class="plan__price">₩0</p>
-            <p class="meta">계속 무료</p>
-            <ul>
-              <li>HWP·HWPX 열기, 편집, 저장</li>
-              <li>Mac, Windows</li>
-            </ul>
-            <a class="btn btn--secondary btn--block" href="download.html">내려받기</a>
-          </div>
-        </article>
-        <article class="cell cell--open plan plan--basic" id="basic" aria-labelledby="basic-title">
-          <span id="pro"></span>
+      <div class="cells plans">
+        <article class="cell cell--open plan" id="hama" aria-labelledby="hama-title">
+          <span id="basic"></span><span id="pro"></span>
           <div class="card">
             <div class="plan__top">
-              <h2 id="basic-title" class="plan__name">Basic</h2>
-              <div class="cycle" role="radiogroup" aria-label="결제 주기">
-                <label><input type="radio" name="basic-cycle" value="monthly">월간</label>
-                <label><input type="radio" name="basic-cycle" value="yearly" checked>연간 <span class="cycle__save"><span data-price="basicYearlySaving">₩7,800</span> 절약</span></label>
+              <h2 id="hama-title" class="plan__name">Hama</h2>
+              <div class="cycle" role="radiogroup" aria-label="Hama 결제 주기">
+                <label><input type="radio" name="hama-cycle" value="monthly">월간</label>
+                <label><input type="radio" name="hama-cycle" value="yearly" checked>연간 <span class="cycle__save"><span data-price="hamaYearlySaving">₩7,800</span> 절약</span></label>
               </div>
             </div>
-            <p class="plan__price" data-cycle="yearly"><span data-price="basicYearly">₩39,000</span><small>/ 년</small></p>
-            <p class="plan__price" data-cycle="monthly"><span data-price="basicMonthly">₩3,900</span><small>/ 월</small></p>
-            <p class="meta" data-cycle="yearly">월 <span data-price="basicYearlyPerMonth">₩3,250</span>꼴 · 부가세 포함 · 언제든 해지</p>
+            <p class="plan__price" data-cycle="yearly"><span data-price="hamaYearly">₩39,000</span><small>/ 년</small></p>
+            <p class="plan__price" data-cycle="monthly"><span data-price="hamaMonthly">₩3,900</span><small>/ 월</small></p>
+            <p class="meta" data-cycle="yearly">월 <span data-price="hamaYearlyPerMonth">₩3,250</span>꼴 · 부가세 포함 · 언제든 해지</p>
             <p class="meta" data-cycle="monthly">부가세 포함 · 언제든 해지</p>
             <ul>
-              <li>무료의 모든 기능</li>
-              <li><b>AI 에이전트</b>를 내 계정으로 연결<br>Codex, Claude, OpenRouter</li>
-              <li><b>Rau-0.1</b>이 내 글 취향을 배워요</li>
-              <li>설치 없이 서버에서, 매달 사용 한도까지</li>
+              <li><b>내 AI 연결</b><br>쓰던 AI 계정으로 에이전트를 써요</li>
+              <li>사용료는 연결한 계정에서 나가요</li>
+              <li><a class="link" href="index.html#connect">연결할 수 있는 AI</a></li>
             </ul>
             <label class="check" hidden>
               <input type="checkbox" data-consent>
               <span><a href="tos.html#a9">환불 규정</a>을 확인했으며, 이에 동의합니다.</span>
             </label>
-            <a class="btn btn--primary btn--block" href="#basic" data-buy data-buy-sku="basicYearly" data-buy-label="Groble에서 연간 결제하기" data-cycle="yearly" aria-disabled="true">곧 출시</a>
-            <a class="btn btn--primary btn--block" href="#basic" data-buy data-buy-sku="basicMonthly" data-buy-label="Groble에서 월간 결제하기" data-cycle="monthly" aria-disabled="true">곧 출시</a>
+            <a class="btn btn--secondary btn--block" href="#hama" data-buy data-buy-sku="hamaYearly" data-buy-label="Groble에서 연간 결제하기" data-cycle="yearly" aria-disabled="true">곧 출시</a>
+            <a class="btn btn--secondary btn--block" href="#hama" data-buy data-buy-sku="hamaMonthly" data-buy-label="Groble에서 월간 결제하기" data-cycle="monthly" aria-disabled="true">곧 출시</a>
             <p data-buy-note role="status" aria-live="polite"></p>
           </div>
         </article>
-        <article class="cell cell--open plan plan--soon" id="hama" aria-labelledby="hama-title">
+        <article class="cell cell--open plan plan--rau" id="rau" aria-labelledby="rau-title">
           <div class="card">
-            <div class="plan__top"><h2 id="hama-title" class="plan__name">Hama</h2><span class="plan__tag">준비 중</span></div>
-            <p class="plan__price" data-price="hama">미정</p>
-            <p class="meta">계정 없이 바로 쓰는 AI 에이전트</p>
+            <div class="plan__top">
+              <h2 id="rau-title" class="plan__name">Rau</h2>
+              <div class="cycle" role="radiogroup" aria-label="Rau 결제 주기">
+                <label><input type="radio" name="rau-cycle" value="monthly">월간</label>
+                <label><input type="radio" name="rau-cycle" value="yearly" checked>연간 <span class="cycle__save"><span data-price="rauYearlySaving">₩29,800</span> 절약</span></label>
+              </div>
+            </div>
+            <p class="plan__price" data-cycle="yearly"><span data-price="rauYearly">₩149,000</span><small>/ 년</small></p>
+            <p class="plan__price" data-cycle="monthly"><span data-price="rauMonthly">₩14,900</span><small>/ 월</small></p>
+            <p class="meta" data-cycle="yearly">월 <span data-price="rauYearlyPerMonth">₩12,417</span>꼴 · 부가세 포함 · 언제든 해지</p>
+            <p class="meta" data-cycle="monthly">부가세 포함 · 언제든 해지</p>
             <ul>
-              <li>Basic의 모든 기능</li>
-              <li><b>AI 에이전트 포함</b><br><span class="nb">Claude Haiku 5.5</span></li>
-              <li>한도에 닿으면 더 가벼운 모델로 이어서 작업</li>
+              <li><b>AI 포함</b><br>계정 연결 없이 바로 에이전트를 써요</li>
+              <li><b>Rau 모드</b><br>작업하면서 내 글 취향을 배워요</li>
+              <li>매달 크레딧 포함</li>
+              <li>Hama의 모든 기능</li>
             </ul>
+            <p class="plan__trial"><b>7일 무료 체험</b> · 앱에서 로그인하면 시작해요</p>
+            <label class="check" hidden>
+              <input type="checkbox" data-consent>
+              <span><a href="tos.html#a9">환불 규정</a>을 확인했으며, 이에 동의합니다.</span>
+            </label>
+            <a class="btn btn--primary btn--block" href="#rau" data-buy data-buy-sku="rauYearly" data-buy-label="Groble에서 연간 결제하기" data-cycle="yearly" aria-disabled="true">곧 출시</a>
+            <a class="btn btn--primary btn--block" href="#rau" data-buy data-buy-sku="rauMonthly" data-buy-label="Groble에서 월간 결제하기" data-cycle="monthly" aria-disabled="true">곧 출시</a>
+            <p data-buy-note role="status" aria-live="polite"></p>
           </div>
         </article>
       </div>
+      <p class="price-free">편집기는 무료예요. <a class="link" href="download.html">내려받기</a></p>
     </div>
   </section>
 
@@ -271,22 +279,29 @@ html, body { overflow-x: clip; }
     <h2 id="faq-title" class="h2">자주 묻는 질문</h2>
     <div class="faq__list">
       <details>
-        <summary>내 계정으로 쓰는 것과 Hama는 무엇이 다른가요?</summary>
-        <p>무료에는 AI 에이전트가 없어요. Basic은 AI 에이전트를 내 Codex, Claude, OpenRouter 계정에 연결해서 써요. 사용료는 그 계정에서 나가고, 한도도 그 서비스의 한도를 따라요. <a class="link" href="tutorial-openrouter.html">OpenRouter 연결 방법</a></p>
-        <p>Hama는 AI 사용량이 요금에 들어 있어요. 따로 계정을 만들거나 크레딧을 충전하지 않아도 돼요.</p>
+        <summary>Hama와 Rau는 무엇이 다른가요?</summary>
+        <p>Hama는 쓰던 AI 계정을 연결해서 에이전트를 써요. 사용료와 한도는 그 계정을 따라요.</p>
+        <p>Rau는 AI 사용량이 요금에 들어 있어서 계정을 만들거나 충전하지 않아도 돼요. Rau 모드와 Hama의 모든 기능도 함께 써요.</p>
       </details>
       <details>
-        <summary>Rau-0.1은 무엇인가요?</summary>
-        <p>에이전트와 일하는 동안 내 문체, 자주 쓰는 용어, 정해 둔 결정을 배워 문서 기억에 남기는 모델이에요. 다음 작업부터 에이전트가 그 취향대로 써요. 배운 항목은 언제든 보고 되돌릴 수 있어요.</p>
-        <p>Basic과 Hama에서는 서버에서 돌아가서 설정할 것이 없어요. 매달 사용 한도가 있고, 한도에 닿으면 다음 달에 다시 채워져요. 편집과 내 계정 에이전트는 그동안에도 그대로 써요.</p>
+        <summary>Rau 모드는 무엇인가요?</summary>
+        <p>에이전트와 일하는 동안 내 문체, 자주 쓰는 용어, 정해 둔 결정을 배워 문서 기억에 남겨요. 다음 작업부터 에이전트가 그 취향대로 써요. 배운 항목은 언제든 보고 되돌릴 수 있어요.</p>
+      </details>
+      <details>
+        <summary>월 크레딧을 다 쓰면 어떻게 되나요?</summary>
+        <p>다음 갱신일에 다시 채워지고, 남은 크레딧은 넘어가지 않아요. 연간 결제도 매달 채워져요. 그동안 편집과 내 AI 연결은 그대로 써요.</p>
+      </details>
+      <details>
+        <summary>무료 체험은 어떻게 하나요?</summary>
+        <p>앱에서 로그인하고 Rau 체험을 시작하면 7일 동안 Rau를 써요. 체험은 계정마다 한 번이고, 결제 정보를 받지 않아서 끝나도 자동으로 결제되지 않아요. 계속 쓰려면 Rau를 구매해요.</p>
       </details>
       <details>
         <summary>해지는 어떻게 하나요?</summary>
-        <p>Groble에서 언제든 해지할 수 있어요. 해지해도 결제한 기간이 끝날 때까지 Basic을 쓰고, 그 뒤에는 무료로 돌아가요. 문서 편집과 저장은 계속되고, AI 에이전트와 Rau-0.1은 멈춰요. 환불은 <a class="link" href="tos.html#a9">환불 규정</a>을 따라요.</p>
+        <p>Groble에서 언제든 해지할 수 있어요. 해지해도 결제한 기간이 끝날 때까지 쓰고, 그 뒤에는 무료로 돌아가요. 문서 편집과 저장은 계속돼요. 환불은 <a class="link" href="tos.html#a9">환불 규정</a>을 따라요.</p>
       </details>
       <details>
         <summary>이미 산 라이선스 키는 어떻게 되나요?</summary>
-        <p>연간 구독 키, 한 번 결제로 산 키, 베타 키는 지금처럼 그대로 쓸 수 있어요. AI 에이전트도 내 계정으로 계속 쓰고, 새로 입력하거나 바꿀 것은 없어요. Rau-0.1은 Basic과 Hama에 들어 있어요.</p>
+        <p>연간 구독 키, 한 번 결제로 산 키, 베타 키는 Hama로 그대로 쓸 수 있어요. 새로 입력하거나 바꿀 것은 없어요.</p>
       </details>
     </div>
   </section>

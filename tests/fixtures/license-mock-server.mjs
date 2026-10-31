@@ -9,7 +9,6 @@ import { generateKeyPairSync, randomBytes, randomUUID, sign } from 'node:crypto'
 import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { normalizeLicenseKey, licenseKeyHash, verifyLease } from '../../desktop/license-lease.mjs';
-import { createHamaMock } from './hama-mock.mjs';
 
 // 테스트마다 메모리에서 생성한다. 개인키는 저장하거나 커밋하지 않는다.
 const pair = generateKeyPairSync('ed25519');
@@ -96,10 +95,10 @@ export function createMockLicenseServer({
 
   /**
    * licenseExpiresAt (epoch ms) makes an annual subscription key; without it the key is lifetime, like beta keys.
-   * plan answers like the Basic server (edition, plan, rau.eligible); without it the answer matches the older server.
-   * Like the real server, the edition is named 'basic' only for requests that send X-Hama-Plan-Names: basic, else 'pro'.
+   * plan answers like the plan server (edition 'hama' | 'rau', plan, rau.eligible true only for Rau); without it the
+   * answer matches the older server.
    */
-  function issueKey({ tier = 'paid', licenseExpiresAt = null, autoRenew = true, devices = tier === 'beta' ? BETA_DEVICE_LIMIT : deviceLimit, plan = null, edition = 'basic', rauEligible = true } = {}) {
+  function issueKey({ tier = 'paid', licenseExpiresAt = null, autoRenew = true, devices = tier === 'beta' ? BETA_DEVICE_LIMIT : deviceLimit, plan = null, edition = 'hama', rauEligible = edition === 'rau' } = {}) {
     const raw = Array.from(randomBytes(25), n => '0123456789ABCDEFGHJKMNPQRSTVWXYZ'[n & 31]).join('');
     const key = `HAMA-${raw.slice(0, 5)}-${raw.slice(5, 10)}-${raw.slice(10, 15)}-${raw.slice(15, 20)}-${raw.slice(20, 25)}`;
     licenses.set(key, { id: `lic_${licenses.size + 1}`, key, tier, devices: new Set(), platforms: new Map(), revoked: false, licenseExpiresAt, autoRenew, paymentGraceEndsAt: null, deviceLimit: devices, plan, edition, rauEligible });
@@ -118,14 +117,14 @@ export function createMockLicenseServer({
     }, keypair);
   }
 
-  function leaseBody(key, deviceId, license, basicNames) {
+  function leaseBody(key, deviceId, license) {
     return {
       ok: true, lease: lease(key, deviceId), keyId: license.id, tier: license.tier, expiresAt: now() + ttl(license),
       licenseExpiresAt: license.licenseExpiresAt, autoRenew: license.licenseExpiresAt === null ? null : license.autoRenew,
       licenseState: license.paymentGraceEndsAt === null ? 'active' : 'payment_failed', paymentGraceEndsAt: license.paymentGraceEndsAt,
       ...(license.licenseExpiresAt === null ? {} : { paymentFixUrl: PAYMENT_FIX_URL }),
       devicesUsed: license.devices.size, deviceLimit: license.deviceLimit,
-      ...(license.plan ? { edition: license.edition === 'basic' && !basicNames ? 'pro' : license.edition, plan: license.plan, rau: { eligible: license.rauEligible } } : {}),
+      ...(license.plan ? { edition: license.edition, plan: license.plan, rau: { eligible: license.rauEligible } } : {}),
     };
   }
 
@@ -155,8 +154,6 @@ export function createMockLicenseServer({
     if (licenseKeyHash(license.key) !== result.payload.keyHash) return null;
     return { license, deviceId: result.payload.deviceId, platform: license.platforms.get(result.payload.deviceId) ?? null };
   }
-
-  const hama = createHamaMock({ now, authenticate });
 
   function giftEvent() {
     return { id: giftConfig.eventId, amountUsd: giftConfig.amountUsd, endsAt: giftConfig.endsAt, active: giftConfig.active };
@@ -274,11 +271,6 @@ export function createMockLicenseServer({
   /** 반환값: [status, body] 또는 SSE 일 때 [status, null, { sse: string[] }]. 예전 2인자 호출도 받는다. */
   function handle(path, body, { method, headers = {} } = {}) {
     calls.push({ path, body });
-    if (path.startsWith('/v1/hama/')) {
-      const result = hama.handle(path, body, { method: method ? String(method).toUpperCase() : 'GET', headers });
-      if (log) log(`[hama] ${method ?? '-'} ${path}${typeof body?.model === 'string' ? ` model=${body.model}` : ''} → ${result[0]}${result[2]?.sse ? ' stream' : ''}`);
-      return result;
-    }
     if (path.startsWith('/v1/gift/')) {
       const result = handleGift(path, body, method ? String(method).toUpperCase() : undefined, headers);
       if (log) {
@@ -314,11 +306,11 @@ export function createMockLicenseServer({
       if (!license.devices.has(deviceId) && license.devices.size >= license.deviceLimit) return [409, { ok: false, error: 'device_limit' }];
       license.devices.add(deviceId);
       license.platforms.set(deviceId, typeof body.platform === 'string' ? body.platform : null);
-      return [200, leaseBody(normalizedKey, deviceId, license, headerValue(headers, 'x-hama-plan-names') === 'basic')];
+      return [200, leaseBody(normalizedKey, deviceId, license)];
     }
     if (path === '/v1/license/validate') {
       if (!license.devices.has(deviceId)) return [404, { ok: false, error: 'not_activated' }];
-      return [200, leaseBody(normalizedKey, deviceId, license, headerValue(headers, 'x-hama-plan-names') === 'basic')];
+      return [200, leaseBody(normalizedKey, deviceId, license)];
     }
     return [404, { ok: false, error: 'not_found' }];
   }
@@ -383,11 +375,6 @@ export function createMockLicenseServer({
     setOffline(value) { offline = value; },
     giftState,
     setGiftUsage,
-    /** Hama 플랜: 이 라이선스(키 또는 id)를 가입시킨다. 가입하지 않은 키는 403 hama_not_enrolled 다. */
-    enrollHama(ref) { const license = licenseByRef(ref); if (license) hama.enroll(license.id); },
-    disenrollHama(ref) { const license = licenseByRef(ref); if (license) hama.disenroll(license.id); },
-    setHamaCap(cap) { hama.setCap(cap); },
-    hamaCalls: hama.calls,
     /** 모든 라이선스의 사용액을 같은 값으로 둔다(CLI 관리 경로). */
     setAllGiftUsage(usd) { for (const license of licenses.values()) setGiftUsage(license.id, usd); },
     setGiftActive(value) { giftConfig.active = Boolean(value); },
@@ -403,7 +390,7 @@ function cliPort(argv, env) {
 }
 
 /** SSE 한 덩어리. 문자열은 data 만, {event, data} 는 event 줄도 붙인다 (Anthropic Messages). */
-function sseFrame(entry) {
+export function sseFrame(entry) {
   if (entry && typeof entry === 'object') return `event: ${entry.event}\ndata: ${entry.data}\n\n`;
   return `data: ${entry}\n\n`;
 }
@@ -434,8 +421,6 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     if (path.startsWith('/__mock/')) {
       if (req.method === 'POST' && path === '/__mock/gift/usage') server.setAllGiftUsage(body?.usd);
       else if (req.method === 'POST' && path === '/__mock/gift/active') server.setGiftActive(body?.active);
-      else if (req.method === 'POST' && path === '/__mock/hama/enroll') server.enrollHama(normalizeLicenseKey(body?.key) ?? body?.key);
-      else if (req.method === 'POST' && path === '/__mock/hama/cap') server.setHamaCap(body?.cap ?? null);
       else if (req.method === 'POST' && path === '/__mock/license/expiry') {
         const target = normalizeLicenseKey(body?.key);
         if (!target || !server.snapshot().licenses.some((l) => l.key === target)) return json(404, { ok: false, error: 'invalid_key' });
@@ -470,6 +455,5 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     console.log(`annual test key ${annualKey} (renews in 365 days)`);
     console.log(`HAMA_LICENSE_DEV_PUBLIC_KEY=${DEV_KEYPAIR.kid}:${DEV_KEYPAIR.publicKeyBase64}`);
     console.log(`gift proxy base http://127.0.0.1:${port}${GIFT_PROXY_PREFIX}`);
-    console.log(`hama: POST /__mock/hama/enroll {key} to enroll a key, POST /__mock/hama/cap {cap} to force a cap`);
   });
 }

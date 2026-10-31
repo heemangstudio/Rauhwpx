@@ -1,4 +1,4 @@
-// 계정 상태. 메인 프로세스가 하나 만들어 Studio 의 계정 화면, 요금제, 선물·Hama·Rau 에 상태와 lease 를 준다.
+// 계정 상태. 메인 프로세스가 하나 만들어 Studio 의 계정 화면, 요금제, 선물·Rau 에 상태와 lease 를 준다.
 //
 // 규칙
 // - 로그인: 시스템 브라우저로 서버의 로그인 주소(WorkOS AuthKit)를 열고, 127.0.0.1 의 일회용 루프백 서버가
@@ -13,6 +13,7 @@
 //   lease 와 계정 정보를 그대로 쓰고(sync.offline) 15분마다 다시 묻는다. 서버가 세션을 모르면(session_invalid)
 //   이 기기만 로그아웃한다(기기 id 는 남긴다).
 // - lease(v2)는 서명·기기·계정·만료를 확인한 것만 쓴다. 무료(tier 'free') lease 는 호스팅 기능에 주지 않는다.
+// - Rau 체험(7일, 크레딧 $2)은 계정마다 한 번, 로그인한 뒤에만 시작한다(startRauTrial). 서버가 정하고 앱은 보여 주기만 한다.
 // - 사진은 userData/account-avatar 에 받아 두고 서버의 rev 가 바뀌면 다시 받는다. 상태 방송에는 넣지 않는다.
 // - 사용 기록(에이전트 세션·편집한 문서)은 id 를 해시로 2,000개씩 기억해 한 번만 세고, 5분에 한 번과 앱을 끝낼 때
 //   서버로 보낸다. 보내지 못한 묶음은 같은 batchId 로 다시 보낸다. 로그인하지 않은 동안의 기록은 버린다.
@@ -52,11 +53,14 @@ const DEVICE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0
 const SERVER_DEVICE_ID_RE = /^[A-Za-z0-9\-_.:]{8,128}$/;
 const SESSION_RE = /^hes_[A-Za-z0-9_-]{16,256}$/;
 const CONTROL_RE = /[\u0000-\u001f\u007f-\u009f]/g;
-const TIERS = new Set(['free', 'basic', 'legacy', 'hama']);
-const EDITIONS = new Set(['basic', 'hama', 'signature']);
+const TIERS = new Set(['free', 'hama', 'rau']);
+const EDITIONS = new Set(['hama', 'rau', 'signature']);
 const PLANS = new Set(['monthly', 'annual', 'lifetime']);
-/** Basic 의 예전 이름 'pro' 로 온 등급·에디션은 basic 으로 읽는다. */
-const basicName = (value) => (value === 'pro' ? 'basic' : value);
+const RAU_SOURCES = new Set(['plan', 'trial']);
+const TRIAL_STATES = new Set(['available', 'active', 'ended']);
+/** 서버가 정한 체험 길이와 크레딧. 서버가 보내지 않으면 이 값으로 보인다. */
+export const RAU_TRIAL_DAYS = 7;
+export const RAU_TRIAL_ALLOWANCE_USD = 2;
 const LICENSE_STATUSES = new Set(['active', 'past_due', 'expired', 'revoked']);
 /** 다시 시도해도 같은 답이 오는 키 연결 실패. */
 const INVALID_KEY_CODES = new Set(['invalid_key', 'revoked', 'invalid_format']);
@@ -86,6 +90,9 @@ export const ACCOUNT_MESSAGES = Object.freeze({
   confirm_mismatch: '이메일이 맞지 않아요.',
   subscription_active: '구독을 먼저 해지해 주세요.',
   rate_limited: '잠시 뒤 다시 시도해 주세요.',
+  trial_used: 'Rau 체험은 계정마다 한 번만 쓸 수 있어요.',
+  rau_active: '이미 Rau 요금제를 쓰고 있어요.',
+  rau_unavailable: 'Rau 체험을 지금은 시작할 수 없어요. 조금 뒤 다시 시도해 주세요.',
   sign_in_required: '먼저 로그인해 주세요.',
   already_signed_in: '이미 로그인했어요.',
   invalid: '요청을 처리하지 못했어요.',
@@ -95,9 +102,12 @@ export function accountErrorMessage(code) {
   return ACCOUNT_MESSAGES[code] ?? ACCOUNT_MESSAGES.server;
 }
 
+const NO_RAU = Object.freeze({
+  eligible: false, source: null, allowanceUsd: null, usedUsd: null, remainingUsd: null, resetsAt: null,
+});
 const FREE_PLAN = Object.freeze({
   tier: 'free', edition: null, plan: null, expiresAt: null, autoRenew: null,
-  paymentFailed: false, paymentGraceEndsAt: null, manageUrl: null,
+  paymentFailed: false, paymentGraceEndsAt: null, manageUrl: null, rau: NO_RAU,
 });
 
 // ── 루프백 페이지 ────────────────────────────────────────────────────────
@@ -153,7 +163,7 @@ const text = (value, max) => (typeof value === 'string' ? value.replace(CONTROL_
 const epochOrNull = (value) => (Number.isSafeInteger(value) && value >= 0 ? value : null);
 const boolOrNull = (value) => (typeof value === 'boolean' ? value : null);
 const count = (value) => (Number.isSafeInteger(value) && value >= 0 ? value : 0);
-const usd = (value) => (Number.isFinite(value) && value >= 0 ? value : 0);
+const usdOrNull = (value) => (Number.isFinite(value) && value >= 0 ? value : null);
 const oneOf = (value, set) => (set.has(value) ? value : null);
 
 function isoToEpoch(value) {
@@ -221,17 +231,44 @@ function sanitizeAccount(raw) {
   };
 }
 
-function sanitizePlan(raw) {
-  if (!isObject(raw)) return { ...FREE_PLAN };
+/** 호스팅 Rau 자격과 이번 기간의 크레딧. 자격이 없으면 사용량은 모두 null 이다. */
+function sanitizeRau(raw) {
+  if (!isObject(raw) || raw.eligible !== true) return { ...NO_RAU };
   return {
-    tier: oneOf(basicName(raw.tier), TIERS) ?? 'free',
-    edition: oneOf(basicName(raw.edition), EDITIONS),
+    eligible: true,
+    source: oneOf(raw.source, RAU_SOURCES),
+    allowanceUsd: usdOrNull(raw.allowanceUsd),
+    usedUsd: usdOrNull(raw.usedUsd),
+    remainingUsd: usdOrNull(raw.remainingUsd),
+    resetsAt: epochOrNull(isoToEpoch(raw.resetsAt)),
+  };
+}
+
+function sanitizePlan(raw) {
+  if (!isObject(raw)) return { ...FREE_PLAN, rau: { ...NO_RAU } };
+  return {
+    tier: oneOf(raw.tier, TIERS) ?? 'free',
+    edition: oneOf(raw.edition, EDITIONS),
     plan: oneOf(raw.plan, PLANS),
     expiresAt: epochOrNull(raw.expiresAt),
     autoRenew: boolOrNull(raw.autoRenew),
     paymentFailed: raw.paymentFailed === true,
     paymentGraceEndsAt: epochOrNull(raw.paymentGraceEndsAt),
     manageUrl: grobleUrlFrom(raw.manageUrl),
+    rau: sanitizeRau(raw.rau),
+  };
+}
+
+/** Rau 체험. 서버가 보내지 않으면 null(예전 서버). */
+function sanitizeTrial(raw) {
+  if (!isObject(raw)) return null;
+  const days = Number.isSafeInteger(raw.days) && raw.days > 0 && raw.days <= 366 ? raw.days : RAU_TRIAL_DAYS;
+  return {
+    state: oneOf(raw.state, TRIAL_STATES) ?? 'ended',
+    startedAt: epochOrNull(isoToEpoch(raw.startedAt)),
+    endsAt: epochOrNull(isoToEpoch(raw.endsAt)),
+    days,
+    allowanceUsd: usdOrNull(raw.allowanceUsd) ?? RAU_TRIAL_ALLOWANCE_USD,
   };
 }
 
@@ -241,7 +278,7 @@ function sanitizeLicense(raw) {
     keyId: raw.keyId.slice(0, 64),
     maskedKey: text(raw.maskedKey, 64),
     tier: raw.tier === 'beta' ? 'beta' : 'paid',
-    edition: oneOf(basicName(raw.edition), EDITIONS),
+    edition: oneOf(raw.edition, EDITIONS),
     plan: oneOf(raw.plan, PLANS),
     status: oneOf(raw.status, LICENSE_STATUSES) ?? 'expired',
     expiresAt: epochOrNull(raw.expiresAt),
@@ -252,17 +289,10 @@ function sanitizeLicense(raw) {
 
 function sanitizeStats(raw) {
   if (!isObject(raw)) return null;
-  const hama = isObject(raw.hama) ? {
-    usedUsd: usd(raw.hama.usedUsd),
-    allowanceUsd: usd(raw.hama.allowanceUsd),
-    periodEndsAt: epochOrNull(raw.hama.periodEndsAt) ?? 0,
-    calls: count(raw.hama.calls),
-  } : null;
   return {
     agentSessions: count(raw.agentSessions),
     documentsEdited: count(raw.documentsEdited),
     since: epochOrNull(isoToEpoch(raw.since)),
-    hama,
   };
 }
 
@@ -278,6 +308,7 @@ function sanitizeView(raw, deviceId) {
     devices: sanitizeDevices(raw.devices, deviceId),
     deviceLimit: sanitizeLimit(raw.deviceLimit),
     stats: sanitizeStats(raw.stats),
+    trial: sanitizeTrial(raw.trial),
   };
 }
 
@@ -571,11 +602,12 @@ export function createAccountManager({
         provider: view.account.provider,
         createdAt: view.account.createdAt,
       } : null,
-      plan: view ? { ...view.plan } : { ...FREE_PLAN },
+      plan: view ? { ...view.plan, rau: { ...view.plan.rau } } : { ...FREE_PLAN, rau: { ...NO_RAU } },
+      trial: view?.trial ? { ...view.trial } : null,
       licenses: view ? view.licenses.map((license) => ({ ...license })) : [],
       devices: view ? view.devices.map((device) => ({ ...device })) : [],
       deviceLimit: view?.deviceLimit ?? DEFAULT_DEVICE_LIMIT,
-      stats: view?.stats ? { ...view.stats, hama: view.stats.hama ? { ...view.stats.hama } : null } : null,
+      stats: view?.stats ? { ...view.stats } : null,
       sync: { lastSyncAt: view ? state.lastSyncAt : null, offline: view ? offline : false, error: syncError },
       localKey,
     };
@@ -1165,6 +1197,13 @@ export function createAccountManager({
     return linkAction((session) => client.claim(session, { orderId: order, email: address }));
   }
 
+  /** Rau 체험을 시작한다. 서버가 계정마다 한 번만 열고, 받은 accountPayload(체험 active)를 그대로 쓴다. */
+  function startRauTrial() {
+    return sessionAction(async (session) => {
+      acceptPayload(await client.rauTrial(session));
+    }, { refreshAfter: false });
+  }
+
   async function deleteAccount(confirm) {
     const typed = typeof confirm === 'string' ? confirm.trim().slice(0, 320) : '';
     return serialize(async () => {
@@ -1393,13 +1432,14 @@ export function createAccountManager({
     getAvatar,
     redeem,
     claim,
+    startRauTrial,
     deleteAccount,
     openManage,
     recordActivity,
     flushActivity,
     flushOnQuit,
     /**
-     * 호스팅 기능(선물·Hama·Rau)에 줄 lease. 로그인했고, 서명·기기·계정·만료가 맞고, 무료가 아닐 때만.
+     * 호스팅 기능(선물·Rau)에 줄 lease. 로그인했고, 서명·기기·계정·만료가 맞고, 무료가 아닐 때만.
      * 상태를 이미 읽었으면 진행 중인 서버 요청을 기다리지 않는다.
      */
     async currentLease() {
@@ -1410,7 +1450,7 @@ export function createAccountManager({
     async entitlement() {
       if (!state) await serialize(load);
       const payload = verifiedLease();
-      return { signedIn: signedIn(), accountId: signedIn() ? state.accountId : null, tier: basicName(payload?.tier) ?? null };
+      return { signedIn: signedIn(), accountId: signedIn() ? state.accountId : null, tier: oneOf(payload?.tier, TIERS) };
     },
     /** 라이선스 관리자의 onChange 에서 부른다. 키가 바뀌었으면 계정에 연결한다. */
     licenseChanged: () => migrateLocalKey(),

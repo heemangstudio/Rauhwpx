@@ -56,18 +56,18 @@ test('setup gates provider connection by account and plan, and resumes after che
     await page.click('.ag-pricing-close');
     await finished();
 
-    await start('basic');
+    await start('hama');
     await page.click('[data-path="ai"]');
     await step('models');
     await page.click('.rhwp-setup-primary');
     await finished();
 
-    await start('hama');
+    await start('rau');
     await page.click('[data-path="ai"]');
     await step('models');
     await page.click('.rhwp-setup-primary');
-    await step('hama');
-    await page.screenshot({ path: resolve(artifacts, 'setup-hama-introduction.png') });
+    await step('rau');
+    await page.screenshot({ path: resolve(artifacts, 'setup-rau-introduction.png') });
     await page.click('.rhwp-setup-primary');
     await finished();
 
@@ -76,11 +76,11 @@ test('setup gates provider connection by account and plan, and resumes after che
     await step('plans');
     await page.click('.rhwp-setup-plans .rhwp-setup-upgrade-action');
     await page.waitForSelector('.ag-pricing-card', { visible: true });
-    // 이 페이지의 결제는 네트워크 요청 없는 mock-plan 이다.
-    await page.click('.ag-pricing-col[data-plan="hama"] .ag-pricing-btn-primary');
+    // 무료 계정은 Rau 체험을 쓸 수 있다. 체험 시작은 네트워크 요청 없는 mock-account 다.
+    await page.click('.ag-pricing-col[data-plan="rau"] .ag-pricing-btn-trial');
     await step('models');
     await page.click('.rhwp-setup-primary');
-    await step('hama');
+    await step('rau');
     await page.click('.rhwp-setup-primary');
     await finished();
   } finally {

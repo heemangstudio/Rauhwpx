@@ -11,12 +11,12 @@ export const HANDOFF_TOKEN_HARD_CAP = 64_000;
 const MIN_HANDOFF_TOKEN_CAP = 1_024;
 
 /** 공급자가 알려 준 창이 없을 때 쓰는 값. codex 는 0.162 의 modelContextWindow 관측값. */
-export const DEFAULT_CONTEXT_WINDOWS = Object.freeze({ claude: 200_000, codex: 258_400, pi: 128_000 });
+export const DEFAULT_CONTEXT_WINDOWS = Object.freeze({ claude: 200_000, codex: 258_400, pi: 128_000, rau: 200_000 });
 export const FALLBACK_CONTEXT_WINDOW = 128_000;
 
 const ENTRY_KINDS = new Set(['message', 'question', 'answer', 'plan', 'tools', 'tasks', 'progress', 'error', 'interrupted']);
 const AGENT_LABELS = Object.freeze({
-  claude: 'Claude', codex: 'Codex', pi: 'Pi', grok: 'Grok', cursor: 'Cursor', opencode: 'OpenCode',
+  claude: 'Claude', codex: 'Codex', pi: 'Pi', rau: 'Rau', grok: 'Grok', cursor: 'Cursor', opencode: 'OpenCode',
 });
 // 와이어 안전 한도 — 예산 선택 전에 터무니없는 입력만 잘라 낸다.
 const MAX_ENTRIES = 400;

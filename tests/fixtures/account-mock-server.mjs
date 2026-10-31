@@ -1,6 +1,8 @@
-// In-memory test double of the site-api account routes (/v1/account/*, accounts contract §3) and
-// GET /v1/license/by-ref. It signs real v2 account leases with the generated dev key from
-// license-mock-server.mjs, so the app verifies them (HAMA_LICENSE_DEV_PUBLIC_KEY).
+// In-memory test double of the site-api account routes (/v1/account/*, accounts contract §3),
+// GET /v1/license/by-ref and the hosted Rau routes (/v1/rau/*, rau-mock.mjs). It signs real v2 account leases with
+// the generated dev key from license-mock-server.mjs, so the app verifies them (HAMA_LICENSE_DEV_PUBLIC_KEY).
+// Plans: a live 'rau' key makes the Rau tier ($8 a month); every other live key (hama, signature, null) is the Hama
+// tier. An active Rau trial (7 days, $2, once per account and email) makes the Rau tier without a Rau key.
 //
 // Desktop tests use `.fetch`. `.listen()` serves it on 127.0.0.1 for live checks; then `auth/start` answers
 // a URL to the mock's own `/authorize`, which plays WorkOS and 302s to the app's loopback with a grant
@@ -11,12 +13,14 @@
 // and prints the env to point the app at it. Admin routes under /__mock/: GET state, POST next-user
 // {email, name, emailVerified}, POST key {edition, plan, tier, email} → {key}, POST devices {email, count},
 // POST session {email, deviceId} → {token}, POST authorize-error {error|null}, POST configured {on},
-// POST checkout/complete {edition, plan} (issues keys for every by-ref the app asked about).
+// POST checkout/complete {edition, plan} (issues keys for every by-ref the app asked about),
+// POST rau/usage {email, usd} (sets the current Rau spend), POST rau/configured {on}.
 import { createHash, randomBytes } from 'node:crypto';
 import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
-import { normalizeLicenseKey } from '../../desktop/license-lease.mjs';
-import { DEV_KEYPAIR, DEV_PUBLIC_KEYS, signLease } from './license-mock-server.mjs';
+import { normalizeLicenseKey, verifyAccountLease } from '../../desktop/license-lease.mjs';
+import { DEV_KEYPAIR, DEV_PUBLIC_KEYS, signLease, sseFrame } from './license-mock-server.mjs';
+import { createRauMock, RAU_PLAN_ALLOWANCE_USD, RAU_TRIAL_ALLOWANCE_USD } from './rau-mock.mjs';
 
 export { DEV_KEYPAIR, DEV_PUBLIC_KEYS };
 
@@ -24,6 +28,7 @@ const DAY = 24 * 60 * 60 * 1000;
 const LEASE_TTL_MS = 7 * DAY;
 const BETA_LEASE_TTL_MS = 3 * DAY;
 const GRANT_TTL_MS = 10 * 60 * 1000;
+const TRIAL_DAYS = 7;
 const MANAGE_URL = 'https://groble.im/manage/purchase';
 const AVATAR_MAX_BYTES = 1024 * 1024;
 const AVATAR_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
@@ -82,6 +87,9 @@ export function createMockAccountServer({
   const orders = new Map();
   const checkouts = new Map();
   const scripted = new Map();
+  /** Rau 체험을 쓴 이메일. 계정을 지우고 다시 만들어도 다시 받지 못한다. */
+  const trialEmails = new Set();
+  let rauConfigured = true;
   const calls = [];
 
   const iso = (t = now()) => new Date(t).toISOString();
@@ -96,6 +104,8 @@ export function createMockAccountServer({
         email, emailLower: lower, emailVerified, name: name ?? lower.split('@')[0], nameSource: 'provider',
         avatar: null, provider, createdAt: iso(), devices: new Map(),
         stats: { agentSessions: 0, documentsEdited: 0, since: now(), batches: [] },
+        rauUsedUsd: 0,
+        trial: null,
       };
       accounts.set(account.id, account);
       if (emailVerified) byEmail.set(lower, account.id);
@@ -119,7 +129,7 @@ export function createMockAccountServer({
     return license.expiresAt === null || now() < license.expiresAt;
   }
 
-  const rank = (license) => (license.edition === 'hama' ? 3 : license.edition === 'basic' ? 2 : 1);
+  const rank = (license) => (license.edition === 'rau' ? 3 : license.edition === 'hama' ? 2 : 1);
 
   function linked(account) {
     return [...keys.values()].filter((license) => license.accountId === account.id);
@@ -131,9 +141,55 @@ export function createMockAccountServer({
       || (a.createdAt - b.createdAt))[0] ?? null;
   }
 
-  function tierOf(primary) {
-    if (!primary) return 'free';
-    return rank(primary) === 3 ? 'hama' : rank(primary) === 2 ? 'basic' : 'legacy';
+  function trialActive(account) {
+    const trial = account.trial;
+    return Boolean(trial && now() < trial.endsAt && trial.usedUsd < RAU_TRIAL_ALLOWANCE_USD);
+  }
+
+  function trialView(account) {
+    const trial = account.trial;
+    const used = trial || trialEmails.has(account.emailLower);
+    return {
+      state: !used ? 'available' : trialActive(account) ? 'active' : 'ended',
+      startedAt: trial?.startedAt ?? null,
+      endsAt: trial?.endsAt ?? null,
+      days: TRIAL_DAYS,
+      allowanceUsd: RAU_TRIAL_ALLOWANCE_USD,
+    };
+  }
+
+  /** 호스팅 Rau 자격과 크레딧. 플랜이 체험보다 먼저다. */
+  function rauOf(account) {
+    const primary = primaryOf(account);
+    if (primary?.edition === 'rau') {
+      const usedUsd = account.rauUsedUsd;
+      return {
+        eligible: true, source: 'plan', allowanceUsd: RAU_PLAN_ALLOWANCE_USD, usedUsd,
+        remainingUsd: Math.max(0, RAU_PLAN_ALLOWANCE_USD - usedUsd), resetsAt: now() + 20 * DAY,
+      };
+    }
+    if (trialActive(account) || (account.trial && now() < account.trial.endsAt)) {
+      const usedUsd = account.trial.usedUsd;
+      return {
+        eligible: trialActive(account), source: trialActive(account) ? 'trial' : null,
+        allowanceUsd: trialActive(account) ? RAU_TRIAL_ALLOWANCE_USD : null,
+        usedUsd: trialActive(account) ? usedUsd : null,
+        remainingUsd: trialActive(account) ? Math.max(0, RAU_TRIAL_ALLOWANCE_USD - usedUsd) : null,
+        resetsAt: trialActive(account) ? account.trial.endsAt : null,
+      };
+    }
+    return { eligible: false, source: null, allowanceUsd: null, usedUsd: null, remainingUsd: null, resetsAt: null };
+  }
+
+  function spendRau(account, usd) {
+    if (primaryOf(account)?.edition === 'rau') account.rauUsedUsd += usd;
+    else if (account.trial) account.trial.usedUsd += usd;
+  }
+
+  function tierOf(account) {
+    const primary = primaryOf(account);
+    if (primary?.edition === 'rau' || trialActive(account)) return 'rau';
+    return primary ? 'hama' : 'free';
   }
 
   function deviceView(id, device, currentId) {
@@ -152,7 +208,7 @@ export function createMockAccountServer({
     return {
       lease: signLease({
         v: 2, kid: keypair.kid, accountId: account.id, deviceId,
-        keyId: primary?.keyId ?? null, tier: tierOf(primary), plan: primary?.plan ?? null,
+        keyId: primary?.keyId ?? null, tier: tierOf(account), plan: primary?.plan ?? null,
         issuedAt, expiresAt,
         ...(primary?.expiresAt ? { licenseExpiresAt: primary.expiresAt } : {}),
       }, keypair),
@@ -172,11 +228,12 @@ export function createMockAccountServer({
         provider: account.provider, createdAt: account.createdAt,
       },
       plan: {
-        tier: tierOf(primary), keyId: primary?.keyId ?? null, edition: primary?.edition ?? null, plan: primary?.plan ?? null,
+        tier: tierOf(account), keyId: primary?.keyId ?? null, edition: primary?.edition ?? null, plan: primary?.plan ?? null,
         expiresAt: primary?.expiresAt ?? null, autoRenew: subscription ? primary.autoRenew !== false : null,
         paymentFailed: false, paymentGraceEndsAt: null, manageUrl: subscription ? MANAGE_URL : null,
-        rau: { eligible: Boolean(primary && rank(primary) >= 2) },
+        rau: rauOf(account),
       },
+      trial: trialView(account),
       licenses: licenses.map((license) => ({
         keyId: license.keyId, maskedKey: maskKey(license.key), tier: license.tier, edition: license.edition,
         plan: license.plan, status: live(license) ? 'active' : license.status === 'revoked' ? 'revoked' : 'expired',
@@ -189,13 +246,24 @@ export function createMockAccountServer({
         agentSessions: account.stats.agentSessions,
         documentsEdited: account.stats.documentsEdited,
         since: account.stats.since,
-        hama: tierOf(primary) === 'hama' ? { usedUsd: 1.25, allowanceUsd: 10, periodEndsAt: now() + 20 * DAY, calls: 42 } : null,
       },
       ...leaseFor(account, deviceId),
     };
   }
 
   const fail = (status, error, extra = {}) => [status, { ok: false, error, ...extra }];
+
+  /** 호스팅 Rau 의 lease 인증. 이 서버가 서명한 v2 계정 lease 만, 지금 계정에 있는 기기의 것만 받는다. */
+  function leaseAccount(headers) {
+    const match = /^Bearer\s+(\S+)$/i.exec(headerValue(headers, 'authorization').trim());
+    if (!match) return null;
+    const result = verifyAccountLease(match[1], { publicKeys: { [keypair.kid]: keypair.publicKeyBase64 }, now: now() });
+    if (!result.ok) return null;
+    const account = accounts.get(result.payload.accountId);
+    return account && account.devices.has(result.payload.deviceId) ? { account } : null;
+  }
+
+  const rau = createRauMock({ now, authenticate: leaseAccount, rauOf, spend: spendRau });
 
   function authenticate(headers) {
     const match = /^Bearer\s+(hes_\S+)$/i.exec(headerValue(headers, 'authorization').trim());
@@ -323,6 +391,14 @@ export function createMockAccountServer({
       return [200, { ok: true, signedOut: false, devices: devicesView(account, deviceId) }];
     }
     if (path === '/v1/account/redeem' && method === 'POST') return linkKey(auth, body?.key, 'redeem');
+    if (path === '/v1/account/rau-trial' && method === 'POST') {
+      if (!rauConfigured) return fail(503, 'rau_unavailable');
+      if (primaryOf(account)?.edition === 'rau') return fail(409, 'rau_active');
+      if (account.trial || trialEmails.has(account.emailLower)) return fail(409, 'trial_used');
+      account.trial = { startedAt: now(), endsAt: now() + TRIAL_DAYS * DAY, usedUsd: 0 };
+      trialEmails.add(account.emailLower);
+      return [200, payload(account, deviceId)];
+    }
     if (path === '/v1/account/claim' && method === 'POST') {
       const order = orders.get(String(body?.orderId ?? '').trim());
       if (!order || String(body?.email ?? '').trim().toLowerCase() !== order.email.toLowerCase()) return fail(404, 'order_not_found');
@@ -395,6 +471,10 @@ export function createMockAccountServer({
       checkouts.set(ref, checkout);
       return [200, checkout.key ? { ok: true, status: 'issued', key: checkout.key } : { ok: true, status: 'pending' }];
     }
+    if (path.startsWith('/v1/rau/')) {
+      rau.setConfigured(rauConfigured);
+      return rau.handle(path, body, { method, headers });
+    }
     if (!path.startsWith('/v1/account/')) return fail(404, 'not_found');
     if (!configured) return fail(503, 'accounts_not_configured');
     if (path === '/v1/account/auth/providers' && method === 'GET') return [200, { ok: true, providers: [...providers] }];
@@ -412,12 +492,17 @@ export function createMockAccountServer({
     }
     const authorization = headerValue(headers, 'authorization');
     calls.push({ method, path: parsed.pathname, body, bearer: authorization ? authorization.replace(/^Bearer\s+/i, '') : null });
-    const [status, payloadBody, extraHeaders = {}] = route(method, parsed.pathname, parsed.searchParams, body, raw, headers);
-    if (log) log(`[account-mock] ${method} ${parsed.pathname} → ${status}`);
-    return { status, body: payloadBody, headers: extraHeaders };
+    const [status, payloadBody, extra = {}] = route(method, parsed.pathname, parsed.searchParams, body, raw, headers);
+    if (log) log(`[account-mock] ${method} ${parsed.pathname} → ${status}${extra.sse ? ' stream' : ''}`);
+    // rau-mock 은 [status, body, {headers, sse}] 로, 나머지는 [status, body, headers] 로 답한다.
+    if (extra.sse || extra.headers) return { status, body: payloadBody, headers: extra.headers ?? {}, sse: extra.sse ?? null };
+    return { status, body: payloadBody, headers: extra };
   }
 
-  function toResponse({ status, body, headers }) {
+  function toResponse({ status, body, headers, sse = null }) {
+    if (sse) {
+      return new Response(sse.map(sseFrame).join(''), { status, headers: { 'Content-Type': 'text/event-stream', ...headers } });
+    }
     if (Buffer.isBuffer(body) || typeof body === 'string') {
       return new Response(status === 302 || body.length === 0 ? null : body, { status, headers });
     }
@@ -453,6 +538,16 @@ export function createMockAccountServer({
         return;
       }
       const answer = handle({ method: req.method, url: req.url, headers: req.headers, raw });
+      if (answer.sse) {
+        res.writeHead(answer.status, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive', ...answer.headers });
+        for (const frame of answer.sse) {
+          if (res.destroyed) return;
+          res.write(sseFrame(frame));
+          await new Promise((resolve) => setTimeout(resolve, 40));
+        }
+        res.end();
+        return;
+      }
       const isRaw = Buffer.isBuffer(answer.body) || typeof answer.body === 'string';
       res.writeHead(answer.status, isRaw ? answer.headers : { 'Content-Type': 'application/json', ...answer.headers });
       res.end(isRaw ? answer.body : JSON.stringify(answer.body));
@@ -491,7 +586,7 @@ export function createMockAccountServer({
     /** 그 경로의 다음 호출들에 순서대로 답한다. 값은 [status, body] 또는 함수. */
     script(path, ...responses) { scripted.set(path, [...(scripted.get(path) ?? []), ...responses]); },
     /** 계정에 붙일 수 있는 키를 만든다. email 이 있으면 그 구매 이메일로 자동 연결된다. */
-    issueKey({ edition = 'basic', plan = 'monthly', tier = 'paid', email = null, expiresAt = plan === 'lifetime' ? null : now() + 30 * DAY, autoRenew = true, status = 'active' } = {}) {
+    issueKey({ edition = 'hama', plan = 'monthly', tier = 'paid', email = null, expiresAt = plan === 'lifetime' ? null : now() + 30 * DAY, autoRenew = true, status = 'active' } = {}) {
       keyCounter += 1;
       const rawKey = Array.from(randomBytes(25), (n) => '0123456789ABCDEFGHJKMNPQRSTVWXYZ'[n & 31]).join('');
       const key = `HAMA-${rawKey.match(/.{5}/g).join('-')}`;
@@ -522,7 +617,7 @@ export function createMockAccountServer({
       return { token: newSession(account, deviceId), accountId: account.id };
     },
     /** 앱이 by-ref 로 물은 결제를 모두 키로 끝낸다. */
-    completeCheckouts({ edition = 'basic', plan = 'monthly' } = {}) {
+    completeCheckouts({ edition = 'hama', plan = 'monthly' } = {}) {
       const issued = [];
       for (const [ref, checkout] of checkouts) {
         if (checkout.key) continue;
@@ -532,6 +627,20 @@ export function createMockAccountServer({
       return issued.length;
     },
     setCheckout(ref, key) { checkouts.set(ref, { status: 'issued', key }); },
+    /** 이번 기간의 Rau 사용액(USD)을 정한다. 체험 중이면 체험 크레딧이다. */
+    setRauUsage(email, usd) {
+      const account = accountByEmail(email);
+      if (!account) return;
+      if (primaryOf(account)?.edition === 'rau') account.rauUsedUsd = usd;
+      else if (account.trial) account.trial.usedUsd = usd;
+    },
+    /** 체험을 끝난 것으로 만든다(7일이 지났다). */
+    endRauTrial(email) {
+      const account = accountByEmail(email);
+      if (account?.trial) account.trial.endsAt = now();
+    },
+    setRauConfigured(value) { rauConfigured = Boolean(value); },
+    rauCalls: rau.calls,
     sessionCount() { return sessions.size; },
     snapshot() {
       return {
@@ -566,6 +675,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     else if (path === '/__mock/authorize-error') server.setAuthorizeError(body.error ?? null);
     else if (path === '/__mock/configured') server.setConfigured(body.on !== false);
     else if (path === '/__mock/checkout/complete') return [200, { ok: true, completed: server.completeCheckouts(body) }];
+    else if (path === '/__mock/rau/usage') server.setRauUsage(body.email, Number(body.usd) || 0);
+    else if (path === '/__mock/rau/configured') server.setRauConfigured(body.on !== false);
     else return [404, { ok: false, error: 'not_found' }];
     return [200, { ok: true, state: server.snapshot() }];
   };

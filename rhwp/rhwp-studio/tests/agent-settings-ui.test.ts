@@ -22,9 +22,9 @@ test('토큰·시각 표기는 짧게 (폭이 흔들리지 않게)', () => {
 });
 
 test('provider values share the live provider catalog', () => {
-  assert.deepEqual([...PROVIDER_ORDER], ['claude', 'codex', 'pi', 'hama']);
-  assert.deepEqual(PROVIDER_ORDER.map(name => AGENT_LABEL[name]), ['Claude', 'Codex', 'BYOK', 'Hama']);
-  assert.deepEqual([...MASK_ICON_AGENTS], ['codex', 'pi', 'hama']);
+  assert.deepEqual([...PROVIDER_ORDER], ['claude', 'codex', 'pi', 'rau']);
+  assert.deepEqual(PROVIDER_ORDER.map(name => AGENT_LABEL[name]), ['Claude', 'Codex', 'BYOK', 'Rau']);
+  assert.deepEqual([...MASK_ICON_AGENTS], ['codex', 'pi', 'rau']);
   assert.equal(PROVIDER_ICON_SRC.claude, '/icons/provider-claude.png');
   assert.equal(PROVIDER_ICON_SRC.codex, '/icons/provider-codex.png');
 });

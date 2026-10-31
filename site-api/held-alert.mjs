@@ -36,6 +36,8 @@ export function heldReasonText(reason) {
     case 'wrong_product': return `다른 상품(${detail || '없음'})의 결제예요.`;
     case 'wrong_payment_type': return `결제 방식(${detail})이 상품과 맞지 않아요.`;
     case 'cycle_mismatch': return `결제 주기(${detail}개월)가 상품의 주기와 맞지 않아요.`;
+    case 'wrong_option': return `다른 상품 옵션(${detail || '없음'})의 결제예요.`;
+    case 'missing_option': return '결제에 상품 옵션이 빠져 있어요.';
     case 'renewal_unmatched': return '갱신 결제에 맞는 구독 키를 찾지 못했어요.';
     case 'renewal_for_revoked_key': return '해지한 키의 갱신 결제예요.';
     case 'subscription_unmatched': return `${EVENT_LABELS[detail] ?? detail} 알림에 맞는 구독 키를 찾지 못했어요.`;

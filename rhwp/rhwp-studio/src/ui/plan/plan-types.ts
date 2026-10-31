@@ -1,10 +1,11 @@
 // 앱 요금제. 데스크톱 main(desktop/plan-manager.mjs)이 정하고 rhwpDesktop.plan 으로 알린다.
 // 이 꼴은 데스크톱 JSON 과 같다. 결제 주소와 ref 는 렌더러로 오지 않는다.
 
-export type PlanTier = 'free' | 'basic' | 'legacy' | 'hama';
-export type PlanSku = 'basicMonthly' | 'basicYearly' | 'hamaMonthly' | 'hamaYearly';
+/** free: 편집기만. hama: 내 AI 연결. rau: 호스팅 Rau 에이전트와 Rau 모드(체험 포함). */
+export type PlanTier = 'free' | 'hama' | 'rau';
+export type PlanSku = 'hamaMonthly' | 'hamaYearly' | 'rauMonthly' | 'rauYearly';
 
-export const PLAN_SKUS: readonly PlanSku[] = ['basicMonthly', 'basicYearly', 'hamaMonthly', 'hamaYearly'];
+export const PLAN_SKUS: readonly PlanSku[] = ['hamaMonthly', 'hamaYearly', 'rauMonthly', 'rauYearly'];
 
 export interface PlanCheckoutOption {
   available: boolean;
@@ -40,5 +41,10 @@ export interface DesktopPlanApi {
 
 /** 산 상품이 여는 요금제. */
 export function tierForSku(sku: PlanSku): PlanTier {
-  return sku === 'hamaMonthly' || sku === 'hamaYearly' ? 'hama' : 'basic';
+  return sku === 'rauMonthly' || sku === 'rauYearly' ? 'rau' : 'hama';
+}
+
+/** 요금제의 높이. 결제가 끝났는지는 산 등급 이상이 되었는지로 본다(Rau 는 Hama 를 넘어선다). */
+export function tierRank(tier: PlanTier): number {
+  return tier === 'rau' ? 2 : tier === 'hama' ? 1 : 0;
 }

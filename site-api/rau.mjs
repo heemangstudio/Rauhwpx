@@ -1,33 +1,48 @@
 import { licenseError, tokenEquals } from './licenses.mjs';
-import { createOpenRouterClient, finite, isKeyLimitReached, usd } from './openrouter.mjs';
+import {
+  RAU_TRIAL_ALLOWANCE_USD,
+  SPEND_WEEKS_KEPT,
+  addSpend,
+  finite,
+  normalizeLedger,
+  periodCalls,
+  periodOf,
+  periodUsed,
+  recordCall,
+  spendReport,
+  usd,
+} from './rau-ledger.mjs';
+import { RAU_AGENT_MODEL, RAU_AGENT_PREFIX, RAU_CONTEXT_WINDOW, RAU_MAX_OUTPUT_TOKENS } from './rau-proxy.mjs';
 import { createRateLimiter } from './rate-limit.mjs';
 import { createMemoryStore } from './store.mjs';
 
 /**
- * Hosted Rau-0.1 (the taste learner) for active Basic keys and active Hama plans. The app sends its
- * license lease and a prompt; the server calls the model on OpenRouter with a key of its own, so the
- * app never holds a provider key. Each license gets one OpenRouter key, `hama-rau-<keyId>`, created
- * with `limit` = its plan's cap and `limit_reset: 'monthly'` (UTC calendar month). A license with
- * both plans gets the Hama cap. The server also keeps a per-month ledger from each response's cost and refuses before calling upstream once the
- * month's spend reaches the cap, using whichever of the ledger and OpenRouter's own count is higher.
+ * Hosted Rau: the Rau agent (rau-proxy.mjs) and Rau-0.1, the taste learner (`learn`), for Rau keys,
+ * keys with an active plan in the frozen hama.json, and accounts in their trial. The app sends its
+ * lease; the server calls the model with keys of its own, so the app never holds a provider key.
  *
- * rau.json = { allowances: { [keyId]: { keyId, status: provisioning|active, name, openrouterHash,
- *   openrouterKey, capUsd, period: 'YYYY-MM', limitSetAt, ledger: { [period]: usd }, createdAt } } }
- * `openrouterKey` never leaves the server. Assumes ONE replica: all writes go through one lock.
+ * Each principal has one ledger (rau-ledger.mjs): a Rau license spends RAU_MONTHLY_ALLOWANCE_USD each
+ * month from its anchor, a trial RAU_TRIAL_ALLOWANCE_USD over its 7 days. A call is refused before
+ * upstream once the period's spend reaches the allowance, so the last admitted call may overshoot by
+ * its own cost (and calls in flight together by theirs).
+ *
+ * rau.json = { ledgers: { [principalId]: ledger }, spend: { [weekStart]: { [model]: row } } }. An old
+ * `allowances` field (per-license OpenRouter keys of the previous Rau-0.1) is left as it is and never read.
+ * Assumes ONE replica: all writes go through one lock.
  */
 
 export const MAX_RAU_PROMPT_BYTES = 48 * 1024;
 /** The JSON body may escape every prompt byte (`\u0000` is 6 bytes), so the raw cap is wider than the prompt cap. */
 export const MAX_RAU_BODY_BYTES = 6 * MAX_RAU_PROMPT_BYTES + 1024;
-export const RAU_CONCURRENCY_PER_LICENSE = 2;
-export const RAU_REQUESTS_PER_MINUTE = 20;
+export const RAU_LEARN_CONCURRENCY = 2;
+export const RAU_LEARN_PER_MINUTE = 20;
+export const RAU_LEARN_MAX_TOKENS = 2000;
+export const RAU_LEARN_MODEL = 'rau-0.1';
 const MINUTE = 60 * 1000;
-const BALANCE_CACHE_MS = 15 * 1000;
-const LEARN_TIMEOUT_MS = 120 * 1000;
-const LEDGER_PERIODS_KEPT = 3;
+const LEARN_TIMEOUT_MS = 2 * MINUTE;
 
 export function emptyRauState() {
-  return { allowances: {} };
+  return { ledgers: {}, spend: {} };
 }
 
 /** A license error whose `extra` fields and `headers` the server adds to the `{ok:false, error}` reply. */
@@ -39,21 +54,11 @@ export function rauRateLimited(retryAfterSeconds = 60) {
   return rauError('rate_limited', 429, {}, { 'Retry-After': String(retryAfterSeconds) });
 }
 
-/** UTC calendar month of `ms`, e.g. `2026-10`. OpenRouter's monthly limit resets on the same boundary. */
-export function rauPeriod(ms) {
-  const d = new Date(ms);
-  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
-}
-
-/** Next 1st of the month, 00:00 UTC. */
-export function rauResetsAt(ms) {
-  const d = new Date(ms);
-  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1);
-}
-
 function own(map, key) {
-  return map && typeof map === 'object' && Object.hasOwn(map, key) ? map[key] : undefined;
+  return map && typeof map === 'object' && typeof key === 'string' && Object.hasOwn(map, key) ? map[key] : undefined;
 }
+
+const isoOf = (ms) => new Date(ms).toISOString();
 
 /** `{prompt}` as JSON, the prompt a non-empty string of at most MAX_RAU_PROMPT_BYTES UTF-8 bytes. */
 export function parseRauPrompt(raw) {
@@ -68,49 +73,29 @@ export function parseRauPrompt(raw) {
   return prompt;
 }
 
-/**
- * What one response cost against the key's limit: OpenRouter's `usage.cost` (credits), plus the
- * provider's own charge when the call ran on a BYOK key, which the limit also counts.
- */
-function costOf(usage) {
-  const credit = finite(usage?.cost) ?? 0;
-  const byok = usage?.is_byok === true ? finite(usage?.cost_details?.upstream_inference_cost) ?? 0 : 0;
-  return Math.max(0, credit + byok);
-}
-
-/** This month's spend as OpenRouter counts it, from GET /key. */
-function upstreamUsed(data) {
-  const counts = [];
-  const monthly = finite(data?.usage_monthly);
-  if (monthly !== null) counts.push(monthly + (data.include_byok_in_limit === false ? 0 : finite(data?.byok_usage_monthly) ?? 0));
-  const limit = finite(data?.limit);
-  const remaining = finite(data?.limit_remaining);
-  if (limit !== null && remaining !== null) counts.push(limit - remaining);
-  return counts.length ? Math.max(0, ...counts) : 0;
-}
+/** What `GET /v1/rau/status` tells the app about the agent endpoint. */
+export const RAU_AGENT_INFO = Object.freeze({
+  baseUrl: RAU_AGENT_PREFIX,
+  model: RAU_AGENT_MODEL,
+  contextWindow: RAU_CONTEXT_WINDOW,
+  maxOutputTokens: RAU_MAX_OUTPUT_TOKENS,
+});
 
 export function createRauService({
   store = createMemoryStore(emptyRauState()),
+  // lease → principal with `rau`: `{ source: 'plan', ledgerId, anchor }`, `{ source: 'trial', ledgerId,
+  // startedAt, endsAt }` or null. Throws 401 unauthorized for a lease that is not ours.
   authenticate,
+  upstream = { configured: false, complete: async () => ({ failed: true }) },
   config = {},
-  upgradeUrl = 'https://heemangstudios.com/pricing.html#basic',
+  upgradeUrl = 'https://heemangstudios.com/pricing.html#rau',
   adminToken = '',
-  fetchImpl = globalThis.fetch,
   now = Date.now,
   log = (line) => process.stderr.write(`${line}\n`),
 } = {}) {
-  const {
-    enabled = true,
-    provisioningKey = '',
-    model = 'deepseek/deepseek-v4.1-flash',
-    reasoningEffort = 'low',
-    maxOutputTokens = 2000,
-    monthlyCapsUsd = { basic: 2, hama: 5 },
-    apiBase = 'https://openrouter.ai/api/v1',
-  } = config;
-  const configured = Boolean(enabled && provisioningKey);
-  const caps = { basic: usd(monthlyCapsUsd.basic), hama: usd(monthlyCapsUsd.hama) };
-  const openrouter = createOpenRouterClient({ apiBase, provisioningKey, fetchImpl });
+  const enabled = config.enabled ?? true;
+  const allowanceUsd = usd(config.allowanceUsd ?? 8);
+  const configured = Boolean(enabled && upstream?.configured);
 
   let mutation = Promise.resolve();
   function withLock(fn) {
@@ -120,7 +105,9 @@ export function createRauService({
   }
   function normalize(state) {
     const next = state && typeof state === 'object' && !Array.isArray(state) ? state : {};
-    if (!next.allowances || typeof next.allowances !== 'object' || Array.isArray(next.allowances)) next.allowances = {};
+    for (const field of ['ledgers', 'spend']) {
+      if (!next[field] || typeof next[field] !== 'object' || Array.isArray(next[field])) next[field] = {};
+    }
     return next;
   }
   async function mutate(fn) {
@@ -136,239 +123,191 @@ export function createRauService({
     return normalize(await store.load());
   }
 
-  function usageView(usedUsd, capUsd, nowMs = now()) {
-    const used = usd(Math.max(0, usedUsd));
-    return { usedUsd: used, capUsd, remainingUsd: usd(Math.max(0, capUsd - used)), resetsAt: new Date(rauResetsAt(nowMs)).toISOString() };
-  }
-  function capReached(usedUsd, capUsd) {
-    const view = usageView(usedUsd, capUsd);
-    return rauError('rau_cap_reached', 402, { capUsd: view.capUsd, usedUsd: view.usedUsd, resetsAt: view.resetsAt });
+  const allowanceOf = (source) => (source === 'trial' ? RAU_TRIAL_ALLOWANCE_USD : allowanceUsd);
+
+  /**
+   * Where a principal stands now: its period, allowance and spend. Null when it has no Rau now: no
+   * principal, a trial outside its 7 days, or (unless `keepSpentTrial`) a trial whose credits are spent.
+   */
+  function standing(principal, state, at = now(), { keepSpentTrial = false } = {}) {
+    if (!principal?.ledgerId || (principal.source !== 'plan' && principal.source !== 'trial')) return null;
+    let period;
+    try { period = periodOf(principal, at); } catch { return null; }
+    if (!(at >= period.start && at < period.end)) return null;
+    const allowance = allowanceOf(principal.source);
+    const used = periodUsed(own(state.ledgers, principal.ledgerId), period);
+    if (principal.source === 'trial' && used >= allowance && !keepSpentTrial) return null;
+    return {
+      source: principal.source,
+      ledgerId: principal.ledgerId,
+      period,
+      allowanceUsd: allowance,
+      usedUsd: used,
+      remainingUsd: usd(Math.max(0, allowance - used)),
+    };
   }
 
-  async function principal(lease) {
+  async function who(lease) {
     if (typeof authenticate !== 'function') throw rauError('unauthorized', 401);
-    const who = await authenticate(lease);
-    // Not eligible: the cap an upgrade to Basic would buy.
-    return { ...who, eligible: Boolean(who.rauPlan), capUsd: caps[who.rauPlan ?? 'basic'] };
+    return authenticate(lease);
   }
 
-  // ------------------------------------------------------------ allowance
-
-  const balances = new Map();
-  async function upstreamMonthUsed(allowance) {
-    const cached = balances.get(allowance.keyId);
-    if (cached && now() - cached.at < BALANCE_CACHE_MS) return cached.value;
-    const value = upstreamUsed(await openrouter.keyInfo(allowance.openrouterKey));
-    balances.set(allowance.keyId, { at: now(), value });
-    return value;
+  /**
+   * The current period of a principal for the account page: `{ allowanceUsd, usedUsd, remainingUsd,
+   * resetsAt (epoch ms) }`, or null outside it. A spent trial still answers (remaining 0). Read-only.
+   */
+  async function usage(principal) {
+    const s = standing(principal, await read(), now(), { keepSpentTrial: true });
+    return s ? { allowanceUsd: s.allowanceUsd, usedUsd: s.usedUsd, remainingUsd: s.remainingUsd, resetsAt: s.period.end } : null;
   }
-
-  /** This month's spend: the higher of our ledger and OpenRouter's count. OpenRouter not answering leaves the ledger. */
-  async function periodUsed(allowance, period) {
-    const ledger = finite(own(allowance.ledger, period)) ?? 0;
-    const upstream = await upstreamMonthUsed(allowance).catch(() => 0);
-    return Math.max(ledger, upstream);
-  }
-
-  // One allowance change per license at a time, so parallel calls create one key and PATCH once.
-  const preparing = new Map();
-  function ensureAllowance(keyId, capUsd) {
-    const previous = preparing.get(keyId);
-    const run = (previous ? previous.catch(() => {}) : Promise.resolve()).then(() => prepare(keyId, capUsd));
-    preparing.set(keyId, run);
-    const clear = () => { if (preparing.get(keyId) === run) preparing.delete(keyId); };
-    run.then(clear, clear);
-    return run;
-  }
-
-  async function prepare(keyId, capUsd) {
-    const name = `hama-rau-${keyId}`;
-    const period = rauPeriod(now());
-    const reserved = await mutate((state) => {
-      const existing = own(state.allowances, keyId);
-      if (existing?.status === 'active') return { dirty: false, value: { existing: { ...existing } } };
-      state.allowances[keyId] = {
-        keyId,
-        status: 'provisioning',
-        name,
-        capUsd,
-        period,
-        ledger: existing?.ledger ?? {},
-        startedAt: new Date(now()).toISOString(),
-      };
-      // A provisioning record seen here is a crash between create and save.
-      return { value: { stale: existing?.status === 'provisioning' } };
-    });
-
-    if (!reserved.existing) {
-      let created;
-      try {
-        if (reserved.stale) await openrouter.removeOrphans(name);
-        created = await openrouter.createKey(name, capUsd, { limitReset: 'monthly' });
-      } catch (error) {
-        log(`[site-api] rau key for ${keyId} not created: ${error?.code ?? 'error'}${error?.status ? ` (${error.status})` : ''}`);
-        if (error?.definite) {
-          await mutate((state) => {
-            if (own(state.allowances, keyId)?.status !== 'provisioning') return { dirty: false };
-            delete state.allowances[keyId];
-            return {};
-          }).catch(() => {});
-        }
-        throw rauError('upstream_unavailable', 502);
-      }
-      const at = new Date(now()).toISOString();
-      log(`[site-api] rau allowance created for ${keyId}`);
-      return mutate((state) => {
-        const a = state.allowances[keyId];
-        Object.assign(a, { status: 'active', openrouterHash: created.hash, openrouterKey: created.key, createdAt: at, limitSetAt: at });
-        return { value: { ...a } };
-      });
-    }
-
-    // A new month or a changed cap (a new price, or the license gained or lost its Hama plan): set the key's limit once. This also re-asserts the monthly
-    // reset in case OpenRouter dropped it. A failed PATCH is retried on the next call; the ledger
-    // guard holds the cap meanwhile.
-    const allowance = reserved.existing;
-    if (allowance.period === period && allowance.capUsd === capUsd) return allowance;
-    const patched = await openrouter.patchKey(allowance.openrouterHash, { limit: capUsd, limit_reset: 'monthly', include_byok_in_limit: true });
-    if (!patched.ok) {
-      log(`[site-api] rau limit for ${keyId} not set: ${patched.status ?? 'network'}`);
-      return allowance;
-    }
-    balances.delete(keyId);
-    return mutate((state) => {
-      const a = own(state.allowances, keyId);
-      Object.assign(a, { period, capUsd, limitSetAt: new Date(now()).toISOString() });
-      return { value: { ...a } };
-    });
-  }
-
-  /** Add one response's cost to this month's ledger (or raise it to `atLeast`) and keep the last few months. */
-  async function recordSpend(keyId, period, { add = 0, atLeast = 0 } = {}) {
-    return mutate((state) => {
-      const a = own(state.allowances, keyId);
-      if (!a) return { dirty: false, value: Math.max(add, atLeast) };
-      a.ledger = a.ledger && typeof a.ledger === 'object' ? a.ledger : {};
-      a.ledger[period] = usd(Math.max((finite(a.ledger[period]) ?? 0) + add, atLeast));
-      for (const old of Object.keys(a.ledger).sort().slice(0, -LEDGER_PERIODS_KEPT)) delete a.ledger[old];
-      a.lastUsedAt = new Date(now()).toISOString();
-      return { value: a.ledger[period] };
-    });
-  }
-
-  // ---------------------------------------------------------------- routes
 
   async function status(lease) {
-    const who = await principal(lease);
+    const principal = await who(lease);
     if (!configured) throw rauError('rau_not_configured', 503);
-    const usage = usageView(0, who.capUsd);
-    if (!who.eligible) {
-      return { ok: true, eligible: false, reason: 'rau_requires_basic', upgradeUrl, capUsd: who.capUsd, usedUsd: null, remainingUsd: null, resetsAt: usage.resetsAt };
+    const s = standing(principal.rau, await read());
+    if (!s) {
+      return {
+        ok: true, eligible: false, source: null, reason: 'rau_plan_required', upgradeUrl,
+        allowanceUsd: null, usedUsd: null, remainingUsd: null, resetsAt: null, agent: { ...RAU_AGENT_INFO },
+      };
     }
-    const allowance = own((await read()).allowances, who.keyId);
-    const used = allowance?.status === 'active' ? await periodUsed(allowance, rauPeriod(now())) : 0;
-    const view = usageView(used, who.capUsd);
-    return { ok: true, eligible: true, reason: null, upgradeUrl, capUsd: who.capUsd, usedUsd: view.usedUsd, remainingUsd: view.remainingUsd, resetsAt: view.resetsAt };
+    return {
+      ok: true, eligible: true, source: s.source, reason: null, upgradeUrl,
+      allowanceUsd: s.allowanceUsd, usedUsd: s.usedUsd, remainingUsd: s.remainingUsd, resetsAt: isoOf(s.period.end),
+      agent: { ...RAU_AGENT_INFO },
+    };
   }
 
-  const perLicense = createRateLimiter({ now });
+  /**
+   * Checks a lease before a hosted call. Resolves to `{ principal, refusal }`: the principal's standing
+   * (it is billed against `principal.period`), and `{ resetsAt (ISO), allowanceUsd, usedUsd }` when its
+   * credits are spent. Throws 401 unauthorized, 503 rau_not_configured or 403 rau_plan_required.
+   */
+  async function admit(lease) {
+    const principal = await who(lease);
+    if (!configured) throw rauError('rau_not_configured', 503);
+    const s = standing(principal.rau, await read());
+    if (!s) throw rauError('rau_plan_required', 403, { upgradeUrl });
+    const refusal = s.usedUsd >= s.allowanceUsd
+      ? { resetsAt: isoOf(s.period.end), allowanceUsd: s.allowanceUsd, usedUsd: s.usedUsd }
+      : null;
+    return { principal: s, refusal };
+  }
+
+  /**
+   * Bills one finished (or cut off) call to the principal's ledger and the weekly spend. Idempotent on
+   * `call.id`: a repeated id returns `{ duplicate: true }` and counts nowhere. Saved before it resolves.
+   */
+  async function record(principal, call) {
+    const at = finite(call?.at) ?? now();
+    return mutate((state) => {
+      const ledger = normalizeLedger(own(state.ledgers, principal.ledgerId));
+      state.ledgers[principal.ledgerId] = ledger;
+      const outcome = recordCall(ledger, { id: call?.id, costUsd: call?.costUsd, at, source: principal.source }, principal.period);
+      if (outcome.duplicate) return { dirty: false, value: outcome };
+      addSpend(state.spend, {
+        at,
+        model: call?.model,
+        route: call?.route,
+        costUsd: outcome.costUsd,
+        inputTokens: call?.inputTokens,
+        outputTokens: call?.outputTokens,
+        cacheReadTokens: call?.cacheReadTokens,
+        cacheWriteTokens: call?.cacheWriteTokens,
+      });
+      return { value: { ...outcome, usedUsd: periodUsed(ledger, principal.period) } };
+    });
+  }
+
+  // ----------------------------------------------------------- Rau-0.1
+
+  const perPrincipal = createRateLimiter({ now });
   const inFlight = new Map();
 
   /** `raw` is the request body (null when it ran past MAX_RAU_BODY_BYTES). */
   async function learn(lease, raw) {
-    const who = await principal(lease);
+    const principal = await who(lease);
     if (!configured) throw rauError('rau_not_configured', 503);
-    if (!who.eligible) throw rauError('rau_requires_basic', 403, { upgradeUrl });
+    const s = standing(principal.rau, await read());
+    if (!s) throw rauError('rau_plan_required', 403, { upgradeUrl });
     const prompt = parseRauPrompt(raw);
-    if (!perLicense.check(who.keyId, RAU_REQUESTS_PER_MINUTE, MINUTE)) throw rauRateLimited(60);
-    if ((inFlight.get(who.keyId) ?? 0) >= RAU_CONCURRENCY_PER_LICENSE) throw rauRateLimited(5);
-    inFlight.set(who.keyId, (inFlight.get(who.keyId) ?? 0) + 1);
+    if (!perPrincipal.check(s.ledgerId, RAU_LEARN_PER_MINUTE, MINUTE)) throw rauRateLimited(60);
+    if ((inFlight.get(s.ledgerId) ?? 0) >= RAU_LEARN_CONCURRENCY) throw rauRateLimited(5);
+    inFlight.set(s.ledgerId, (inFlight.get(s.ledgerId) ?? 0) + 1);
     try {
-      return await run(who.keyId, who.capUsd, prompt);
+      if (s.usedUsd >= s.allowanceUsd) {
+        throw rauError('rau_credits_exhausted', 402, { allowanceUsd: s.allowanceUsd, usedUsd: s.usedUsd, resetsAt: isoOf(s.period.end) });
+      }
+      const answer = await upstream.complete({
+        max_tokens: RAU_LEARN_MAX_TOKENS,
+        messages: [{ role: 'user', content: prompt }],
+      }, { timeoutMs: LEARN_TIMEOUT_MS });
+      if (answer.failed) throw rauError('upstream_unavailable', 502);
+      const billed = await record(s, answer.call);
+      const used = usd(Math.max(s.usedUsd, billed.usedUsd ?? s.usedUsd));
+      return {
+        ok: true,
+        text: answer.text,
+        model: RAU_LEARN_MODEL,
+        usage: { allowanceUsd: s.allowanceUsd, usedUsd: used, remainingUsd: usd(Math.max(0, s.allowanceUsd - used)), resetsAt: isoOf(s.period.end) },
+      };
     } finally {
-      const left = (inFlight.get(who.keyId) ?? 1) - 1;
-      if (left > 0) inFlight.set(who.keyId, left);
-      else inFlight.delete(who.keyId);
+      const left = (inFlight.get(s.ledgerId) ?? 1) - 1;
+      if (left > 0) inFlight.set(s.ledgerId, left);
+      else inFlight.delete(s.ledgerId);
     }
-  }
-
-  async function run(keyId, capUsd, prompt) {
-    const allowance = await ensureAllowance(keyId, capUsd);
-    const period = rauPeriod(now());
-    const used = await periodUsed(allowance, period);
-    if (used >= capUsd) throw capReached(used, capUsd);
-
-    let answer;
-    try {
-      answer = await openrouter.json('/chat/completions', {
-        method: 'POST',
-        key: allowance.openrouterKey,
-        timeout: LEARN_TIMEOUT_MS,
-        headers: { 'HTTP-Referer': 'https://heemangstudios.com/', 'X-Title': 'HamaEditor Rau-0.1' },
-        body: {
-          model,
-          messages: [{ role: 'user', content: prompt }],
-          max_tokens: maxOutputTokens,
-          reasoning: { effort: reasoningEffort },
-          stream: false,
-          usage: { include: true },
-        },
-      });
-    } catch {
-      throw rauError('upstream_unavailable', 502);
-    } finally {
-      balances.delete(keyId);
-    }
-    if (isKeyLimitReached(answer.status, answer.body)) {
-      // The key still has a lower old limit because its PATCH failed: the next call asks again, and
-      // filling the ledger now would hold the raised cap shut for the rest of the month.
-      if (allowance.capUsd < capUsd) throw rauError('upstream_unavailable', 502);
-      // OpenRouter's own limit is spent: fill the ledger so the next call stops before upstream.
-      const full = Math.max(used, capUsd);
-      await recordSpend(keyId, period, { atLeast: full });
-      throw capReached(full, capUsd);
-    }
-    const text = answer.body?.choices?.[0]?.message?.content;
-    if (!answer.ok || typeof text !== 'string') {
-      log(`[site-api] rau learn for ${keyId} failed upstream: ${answer.status}`);
-      throw rauError('upstream_unavailable', 502);
-    }
-    const cost = costOf(answer.body.usage);
-    const ledger = await recordSpend(keyId, period, { add: cost });
-    return {
-      ok: true,
-      text,
-      model: typeof answer.body.model === 'string' ? answer.body.model : model,
-      usage: usageView(Math.max(used + cost, ledger), capUsd),
-    };
   }
 
   // ----------------------------------------------------------------- admin
 
+  function requireAdmin(token) {
+    if (!tokenEquals(token, adminToken)) throw rauError('forbidden', 403);
+  }
+
   const admin = {
-    /** Every allowance without its key, with this month's spend (the live count when OpenRouter answers). */
+    /** Every ledger, most recently used first: its period's spend against its allowance. No keys or emails. */
     async list(token) {
-      if (!tokenEquals(token, adminToken)) throw rauError('forbidden', 403);
-      const period = rauPeriod(now());
-      const allowances = await Promise.all(Object.values((await read()).allowances).map(async (a) => {
-        const { openrouterKey: _secret, ...rest } = a;
-        const usedUsd = a.status === 'active' ? usd(await periodUsed(a, period)) : null;
-        return { ...rest, usedUsd, remainingUsd: usedUsd === null ? null : usd(Math.max(0, a.capUsd - usedUsd)) };
-      }));
-      allowances.sort((x, y) => String(y.lastUsedAt ?? y.createdAt).localeCompare(String(x.lastUsedAt ?? x.createdAt)));
+      requireAdmin(token);
+      const at = now();
+      const ledgers = Object.entries((await read()).ledgers).map(([principalId, stored]) => {
+        const ledger = normalizeLedger(structuredClone(stored));
+        const source = ledger.source === 'trial' ? 'trial' : 'plan';
+        const allowance = allowanceOf(source);
+        const period = ledger.period ? { start: Date.parse(ledger.period.start), end: Date.parse(ledger.period.end) } : null;
+        const current = Boolean(period && at >= period.start && at < period.end);
+        const used = current ? periodUsed(ledger, period) : 0;
+        return {
+          principalId,
+          source,
+          allowanceUsd: allowance,
+          usedUsd: used,
+          remainingUsd: usd(Math.max(0, allowance - used)),
+          periodCalls: current ? periodCalls(ledger, period) : 0,
+          periodEnd: current ? isoOf(period.end) : null,
+          totalUsd: ledger.totalUsd,
+          calls: ledger.calls,
+          lastCallAt: ledger.lastCallAt,
+        };
+      });
+      ledgers.sort((x, y) => String(y.lastCallAt).localeCompare(String(x.lastCallAt)));
       return {
         ok: true,
         configured,
-        model,
-        reasoningEffort,
-        period,
-        capsUsd: caps,
-        resetsAt: new Date(rauResetsAt(now())).toISOString(),
-        count: allowances.length,
-        allowances,
+        models: upstream?.routes ?? [],
+        allowanceUsd,
+        trialAllowanceUsd: RAU_TRIAL_ALLOWANCE_USD,
+        count: ledgers.length,
+        ledgers,
       };
+    },
+    /** Spend per week and model for the last `weeks` weeks (1–26, default 8), with totals. */
+    async spend(token, { weeks } = {}) {
+      requireAdmin(token);
+      const n = weeks === undefined || weeks === '' ? 8 : Number(weeks);
+      if (!Number.isInteger(n) || n < 1 || n > SPEND_WEEKS_KEPT) throw rauError('weeks_invalid', 400);
+      return { ok: true, ...spendReport((await read()).spend, { weeks: n, now: now() }) };
     },
   };
 
-  return { configured, status, learn, admin };
+  return { configured, status, usage, admit, record, learn, admin };
 }

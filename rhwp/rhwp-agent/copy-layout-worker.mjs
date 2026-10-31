@@ -107,7 +107,7 @@ export async function launchCopyLayoutWorker(record, job, dependencies) {
     reasoning: piRuntimeModelConfig
       ? Boolean(piRuntimeModelConfig(job.agent, job.model)?.reasoning)
       : job.agent === 'pi' && Boolean(piModelConfig(job.model)?.reasoning),
-    // 선물 크레딧·Hama 리스는 스폰마다 새로 받는다.
+    // 선물 크레딧·Rau 리스는 스폰마다 새로 받는다.
     ...(piRuntimeSpawnHooks ? piRuntimeSpawnHooks(job.agent) : job.agent === 'pi' ? piSpawnHooks?.() : {}),
   };
   const createBackend = SESSION_FACTORIES[job.agent];

@@ -1,6 +1,6 @@
 /**
- * OpenRouter calls shared by gift credits (gifts.mjs) and hosted Rau-0.1 (rau.mjs): the
- * provisioning API (`/keys`) with the management key, and per-key calls with a key we created.
+ * OpenRouter calls of gift credits (gifts.mjs): the provisioning API (`/keys`) with the management
+ * key, and per-key calls with a key we created. Hosted Rau calls OpenRouter in rau-proxy.mjs.
  * Keys created here never leave the server.
  */
 

@@ -21,7 +21,7 @@ import {
 } from './agents/codex.mjs';
 import { IDLE_PROCESS_RELEASE_MS, redactDiagnosticText } from './agents/backend.mjs';
 import { canResumePiSession, createPiSession } from './agents/pi.mjs';
-import { canResumeHamaSession, createHamaSession } from './agents/hama.mjs';
+import { canResumeRauSession, createRauSession } from './agents/rau.mjs';
 import { canResumeCodexThread } from './agents/codex-app-server.mjs';
 import {
   detachCompactionNeeded,
@@ -113,7 +113,8 @@ import { createCodexModelCatalog, createCodexModelResolver, createCodexModelStor
 import { createOpenRouter } from './openrouter.mjs';
 import { createIpcSecretStore } from './secret-store.mjs';
 import { createIpcGiftSource } from './gift-source.mjs';
-import { createHamaHarness, createIpcHamaSource } from './hama-hosted.mjs';
+import { RAU_AGENT_UNAVAILABLE_MESSAGE } from './rau-agent.mjs';
+import { createIpcRauAgentSource, createRauAgentHarness } from './rau-agent-hosted.mjs';
 import { tasteLearningAllowed } from './byok-taste.mjs';
 import { createHostedRau, createIpcRauSource } from './rau-hosted.mjs';
 import { handlePiToolDefinitions } from './pi/tool-schema.mjs';
@@ -401,13 +402,13 @@ const piManager = createPiManager({
 /** 보조 작업이 쓰는 OpenRouter 라우터 — 리스는 선물 프록시로, 내 키는 openrouter.ai 로만 보낸다. */
 const piRouter = piManager.router;
 /**
- * Hama 하네스 (Hama 플랜). 데스크톱이 플랜 상태와 lease 를 준다. BYOK(pi) 의 키·모델과 섞지 않는다.
- * Pi 런타임과 세션 폴더는 같이 쓰고, 홈은 `<piRoot>/agent-hama` 다.
+ * Rau 하네스 (Rau 플랜·Rau 체험). 데스크톱이 자격과 lease 를 준다. BYOK(pi) 의 키·모델과 섞지 않는다.
+ * Pi 런타임과 세션 폴더는 같이 쓰고, 홈은 `<piRoot>/agent-rau` 다.
  */
-const hamaSource = createIpcHamaSource();
-const hamaHarness = createHamaHarness({
+const rauAgentSource = createIpcRauAgentSource();
+const rauAgentHarness = createRauAgentHarness({
   piRoot: PI_ROOT,
-  source: hamaSource,
+  source: rauAgentSource,
   isPiInstalled: () => piStatus.installed === true,
 });
 const authRuns = new AuthRunRegistry();
@@ -493,7 +494,7 @@ function ensureBootWork() {
     piStatus = await piManager.status();
     // 선물 자격은 데스크톱 서버 응답을 기다릴 수 있다 — 기동을 막지 않고 끝나면 알린다.
     if (giftSource.available) void refreshGiftAndBroadcast(false);
-    if (hamaSource.available) void refreshHamaAndBroadcast();
+    if (rauAgentSource.available) void refreshRauAgentAndBroadcast();
     await Promise.all([
       // 저장된 Claude 토큰이 아직 받아들여지는지 한 번 확인한다. 네트워크가 없으면 그대로 둔다.
       cliSetup.verifyAuth('claude')
@@ -1743,9 +1744,14 @@ function flushProviderCredentialHomes(homes) {
 
 /** CLI 설치·인증을 cli-setup-manager 가 관리하는 에이전트들. */
 const CLI_SETUP_AGENTS = ['claude', 'codex'];
-const KNOWN_AGENTS = new Set([...CLI_SETUP_AGENTS, 'pi', 'hama']);
-/** Pi 런타임을 쓰는 하네스 — BYOK(pi) 와 Hama(hama). MCP 도구 신뢰 규칙이 같다. */
-const PI_RUNTIME_AGENTS = new Set(['pi', 'hama']);
+const KNOWN_AGENTS = new Set([...CLI_SETUP_AGENTS, 'pi', 'rau']);
+/** Pi 런타임을 쓰는 하네스 — BYOK(pi) 와 Rau(rau). MCP 도구 신뢰 규칙이 같다. */
+const PI_RUNTIME_AGENTS = new Set(['pi', 'rau']);
+/** 예전 이름. 개발 중 저장된 'hama'(호스팅 하네스) 채팅은 Rau 로 읽는다. */
+const AGENT_ALIASES = Object.freeze({ hama: 'rau' });
+function agentNameFrom(value) {
+  return typeof value === 'string' && Object.hasOwn(AGENT_ALIASES, value) ? AGENT_ALIASES[value] : value;
+}
 const AGENT_INSTRUCTION_DRAFT_TTL_MS = 5 * 60 * 1000;
 // 학습기의 제안은 사용자가 설정을 열 때까지 기다린다.
 const RAU_INSTRUCTION_DRAFT_TTL_MS = 24 * 60 * 60 * 1000;
@@ -1771,7 +1777,7 @@ const SESSION_FACTORIES = {
   claude: createClaudeSession,
   codex: createCodexSession,
   pi: createPiSession,
-  hama: createHamaSession,
+  rau: createRauSession,
 };
 
 /**
@@ -1782,7 +1788,7 @@ const SESSION_RESUME_PROBES = {
   claude: canResumeClaudeSession,
   codex: canResumeCodexThread,
   pi: canResumePiSession,
-  hama: canResumeHamaSession,
+  rau: canResumeRauSession,
 };
 
 function unknownAgentError(agent) {
@@ -1830,7 +1836,7 @@ function refreshGiftAndBroadcast(refresh = true) {
  */
 let giftPiInstallAttempted = false;
 function installPiForGift(status) {
-  const hosted = status?.credential === 'gift' || status?.hamaActive === true;
+  const hosted = status?.credential === 'gift' || status?.rauActive === true;
   if (giftPiInstallAttempted || !hosted || status.installed || status.installing) return;
   giftPiInstallAttempted = true;
   log('gift claimed without Pi: installing Pi in the background');
@@ -1850,51 +1856,51 @@ function installPiForGift(status) {
 
 giftSource.onChange(() => { void refreshGiftAndBroadcast(true); });
 
-/** 바뀐 Hama 플랜 상태를 모든 Studio 탭에 보낸다. 설정 연결 상태(hama.connected)도 따라 바뀐다. */
-function broadcastHamaStatus() {
-  const status = hamaHarness.snapshot();
-  broadcastToStudios({ v: 1, type: 'hama-status', status });
+/** 바뀐 Rau 자격·크레딧을 모든 Studio 탭에 보낸다. 설정 연결 상태(rau.connected)도 따라 바뀐다. */
+function broadcastRauAgentStatus() {
+  const status = rauAgentHarness.snapshot();
+  broadcastToStudios({ v: 1, type: 'rau-agent-status', status });
   void broadcastFreshAgentSetupStatuses().catch(() => {});
   return status;
 }
 
-function refreshHamaAndBroadcast() {
-  return hamaHarness.refresh()
+function refreshRauAgentAndBroadcast() {
+  return rauAgentHarness.refresh()
     .then(() => {
-      const status = broadcastHamaStatus();
-      // 플랜이 살아 있는데 Pi 런타임이 없으면 뒤에서 설치한다 (선물과 같은 길).
-      if (status.availability === 'active') installPiForGift({ ...piStatus, hamaActive: true });
+      const status = broadcastRauAgentStatus();
+      // Rau 를 쓸 수 있는데 Pi 런타임이 없으면 뒤에서 설치한다 (선물과 같은 길).
+      if (status.availability === 'active') installPiForGift({ ...piStatus, rauActive: true });
     })
-    .catch((error) => log(`hama refresh failed: ${error?.message ?? error}`));
+    .catch((error) => log(`rau agent refresh failed: ${error?.message ?? error}`));
 }
 
-// 라이선스가 바뀌면 데스크톱이 알린다.
-hamaSource.onChange(() => { void refreshHamaAndBroadcast(); });
+// 계정·라이선스가 바뀌면 데스크톱이 알린다.
+rauAgentSource.onChange(() => { void refreshRauAgentAndBroadcast(); });
 
-/** Hama 스폰마다 Hama 자격만 고른다. 한도 꼬리표가 오면 막힌 상태를 바로 알린다. */
-function hamaSpawnHooks() {
+/** Rau 스폰마다 Rau 자격만 고른다. 크레딧 꼬리표가 오면 다 쓴 상태를 바로 알린다. */
+function rauSpawnHooks() {
   return {
-    resolvePiAccess: (model) => hamaHarness.resolveSpawn(model),
-    onAccessRejected: () => { void refreshHamaAndBroadcast(); },
-    onHamaCap: (info) => {
-      void hamaHarness.noteCap(info)
-        .then(() => broadcastHamaStatus())
-        .catch((error) => log(`hama cap update failed: ${error?.message ?? error}`));
+    resolvePiAccess: () => rauAgentHarness.resolveSpawn(),
+    onAccessRejected: () => { void refreshRauAgentAndBroadcast(); },
+    onRauCredits: (info) => {
+      void rauAgentHarness.noteCreditsExhausted(info)
+        .then(() => broadcastRauAgentStatus())
+        .catch((error) => log(`rau credits update failed: ${error?.message ?? error}`));
     },
   };
 }
 
-/** Pi 런타임 하네스(BYOK·Hama)의 스폰 훅. 다른 에이전트는 없다. */
+/** Pi 런타임 하네스(BYOK·Rau)의 스폰 훅. 다른 에이전트는 없다. */
 function piRuntimeSpawnHooks(agent) {
   if (agent === 'pi') return piSpawnHooks();
-  if (agent === 'hama') return hamaSpawnHooks();
+  if (agent === 'rau') return rauSpawnHooks();
   return {};
 }
 
-/** Pi 런타임 하네스의 모델 설정 (BYOK 는 내 모델, Hama 는 Hama 모델). */
+/** Pi 런타임 하네스의 모델 설정 (BYOK 는 내 모델, Rau 는 'rau' 하나). */
 function piRuntimeModelConfig(agent, id) {
   if (agent === 'pi') return piModelConfig(id);
-  if (agent === 'hama') return hamaHarness.modelConfig(id);
+  if (agent === 'rau') return rauAgentHarness.modelConfig(id);
   return null;
 }
 
@@ -1935,12 +1941,12 @@ function piAgentSetupStatus() {
 }
 
 
-/** Hama 하네스의 연결 상태. 서버가 플랜이 살아 있다고 답했고 Pi 런타임이 있을 때만 연결이다. */
-function hamaAgentSetupStatus() {
-  const snapshot = hamaHarness.snapshot();
+/** Rau 하네스의 연결 상태. 서버가 Rau 를 쓸 수 있다고 답했고 Pi 런타임이 있을 때만 연결이다. */
+function rauAgentSetupStatus() {
+  const snapshot = rauAgentHarness.snapshot();
   const active = snapshot.availability === 'active';
   return {
-    agent: 'hama',
+    agent: 'rau',
     installed: piStatus.installed,
     available: piStatus.installed,
     installing: piStatus.installing,
@@ -2007,7 +2013,7 @@ async function agentSetupStatuses(ownerSessionId = null, refresh = false) {
   const codex = withDetectedHarness(codexSetup, health.codex);
   cliSetupStatus = { claude, codex };
   return withAuthRunStatus(
-    { claude, codex, pi: piAgentSetupStatus(), hama: hamaAgentSetupStatus() },
+    { claude, codex, pi: piAgentSetupStatus(), rau: rauAgentSetupStatus() },
     typeof ownerSessionId === 'string' ? ownerSessionId : null,
   );
 }
@@ -2234,10 +2240,9 @@ async function modelCatalog(agent, record, { refresh = false } = {}) {
 }
 
 function resolveModel(agent, requested, record = null) {
-  if (agent === 'hama') {
-    // Hama 모델만 고를 수 있다 (Haiku 5.5 와 싼 모델). 없는 모델이면 기본 모델(Haiku).
-    if (typeof requested === 'string' && hamaHarness.modelConfig(requested)) return requested;
-    return hamaHarness.defaultModelId();
+  if (agent === 'rau') {
+    // Rau 모델은 'rau' 하나뿐이다. 무엇을 골라도 그것으로 돈다.
+    return rauAgentHarness.defaultModelId();
   }
   if (agent === 'pi') {
     if (typeof requested === 'string' && piModelConfig(requested)) return requested;
@@ -3830,7 +3835,7 @@ const TRACED_PROVIDER_EVENTS = new Set(['turn-start', 'turn-end', 'tool-call', '
 
 /** 실패 문구에서 지울 이 세션의 비밀 값: MCP 세션 토큰, OpenRouter 키, CLI 설정 키. */
 function providerFailureSecrets(opts) {
-  const values = [opts.token, opts.openRouterApiKey, piManager.apiKey(), piManager.ownApiKey(), hamaHarness.secret()];
+  const values = [opts.token, opts.openRouterApiKey, piManager.apiKey(), piManager.ownApiKey(), rauAgentHarness.secret()];
   for (const [name, value] of Object.entries(opts.providerEnv ?? {})) {
     if (/KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL/i.test(name)) values.push(value);
   }
@@ -6175,6 +6180,7 @@ async function setChatWorkflow(record, sock, msg) {
 }
 
 async function handleStudioMessage(record, sock, msg) {
+  if (msg && typeof msg === 'object' && Object.hasOwn(AGENT_ALIASES, msg.agent)) msg.agent = agentNameFrom(msg.agent);
   switch (msg.type) {
     case 'reference-stage-bind': {
       // 첨부 초안은 이전 채팅의 provider 가 살아 있어도 만들 수 있다. 이 묶기는
@@ -6215,13 +6221,13 @@ async function handleStudioMessage(record, sock, msg) {
           : piManager.refreshGift();
         await wait.then(() => refreshPiStatus()).catch(() => {});
       }
-      // Hama 는 서버가 플랜이 살아 있다고 답했을 때만 연다. 라이선스 등급으로 짐작하지 않는다.
-      if (agent === 'hama') {
-        await hamaHarness.ensureFresh({ timeoutMs: 3_000 }).catch(() => {});
-        if (!hamaHarness.active() || !piStatus.installed) {
+      // Rau 는 서버가 쓸 수 있다고 답했을 때만 연다. 요금제 이름으로 짐작하지 않는다.
+      if (agent === 'rau') {
+        await rauAgentHarness.ensureFresh({ timeoutMs: 3_000 }).catch(() => {});
+        if (!rauAgentHarness.active() || !piStatus.installed) {
           rejectStart(Object.assign(
-            new Error('Hama 플랜이 활성화되어 있지 않아요.'),
-            { code: 'HAMA_NOT_ACTIVE' },
+            new Error(RAU_AGENT_UNAVAILABLE_MESSAGE),
+            { code: 'RAU_AGENT_NOT_ACTIVE' },
           ));
           return;
         }
@@ -6981,8 +6987,8 @@ async function handleStudioMessage(record, sock, msg) {
       const requestId = typeof msg.requestId === 'string' ? msg.requestId : null;
       const agent = msg.agent;
       const method = msg.method;
-      // Hama 는 로그인하지 않는다 — 라이선스로 서버가 정한다.
-      if (!KNOWN_AGENTS.has(agent) || agent === 'hama' || (method !== 'oauth' && method !== 'api-key')) {
+      // Rau 는 로그인하지 않는다 — 계정 lease 로 서버가 정한다.
+      if (!KNOWN_AGENTS.has(agent) || agent === 'rau' || (method !== 'oauth' && method !== 'api-key')) {
         sendAgentSetupError(record, sock, requestId, null, new Error('로그인 요청을 확인하지 못했어요.'));
         return;
       }
@@ -7258,12 +7264,12 @@ async function handleStudioMessage(record, sock, msg) {
       void handleSecretSubmit(record, sock, msg);
       return;
     }
-    case 'hama-status-request': {
+    case 'rau-agent-status-request': {
       const requestId = typeof msg.requestId === 'string' ? msg.requestId : null;
-      const read = msg.refresh === true ? hamaHarness.refresh() : hamaHarness.ensureFresh();
+      const read = msg.refresh === true ? rauAgentHarness.refresh() : rauAgentHarness.ensureFresh();
       void read
         .catch(() => {})
-        .then(() => replyToStudio(record, sock, { v: 1, type: 'hama-status', requestId, status: hamaHarness.snapshot() }));
+        .then(() => replyToStudio(record, sock, { v: 1, type: 'rau-agent-status', requestId, status: rauAgentHarness.snapshot() }));
       return;
     }
     case 'pi-status-request': {
@@ -9943,7 +9949,7 @@ httpServer.on('upgrade', (req, socket, head) => {
         if (providers !== cachedProviders) replyToStudio(record, ws, { v: 1, type: 'provider-status', providers });
       }).catch((e) => log(`provider health on connect failed: ${e?.message ?? e}`));
       sendJson(ws, { v: 1, type: 'pi-status', status: piStatus });
-      sendJson(ws, { v: 1, type: 'hama-status', status: hamaHarness.snapshot() });
+      sendJson(ws, { v: 1, type: 'rau-agent-status', status: rauAgentHarness.snapshot() });
       void agentSetupStatuses(record.sessionId).then((statuses) => {
         replyToStudio(record, ws, { v: 1, type: 'agent-setup-status', statuses });
       }).catch((e) => log(`agent setup status on connect failed: ${e?.message ?? e}`));

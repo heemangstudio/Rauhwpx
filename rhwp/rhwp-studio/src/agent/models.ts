@@ -58,14 +58,14 @@ const PI_EFFORT_LABELS: Record<string, string> = { low: 'Low', medium: 'Medium',
 export const DEFAULT_AGENT_MODEL: Record<CatalogAgent, string> = { claude: 'sonnet', codex: 'sol' };
 export const DEFAULT_AGENT_EFFORT: Record<CatalogAgent, string> = { claude: 'high', codex: 'medium' };
 
-/** Pi 런타임을 쓰는 하네스 — BYOK(pi) 와 Hama(hama). 모델 목록은 허브가 하네스마다 따로 준다. */
-type PiRuntimeAgent = 'pi' | 'hama';
-const piRegistries: Record<PiRuntimeAgent, readonly PiModelConfig[]> = { pi: [], hama: [] };
-function isPiRuntime(agent: AgentName): agent is PiRuntimeAgent { return agent === 'pi' || agent === 'hama'; }
+/** Pi 런타임을 쓰는 하네스 — BYOK(pi) 와 호스팅 Rau(rau). 모델 목록은 허브가 하네스마다 따로 준다. */
+type PiRuntimeAgent = 'pi' | 'rau';
+const piRegistries: Record<PiRuntimeAgent, readonly PiModelConfig[]> = { pi: [], rau: [] };
+function isPiRuntime(agent: AgentName): agent is PiRuntimeAgent { return agent === 'pi' || agent === 'rau'; }
 export function setPiModels(models: readonly PiModelConfig[]): void { piRegistries.pi = models; }
 export function piModels(): readonly PiModelConfig[] { return piRegistries.pi; }
-/** Hama 하네스의 모델 (HamaStatus.models). 첫 모델이 기본(Haiku 5.5)이다. */
-export function setHamaModels(models: readonly PiModelConfig[]): void { piRegistries.hama = models; }
+/** Rau 하네스의 모델 (RauAgentStatus.models). 'rau' 하나다. */
+export function setRauModels(models: readonly PiModelConfig[]): void { piRegistries.rau = models; }
 function findPiModel(agent: PiRuntimeAgent, id: string | null | undefined): PiModelConfig | undefined {
   return piRegistries[agent].find((model) => model.id === id);
 }

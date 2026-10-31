@@ -128,7 +128,7 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
       return () => ipcRenderer.removeListener('gift:changed', listener);
     },
   },
-  // 호스팅 Rau-0.1(Basic). 메인이 lease 로 서버에 묻고, 렌더러는 자격과 사용량만 받는다.
+  // 호스팅 Rau(Rau 요금제·Rau 체험). 메인이 lease 로 서버에 묻고, 렌더러는 자격과 크레딧만 받는다.
   rau: {
     getStatus: () => ipcRenderer.invoke('rau:status'),
     openUpgrade: (url) => ipcRenderer.invoke('rau:open-upgrade', typeof url === 'string' ? url : ''),
@@ -154,6 +154,7 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
     getAvatar: () => ipcRenderer.invoke('account:get-avatar'),
     redeem: (key) => ipcRenderer.invoke('account:redeem', key),
     claim: (orderId, email) => ipcRenderer.invoke('account:claim', orderId, email),
+    startRauTrial: () => ipcRenderer.invoke('account:start-rau-trial'),
     deleteAccount: (confirm) => ipcRenderer.invoke('account:delete', confirm),
     openManage: () => ipcRenderer.invoke('account:open-manage'),
     // 답을 기다리지 않는다.

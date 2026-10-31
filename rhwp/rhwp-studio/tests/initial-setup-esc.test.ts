@@ -241,7 +241,7 @@ function status(agent: AgentName, partial: Partial<AgentSetupStatus> = {}): Agen
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-async function openWizard(tier?: 'basic' | 'hama') {
+async function openWizard(tier?: 'hama' | 'rau') {
   const storage = memoryStore();
   let finished = 0;
   const ui = createInitialSetup({
@@ -299,7 +299,7 @@ test('Esc in the provider connect dialog closes only that dialog; the first-run 
 });
 
 test('finishing first-run setup with only Codex connected makes Codex the provider of the untouched chat, not of a started one', async () => {
-  const { ui, storage, finished } = await openWizard('basic');
+  const { ui, storage, finished } = await openWizard('hama');
   ui.handleEvent({
     type: 'agent-setup-status',
     statuses: { claude: status('claude'), codex: status('codex', { available: true, installed: true, authenticated: true, connected: true }), pi: status('pi') },
@@ -327,8 +327,8 @@ test('finishing first-run setup with only Codex connected makes Codex the provid
 });
 
 
-test('Hama subscribers who skip provider connection start with the hosted agent', async () => {
-  const { ui, storage, finished } = await openWizard('hama');
+test('Rau subscribers who skip provider connection start with the hosted agent', async () => {
+  const { ui, storage, finished } = await openWizard('rau');
   const primary = ui.element.querySelector('.rhwp-setup-primary')!;
   primary.click();
   await tick();
@@ -336,10 +336,10 @@ test('Hama subscribers who skip provider connection start with the hosted agent'
   await tick();
   primary.click();
   await tick();
-  assert.equal(ui.element.querySelector('.rhwp-setup-dialog')!.dataset.step, 'hama');
+  assert.equal(ui.element.querySelector('.rhwp-setup-dialog')!.dataset.step, 'rau');
   primary.click();
   await tick();
   assert.equal(finished(), 1);
-  assert.equal(loadAgentPrefs(storage).defaultAgent, 'hama');
+  assert.equal(loadAgentPrefs(storage).defaultAgent, 'rau');
   ui.dispose();
 });

@@ -1,5 +1,5 @@
 // 계정 화면. 홈에서는 별도로 열고, 설정에서는 계정 탭 안에 붙인다.
-// 로그아웃이면 로그인 판만, 로그인했으면 한 단의 프로필 화면(사진·이름·이메일, 요금제, 사용량, 기기, 라이선스,
+// 로그아웃이면 로그인 판만, 로그인했으면 한 단의 프로필 화면(사진·이름·이메일, 요금제와 Rau 크레딧, 사용량, 기기, 라이선스,
 // 로그아웃·계정 삭제)을 보인다. 동작마다 그 단추에 진행을 보이고 오류는 그 옆에 한 줄로 둔다.
 // 어디서든 window 의 'rhwp:open-account' 이벤트로 연다(detail.section 으로 갈 곳을 짚는다).
 import '../agent-sidebar/sheet.css';
@@ -9,21 +9,26 @@ import { createIcon } from '../agent-sidebar/icons.ts';
 import { createSheetFrame } from '../agent-sidebar/sheet.ts';
 import { createHamaMark } from '../plan/hama-mark.ts';
 import { createHamaScene } from '../plan/hama-scene.ts';
-import { PLAN_CYCLES, planPrice, planSkuAvailable, upgradeFamilies, won, type PlanFamily } from '../plan/plan-offers.ts';
+import { PLAN_CYCLES, PLAN_FAMILY_LABEL, planPrice, planSkuAvailable, upgradeFamilies, won, type PlanFamily } from '../plan/plan-offers.ts';
 import { sharedPlanStore, type PlanStore } from '../plan/plan-store.ts';
 import type { PlanSku } from '../plan/plan-types.ts';
 import {
   ACCOUNT_TIER_LABEL,
   deleteConfirmMatches,
   formatLastSeen,
-  formatShortDate,
-  hamaUsageRatio,
   licenseLine,
   licenseStatusLabel,
   paymentFailedLine,
   planCycleLabel,
   planTermLine,
   platformLabel,
+  rauCreditRatio,
+  rauCredits,
+  rauCreditsLine,
+  rauResetLine,
+  trialAvailable,
+  trialButtonLabel,
+  trialLine,
   usd,
   validateAccountName,
   NAME_MAX,
@@ -217,6 +222,17 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
   const manage = button('acct-btn', '구독 관리');
   planHead.append(planName, manage);
   const planTerm = el('p', 'acct-meta acct-plan-term');
+  // Rau 크레딧: 남은 금액, 막대, 초기화 날짜(체험은 남은 날).
+  const credits = el('div', 'acct-rau-credits');
+  const creditsValue = el('p', 'acct-rau-credits-value');
+  const creditsMeter = el('span', 'acct-meter acct-rau-meter');
+  creditsMeter.setAttribute('role', 'meter');
+  creditsMeter.setAttribute('aria-label', 'Rau 크레딧');
+  creditsMeter.setAttribute('aria-valuemin', '0');
+  const creditsFill = el('span', 'acct-meter-fill');
+  creditsMeter.append(creditsFill);
+  const creditsMeta = el('p', 'acct-meta acct-rau-credits-meta');
+  credits.append(creditsValue, creditsMeter, creditsMeta);
   const planAlert = el('div', 'acct-alert');
   const planAlertText = el('p', 'acct-alert-text');
   planAlertText.setAttribute('role', 'alert');
@@ -224,7 +240,7 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
   planAlert.append(planAlertText, fixPayment);
   const offers = el('div', 'acct-offers');
   const planError = alertLine();
-  planSection.root.append(planHead, planTerm, planAlert, offers, planError);
+  planSection.root.append(planHead, planTerm, credits, planAlert, offers, planError);
 
   // ── 사용량 ──────────────────────────────────────────
   const statsSection = section('stats', '사용량');
@@ -301,6 +317,7 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
   let nameBusy = false;
   let photoBusy: 'set' | 'remove' | null = null;
   let checkoutBusy: PlanSku | null = null;
+  let trialBusy = false;
   let deviceConfirm: string | null = null;
   let deviceBusy: string | null = null;
   let redeemBusy = false;
@@ -420,6 +437,17 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
     }
   }
 
+  async function startTrial(): Promise<void> {
+    if (trialBusy || !api.startRauTrial) return;
+    trialBusy = true;
+    say(planError, '');
+    render();
+    const message = await run(() => api.startRauTrial!());
+    trialBusy = false;
+    say(planError, message);
+    render();
+  }
+
   async function cancelCheckout(control: HTMLButtonElement): Promise<void> {
     control.disabled = true;
     try { await plan?.api?.cancelCheckout(); } catch { /* 다음 상태가 다시 그린다 */ }
@@ -494,6 +522,7 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
     const fragment = document.createDocumentFragment();
     const tier = current.plan.tier;
     if (tier === 'hama') fragment.append(createHamaMark('acct-hama-mark'));
+    if (tier === 'rau') fragment.append(rauMark());
     fragment.append(el('span', 'acct-plan-current', '현재 요금제'), el('span', 'acct-plan-tier', ACCOUNT_TIER_LABEL[tier]));
     const cycle = planCycleLabel(current.plan);
     if (cycle) fragment.append(el('span', 'acct-plan-cycle', cycle));
@@ -512,18 +541,26 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
     return [waiting, cancel];
   }
 
-  /** 두 요금제를 같은 크기로 비교하고 Pro 를 먼저 둔다. */
-  function offerRow(family: PlanFamily): HTMLElement {
+  function rauMark(): HTMLElement {
+    const mark = el('span', 'acct-rau-mark');
+    mark.setAttribute('aria-hidden', 'true');
+    return mark;
+  }
+
+  /** 두 요금제를 같은 크기로 비교하고 Hama 를 먼저 둔다. Rau 칸은 체험을 쓸 수 있으면 체험을 먼저 권한다. */
+  function offerRow(family: PlanFamily, current: AccountStatus): HTMLElement {
     const planStatus = plan?.status() ?? null;
     const { monthly, yearly } = PLAN_CYCLES[family];
     const row = el('div', `acct-offer${family === 'hama' ? ' acct-hama-offer' : ''}`);
     row.dataset.plan = family;
     const head = el('div', 'acct-offer-head');
-    head.append(el('h3', 'acct-offer-name', family === 'basic' ? 'Basic' : 'Hama'));
+    const name = el('h3', 'acct-offer-name', PLAN_FAMILY_LABEL[family]);
+    if (family === 'rau') name.prepend(rauMark());
+    head.append(name);
     if (family === 'hama') head.append(createHamaScene('acct-hama-scene'));
-    const copy = el('p', 'acct-offer-description', family === 'basic'
-      ? '내 Codex·Claude를 연결해 문서 작업을 함께해요.'
-      : '별도 AI 연결 없이 Hama와 바로 시작해요.');
+    const copy = el('p', 'acct-offer-description', family === 'hama'
+      ? '쓰던 AI 계정을 연결해 에이전트를 써요.'
+      : 'AI가 포함돼 연결 없이 바로 써요. Rau 모드도 함께예요.');
     const monthlyPrice = planPrice(planStatus, monthly);
     const yearlyPrice = planPrice(planStatus, yearly);
     const price = el('p', 'acct-offer-price');
@@ -531,52 +568,63 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
     const annual = el('p', 'acct-offer-annual', yearlyPrice === null ? '' : `연간 ${won(yearlyPrice)}`);
     const actions = el('div', 'acct-offer-actions');
     const pending = planStatus?.pendingCheckout?.sku;
+    const trial = family === 'rau' && !!api.startRauTrial && trialAvailable(current);
     if (pending === monthly || pending === yearly) actions.append(...checkoutWait());
     else {
+      if (trial) {
+        const start = button('acct-btn acct-btn-primary acct-offer-trial', trialButtonLabel(current.trial));
+        start.disabled = trialBusy || checkoutBusy !== null || pending != null;
+        if (trialBusy) setBusy(start, true);
+        start.addEventListener('click', () => { void startTrial(); });
+        actions.append(start);
+      }
       const skus = [monthly, yearly].filter((sku) => planSkuAvailable(planStatus, sku));
-      if (skus.length === 0) {
+      if (skus.length === 0 && !trial) {
         const soon = button('acct-btn', '곧 출시');
         soon.disabled = true;
         actions.append(soon);
       }
       for (const sku of skus) {
-        const buy = button(sku === yearly ? 'acct-link acct-offer-yearly' : `acct-btn${family === 'basic' ? ' acct-btn-primary' : ''}`, sku === monthly ? '월간 구독' : '연간 구독');
+        const primary = sku === monthly && !trial;
+        const buy = button(sku === yearly ? 'acct-link acct-offer-yearly' : `acct-btn${primary ? ' acct-btn-primary' : ''}`, sku === monthly ? '월간 구독' : '연간 구독');
         buy.dataset.sku = sku;
-        buy.setAttribute('aria-label', `${family === 'basic' ? 'Basic' : 'Hama'} ${sku === monthly ? '월간' : '연간'} 구독`);
-        buy.disabled = checkoutBusy !== null || pending != null;
+        buy.setAttribute('aria-label', `${PLAN_FAMILY_LABEL[family]} ${sku === monthly ? '월간' : '연간'} 구독`);
+        buy.disabled = checkoutBusy !== null || pending != null || trialBusy;
         if (checkoutBusy === sku) setBusy(buy, true);
         buy.addEventListener('click', () => { void checkout(sku); });
         actions.append(buy);
       }
     }
-    row.append(head, copy, price, annual, actions);
+    row.append(head, copy, price, annual);
+    if (family === 'rau' && current.trial?.state === 'ended' && current.plan.tier !== 'rau') {
+      row.append(el('p', 'acct-meta acct-offer-trial-ended', '무료 체험이 끝났어요'));
+    }
+    row.append(actions);
     return row;
+  }
+
+  /** Rau 크레딧 칸을 채운다. Rau 자격이 없으면 숨긴다. */
+  function renderCredits(current: AccountStatus): void {
+    const left = rauCredits(current.plan.rau);
+    credits.hidden = !left || current.plan.tier !== 'rau';
+    if (!left || credits.hidden) return;
+    creditsValue.replaceChildren(
+      el('span', 'acct-rau-credits-left', rauCreditsLine(left)),
+      el('span', 'acct-stat-of', ` / ${usd(left.allowanceUsd)}`),
+    );
+    creditsMeter.setAttribute('aria-valuemax', String(left.allowanceUsd));
+    creditsMeter.setAttribute('aria-valuenow', String(left.remainingUsd));
+    creditsFill.style.width = `${(rauCreditRatio(left) * 100).toFixed(1)}%`;
+    const meta = left.trial && current.trial ? trialLine(current.trial) : rauResetLine(left);
+    creditsMeta.textContent = meta;
+    creditsMeta.hidden = !meta;
+    credits.dataset.source = left.trial ? 'trial' : 'plan';
   }
 
   function statTile(kind: string, label: string, value: string): HTMLElement {
     const tile = el('div', 'acct-stat');
     tile.dataset.stat = kind;
     tile.append(el('span', 'acct-stat-value', value), el('span', 'acct-stat-label', label));
-    return tile;
-  }
-
-  function hamaTile(hama: NonNullable<NonNullable<AccountStatus['stats']>['hama']>): HTMLElement {
-    const tile = el('div', 'acct-stat acct-stat-hama');
-    tile.dataset.stat = 'hama';
-    const value = el('span', 'acct-stat-value', usd(hama.usedUsd));
-    value.append(el('span', 'acct-stat-of', ` / ${usd(hama.allowanceUsd)}`));
-    const label = el('span', 'acct-stat-label');
-    label.append(createHamaMark('acct-hama-mark'), el('span', '', 'Hama'));
-    const meter = el('span', 'acct-meter');
-    meter.setAttribute('role', 'meter');
-    meter.setAttribute('aria-label', 'Hama 사용량');
-    meter.setAttribute('aria-valuemin', '0');
-    meter.setAttribute('aria-valuemax', String(hama.allowanceUsd));
-    meter.setAttribute('aria-valuenow', String(hama.usedUsd));
-    const fill = el('span', 'acct-meter-fill');
-    fill.style.width = `${(hamaUsageRatio(hama) * 100).toFixed(1)}%`;
-    meter.append(fill);
-    tile.append(value, label, meter, el('span', 'acct-meta', `${formatShortDate(hama.periodEndsAt)} 초기화`));
     return tile;
   }
 
@@ -682,9 +730,13 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
     planTerm.hidden = !term;
     planAlert.hidden = !planInfo.paymentFailed;
     planAlertText.textContent = planInfo.paymentFailed ? paymentFailedLine(planInfo) : '';
-    // 결제가 실패한 동안은 결제 수단 바꾸기만 권한다.
-    const families = plan?.api && !planInfo.paymentFailed ? upgradeFamilies(planInfo.tier) : [];
-    keepFocus(offers, () => offers.replaceChildren(...families.map(offerRow)));
+    renderCredits(current);
+    // 결제가 실패한 동안은 결제 수단 바꾸기만 권한다. 체험 중이면 계속 쓸 Rau 를 권한다.
+    const onTrial = planInfo.tier === 'rau' && planInfo.rau?.source === 'trial';
+    const families: PlanFamily[] = plan?.api && !planInfo.paymentFailed
+      ? (onTrial ? ['rau'] : upgradeFamilies(planInfo.tier))
+      : [];
+    keepFocus(offers, () => offers.replaceChildren(...families.map((family) => offerRow(family, current))));
     offers.hidden = families.length === 0;
     if (plan?.status()?.pendingCheckout) say(planError, '');
     else if (!checkoutBusy && plan?.status()?.lastCheckout?.code === 'timed_out') {
@@ -695,7 +747,6 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
     statsSection.root.hidden = !stats;
     if (stats) {
       statsGrid.replaceChildren(
-        ...(stats.hama ? [hamaTile(stats.hama)] : []),
         statTile('sessions', '에이전트 세션', stats.agentSessions.toLocaleString('ko-KR')),
         statTile('documents', '편집한 문서', stats.documentsEdited.toLocaleString('ko-KR')),
       );

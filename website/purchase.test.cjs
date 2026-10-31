@@ -14,6 +14,10 @@ test('config points at the live Groble product and the default API base', () => 
   assert.equal(P.CONFIG.GROBLE_CHECKOUT_URL, 'https://groble.im/payment/GLJFC9');
   assert.equal(P.CONFIG.CHECKOUT_URLS.onetime, 'https://groble.im/payment/uRshdR');
   assert.equal(P.CONFIG.CHECKOUT_URLS.signature, 'https://groble.im/payment/8Xy27f');
+  assert.equal(P.CONFIG.CHECKOUT_URLS.hamaMonthly, 'https://groble.im/payment/SfYBy5');
+  assert.equal(P.CONFIG.CHECKOUT_URLS.hamaYearly, 'https://groble.im/payment/vdw3HN');
+  assert.equal(P.CONFIG.CHECKOUT_URLS.rauMonthly, 'https://groble.im/payment/R3n8zG');
+  assert.equal(P.CONFIG.CHECKOUT_URLS.rauYearly, 'https://groble.im/payment/atqjpJ');
   assert.equal(P.CONFIG.API_BASE, 'https://rau-credits-production.up.railway.app');
   assert.match(P.CONFIG.MAC_DMG_URL, /arm64\.dmg$/);
   assert.match(P.CONFIG.WIN_EXE_URL, /win-x64\.exe$/);
@@ -274,40 +278,52 @@ test('pricing page prices come from CONFIG.PRICES, so the no-JS text cannot drif
   const path = require('node:path');
   const pricing = fs.readFileSync(path.join(__dirname, 'pricing.html'), 'utf8');
   const tagged = [...pricing.matchAll(/data-price="([^"]+)"[^>]*>([^<]*)</g)];
-  assert.ok(tagged.length >= 5);
+  assert.ok(tagged.length >= 8);
   for (const [, key, text] of tagged) assert.equal(text, P.priceText(key), `data-price="${key}"`);
-  assert.equal(P.priceText('basicYearlySaving', { basicMonthly: 3900, basicYearly: 39000 }), '₩7,800');
-  assert.equal(P.priceText('basicYearlyPerMonth', { basicMonthly: 3900, basicYearly: 39000 }), '₩3,250');
-  assert.equal(P.priceText('hama', { hama: null }), '미정');
-  assert.equal(P.priceText('hama', { hama: 12900 }), '₩12,900');
+  assert.equal(P.priceText('hamaYearlySaving'), '₩7,800');
+  assert.equal(P.priceText('hamaYearlyPerMonth'), '₩3,250');
+  assert.equal(P.priceText('rauMonthly'), '₩14,900');
+  assert.equal(P.priceText('rauYearly'), '₩149,000');
+  assert.equal(P.priceText('rauYearlySaving'), '₩29,800');
+  assert.equal(P.priceText('nopeMonthly'), null);
+  assert.equal(P.priceText('hama'), null);
   assert.equal(P.formatWon(1234567), '₩1,234,567');
-  // The license server's BASIC_UPGRADE_URL points at pricing.html#basic; shipped apps still open #pro.
-  assert.match(pricing, /id="basic"/);
-  assert.match(pricing, /id="pro"/);
-  for (const [, sku] of pricing.matchAll(/data-buy-sku="([^"]+)"/g)) assert.ok(sku in P.CONFIG.CHECKOUT_URLS, sku);
-  const hama = pricing.slice(pricing.indexOf('id="hama"'), pricing.indexOf('</article>', pricing.indexOf('id="hama"')));
-  assert.doesNotMatch(hama, /data-buy/, 'Hama has no buy button');
+  // upgradeUrl points at #rau; old apps and the old license server still open #basic and #pro.
+  for (const id of ['hama', 'rau', 'basic', 'pro']) assert.match(pricing, new RegExp(`id="${id}"`));
+  const skus = [...pricing.matchAll(/data-buy-sku="([^"]+)"/g)].map(([, sku]) => sku).sort();
+  assert.deepEqual(skus, ['hamaMonthly', 'hamaYearly', 'rauMonthly', 'rauYearly']);
+  for (const sku of skus) assert.ok(P.CONFIG.CHECKOUT_URLS[sku], sku);
   assert.match(pricing, /renderPrices/);
   assert.match(pricing, /bindBuyButtons/);
 });
 
-test('a Basic buy button without a Groble link stays a disabled 곧 출시 button and never navigates', () => {
-  const urls = P.CONFIG.CHECKOUT_URLS;
-  const saved = urls.basicMonthly;
+test('plan copy names no model or AI vendor', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const pricing = fs.readFileSync(path.join(__dirname, 'pricing.html'), 'utf8');
+  const main = pricing.slice(pricing.indexOf('<main'), pricing.indexOf('</main>')).replace(/<span id="(basic|pro)"><\/span>/g, '');
+  const hit = /Haiku|Claude|DeepSeek|Codex|OpenRouter|Sonnet|Opus|GPT|Basic/i.exec(main);
+  assert.equal(hit, null, hit && `pricing copy names ${hit[0]}`);
+  const meta = /<meta name="description" content="([^"]*)"/.exec(pricing)[1];
+  assert.doesNotMatch(meta, /Haiku|Claude|DeepSeek|Codex|OpenRouter|Basic/i);
+});
+
+test('an off-sale plan stays a disabled 곧 출시 button and never navigates; ON_SALE opens it', () => {
+  const onSale = P.CONFIG.ON_SALE;
   const label = { hidden: true };
   const consent = { checked: true, hidden: true, addEventListener() {}, closest: () => label };
   const card = { querySelector: (sel) => (sel === '[data-consent]' ? consent : null) };
   const make = () => ({
     textContent: '곧 출시', attrs: { 'aria-disabled': 'true' }, listeners: {},
-    getAttribute(name) { return name === 'data-buy-sku' ? 'basicMonthly' : name === 'data-buy-label' ? 'Groble에서 월간 결제하기' : null; },
+    getAttribute(name) { return name === 'data-buy-sku' ? 'rauMonthly' : name === 'data-buy-label' ? 'Groble에서 월간 결제하기' : null; },
     setAttribute(name, value) { this.attrs[name] = value; },
     addEventListener(type, fn) { this.listeners[type] = fn; },
     closest: () => card,
   });
   const location = { href: '' };
   const docWith = (buy) => ({ defaultView: { localStorage: memoryStorage(), location }, querySelectorAll: (sel) => (sel === '[data-buy]' ? [buy] : []) });
+  for (const sku of ['hamaMonthly', 'hamaYearly', 'rauMonthly', 'rauYearly']) assert.equal(P.saleUrl(sku), '', `${sku} is off sale`);
   try {
-    urls.basicMonthly = '';
     const soon = make();
     P.bindBuyButtons(docWith(soon));
     let prevented = false;
@@ -318,15 +334,15 @@ test('a Basic buy button without a Groble link stays a disabled 곧 출시 butto
     assert.equal(soon.attrs['aria-disabled'], 'true');
     assert.equal(label.hidden, true, 'no consent box for a product that is not on sale');
 
-    urls.basicMonthly = 'https://groble.im/payment/BASIC-M';
+    onSale.rauMonthly = true;
     const live = make();
     P.bindBuyButtons(docWith(live));
     assert.equal(live.textContent, 'Groble에서 월간 결제하기');
     assert.equal(live.attrs['aria-disabled'], 'false');
     assert.equal(label.hidden, false);
     live.listeners.click({ preventDefault() {} });
-    assert.match(location.href, /^https:\/\/groble\.im\/payment\/BASIC-M\?ref=hama-/);
+    assert.match(location.href, /^https:\/\/groble\.im\/payment\/R3n8zG\?ref=hama-/);
   } finally {
-    urls.basicMonthly = saved;
+    onSale.rauMonthly = false;
   }
 });

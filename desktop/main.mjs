@@ -141,10 +141,9 @@ import { installLicenseHost } from './license-host.mjs';
 import { createGiftClient } from './gift-client.mjs';
 import { createGiftManager } from './gift-manager.mjs';
 import { handleGiftRequest, installGiftHost, staleGiftResponse } from './gift-host.mjs';
-import { createHamaClient } from './hama-client.mjs';
-import { handleHamaRequest, staleHamaResponse } from './hama-host.mjs';
 import { createRauClient } from './rau-client.mjs';
 import { handleRauRequest, installRauHost, staleRauResponse } from './rau-host.mjs';
+import { handleRauAgentRequest, staleRauAgentResponse } from './rau-agent-host.mjs';
 import { createPlanManager } from './plan-manager.mjs';
 import { installPlanHost } from './plan-host.mjs';
 import { createSystemFontService } from './system-fonts.mjs';
@@ -509,8 +508,8 @@ class AgentHubOwner {
         RHWP_DOWNLOADS_DIR: app.getPath('downloads'),
         // 선물 크레딧은 macOS·Windows 에서만 준다. 다른 OS 의 허브는 선물 경로를 모른다.
         ...(process.platform === 'darwin' || process.platform === 'win32' ? { RHWP_GIFT_BROKER: 'ipc' } : {}),
-        // Hama 플랜: 메인이 lease 로 플랜 상태를 묻고, 살아 있는 플랜일 때만 Pi 에 줄 lease 를 넘긴다.
-        RHWP_HAMA_BROKER: 'ipc',
+        // Rau 에이전트: 메인이 lease 로 Rau 자격을 묻고, Rau 를 쓸 수 있을 때만 Pi 에 줄 lease 를 넘긴다.
+        RHWP_RAU_AGENT_BROKER: 'ipc',
         // 호스팅 Rau-0.1 은 메인이 lease 로 대신 묻는다. 허브는 결과만 받는다.
         RHWP_RAU_BROKER: 'ipc',
         ...(rhwpExecutable ? { RHWP_BIN: rhwpExecutable } : {}),
@@ -538,12 +537,12 @@ class AgentHubOwner {
           if (source === this.#child && typeof message.id === 'string') this.#activityQueries.get(message.id)?.(message.busy !== false);
           return;
         }
-        if (message?.type === 'rhwp-hama-request') {
+        if (message?.type === 'rhwp-rau-agent-request') {
           if (source !== this.#child || this.#stoppingChild === source || this.#disposed || quitting) {
-            if (source.connected) source.send(staleHamaResponse(message));
+            if (source.connected) source.send(staleRauAgentResponse(message));
             return;
           }
-          void handleHamaRequest(hamaDeps, message).then((response) => {
+          void handleRauAgentRequest(rauDeps, message).then((response) => {
             if (response && source.connected) source.send(response);
           });
           return;
@@ -673,11 +672,11 @@ class AgentHubOwner {
     return this.#suspendPromise;
   }
 
-  /** 라이선스가 바뀌었다고 지금 허브에 알린다. 허브가 Hama 플랜 상태를 다시 묻는다. */
-  notifyHamaChanged() {
+  /** 계정·라이선스가 바뀌었다고 지금 허브에 알린다. 허브가 Rau 자격을 다시 묻는다. */
+  notifyRauAgentChanged() {
     const child = this.#child;
     if (!child || this.#stoppingChild === child || this.#disposed || quitting || !child.connected) return;
-    try { child.send({ type: 'rhwp-hama-changed' }); } catch { /* 끝나는 자식 */ }
+    try { child.send({ type: 'rhwp-rau-agent-changed' }); } catch { /* 끝나는 자식 */ }
   }
 
   /** 선물 크레딧 상태가 바뀌었다고 지금 허브에 알린다. 허브가 다시 자격 증명을 묻는다. */
@@ -1596,12 +1595,8 @@ const giftManager = createGiftManager({
   },
 });
 const giftHost = installGiftHost({ ipcMain, manager: giftManager, isTrustedStudioEvent, studioWebContents });
-// Hama 플랜: 키 서버와 같은 주소의 /v1/hama/status 에 계정 lease 로 묻는다.
-const hamaDeps = {
-  client: createHamaClient({ baseUrl: licenseApiBase }),
-  currentLease: () => accountManager.currentLease(),
-};
-// 호스팅 Rau-0.1(Pro): 키 서버와 같은 주소에 계정 lease 로 묻는다.
+// 호스팅 Rau(Rau 에이전트·Rau-0.1): 키 서버와 같은 주소의 /v1/rau/* 에 계정 lease 로 묻는다.
+// 무료 lease 는 currentLease 가 주지 않는다.
 const rauDeps = {
   client: createRauClient({ baseUrl: licenseApiBase }),
   currentLease: () => accountManager.currentLease(),
@@ -1665,13 +1660,13 @@ const accountManager = createAccountManager({
   },
   // 호스팅 기능에 주는 lease 가 바뀌었다(로그인·로그아웃·갱신·요금제 변경).
   onLeaseChange: () => {
-    hubOwner.notifyHamaChanged();
+    hubOwner.notifyRauAgentChanged();
     hubOwner.notifyLicenseChanged();
     void giftManager.licenseChanged().catch((error) => console.warn('[hamaeditor] gift refresh failed:', error));
   },
 });
 const accountHost = installAccountHost({ ipcMain, manager: accountManager, isTrustedStudioEvent, studioWebContents });
-// 앱 요금제: 계정으로 무료·Basic·예전 키·Hama 를 정하고, 앱 안 결제를 ref 로 확인해 키를 계정에 연결한다.
+// 앱 요금제: 계정으로 무료·Hama·Rau 를 정하고, 앱 안 결제를 ref 로 확인해 키를 계정에 연결한다.
 const planManager = createPlanManager({
   accountManager,
   enforce: licenseEnforced,

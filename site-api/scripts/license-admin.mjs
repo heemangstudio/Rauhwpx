@@ -23,7 +23,8 @@
 //   node scripts/license-admin.mjs gifts [--status active|revoked|provisioning] [--event-id special-2026-10]
 //   node scripts/license-admin.mjs gift-disable --key-id lic_... [--reason "..."]   # disables the OpenRouter key too
 //   node scripts/license-admin.mjs gift-amount --key-id lic_... --usd 30   # this beta key's gift; 0 = none, a claimed key's limit changes on OpenRouter
-//   node scripts/license-admin.mjs rau                                # hosted Rau-0.1 allowances: this month's spend against the cap
+//   node scripts/license-admin.mjs rau                                # hosted Rau ledgers: this period's spend against the allowance
+//   node scripts/license-admin.mjs rau-spend [--weeks 8]              # hosted Rau spend per week and model, with totals
 //   node scripts/license-admin.mjs accounts --email user@example.com | --id acct_... | --key-id lic_...   # accounts with devices and linked keys
 //   node scripts/license-admin.mjs account-unlink --key-id lic_...     # free a key from its account
 //   node scripts/license-admin.mjs account-link --key-id lic_... --account-id acct_...
@@ -77,6 +78,7 @@ const gets = {
   webhooks: '/v1/admin/webhooks',
   gifts: '/v1/admin/gifts',
   rau: '/v1/admin/rau',
+  'rau-spend': '/v1/admin/rau/spend',
   downloads: '/v1/admin/downloads',
   accounts: '/v1/admin/accounts',
 };
@@ -103,12 +105,14 @@ if (gets[command]) {
   }
   res = await adminRequest({ base, token, method: 'POST', path: posts[command], body });
 } else {
-  process.stderr.write('usage: license-admin.mjs issue|beta|betas|signatures|customers|lookup|orders|webhooks|attention|ack|release|apply-renewal|revoke|restore|reset-devices|remove-device|resend-email|extend|downloads|gifts|gift-disable|gift-amount|rau|accounts|account-unlink|account-link [--flags]\n');
+  process.stderr.write('usage: license-admin.mjs issue|beta|betas|signatures|customers|lookup|orders|webhooks|attention|ack|release|apply-renewal|revoke|restore|reset-devices|remove-device|resend-email|extend|downloads|gifts|gift-disable|gift-amount|rau|rau-spend|accounts|account-unlink|account-link [--flags]\n');
   process.exit(2);
 }
 const parsed = res.json;
 const pretty = parsed ? JSON.stringify(parsed, null, 2) : res.text;
-process.stdout.write(`${res.status} ${pretty}\n`);
+// The Rau reports print a table only; anything else (and every failure) prints the JSON answer.
+const tableOnly = (command === 'rau' || command === 'rau-spend') && res.ok && parsed;
+process.stdout.write(tableOnly ? `${res.status}\n` : `${res.status} ${pretty}\n`);
 const kstDate = (iso) => new Date(Date.parse(iso) + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
 /** One line per key: plan, status and how long it runs (KST date). */
 function expiryLine(license) {
@@ -120,8 +124,7 @@ function expiryLine(license) {
   const renews = license.subscription?.autoRenew === false ? '갱신 안 함' : '자동 갱신';
   const failed = license.subscription?.status === 'past_due' && license.subscription.paymentGraceEndsAt
     ? ` · 결제 실패, ${kstDate(license.subscription.paymentGraceEndsAt)}까지 유예` : '';
-  const edition = license.edition === 'pro' ? 'basic' : license.edition;
-  const plan = `${edition === 'basic' || edition === 'hama' ? `${edition} ` : ''}${license.plan ?? 'annual'}`;
+  const plan = `${license.edition === 'hama' || license.edition === 'rau' ? `${license.edition} ` : ''}${license.plan ?? 'annual'}`;
   return `${license.key} ${plan} · ${license.status} · ${kstDate(license.expiresAt)}까지 · ${renews}${failed}`;
 }
 if (command === 'downloads' && res.ok && parsed) {
@@ -134,10 +137,33 @@ const listed = parsed?.licenses ?? parsed?.signatures ?? (parsed?.license ? [par
 if (res.ok && listed.length && listed.every((l) => l.key)) {
   process.stdout.write(`\n${listed.map(expiryLine).join('\n')}\n`);
 }
-if (command === 'rau' && res.ok && parsed) {
-  const lines = [`${parsed.model} · ${parsed.period} · cap Basic $${parsed.capsUsd.basic ?? parsed.capsUsd.pro}, Hama $${parsed.capsUsd.hama} · resets ${parsed.resetsAt}`];
-  for (const a of parsed.allowances) lines.push(`${a.keyId} ${a.status} · $${a.usedUsd ?? '?'} / $${a.capUsd}`);
-  process.stdout.write(`\n${lines.join('\n')}\n`);
+const money = (value) => (typeof value === 'number' ? `$${value.toFixed(4)}` : '-');
+/** Rows of cells as aligned columns. */
+function table(rows) {
+  const widths = rows[0].map((_, i) => Math.max(...rows.map((row) => String(row[i]).length)));
+  return rows.map((row) => row.map((cell, i) => String(cell).padEnd(widths[i])).join('  ').trimEnd()).join('\n');
+}
+if (command === 'rau' && tableOnly) {
+  const head = `Rau · ${parsed.configured ? 'on' : 'off'} · routes ${parsed.models.map((m) => m.id).join(', ') || '-'} · plan $${parsed.allowanceUsd}/month · trial $${parsed.trialAllowanceUsd} · ${parsed.count} ledgers`;
+  const rows = [['principal', 'source', 'used', 'allowance', 'left', 'period end', 'calls', 'total']];
+  for (const l of parsed.ledgers) {
+    rows.push([l.principalId, l.source, money(l.usedUsd), `$${l.allowanceUsd}`, money(l.remainingUsd), l.periodEnd ? kstDate(l.periodEnd) : '-', l.periodCalls, money(l.totalUsd)]);
+  }
+  process.stdout.write(`${head}\n${table(rows)}\n`);
+}
+if (command === 'rau-spend' && tableOnly) {
+  const rows = [['week', 'model', 'calls', 'usd', 'input', 'output', 'cache read', 'cache write', 'routes']];
+  const line = (label, model, row) => rows.push([
+    label, model, row.calls, money(row.usd), row.inputTokens, row.outputTokens, row.cacheReadTokens, row.cacheWriteTokens,
+    Object.entries(row.routes).map(([route, usd]) => `${route} ${money(usd)}`).join(', ') || '-',
+  ]);
+  for (const week of parsed.weeks) {
+    const models = Object.entries(week.models);
+    if (models.length === 0) rows.push([week.week, '-', 0, money(0), '', '', '', '', '']);
+    for (const [model, row] of models) line(week.week, model, row);
+  }
+  for (const [model, row] of Object.entries(parsed.totals.models)) line('total', model, row);
+  process.stdout.write(`${table(rows)}\n${parsed.weeks.length} weeks · ${parsed.totals.calls} calls · ${money(parsed.totals.usd)}\n`);
 }
 if (command === 'accounts' && res.ok && parsed) {
   const lines = parsed.accounts.map((a) => `${a.id} ${a.email}${a.emailVerified ? '' : ' (미인증)'} · 기기 ${a.devices.length} · 키 ${a.licenses.map((l) => `${l.keyId} ${l.status}`).join(', ') || '-'}`);
