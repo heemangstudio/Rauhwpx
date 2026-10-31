@@ -33,6 +33,17 @@ export function normalizeLicenseKey(raw) {
   return /^HAMA(?:-[0-9A-HJKMNP-TV-Z]{5}){5}$/.test(key) ? key : '';
 }
 
+/** 서버의 GIFT 16자리 형식. 정규화만 하고 실제 발급·만료·소유자는 서버가 확인한다. */
+export function normalizeGiftCode(raw) {
+  if (typeof raw !== 'string' || raw.length > 64) return '';
+  let value = raw.toUpperCase().replace(/[\s-]/g, '');
+  if (value.length === 20 && value.startsWith('GIFT')) value = value.slice(4);
+  value = value.replace(/O/g, '0').replace(/[IL]/g, '1');
+  if (value.length !== 16) return '';
+  const code = `GIFT-${value.match(/.{4}/g).join('-')}`;
+  return /^GIFT(?:-[0-9A-HJKMNP-TV-Z]{4}){4}$/.test(code) ? code : '';
+}
+
 export function licenseKeyHash(key) {
   const normalized = normalizeLicenseKey(key);
   if (!normalized) throw new Error('invalid license key');

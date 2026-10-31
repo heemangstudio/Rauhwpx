@@ -144,9 +144,13 @@ test('a v1 cache moves to v2: Basic, Pro and legacy become Hama, the old hosted 
   assert.deepEqual([unknown.tier, unknown.pendingCheckout], ['free', null]);
 });
 
-test('dev builds that do not enforce the license unlock the agent on the free tier', async (t) => {
-  const { make } = await setup(t, { entitlement: { signedIn: false, accountId: null, tier: null } });
-  const status = await make({ enforce: false }).getStatus();
+test('dev builds that do not enforce the license unlock the free tier only while signed in', async (t) => {
+  const { make, account } = await setup(t, { entitlement: { signedIn: false, accountId: null, tier: null } });
+  const plan = make({ enforce: false });
+  let status = await plan.getStatus();
+  assert.deepEqual([status.tier, status.agentUnlocked], ['free', false]);
+  account.holder.entitlement = { signedIn: true, accountId: 'acct_1', tier: 'free' };
+  status = await plan.getStatus();
   assert.deepEqual([status.tier, status.agentUnlocked], ['free', true]);
 });
 

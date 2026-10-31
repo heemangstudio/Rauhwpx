@@ -74,6 +74,9 @@ export async function checkPlanCard({ page, open, screenshot }) {
   await page.waitForSelector('.ag-pricing-card[data-view="waiting"]');
   assert.deepEqual(await page.evaluate(() => window.sidebarPreview.plan.checkouts), ['hamaMonthly']);
   await page.waitForSelector('.ag-pricing-card[data-view="done"]', { timeout: 6000 });
+  assert.equal(await page.$$eval('.ag-pricing-col', (cols) => cols.length), 3, 'success keeps the pricing columns');
+  assert.equal(await page.$('.ag-pricing-state'), null, 'success stays in the upgrade button');
+  await page.waitForSelector('.ag-pricing-btn-success .ag-icon');
   await page.waitForFunction(() => !document.querySelector('.ag-pricing-card'), { timeout: 4000 });
   await page.waitForFunction(() => !document.querySelector('.ag-root').classList.contains('ag-pricing-locked'));
   assert.equal(await page.$eval('#agent-sidebar', (root) => root.dataset.tier), 'hama');
@@ -103,7 +106,10 @@ export async function checkPlanCard({ page, open, screenshot }) {
   assert.equal(await page.$eval('.ag-pricing-state-meta', (meta) => meta.textContent), 'Rau · 연간');
   assert.deepEqual(await page.evaluate(() => window.sidebarPreview.plan.checkouts), ['rauYearly']);
   await page.waitForSelector('.ag-pricing-card[data-view="done"]', { timeout: 6000 });
-  assert.equal(await page.$eval('.ag-pricing-state-title', (title) => title.textContent), 'Rau를 쓸 수 있어요');
+  assert.equal(await page.$$eval('.ag-pricing-col', (cols) => cols.length), 3, 'success keeps the pricing columns');
+  assert.equal(await page.$('.ag-pricing-state'), null, 'success stays in the upgrade button');
+  await page.waitForSelector('.ag-pricing-btn-success .ag-icon');
+  assert.equal(await page.$eval('.ag-pricing-btn-success', (button) => button.getAttribute('aria-label')), 'Rau 활성화 완료');
   await page.waitForFunction(() => !document.querySelector('.ag-pricing-card'), { timeout: 4000 });
   assert.equal(await page.$eval('#agent-sidebar', (root) => root.dataset.tier), 'rau');
 
@@ -113,11 +119,35 @@ export async function checkPlanCard({ page, open, screenshot }) {
   await page.waitForSelector('.ag-pricing-col[data-plan="rau"][data-focus="true"]');
   assert.deepEqual(
     await page.$$eval('.ag-pricing-col[data-plan="rau"] button', (buttons) => buttons.map((b) => b.textContent)),
-    ['7일 무료 체험', '월간', '연간'],
+    ['7일 무료 체험'],
   );
+  // Rau 칸의 자모 그림은 칸 안에 글자를 그린다(이 확인은 동작 줄이기라 멈춘 한 장이다).
+  assert.ok(await page.waitForFunction(() => {
+    const art = document.querySelector('.ag-pricing-col[data-plan="rau"] .ag-pricing-art');
+    if (!art?.width) return false;
+    return art.getContext('2d').getImageData(0, 0, art.width, art.height).data.some((value, index) => index % 4 === 3 && value > 0);
+  }));
   await screenshot?.('plan-card-trial');
+  // Rau 칸을 누르면 그림이 칸에서 늘어나지만 단추를 가리지 않고, 끝나면 캔버스가 사라진다.
+  await page.emulateMediaFeatures([{ name: 'prefers-reduced-motion', value: 'no-preference' }]);
+  await page.click('.ag-pricing-col[data-plan="rau"] .ag-pricing-features');
+  await page.waitForSelector('.ag-pricing-card .ag-pricing-stretch');
+  await page.click('.ag-pricing-col[data-plan="rau"] .ag-pricing-features');
+  assert.equal(await page.$$eval('.ag-pricing-stretch', (canvases) => canvases.length), 1,
+    'repeated clicks replace the vine animation');
+  assert.equal(await page.$eval('.ag-pricing-col[data-plan="rau"] .ag-pricing-btn-trial', (button) => {
+    const box = button.getBoundingClientRect();
+    return document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2) === button;
+  }), true, 'the stretching art leaves the trial button clickable');
+  await page.waitForFunction(() => !document.querySelector('.ag-pricing-stretch'), { timeout: 4000 });
+  await page.emulateMediaFeatures([{ name: 'prefers-reduced-motion', value: 'reduce' }]);
+  await page.click('.ag-pricing-col[data-plan="rau"] .ag-pricing-features');
+  assert.equal(await page.$('.ag-pricing-stretch'), null, 'reduced motion skips the vines');
   await page.click('.ag-pricing-col[data-plan="rau"] .ag-pricing-btn-trial');
   await page.waitForSelector('.ag-pricing-card[data-view="done"]', { timeout: 4000 });
+  assert.equal(await page.$$eval('.ag-pricing-col', (cols) => cols.length), 3, 'success keeps the pricing columns');
+  assert.equal(await page.$('.ag-pricing-state'), null, 'success stays in the upgrade button');
+  await page.waitForSelector('.ag-pricing-btn-success .ag-icon');
   assert.ok((await page.evaluate(() => window.sidebarPreview.account.calls)).includes('startRauTrial'));
   await page.waitForFunction(() => !document.querySelector('.ag-pricing-card'), { timeout: 4000 });
   await page.waitForFunction(() => document.querySelector('#agent-sidebar')?.dataset.tier === 'rau');
