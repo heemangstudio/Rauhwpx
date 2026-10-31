@@ -355,9 +355,9 @@ function customerView(license, nowMs, graceMaxMs) {
 }
 
 /**
- * License key service. Every mutation runs under one in-process lock and saves
- * the whole state through the atomic file store, so concurrent requests never
- * interleave read-modify-write cycles. Assumes ONE Railway replica.
+ * License key service. Every mutation runs exclusively through `store.update` (the atomic file
+ * store, or Postgres with a per-domain advisory lock), so concurrent requests never interleave
+ * read-modify-write cycles.
  */
 export function createLicensesService({
   store = createMemoryStore(emptyLicensesState()),
@@ -385,7 +385,7 @@ export function createLicensesService({
   adminToken = '',
   downloadUrl = 'https://heemangstudios.com/',
   hamaPlanActive = async () => false,
-  // A plain read of accounts.json (no lock): the account a verified buyer email belongs to, or null.
+  // A read of the accounts store (never its update lock): the account a verified buyer email belongs to, or null.
   accountForEmail = async () => null,
   webhookLog = createWebhookLog({ now }),
   log = (line) => process.stderr.write(`${line}\n`),
@@ -406,25 +406,14 @@ export function createLicensesService({
   // Groble's buyer page, for a key that renews or lapses there. Lifetime and gift keys have none.
   const fixUrlOf = (license) => (expiryOf(license) === null || isGiftKey(license) ? null : paymentFixUrl);
 
-  let mutation = Promise.resolve();
-  function withLock(fn) {
-    const result = mutation.then(fn, fn);
-    mutation = result.then(() => undefined, () => undefined);
-    return result;
-  }
-
+  /** `fn` runs alone on the store and returns `{ value, dirty }`; the state is saved unless `dirty` is false. */
   async function mutate(fn) {
-    return withLock(async () => {
-      const state = normalizeState(await store.load());
-      const result = await fn(state);
-      if (result?.dirty !== false) await store.save(state);
-      return result?.value ?? result;
-    });
+    const result = await store.update((state) => fn(normalizeState(state)));
+    return result?.value ?? result;
   }
 
   async function read() {
-    await mutation.catch(() => {});
-    return normalizeState(await store.load());
+    return normalizeState(await store.read());
   }
 
   function createLicense(state, fields) {
@@ -881,7 +870,7 @@ export function createLicensesService({
     }
     const type = str(event.type, 64);
     const object = event?.data?.object;
-    // Read before the lock: accounts.json is another service's store.
+    // Read before the lock: the accounts store belongs to another service.
     const buyerAccountId = issuesKey(type, object) ? await buyerAccount(object) : null;
     return mutate(async (state) => {
       pruneWebhookEvents(state);
@@ -1503,7 +1492,7 @@ export function createLicensesService({
     const installId = typeof body?.installId === 'string' ? body.installId.trim().toLowerCase() : '';
     if (!INSTALL_ID_RE.test(installId)) throw licenseError('install_id_invalid', 400);
     const digest = uniqueInstallDigest(installId);
-    const installs = (await uniqueInstallsStore?.load())?.installs ?? {};
+    const installs = (await uniqueInstallsStore?.read())?.installs ?? {};
     const install = installs[digest];
     const firstSeen = parseTime(install?.firstSeenAt);
     const eligible = install && firstSeen !== undefined && firstSeen < grandfatherCutoff

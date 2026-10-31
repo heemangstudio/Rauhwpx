@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,6 +9,7 @@ import {
   resolveAccountConfig,
   resolveAccountsDbPath,
   resolveAvatarDir,
+  resolveDatabaseUrl,
   resolveFeedbackDir,
   resolveFeedbackMaxBytes,
   resolveFeedbackProofKey,
@@ -27,6 +28,7 @@ import {
   resolveWebhookLogDbPath,
   resolveDownloadsDbPath,
 } from './config.mjs';
+import { createDatabase } from './db.mjs';
 import {
   DEFAULT_FEEDBACK_PROOF_KEY,
   MAX_FEEDBACK_BODY_BYTES,
@@ -41,7 +43,10 @@ import { createHeldAlerter } from './held-alert.mjs';
 import { createEmailProvider, resendProviderFromEnv } from './license-email.mjs';
 import { parseSigningPrivateKey, publicKeyFromPrivate, rawPublicKeyBase64 } from './license-lease.mjs';
 import { createLicensesService, emptyLicensesState, licenseError } from './licenses.mjs';
+import { licensesMapper } from './mappers/licenses.mjs';
+import { webhookLogMapper } from './mappers/webhook-log.mjs';
 import { renderAccountLoginErrorPage, renderUniqueInstallsPage } from './pages.mjs';
+import { createPostgresStore } from './pg-store.mjs';
 import { MAX_RAU_BODY_BYTES, createRauService, emptyRauState, rauRateLimited } from './rau.mjs';
 import { createRateLimiter } from './rate-limit.mjs';
 import { createFileStore } from './store.mjs';
@@ -250,6 +255,7 @@ export function siteRequestListener({
   webhookLog = createWebhookLog(),
   webhookAlerts = createWebhookAlerter({ log: () => {} }),
   heldAlerts = createHeldAlerter({ log: () => {} }),
+  storage = 'files',
   log = () => {},
 }) {
   const limiter = createRateLimiter();
@@ -831,7 +837,7 @@ export function siteRequestListener({
           res.end(await readFile(RAU_ICON_PATH));
           return;
         case 'GET /healthz':
-          send(200, { ok: true });
+          send(200, { ok: true, storage });
           return;
         case 'GET /unique-installs':
           allow('unique-install-page', 120, MINUTE);
@@ -932,17 +938,23 @@ export function createSiteServer(env = process.env, options = {}) {
     licenseConfig.publicKeyRawBase64 = rawPublicKeyBase64(publicKey);
   }
   const log = options.log ?? ((line) => process.stderr.write(`${line}\n`));
+  // With a database every store that has a Postgres mapping runs there and never touches its JSON
+  // file; the others stay on files until they get one. `options.db` (tests, main) wins over DATABASE_URL.
+  const db = options.db !== undefined ? options.db : databaseFromEnv(env, log);
+  const domainStore = (mapper, filePath, emptyState) => (db
+    ? createPostgresStore({ db, mapper })
+    : createFileStore(filePath, { emptyState }));
   const accountConfig = resolveAccountConfig(env);
   const accountsStore = createFileStore(resolveAccountsDbPath(env), { emptyState: emptyAccountsState });
   const webhookLog = createWebhookLog({
-    store: createFileStore(resolveWebhookLogDbPath(env), { emptyState: emptyWebhookLogState }),
+    store: domainStore(webhookLogMapper, resolveWebhookLogDbPath(env), emptyWebhookLogState),
     now: options.now,
   });
   const alertProvider = options.alertProvider !== undefined ? options.alertProvider : resendProviderFromEnv(env);
   const webhookAlerts = createWebhookAlerter({ provider: alertProvider, now: options.now, log });
   const heldAlerts = createHeldAlerter({ provider: alertProvider, log });
   const licenses = createLicensesService({
-    store: createFileStore(resolveLicensesDbPath(env), { emptyState: emptyLicensesState }),
+    store: domainStore(licensesMapper, resolveLicensesDbPath(env), emptyLicensesState),
     uniqueInstallsStore: uniqueInstallsStore,
     signingKey,
     leaseKid: licenseConfig.signingKeyId,
@@ -966,7 +978,7 @@ export function createSiteServer(env = process.env, options = {}) {
     downloadUrl: licenseConfig.downloadUrl,
     // Bound late: the Hama service authenticates through this one. With HAMA_ENABLED off no plan is active.
     hamaPlanActive: async (keyId) => hamaService?.planActive(keyId) ?? false,
-    accountForEmail: async (emailLower) => accountIdForEmail(await accountsStore.load(), emailLower),
+    accountForEmail: async (emailLower) => accountIdForEmail(await accountsStore.read(), emailLower),
     webhookLog,
     now: options.now,
     log,
@@ -1043,7 +1055,11 @@ export function createSiteServer(env = process.env, options = {}) {
       log,
     }),
   });
-  const listener = siteRequestListener({ uniqueInstalls, waitlist, downloads, licenses, accounts, gifts, hama, rau, feedback, licenseConfig, webhookLog, webhookAlerts, heldAlerts, log });
+  const listener = siteRequestListener({
+    uniqueInstalls, waitlist, downloads, licenses, accounts, gifts, hama, rau, feedback, licenseConfig, webhookLog, webhookAlerts, heldAlerts,
+    storage: db ? 'postgres' : 'files',
+    log,
+  });
   setImmediate(() => { void feedback.prune().catch((error) => log(`[site-api] feedback prune failed: ${error?.message ?? error}`)); });
   // Retry any key email that was queued before a restart.
   setImmediate(() => { void licenses.deliverPendingEmails().catch(() => {}); });
@@ -1069,11 +1085,69 @@ export function createSiteServer(env = process.env, options = {}) {
   return server;
 }
 
+function databaseFromEnv(env, log) {
+  const url = resolveDatabaseUrl(env);
+  return url ? createDatabase(url, { log }) : null;
+}
+
+/** Domains with a Postgres mapping and the JSON file each one replaces. */
+function mappedFiles(env) {
+  return [
+    [licensesMapper.domain, resolveLicensesDbPath(env)],
+    [webhookLogMapper.domain, resolveWebhookLogDbPath(env)],
+  ];
+}
+
+/**
+ * Refuses Postgres mode while a mapped JSON file holds data its domain never got: a DATABASE_URL set
+ * before the import would otherwise start every customer from an empty database.
+ */
+export async function checkImported(db, env = process.env) {
+  const { rows } = await db.query('SELECT domain FROM site_store_versions');
+  const written = new Set(rows.map((row) => row.domain));
+  const missing = [];
+  for (const [domain, file] of mappedFiles(env)) {
+    if (written.has(domain)) continue;
+    const info = await stat(file).catch(() => null);
+    if (info?.isFile() && info.size > 0) missing.push(path.basename(file));
+  }
+  if (missing.length) {
+    throw new Error(`DATABASE_URL is set but ${missing.join(', ')} was never imported into Postgres. Import it first, or unset DATABASE_URL to keep the JSON files.`);
+  }
+}
+
+async function main() {
+  const log = (line) => process.stderr.write(`${line}\n`);
+  const port = Number(process.env.PORT ?? DEFAULT_PORT);
+  const db = databaseFromEnv(process.env, log);
+  if (db) {
+    try {
+      await db.ready();
+      await checkImported(db);
+    } catch (error) {
+      log(`[site-api] Postgres is not usable: ${error?.message ?? error}`);
+      await db.close().catch(() => {});
+      process.exit(1);
+    }
+  }
+  const server = createSiteServer(process.env, { db });
+  server.listen(port, '0.0.0.0', () => {
+    log(`[site-api] listening on 0.0.0.0:${port}${db ? ' with Postgres' : ''}`);
+  });
+  if (db) {
+    // Finish in-flight requests, then end the pool; Railway sends SIGTERM before a redeploy.
+    process.once('SIGTERM', () => {
+      log('[site-api] SIGTERM: closing');
+      setTimeout(() => process.exit(0), 10_000).unref();
+      setTimeout(() => server.closeAllConnections?.(), 5_000).unref();
+      server.close(() => {
+        db.close().catch((error) => log(`[site-api] closing Postgres failed: ${error?.message ?? error}`)).finally(() => process.exit(0));
+      });
+      server.closeIdleConnections?.();
+    });
+  }
+}
+
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
 
-if (isMain) {
-  const port = Number(process.env.PORT ?? DEFAULT_PORT);
-  createSiteServer().listen(port, '0.0.0.0', () => {
-    process.stderr.write(`[site-api] listening on 0.0.0.0:${port}\n`);
-  });
-}
+if (isMain) await main();
