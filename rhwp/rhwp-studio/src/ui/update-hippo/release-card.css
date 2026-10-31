@@ -25,7 +25,6 @@
 }
 
 .rn-dialog {
-  --rn-scene: #e6f5ff;
   --rn-added: #62b3e2; /* 하마 몸 색 */
   --rn-fixed: var(--n-ink-tertiary);
 
@@ -59,18 +58,11 @@
   transform: none;
 }
 
-:root[data-theme-effective='dark'] .rn-dialog { --rn-scene: #15232d; }
-
 .rn-scene {
   display: flex;
   flex: none;
-  align-items: flex-end;
   justify-content: center;
-  box-sizing: border-box;
-  height: 128px;
-  padding-bottom: 16px;
-  border-radius: var(--ag-r-inner);
-  background: var(--rn-scene);
+  padding-top: 16px;
 }
 
 /* 30×14 그림을 여섯 배로. */
@@ -85,11 +77,10 @@
 :root[data-theme-effective='dark'] .rn-hama-light { display: none; }
 :root[data-theme-effective='dark'] .rn-hama-dark { display: block; }
 
-/* 장면의 오른쪽 위 구석에 얹는다. */
 .rn-close {
   position: absolute;
-  top: 22px;
-  right: 30px;
+  top: 12px;
+  right: 12px;
   display: grid;
   place-items: center;
   width: 28px;
