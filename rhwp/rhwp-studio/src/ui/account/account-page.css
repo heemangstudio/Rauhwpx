@@ -932,7 +932,7 @@ html:is(.desktop-mac, .desktop-windows) .acct-page.acct-embedded {
   min-width: 0;
 }
 
-.acct-offer-yearly {
+.acct-offer-actions .acct-offer-yearly {
   flex: none;
   margin-left: 4px;
   font-size: var(--ag-fs-meta);
