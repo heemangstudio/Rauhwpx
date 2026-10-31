@@ -11,6 +11,7 @@ import {
   verifyAccountLease,
 } from './license-lease.mjs';
 import { licenseError, tokenEquals } from './licenses.mjs';
+import { createRateLimiter } from './rate-limit.mjs';
 import { createMemoryStore } from './store.mjs';
 import { maskedEmail } from './workos.mjs';
 
@@ -44,6 +45,9 @@ const SESSION_RE = /^hes_[A-Za-z0-9_-]{43}$/;
 const EMAIL_RE = /^[^\s@]{1,64}@[^\s@]{1,190}\.[^\s@]{2,}$/;
 const CONTROL_RE = /[\u0000-\u001f\u007f-\u009f]/g;
 const DEFAULT_DEVICE_NAME = '이름 없는 기기';
+// Per account per hour: a key or order number is not something to guess at.
+const REDEEMS_PER_HOUR = 20;
+const CLAIMS_PER_HOUR = 10;
 
 export function emptyAccountsState() {
   return { accounts: {}, byWorkosUser: {}, byEmail: {}, sessions: {}, logins: {}, grants: {} };
@@ -147,6 +151,11 @@ export function createAccountsService({
   }
 
   const idle = (session) => !(now() - (ms(session?.lastUsedAt) ?? 0) < SESSION_IDLE_MS);
+
+  const perAccount = createRateLimiter({ now });
+  function limitAccount(action, accountId, max) {
+    if (!perAccount.check(`${action}:${accountId}`, max, HOUR)) throw accountError('rate_limited', 429);
+  }
 
   // ------------------------------------------------------------- devices
 
@@ -515,6 +524,26 @@ export function createAccountsService({
     return { ok: true, signedOut: false, devices: deviceViews(account, context.deviceId) };
   }
 
+  // ------------------------------------------------------------- licenses
+
+  /** Redeem and claim answer the account payload plus the linked license as the app lists it. */
+  async function linkedAnswer(context, { alreadyLinked, keyId }) {
+    const payload = await accountPayload(context.account.id, context.deviceId);
+    return { ...payload, alreadyLinked, license: payload.licenses.find((l) => l.keyId === keyId) ?? null };
+  }
+
+  async function redeem(bearer, body) {
+    const context = await sessionOf(bearer);
+    limitAccount('redeem', context.account.id, REDEEMS_PER_HOUR);
+    return linkedAnswer(context, await licenses.redeemForAccount(context.account.id, body?.key));
+  }
+
+  async function claim(bearer, body) {
+    const context = await sessionOf(bearer);
+    limitAccount('claim', context.account.id, CLAIMS_PER_HOUR);
+    return linkedAnswer(context, await licenses.claimForAccount(context.account.id, { orderId: body?.orderId, email: body?.email }));
+  }
+
   // --------------------------------------------------------------- lease
 
   let publicKeys;
@@ -583,6 +612,13 @@ export function createAccountsService({
       const found = ids.map((accountId) => own(state.accounts, accountId)).filter(Boolean);
       return { ok: true, accounts: await Promise.all(found.map(adminView)) };
     },
+    /** `{ keyId, accountId }`: links a key to an existing account (`linkedBy: 'admin'`). */
+    async link(token, body) {
+      requireAdmin(token);
+      const accountId = typeof body?.accountId === 'string' ? body.accountId.trim() : '';
+      if (!own((await read()).accounts, accountId)) throw accountError('account_not_found', 404);
+      return licenses.admin.linkAccount(token, { keyId: body?.keyId, accountId });
+    },
   };
 
   return {
@@ -594,6 +630,8 @@ export function createAccountsService({
     refresh,
     signout,
     removeDevice: removeDeviceRoute,
+    redeem,
+    claim,
     authenticateLease,
     admin,
   };
