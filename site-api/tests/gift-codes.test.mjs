@@ -260,6 +260,30 @@ test('revoked codes and codes past their redeem-by date answer 410; revoke never
   assert.deepEqual(listed.counts, { active: 0, redeemed: 0, revoked: 0, expired: 2 });
 });
 
+test('admin views carry each code\'s hash, and revoke takes that hash as its one target', async (t) => {
+  const s = await setup(t);
+  const { batch, codes } = (await s.issue({ plan: 'hama', durationMonths: 1, count: 3 })).body;
+  const hashOf = (code) => createHash('sha256').update(code).digest('hex');
+  assert.deepEqual(batch.codes.map((c) => c.codeHash).sort(), codes.map(hashOf).sort());
+  const me = await s.signIn('me@example.com');
+  const used = await s.redeem(me.session, codes[0]);
+
+  const refused = (error) => ({ status: 400, body: { ok: false, error } });
+  const revoke = (body) => s.admin('/v1/admin/gift-codes/revoke', body);
+  assert.deepEqual(await revoke({ codeHash: hashOf(codes[1]), batchId: batch.batchId }), refused('target_required'));
+  assert.deepEqual(await revoke({ codeHash: hashOf(codes[1]), code: codes[1] }), refused('target_required'));
+  for (const codeHash of ['abc', hashOf(codes[1]).toUpperCase(), 42]) assert.deepEqual(await revoke({ codeHash }), refused('invalid_format'), String(codeHash));
+  assert.deepEqual(await revoke({ codeHash: 'f'.repeat(64) }), { status: 404, body: { ok: false, error: 'invalid_code' } });
+  assert.deepEqual(await revoke({ codeHash: hashOf(codes[0]) }), { status: 409, body: { ok: false, error: 'code_redeemed', keyId: used.body.license.keyId } });
+
+  const one = await revoke({ codeHash: hashOf(codes[1]) });
+  assert.deepEqual([one.status, one.body.changed, one.body.batch.counts], [200, 1, { active: 1, redeemed: 1, revoked: 1, expired: 0 }]);
+  assert.equal((await revoke({ codeHash: hashOf(codes[1]) })).body.changed, 0);
+  assert.deepEqual(await s.redeem(me.session, codes[1]), { status: 410, body: { ok: false, error: 'code_revoked' } });
+  const [listed] = (await s.adminGet(`/v1/admin/gift-codes?batchId=${batch.batchId}&status=active`)).body.batches;
+  assert.deepEqual(listed.codes.map((c) => c.codeHash), [hashOf(codes[2])]);
+});
+
 test('redeem refuses bad formats and unknown codes, and every attempt counts against a per-account hourly limit', async (t) => {
   const s = await setup(t);
   const me = await s.signIn('me@example.com', device(1));

@@ -1371,6 +1371,8 @@ export function createLicensesService({
 
   function giftCodeView(record, batch, nowMs) {
     return {
+      // An opaque id for admin views and revoke: the SHA-256 cannot give the code back.
+      codeHash: record.codeHash,
       maskedCode: maskGiftCode(record.prefix),
       status: giftCodeStatusOf(record, batch, nowMs),
       createdAt: record.createdAt,
@@ -1986,17 +1988,19 @@ export function createLicensesService({
       return { ok: true, count: batches.length, batches };
     },
     /**
-     * `{ batchId }` revokes every unredeemed code of a batch, `{ code }` one code. A redeemed code is
-     * 409 code_redeemed with its keyId: revoke that key instead.
+     * `{ batchId }` revokes every unredeemed code of a batch, `{ code }` or `{ codeHash }` one code. A
+     * redeemed code is 409 code_redeemed with its keyId: revoke that key instead.
      */
     async revokeGiftCodes(token, body) {
       requireAdmin(token);
       const batchId = str(body?.batchId, 64);
       const hasCode = body?.code !== undefined && body.code !== null && body.code !== '';
-      if (Boolean(batchId) === hasCode) throw licenseError('target_required', 400);
+      const hasHash = body?.codeHash !== undefined && body.codeHash !== null && body.codeHash !== '';
+      if ([Boolean(batchId), hasCode, hasHash].filter(Boolean).length !== 1) throw licenseError('target_required', 400);
       const code = hasCode ? normalizeGiftCode(body.code) : '';
       if (hasCode && !code) throw licenseError('invalid_format', 400);
-      const hash = code ? giftCodeHash(code) : null;
+      if (hasHash && !(typeof body.codeHash === 'string' && /^[0-9a-f]{64}$/.test(body.codeHash))) throw licenseError('invalid_format', 400);
+      const hash = code ? giftCodeHash(code) : hasHash ? body.codeHash : null;
       const reason = str(body?.reason, 200);
       return mutate(async (state) => {
         let targets;
