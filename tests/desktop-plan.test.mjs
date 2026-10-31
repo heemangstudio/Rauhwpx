@@ -8,8 +8,9 @@ import { createLicenseClient } from '../desktop/license-client.mjs';
 import { createLicenseManager } from '../desktop/license-manager.mjs';
 import {
   CHECKOUT_FAST_POLL_MS, CHECKOUT_FAST_WINDOW_MS, CHECKOUT_GIVE_UP_MS, CHECKOUT_SLOW_POLL_MS,
-  createPlanManager, PLAN_CACHE_MS,
+  createPlanManager, PLAN_CACHE_MS, PLAN_SKUS,
 } from '../desktop/plan-manager.mjs';
+import { PLAN_CHECKOUT } from '../desktop/plan-config.mjs';
 import { createMockLicenseServer, DEV_PUBLIC_KEYS } from './fixtures/license-mock-server.mjs';
 
 const HOUR = 60 * 60 * 1000;
@@ -19,7 +20,8 @@ const quiet = { warn() {}, info() {} };
 const CONFIG = {
   proMonthly: { url: 'https://groble.im/products/pro-monthly', priceKrw: 3900 },
   proYearly: { url: 'http://groble.im/products/pro-yearly', priceKrw: 39000 },
-  hama: { url: '', priceKrw: null },
+  hamaMonthly: { url: '', priceKrw: null },
+  hamaYearly: { url: 'https://example.com/hama-yearly', priceKrw: 139000 },
 };
 
 /** 마지막으로 건 setTimeout 을 손으로 부르는 타이머. */
@@ -100,7 +102,8 @@ test('the tier follows the signed lease: free, pro, legacy keys, beta keys and t
   assert.deepEqual(status.checkout, {
     proMonthly: { available: true, priceKrw: 3900 },
     proYearly: { available: false, priceKrw: 39000 },
-    hama: { available: false, priceKrw: null },
+    hamaMonthly: { available: false, priceKrw: null },
+    hamaYearly: { available: false, priceKrw: 139000 },
   });
 
   await license.activate(server.issueKey({ plan: 'monthly' }));
@@ -158,7 +161,7 @@ test('a revoked key drops the cache at once, and a rolled-back clock never uses 
 test('an unset or non-https checkout link is not available and opens nothing', async (t) => {
   const { opened, byRef, timers, make } = await setup(t);
   const plan = make();
-  for (const sku of ['hama', 'proYearly', 'unknown']) {
+  for (const sku of ['hamaMonthly', 'hamaYearly', 'proYearly', 'hama', 'unknown']) {
     const result = await plan.startCheckout(sku);
     assert.deepEqual([result.ok, result.code, result.status.pendingCheckout], [false, 'not_available', null], sku);
   }
@@ -204,6 +207,42 @@ test('a checkout polls its ref with backoff, activates the issued key and never 
     const text = JSON.stringify(shown);
     assert.ok(!text.includes(ref) && !text.includes(key) && !text.includes('groble') && !text.includes('keys.test'), text);
   }
+});
+
+test('the shipped links open each product\'s real buyer page with the ref', async (t) => {
+  const { opened, make } = await setup(t);
+  const expected = { proMonthly: 'SfYBy5', proYearly: 'vdw3HN', hamaMonthly: 'R3n8zG', hamaYearly: 'atqjpJ' };
+  const prices = { proMonthly: 3900, proYearly: 39000, hamaMonthly: 12900, hamaYearly: 139000 };
+  assert.deepEqual([...PLAN_SKUS], Object.keys(expected));
+  for (const [index, [sku, id]] of Object.entries(expected).entries()) {
+    const plan = make({ config: PLAN_CHECKOUT });
+    const started = await plan.startCheckout(sku);
+    assert.equal(started.ok, true, sku);
+    assert.deepEqual(started.status.checkout[sku], { available: true, priceKrw: prices[sku] });
+    const url = new URL(opened[index]);
+    assert.equal(`${url.origin}${url.pathname}`, `https://groble.im/payment/${id}`);
+    assert.match(url.searchParams.get('ref'), /^hama-[a-z0-9]+-[0-9a-f]{32}$/);
+    await plan.cancelCheckout();
+  }
+});
+
+test('a Hama purchase ends in the Hama tier, and it stays cached while the lease cannot be checked', async (t) => {
+  const { clock, server, license, byRef, opened, timers, make } = await setup(t);
+  const plan = make({ config: PLAN_CHECKOUT });
+  await plan.start();
+  const started = await plan.startCheckout('hamaYearly');
+  assert.deepEqual(started.status.pendingCheckout, { sku: 'hamaYearly', startedAt: T0 });
+  const key = server.issueKey({ plan: 'annual', edition: 'hama', licenseExpiresAt: T0 + 365 * DAY });
+  byRef.answers.set(refOf(opened[0]), { status: 'issued', key, edition: 'hama', plan: 'annual' });
+  await timers.fire();
+  const status = await plan.getStatus();
+  assert.deepEqual([status.tier, status.agentUnlocked, status.source, status.lastCheckout], ['hama', true, 'live', { ok: true, sku: 'hamaYearly' }]);
+  assert.deepEqual([(await license.status()).edition, (await license.status()).plan], ['hama', 'annual']);
+
+  // lease 를 확인할 수 없는 동안에는 마지막 요금제를 보여 준다.
+  clock.t += DAY;
+  const cached = await plan.licenseChanged({ state: 'lease_expired', paid: false, edition: null });
+  assert.deepEqual([cached.tier, cached.agentUnlocked, cached.source], ['hama', true, 'cached']);
 });
 
 test('a revoked ref ends the checkout, and cancel stops polling', async (t) => {

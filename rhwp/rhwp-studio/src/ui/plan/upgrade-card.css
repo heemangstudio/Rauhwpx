@@ -129,10 +129,6 @@
   color: var(--n-ink);
 }
 
-.ag-pricing-amount-soon {
-  color: var(--n-ink-tertiary);
-}
-
 .ag-pricing-unit {
   font-size: var(--ag-fs-secondary);
   color: var(--n-ink-secondary);

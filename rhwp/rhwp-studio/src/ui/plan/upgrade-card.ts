@@ -14,11 +14,15 @@ import { tierForSku, type PlanSku, type PlanStatus, type PlanTier } from './plan
 export const OPEN_PLAN_CARD_EVENT = 'rhwp:open-plan-card';
 export type PlanCardFocus = 'pro' | 'hama';
 
-const DEFAULT_PRICE: Record<PlanSku, number | null> = { proMonthly: 3900, proYearly: 39000, hama: null };
+const DEFAULT_PRICE: Record<PlanSku, number | null> = { proMonthly: 3900, proYearly: 39000, hamaMonthly: 12900, hamaYearly: 139000 };
 const SUCCESS_HOLD_MS = 1200;
 
 const TIER_LABEL: Record<PlanTier, string> = { free: '무료', pro: 'Pro', legacy: '기존 라이선스', hama: 'Hama' };
-const SKU_LABEL: Record<PlanSku, string> = { proMonthly: 'Pro · 월간', proYearly: 'Pro · 연간', hama: 'Hama' };
+const SKU_LABEL: Record<PlanSku, string> = { proMonthly: 'Pro · 월간', proYearly: 'Pro · 연간', hamaMonthly: 'Hama · 월간', hamaYearly: 'Hama · 연간' };
+const PLAN_CYCLES: Record<PlanCardFocus, { monthly: PlanSku; yearly: PlanSku }> = {
+  pro: { monthly: 'proMonthly', yearly: 'proYearly' },
+  hama: { monthly: 'hamaMonthly', yearly: 'hamaYearly' },
+};
 
 export interface PlanCardOptions {
   store: PlanStore;
@@ -189,37 +193,27 @@ export function openPlanCard(options: PlanCardOptions): PlanCardHandle | null {
     if (plan === 'free') {
       priceRow.append(el('span', 'ag-pricing-amount', '₩0'));
       lines.push('문서 편집');
-    } else if (plan === 'pro') {
-      const monthly = price('proMonthly');
-      const yearly = price('proYearly');
+    } else {
+      const monthly = price(PLAN_CYCLES[plan].monthly);
+      const yearly = price(PLAN_CYCLES[plan].yearly);
       priceRow.append(el('span', 'ag-pricing-amount', monthly === null ? '—' : won(monthly)), el('span', 'ag-pricing-unit', '/월'));
       if (yearly !== null) priceRow.append(el('span', 'ag-pricing-alt', `연 ${won(yearly)}`));
-      lines.push('AI 연결(Codex, Claude)', 'Rau-0.1');
-    } else {
-      priceRow.append(el('span', 'ag-pricing-amount ag-pricing-amount-soon', '준비 중'));
-      lines.push('Hama 에이전트 크레딧 제공', 'Rau-0.1');
+      if (plan === 'pro') lines.push('AI 연결(Codex, Claude)', 'Rau-0.1');
+      else lines.push('Hama 에이전트 크레딧 제공', 'Rau-0.1');
     }
     for (const line of lines) features.append(el('li', '', line));
 
     if (current) {
       actions.append(el('span', 'ag-pricing-current', '사용 중'));
-    } else if (plan === 'pro') {
-      const skus = (['proMonthly', 'proYearly'] as const).filter(available);
+    } else if (plan !== 'free') {
+      const { monthly, yearly } = PLAN_CYCLES[plan];
+      const skus = [monthly, yearly].filter(available);
       if (skus.length === 0) actions.append(soonButton());
       for (const sku of skus) {
-        const buy = button(sku === 'proMonthly' ? 'ag-pricing-btn ag-pricing-btn-primary' : 'ag-pricing-btn', sku === 'proMonthly' ? '월간' : '연간');
+        const buy = button(sku === monthly ? 'ag-pricing-btn ag-pricing-btn-primary' : 'ag-pricing-btn', sku === monthly ? '월간' : '연간');
         buy.dataset.sku = sku;
         buy.disabled = checkoutBusy;
         buy.addEventListener('click', () => { void begin(sku); });
-        actions.append(buy);
-      }
-    } else if (plan === 'hama') {
-      if (!available('hama')) actions.append(soonButton());
-      else {
-        const buy = button('ag-pricing-btn ag-pricing-btn-primary', '시작하기');
-        buy.dataset.sku = 'hama';
-        buy.disabled = checkoutBusy;
-        buy.addEventListener('click', () => { void begin('hama'); });
         actions.append(buy);
       }
     }

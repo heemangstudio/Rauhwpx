@@ -5,7 +5,7 @@
 //   이런 상태는 설정과 활성화 창에 문제로만 보인다.
 // - Pro 기능은 서명한 lease 로만 연다(paid). 키를 활성화하면 서버가 이 기기용 lease(7일, 베타 키는 3일)를 준다.
 //   실행할 때와 24시간마다 다시 확인해 lease 를 늘린다. 인터넷이 없으면 가진 lease 가 끝날 때까지 그대로 쓴다.
-// - 서버 응답의 edition('pro')·plan('monthly' | 'annual' | 'lifetime')·rau.eligible 은 표시와 안내에만 쓴다.
+// - 서버 응답의 edition('pro' | 'hama')·plan('monthly' | 'annual' | 'lifetime')·rau.eligible 은 표시와 안내에만 쓴다.
 //   예전 서버는 보내지 않으므로 없으면 null 이다.
 // - 환불이나 베타 종료로 키가 해지되면(revoked) Pro 기능이 닫힌다.
 // - 구독 키는 서명한 lease 에 키의 만료 시각(licenseExpiresAt)이 들어 있다. 만료가 지나면 expired 다.
@@ -107,10 +107,10 @@ function sanitizeState(raw) {
 
 const PLANS = new Set(['monthly', 'annual', 'lifetime']);
 
-/** 클라이언트가 읽은 서버 응답(또는 상태 파일)의 Pro 표시 값. 없거나 모르는 값은 null. */
+/** 클라이언트가 읽은 서버 응답(또는 상태 파일)의 Pro·Hama 표시 값. 없거나 모르는 값은 null. */
 function editionFrom(value) {
   return {
-    edition: value?.edition === 'pro' ? 'pro' : null,
+    edition: value?.edition === 'pro' || value?.edition === 'hama' ? value.edition : null,
     plan: PLANS.has(value?.plan) ? value.plan : null,
     rauEligible: typeof value?.rauEligible === 'boolean' ? value.rauEligible : null,
   };
@@ -234,7 +234,7 @@ export function createLicenseManager({
     else if (lease.reason === 'expired') value = 'lease_expired';
     else value = 'needs_activation';
     // Pro 는 서명한 lease 로만 정한다. 라이선스를 보지 않는 개발 빌드(unenforced)도 같다.
-    // edition 은 서버가 'pro' 라고 답한 키만 'pro' 다. 예전 키(GLJFC9·평생·Signature·베타 등)는 null 이다.
+    // edition 은 서버가 'pro'·'hama' 라고 답한 키만 그 값이다. 예전 키(GLJFC9·평생·Signature·베타 등)는 null 이다.
     const paid = value === 'licensed';
     return {
       state: enforce ? value : 'unenforced',

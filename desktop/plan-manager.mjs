@@ -2,7 +2,7 @@
 // 에이전트 잠금에 상태(PlanStatus)를 준다.
 //
 // 규칙
-// - 요금제: Hama 가 켜져 있으면 hama, 서명한 lease 가 있으면 edition 'pro' 는 pro, 그 밖의 키(GLJFC9 연간·평생·
+// - 요금제: Hama 가 켜져 있으면 hama, 서명한 lease 가 있으면 edition 'pro'·'hama' 는 그 요금제, 그 밖의 키(GLJFC9 연간·평생·
 //   Signature·베타·기존 사용자·수동 발급)는 legacy, 없으면 free. 라이선스를 보지 않는 개발 빌드(unenforced)는
 //   요금제와 상관없이 에이전트를 연다.
 // - 오프라인 캐시: lease 로 정한 요금제를 userData/plan.json 에 적어 두고, lease 를 확인할 수 없을 때만
@@ -21,7 +21,7 @@ import { DEFAULT_LICENSE_API_BASE } from './license-client.mjs';
 import { PLAN_CHECKOUT } from './plan-config.mjs';
 
 export const PLAN_STATE_FILE = 'plan.json';
-export const PLAN_SKUS = Object.freeze(['proMonthly', 'proYearly', 'hama']);
+export const PLAN_SKUS = Object.freeze(['proMonthly', 'proYearly', 'hamaMonthly', 'hamaYearly']);
 /** lease 를 확인할 수 없을 때 마지막 확인의 요금제를 보여 주는 기간. */
 export const PLAN_CACHE_MS = 7 * 24 * 60 * 60 * 1000;
 /** 결제 시작 뒤 이 시간 동안은 자주, 그 뒤로는 드물게 묻는다. */
@@ -37,7 +37,7 @@ const VERIFIED_PERSIST_MS = 60 * 60 * 1000;
 const BY_REF_TIMEOUT_MS = 10_000;
 /** Groble sellerReference 규칙. 서버(site-api/licenses.mjs REF_RE)와 같다. */
 const REF_RE = /^[A-Za-z0-9\-_.:=~]{1,128}$/;
-const CACHED_TIERS = new Set(['pro', 'legacy']);
+const CACHED_TIERS = new Set(['pro', 'hama', 'legacy']);
 /** lease 를 지금 확인할 수 없을 뿐인 라이선스 상태. 이때만 캐시를 쓴다. */
 const UNVERIFIABLE_STATES = new Set(['lease_expired', 'needs_activation']);
 /** 다시 물어도 바뀌지 않는 활성화 실패. 결제 확인을 끝내고 키를 직접 넣게 한다. */
@@ -160,7 +160,7 @@ export function createPlanManager({
       tier = 'hama';
       source = 'live';
     } else if (license?.paid) {
-      tier = license.edition === 'pro' ? 'pro' : 'legacy';
+      tier = license.edition === 'pro' || license.edition === 'hama' ? license.edition : 'legacy';
       source = 'live';
       if (state.tier !== tier || t - state.verifiedAt >= VERIFIED_PERSIST_MS || t < state.verifiedAt) {
         state.tier = tier;
