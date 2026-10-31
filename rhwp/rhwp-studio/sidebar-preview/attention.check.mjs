@@ -1,4 +1,4 @@
-// 백그라운드 채팅 알림(U3) — 레일의 상태 점, 확인 필요 칩·숫자, 앱 안 토스트, 알림 장부를
+// 백그라운드 채팅 알림(U3) — 레일 행의 상태 점과 문구, 목록 단추의 숫자, 알림 장부를
 // 실제 사이드바와 가짜 브리지로 본다.
 // 혼자 돌릴 때: node sidebar-preview/attention.check.mjs (CHROME_PATH 필요, standalone.mjs 가 자기 Vite 서버를 띄운다).
 import assert from 'node:assert/strict';
@@ -15,7 +15,7 @@ async function openPreview(page, origin, query) {
   }
 }
 
-/** 화면에 붙은 사이드바(.ag-root)의 레일·칩·숫자와 장부·토스트. */
+/** 화면에 붙은 사이드바(.ag-root)의 레일·숫자와 장부. 앱 안 토스트는 없어야 한다. */
 function attentionState(page) {
   return page.evaluate(() => {
     const root = document.querySelector('.ag-root');
@@ -31,13 +31,11 @@ function attentionState(page) {
     });
     const visibleCount = [...root.querySelectorAll('.ag-threads-btn-count')]
       .find((badge) => !badge.hidden && badge.checkVisibility());
-    const section = root.querySelector('.ag-threads-section[data-section="attention"]');
     const preview = window.sidebarPreview;
     return {
       rows,
       headerCount: visibleCount?.textContent ?? null,
-      section: section ? [...root.querySelectorAll('.ag-threads-row[data-attention]')].map((row) => row.dataset.threadId) : null,
-      sectionLabel: section?.textContent ?? null,
+      sections: [...root.querySelectorAll('.ag-threads-section')].map((section) => section.dataset.section),
       toasts: [...document.querySelectorAll('.rhwp-toast')]
         .filter((toast) => toast.querySelector('.rhwp-toast-action'))
         .map((toast) => toast.querySelector('.rhwp-toast-message').textContent),
@@ -89,16 +87,7 @@ async function startHiddenChat(page) {
   return id;
 }
 
-async function clickToastOpen(page) {
-  const clicked = await page.evaluate(() => {
-    const action = [...document.querySelectorAll('.rhwp-toast .rhwp-toast-action')].find((button) => button.textContent === '열기');
-    action?.click();
-    return Boolean(action);
-  });
-  assert(clicked, 'a toast with 열기');
-}
-
-/** 숨은 채팅이 검토를 남기고 끝나면 레일·숫자·토스트가 알리고, 열기로 열면 숫자만 걷힌다. */
+/** 숨은 채팅이 검토를 남기고 끝나면 레일 행과 숫자가 알린다(토스트 없음). 열면 숫자만 걷힌다. */
 export async function checkHiddenReview(page, origin, artifacts) {
   await openPreview(page, origin, 'parallel=1&scenario=review&hold=1');
   const hidden = await startHiddenChat(page);
@@ -108,24 +97,22 @@ export async function checkHiddenReview(page, origin, artifacts) {
     const row = [...document.querySelectorAll('.ag-root .ag-threads-item')].find((item) => item.dataset.threadId === id);
     return row?.querySelector('.ag-threads-item-when')?.dataset.status === 'needs-review';
   }, hidden, 'the hidden chat shows 검토 대기');
-  await waitFor(page, () => document.querySelector('.rhwp-toast .rhwp-toast-action'), undefined, 'a toast appears');
+  await new Promise((done) => setTimeout(done, 300));
   let state = await attentionState(page);
   assert.deepEqual(rowOf(state, hidden), { id: hidden, status: 'needs-review', label: '검토 대기', dot: 'needs-review' });
   assert.equal(state.headerCount, '1');
   assert.equal(state.badge, 1);
-  assert.equal(state.toasts.length, 1);
-  assert.match(state.toasts[0], / — 검토할 변경이 있습니다$/);
-  assert.deepEqual(state.systemNotices, [], 'a focused window gets a toast, not a system notice');
-  // 토스트가 다 들어온 뒤 — 레일의 검토 대기, 목록 단추의 수, 열기 토스트를 한 장에.
-  await waitFor(page, () => document.querySelector('.rhwp-toast.rhwp-toast-in'), undefined, 'the toast slides in');
-  await page.screenshot({ path: resolve(artifacts, 'attention-toast.png') });
+  assert.deepEqual(state.toasts, [], 'the row tells it in the app; no toast');
+  assert.deepEqual(state.systemNotices, [], 'a focused window gets no system notice');
+  assert.deepEqual(state.sections, ['pinned', 'recent'], 'no separate attention section');
+  await page.screenshot({ path: resolve(artifacts, 'attention-review.png') });
 
-  await clickToastOpen(page);
-  await waitFor(page, () => window.sidebarPreview.chats[0].sidebar.isActive(), undefined, '열기 shows the chat');
-  await showRail(page);
+  await page.click(`.ag-root .ag-threads-item[data-thread-id="${hidden}"]`);
+  await waitFor(page, () => window.sidebarPreview.chats[0].sidebar.isActive(), undefined, 'the rail opens the chat');
   await waitFor(page, () => window.sidebarPreview.attention.count() === 0, undefined, 'seeing the chat clears the badge');
+  assert.equal((await attentionState(page)).headerCount, null, 'the shown chat is not counted');
+  await showRail(page);
   state = await attentionState(page);
-  assert.equal(state.headerCount, null, 'the shown chat is not counted');
   assert.equal(rowOf(state, hidden).status, 'needs-review', '검토 대기 stays until the review is settled');
 
   await page.evaluate(() => {
@@ -138,24 +125,25 @@ export async function checkHiddenReview(page, origin, artifacts) {
   }, hidden, 'approving clears the row');
   state = await attentionState(page);
   assert.equal(rowOf(state, hidden).dot, null);
-  assert.equal(state.section, null);
 }
 
-/** 숨은 채팅이 실패하면 빨간 고리와 짧은 이유, 토스트에는 실패 제목. 열어 보면 걷힌다. */
+/** 숨은 채팅이 실패하면 빨간 고리와 짧은 이유(토스트 없음). 열어 보면 걷힌다. */
 export async function checkHiddenFailure(page, origin) {
   await openPreview(page, origin, 'parallel=1&scenario=chat&hold=1');
   const hidden = await startHiddenChat(page);
   // 같은 흐름에서 error → turn-end → turn-failure 가 온다. 알림은 이유가 붙은 뒤에 나간다.
   await page.evaluate(() => window.sidebarPreview.chats[0].mock.failRunningTurn('auth'));
-  await waitFor(page, () => document.querySelector('.rhwp-toast .rhwp-toast-action'), undefined, 'a toast appears');
+  await waitFor(page, (id) => {
+    const row = [...document.querySelectorAll('.ag-root .ag-threads-item')].find((item) => item.dataset.threadId === id);
+    return row?.querySelector('.ag-threads-item-when')?.dataset.status === 'failed';
+  }, hidden, 'the hidden chat shows 오류');
   let state = await attentionState(page);
   assert.deepEqual(rowOf(state, hidden), { id: hidden, status: 'failed', label: '로그인 필요', dot: 'failed' });
-  assert.deepEqual(state.toasts.length, 1);
-  assert.match(state.toasts[0], / — Claude 로그인이 필요해요$/);
+  assert.deepEqual(state.toasts, []);
   assert.equal(state.headerCount, '1');
 
-  await clickToastOpen(page);
-  await waitFor(page, () => window.sidebarPreview.chats[0].sidebar.isActive(), undefined, '열기 shows the chat');
+  await page.click(`.ag-root .ag-threads-item[data-thread-id="${hidden}"]`);
+  await waitFor(page, () => window.sidebarPreview.chats[0].sidebar.isActive(), undefined, 'the rail opens the chat');
   await showRail(page);
   await waitFor(page, (id) => {
     const row = [...document.querySelectorAll('.ag-root .ag-threads-item')].find((item) => item.dataset.threadId === id);
@@ -213,7 +201,7 @@ export async function checkFinished(page, origin) {
   assert.equal(rowOf(state, hidden).dot, 'finished');
   assert.equal(state.headerCount, '1');
   assert.equal(state.badge, 1, 'the finish counts toward the badge');
-  // 앱 안에서 완료는 토스트 없이 칩과 숫자로만 알린다.
+  // 앱 안에서는 행의 점과 숫자로만 알린다.
   await new Promise((done) => setTimeout(done, 300));
   assert.deepEqual((await attentionState(page)).toasts, []);
 
@@ -237,10 +225,9 @@ export async function checkFinished(page, origin) {
   state = await attentionState(page);
   assert.equal(rowOf(state, watched).status, '', 'a chat watched while it finishes has no dot');
   assert.equal(state.badge, 0);
-  assert.equal(state.section, null);
 }
 
-/** 계획 승인·질문은 입력 대기, 답하면 걷힌다. 사용자가 멈춘 턴은 아무것도 남기지 않는다. */
+/** 계획 승인·질문은 입력 필요, 답하면 걷힌다. 사용자가 멈춘 턴은 아무것도 남기지 않는다. */
 export async function checkBlockingStates(page, origin) {
   await openPreview(page, origin, 'scenario=plan');
   await page.click('#play');
@@ -249,14 +236,14 @@ export async function checkBlockingStates(page, origin) {
   await showRail(page);
   let state = await attentionState(page);
   assert.equal(rowOf(state, planThread).status, 'needs-input', 'a plan awaiting approval waits for input');
-  assert.equal(rowOf(state, planThread).label, '입력 대기');
+  assert.equal(rowOf(state, planThread).label, '입력 필요');
   await page.click('.ag-root .ag-threads-close');
   await page.click('.ag-plan-approve');
   await waitFor(page, () => window.sidebarPreview.snapshot().workflow.phase !== 'awaiting-approval', undefined, 'the plan is approved');
   await showRail(page);
   await waitFor(page, (id) => [...document.querySelectorAll('.ag-root .ag-threads-item')]
     .find((item) => item.dataset.threadId === id)?.querySelector('.ag-threads-item-when')?.dataset.status !== 'needs-input',
-  planThread, 'approving the plan clears 입력 대기');
+  planThread, 'approving the plan clears 입력 필요');
 
   await openPreview(page, origin, 'scenario=chat&hold=1');
   await page.click('#play');
@@ -267,7 +254,6 @@ export async function checkBlockingStates(page, origin) {
   await showRail(page);
   state = await attentionState(page);
   assert.equal(rowOf(state, questionThread).status, 'needs-input', 'a question waits for input');
-  assert.deepEqual(state.section, [questionThread], 'a question in the open chat lifts it into 입력 필요');
   // 목록에서 대화로 돌아온 그 순간부터 질문 카드가 클릭을 받는다(동작 줄이기에서도 한 프레임 숨지 않는다).
   const hitAfterReturn = await page.evaluate(async () => {
     document.querySelector('.ag-root .ag-threads-close').click();
@@ -289,14 +275,7 @@ export async function checkBlockingStates(page, origin) {
   await showRail(page);
   await waitFor(page, (id) => [...document.querySelectorAll('.ag-root .ag-threads-item')]
     .find((item) => item.dataset.threadId === id)?.querySelector('.ag-threads-item-when')?.dataset.status === '',
-  questionThread, 'answering clears 입력 대기');
-  assert.deepEqual((await attentionState(page)).section, [questionThread], 'the answered chat stays while it is open');
-  await page.click('.ag-root .ag-threads-new');
-  await waitFor(page, () => !document.querySelector('.ag-root').classList.contains('ag-threads-open'),
-    undefined, 'the new chat replaces the rail');
-  await showRail(page);
-  await waitFor(page, () => !document.querySelector('.ag-root .ag-threads-row[data-attention]'),
-    undefined, 'leaving the chat drops it back to 최근');
+  questionThread, 'answering clears 입력 필요');
 
   // 멈춤: 노란 불이 걷히고 아무 점도 남지 않는다.
   await openPreview(page, origin, 'scenario=chat&hold=1');
@@ -317,8 +296,8 @@ export async function checkBlockingStates(page, origin) {
   assert.equal((await attentionState(page)).badge, 0);
 }
 
-/** 확인이 필요한 채팅은 입력 필요 구역으로 올라가고 일하는 채팅은 최근에 남는다. */
-export async function checkAttentionSection(page, origin, artifacts) {
+/** 확인이 필요한 채팅도 제자리(활동 순)에 남고, 행의 상태로만 알린다. */
+export async function checkAttentionRows(page, origin, artifacts) {
   await openPreview(page, origin, 'chats=sample');
   await showRail(page);
   await waitFor(page, () => document.querySelector('.ag-root .ag-threads-item-when[data-status="working"]'),
@@ -328,12 +307,9 @@ export async function checkAttentionSection(page, origin, artifacts) {
   assert.deepEqual(byId['preview-chat-minutes'], { id: 'preview-chat-minutes', status: 'finished', label: '14분', dot: 'finished' });
   assert.deepEqual(byId['preview-chat-totals'], { id: 'preview-chat-totals', status: 'needs-review', label: '검토 대기', dot: 'needs-review' });
   assert.equal(byId['preview-chat-schedule'].dot, 'working');
-  assert.equal(state.sectionLabel, '입력 필요');
-  const needing = ['preview-chat-minutes', 'preview-chat-totals', 'preview-chat-interrupted'];
-  assert.deepEqual([...state.section].sort(), [...needing].sort());
+  assert.equal(byId['preview-chat-interrupted'].dot, 'failed');
   assert.equal(state.headerCount, '3');
-  // 구역이 목록 맨 위에 서고 일하는 채팅은 아래 최근에 남는다.
-  assert.deepEqual(state.rows.slice(0, 3).map((row) => row.id).sort(), [...needing].sort());
+  assert.deepEqual(state.sections, ['pinned', 'recent'], 'no separate attention section');
   await page.$eval('.ag-root', (root) => root.scrollTop = 0);
   await (await page.$('.ag-root')).screenshot({ path: resolve(artifacts, 'attention-rail.png') });
 }
@@ -366,7 +342,7 @@ export async function checkSystemNotices(page, origin, { details = false } = {})
     assert.ok(chatTitle && chatTitle !== 'HamaEditor', 'the hidden chat has a title of its own');
     assert.deepEqual(
       { title: state.systemNotices[0].title, body: state.systemNotices[0].body },
-      { title: chatTitle, body: '작업이 중단됐습니다 · 사업 제안서.hwpx' },
+      { title: chatTitle, body: '작업이 중단됐습니다 (사업 제안서.hwpx)' },
       'with the setting on, the notice names the chat and the document',
     );
   } else {
@@ -414,12 +390,12 @@ export async function checkAttention(page, origin, artifacts) {
   await checkHiddenRejectedFollowUp(page, origin);
   await checkFinished(page, origin);
   await checkBlockingStates(page, origin);
-  await checkAttentionSection(page, origin, artifacts);
+  await checkAttentionRows(page, origin, artifacts);
   await checkSystemNotices(page, origin);
   await checkSystemNotices(page, origin, { details: true });
   await checkAttentionSetting(page, origin, artifacts);
 }
 
 if (isMainModule(import.meta)) {
-  await runStandalone('Background-chat attention: rail states, 입력 필요 section, count, toasts and notices', checkAttention);
+  await runStandalone('Background-chat attention: rail states, count and notices', checkAttention);
 }

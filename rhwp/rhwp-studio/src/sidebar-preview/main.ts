@@ -34,7 +34,6 @@ import {
   type AttentionNotice,
 } from '../agent/chat-attention.ts';
 import { loadAttentionPrefs, saveAttentionPrefs, subscribeAttentionPrefs } from '../agent/attention-prefs.ts';
-import { installAttentionToasts } from '../ui/agent-attention.ts';
 import type { LibraryMoveResult } from '../library/move-to-document.ts';
 import type { ChatDocumentLinked, ChatDocumentLinkTarget } from '../agent/document-link.ts';
 import type { TurnRestoreControl, TurnRestoreResult, TurnRestoreStatus } from '../agent/turn-checkpoints.ts';
@@ -114,7 +113,6 @@ const attentionNotices: AttentionNotice[] = [];
 const attentionCounts: number[] = [];
 attention.subscribe({
   notice(notice) {
-    if (notice.channel !== 'system') return;
     attentionNotices.push(notice);
     report(`알림: ${notice.title} — ${notice.body}`);
   },
@@ -526,6 +524,8 @@ async function openChatFrom(index: number, request: OpenChatRequest): Promise<'h
     ));
     if (holder >= 0) {
       showChat(holder);
+      // A holder that went down with its rail open still shows the chat.
+      chats[holder]!.sidebar.openThreadById(request.threadId);
       return 'handled';
     }
   }
@@ -682,12 +682,11 @@ if (params.get('chats') === 'sample' || params.get('chats') === 'engine-trap') {
   markChatNeedsReview(SAMPLE_REVIEW_CHAT_ID);
   markChatFailed(SAMPLE_INTERRUPTED_CHAT_ID, { label: '중단됨' });
 }
-/** The shown chat's 열기 from a toast or notification — the same path as a rail click. */
+/** The shown chat's 열기 from a notification — the same path as a rail click. */
 function openFromAttention(threadId: string): void {
   const shown = parallelChats ? chats[shownChat] : sessions[attachedSession];
   shown?.sidebar.openThreadFromHost(threadId);
 }
-installAttentionToasts(attention, openFromAttention);
 
 const scenarioSelect = document.querySelector<HTMLSelectElement>('#scenario')!;
 for (const name of scenarios)

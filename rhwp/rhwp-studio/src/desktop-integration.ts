@@ -1901,7 +1901,6 @@ export function installDesktopAgentAttention(
   sendCount(ledger.count());
   const off = ledger.subscribe({
     notice(notice) {
-      if (notice.channel !== 'system') return;
       api.notifyAgentAttention?.({ threadId: notice.threadId, title: notice.title, body: notice.body });
     },
     count: sendCount,

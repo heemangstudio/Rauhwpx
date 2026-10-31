@@ -8,9 +8,9 @@
 const STORAGE_KEY = 'rhwp-agent-attention';
 
 export interface AttentionPrefs {
-  /** 알림·토스트·앱 아이콘 배지 */
+  /** 알림·앱 아이콘 배지 */
   notifications: boolean;
-  /** OS·브라우저 알림에 채팅 제목과 문서 이름을 싣는다. 앱 안 토스트는 이 값과 상관없이 제목을 보인다. */
+  /** OS·브라우저 알림에 채팅 제목과 문서 이름을 싣는다. */
   showChatDetails: boolean;
 }
 

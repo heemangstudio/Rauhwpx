@@ -325,7 +325,7 @@ import {
 import { initAgentBridge, type AgentBridge } from './agent/bridge.ts';
 import { chatAttention, connectChatAttention } from './agent/chat-attention.ts';
 import { loadAttentionPrefs, subscribeAttentionPrefs } from './agent/attention-prefs.ts';
-import { installAttentionToasts, installWebAgentAttention } from './ui/agent-attention.ts';
+import { installWebAgentAttention } from './ui/agent-attention.ts';
 import { claimDocumentWriter, syncDocumentWriter } from './agent/document-writer.ts';
 import { checkTurnRestore, restoreTurn, type TurnRestoreGates } from './agent/turn-checkpoints.ts';
 import {
@@ -2650,6 +2650,8 @@ function openChatFromChat(
       ));
       if (holder) {
         showChat(session, holder);
+        // 그 채팅 창이 목록을 열어 둔 채 내려갔어도 대화를 보인다.
+        holder.sidebar.openThreadById(request.threadId);
         return 'handled';
       }
     }
@@ -2672,6 +2674,7 @@ async function focusThreadInSession(session: DocumentSession, threadId: string):
   const holder = session.chats.find((chat) => chat.sidebar.currentThreadId() === threadId);
   if (holder) {
     showChat(session, holder);
+    holder.sidebar.openThreadById(threadId);
     return;
   }
   const active = session.activeChat;
@@ -2732,7 +2735,7 @@ function openThreadFromAttention(threadId: string): void {
 
 /**
  * 백그라운드 채팅 알림은 창에 하나다(장부 chatAttention). 사이드바마다 자기 채팅의 상태를 알리고,
- * 여기서 알림 설정을 적용하고 데스크톱(OS 알림·배지) 또는 웹(허락된 브라우저 알림)과 앱 안 토스트로 보낸다.
+ * 여기서 알림 설정을 적용하고 데스크톱(OS 알림·배지) 또는 웹(허락된 브라우저 알림)으로 보낸다.
  */
 function installWindowAgentAttention(): void {
   chatAttention.setEnabled(loadAttentionPrefs().notifications);
@@ -2740,7 +2743,6 @@ function installWindowAgentAttention(): void {
   connectChatAttention(chatAttention);
   if (isDesktopApp()) installDesktopAgentAttention(chatAttention, openThreadFromAttention);
   else installWebAgentAttention(chatAttention, openThreadFromAttention);
-  installAttentionToasts(chatAttention, openThreadFromAttention);
 }
 
 let inlinePrompt: { dispose(): void } | null = null;

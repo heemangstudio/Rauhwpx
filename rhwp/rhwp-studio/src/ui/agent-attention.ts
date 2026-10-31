@@ -1,32 +1,11 @@
 /**
- * 백그라운드 채팅 알림을 사용자에게 건네는 길 — 장부(agent/chat-attention)의 알림을 받아
- * 창에 초점이 있으면 앱 안 토스트로, 웹에서는 이미 허락된 브라우저 알림으로 보낸다.
- * 데스크톱의 OS 알림과 앱 아이콘 배지는 desktop-integration 이 맡는다.
+ * 웹 배포판의 백그라운드 채팅 알림 — 장부(agent/chat-attention)의 알림을 이미 허락된 브라우저
+ * 알림으로 보낸다. 데스크톱의 OS 알림과 앱 아이콘 배지는 desktop-integration 이 맡는다.
+ * 앱 안에서는 채팅 목록 행의 상태가 알린다.
  *
- * 토스트와 알림은 초점을 가져가지 않는다 — 쓰는 중인 글과 한글 조합을 깨지 않는다.
+ * 알림은 초점을 가져가지 않는다 — 쓰는 중인 글과 한글 조합을 깨지 않는다.
  */
 import type { AttentionNotice, ChatAttentionLedger } from '../agent/chat-attention.ts';
-import { showToast, type ToastOptions } from './toast.ts';
-
-const TOAST_DURATION_MS = 6000;
-
-/** 창에 초점이 있지만 그 채팅이 보이지 않을 때 — `{제목} — 답변을 기다립니다 [열기]`. */
-export function installAttentionToasts(
-  ledger: ChatAttentionLedger,
-  openThread: (threadId: string) => void,
-  toast: (options: ToastOptions) => void = showToast,
-): () => void {
-  return ledger.subscribe({
-    notice(notice) {
-      if (notice.channel !== 'in-app') return;
-      toast({
-        message: notice.message,
-        action: { label: '열기', onClick: () => openThread(notice.threadId) },
-        durationMs: TOAST_DURATION_MS,
-      });
-    },
-  });
-}
 
 /** 브라우저 알림의 최소 모양 — 테스트가 가짜를 넣는다. */
 export interface WebNotificationLike {
@@ -64,7 +43,7 @@ export function installWebAgentAttention(
 ): () => void {
   return ledger.subscribe({
     notice(notice: AttentionNotice) {
-      if (notice.channel !== 'system' || !webNotificationsGranted(host)) return;
+      if (!webNotificationsGranted(host)) return;
       try {
         const NotificationCtor = host.Notification!;
         const shown = new NotificationCtor(notice.title, { body: notice.body, tag: notice.key });
