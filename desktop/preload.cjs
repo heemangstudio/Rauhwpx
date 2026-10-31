@@ -46,6 +46,7 @@ contextBridge.exposeInMainWorld('rhwpDesktop', {
     getState: (payload) => ipcRenderer.invoke('desktop:browser-state', payload),
     zoom: (payload) => ipcRenderer.invoke('desktop:browser-zoom', payload),
     pointer: (payload) => ipcRenderer.invoke('desktop:browser-pointer', payload),
+    chromeSignIn: (payload) => ipcRenderer.invoke('desktop:browser-chrome-sign-in', payload),
     navigate: (payload) => ipcRenderer.invoke('desktop:browser-navigate', payload),
     back: (payload) => ipcRenderer.invoke('desktop:browser-back', payload),
     forward: (payload) => ipcRenderer.invoke('desktop:browser-forward', payload),

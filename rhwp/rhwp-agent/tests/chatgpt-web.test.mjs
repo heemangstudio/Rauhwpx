@@ -152,3 +152,11 @@ test('the store persists the opt-in and chat map and rejects foreign addresses',
   await corrupt.ready();
   assert.equal(corrupt.enabled(), false, 'an unreadable file falls back to off');
 });
+
+test('waits for a slow page to finish loading instead of a fixed step time', { skip, timeout: 60_000 }, async (t) => {
+  // 입력창은 3초 뒤에 뜨지만 그동안 리소스가 계속 들어온다. 진행이 이어지면 단계 한도(1초)를 넘어도 기다린다.
+  const h = await harness(t, { projects: [PROJECT], slowComposer: { afterMs: 3_000, everyMs: 150 } }, { stepTimeoutMs: 1_000 });
+  const result = await h.driver.ask({ chatKey: 'thread-1', question: '천천히 뜨는 화면' });
+  assert.ok(result.answer.includes('천천히 뜨는 화면'));
+  assert.equal(h.fixture.state.sent.length, 1);
+});

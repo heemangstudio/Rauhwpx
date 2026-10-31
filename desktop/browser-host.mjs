@@ -7,6 +7,9 @@ import { PrivateBrowserCdp, protectedUrl } from './browser-cdp.mjs';
 import { AgentCursorOverlay, readAgentPointer } from './browser-agent-cursor.mjs';
 
 const GUEST_PRELOAD = fileURLToPath(new URL('./browser-guest-preload.cjs', import.meta.url));
+// 이 로그인 페이지에서는 앱 브라우저 대신 Google Chrome 로그인을 권한다. Google은 내장 브라우저를 거절할 수 있고 Apple 패스키는 iCloud 키체인이 필요하다.
+const CHROME_SIGN_IN_HOSTS = new Set(['accounts.google.com', 'appleid.apple.com']);
+const CHROME_SIGN_IN_BAR = 36;
 const POPOUT_PRELOAD = fileURLToPath(new URL('./browser-popout-preload.cjs', import.meta.url));
 const POPOUT_URL = new URL('./browser-popout.html', import.meta.url).href;
 const MAX_NATIVE_TABS = 64;
@@ -331,6 +334,7 @@ export class OwnedBrowserHost {
     });
     for (const event of ['did-start-loading', 'did-stop-loading', 'page-title-updated']) contents.on(event, () => this.emit(tab, 'state'));
     contents.on('did-navigate', () => { tab.faviconCandidates = null; });
+    contents.on('did-navigate', (_event, rawUrl) => this.trackChromeSignIn(tab, rawUrl));
     contents.on('page-favicon-updated', (_event, favicons) => { tab.faviconCandidates = faviconList(favicons); this.forwardFavicons(tab); });
     contents.on('dom-ready', () => this.passwords?.restoreManualSave?.(tab));
     contents.on('did-navigate', () => { this.clearActivity(tab); tab.navigationEpoch += 1; tab.lastError = null; this.emit(tab, 'navigation'); });
@@ -412,6 +416,8 @@ export class OwnedBrowserHost {
     Object.assign(tab, { tabId, sessionId, chatId, windowId: window.id, global });
     this.aliases.set(tabId, targetId);
     this.emit(tab, 'bound');
+    // 팝업은 탭 ID를 받기 전에 첫 페이지(Google 로그인 등)를 연다. 묶인 뒤 다시 본다.
+    if (!tab.chromeSignIn && !tab.view.webContents.isDestroyed()) this.trackChromeSignIn(tab, tab.view.webContents.getURL());
     this.forwardFavicons(tab);
     return this.state(tab);
   }
@@ -453,6 +459,9 @@ export class OwnedBrowserHost {
       if (!contents || contents.isDestroyed() || !contents.debugger.isAttached()) return;
       // 열린 페이지 대화상자는 렌더러를 멈춰 이 명령이 돌아오지 않는다. 에이전트가 대화상자에 답할 수 있게 닫힐 때까지 미룬다.
       if (tab.dialogOpen) { tab.activitySyncDeferred = true; return; }
+      // 허브가 숨은 탭을 다루는 동안에는 타이머·애니메이션 제한을 풀어 페이지가 제 속도로 뜨게 한다.
+      const unthrottled = !!tab.activityLeases?.size;
+      if (unthrottled !== !!tab.unthrottled) { tab.unthrottled = unthrottled; contents.setBackgroundThrottling?.(!unthrottled); }
       await contents.debugger.sendCommand('Emulation.setFocusEmulationEnabled', { enabled: !!tab.activityLeases?.size });
     });
     return tab.activityQueue;
@@ -502,6 +511,7 @@ export class OwnedBrowserHost {
       canGoForward: !!alive && contents.navigationHistory.canGoForward(),
       controller: tab.human ? 'human' : 'agent', held: tab.held === true, interactive: tab.interactive === true, mode: tab.placement?.mode ?? 'hidden',
       crashed: tab.crashed, error: tab.lastError,
+      chromeSignIn: this.chromeSignInOffer(tab), chromeSignInActive: this.chromeSignInActiveSite ?? null,
     };
     if (tab.passwordShield) { state.url = protectedUrl(state.url); state.title = ''; state.error = null; }
     return this.passwords ? this.passwords.redact(tab, state) : state;
@@ -534,12 +544,12 @@ export class OwnedBrowserHost {
     if (popout && !popout.isDestroyed()) popout.webContents.send('desktop:browser-popout-state', payload);
   }
 
-  attach(window, { tabId, bounds, mode = 'dock', interactive = false, focus = false, navigationEpoch, expectedTargetId, signIn = false }) {
+  attach(window, { tabId, bounds, mode = 'dock', interactive = false, focus = false, signIn = false, title, navigationEpoch, expectedTargetId }) {
     const tab = this.ownedTab(tabId, window);
     if (expectedTargetId !== undefined && expectedTargetId !== tab.targetId) throw new Error('Native browser presentation target is stale');
     if (navigationEpoch !== undefined && navigationEpoch !== tab.navigationEpoch) throw new Error('Native browser presentation navigation is stale');
     if (!['dock', 'float', 'popout'].includes(mode)) throw new Error('Native browser presentation mode is invalid');
-    if (mode === 'popout') return this.popout(window, tab, { signIn });
+    if (mode === 'popout') return this.popout(window, tab, { signIn, title });
     const rect = browserViewBounds(bounds, window);
     // 띄우기도 고정과 같이 편집기 창 안의 뷰다. 화면 틀은 렌더러가 그리고 호스트는 영역만 따른다.
     const windowChanged = tab.placement?.window !== window;
@@ -826,8 +836,11 @@ export class OwnedBrowserHost {
     return this.state(tab);
   }
 
-  popout(ownerWindow, tab, { signIn = false } = {}) {
+  popout(ownerWindow, tab, { signIn = false, title } = {}) {
     this.unplace(tab);
+    // 로그인 전용 창은 도구 막대 없이 페이지만 창 전체에 보이고, 제목은 서비스 이름이다.
+    tab.signInPresentation = signIn === true;
+    tab.popoutTitle = typeof title === 'string' && title ? title.slice(0, 80) : null;
     let popout = this.popouts.get(tab.targetId);
     if (!popout || popout.isDestroyed()) {
       popout = new this.BrowserWindow({ width: 1000, height: 760, minWidth: 420, minHeight: 320, title: 'Browser', show: false,
@@ -836,6 +849,7 @@ export class OwnedBrowserHost {
       popout.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
       popout.webContents.on('will-navigate', (event) => event.preventDefault());
       popout.on('resize', () => this.layoutPopout(tab, popout));
+      popout.on('page-title-updated', (event) => { if (tab.popoutTitle) event.preventDefault(); });
       popout.on('close', (event) => {
         if (this.disposing) return;
         if (this.quitRequested) {
@@ -849,7 +863,7 @@ export class OwnedBrowserHost {
       popout.webContents.once('did-finish-load', () => this.emit(tab, 'state'));
       void popout.loadURL(POPOUT_URL);
     }
-    tab.signInPresentation = signIn === true;
+    popout.setTitle(tab.popoutTitle || popout.webContents.getTitle() || 'Browser');
     this.placeGuest(tab, popout);
     tab.placement = { window: popout, ownerWindow, mode: 'popout' };
     tab.interactive = tab.human;
@@ -860,12 +874,69 @@ export class OwnedBrowserHost {
     return this.state(tab);
   }
 
+  /** 이 탭에서 Chrome 로그인을 권할 사이트. 숨겼으면 null이다. */
+  chromeSignInOffer(tab) {
+    const offer = tab.chromeSignIn;
+    return offer && !offer.dismissed ? { siteUrl: offer.siteUrl, host: new URL(offer.siteUrl).hostname, reason: offer.reason } : null;
+  }
+
+  /** 로그인할 사이트 주소. 로그인 제공자 페이지면 그 페이지를 연 사이트(팝업의 부모나 직전 사이트)다. */
+  chromeSignInSite(tab, rawUrl) {
+    let url; try { url = new URL(rawUrl); } catch { return null; }
+    if (url.protocol !== 'https:') return null;
+    if (!CHROME_SIGN_IN_HOSTS.has(url.hostname)) return url.href;
+    const opener = tab.openerTargetId && this.tabs.get(tab.openerTargetId);
+    const openerUrl = opener && !opener.view.webContents.isDestroyed() ? opener.view.webContents.getURL() : null;
+    return [openerUrl, tab.lastSiteUrl].find((candidate) => { try { const parsed = new URL(candidate); return parsed.protocol === 'https:' && !CHROME_SIGN_IN_HOSTS.has(parsed.hostname); } catch { return false; } }) ?? null;
+  }
+
+  offerChromeSignIn(tab, reason) {
+    if (process.platform !== 'darwin' || !tab.tabId || tab.closing || tab.view.webContents.isDestroyed()) return;
+    const siteUrl = this.chromeSignInSite(tab, tab.view.webContents.getURL());
+    if (!siteUrl) return;
+    const host = new URL(siteUrl).hostname;
+    // 같은 사이트에서 숨긴 제안은 다시 띄우지 않는다.
+    if (tab.chromeSignIn && new URL(tab.chromeSignIn.siteUrl).hostname === host && (tab.chromeSignIn.dismissed || tab.chromeSignIn.siteUrl === siteUrl)) return;
+    tab.chromeSignIn = { siteUrl, reason, dismissed: false };
+    this.refreshChromeSignIn(tab);
+  }
+
+  dismissChromeSignIn(tab) {
+    if (!tab.chromeSignIn || tab.chromeSignIn.dismissed) return;
+    tab.chromeSignIn.dismissed = true;
+    this.refreshChromeSignIn(tab);
+  }
+
+  trackChromeSignIn(tab, rawUrl) {
+    let url; try { url = new URL(rawUrl); } catch { return; }
+    if (CHROME_SIGN_IN_HOSTS.has(url.hostname)) { this.offerChromeSignIn(tab, 'identity-provider'); return; }
+    if (url.protocol === 'https:') tab.lastSiteUrl = url.href;
+    // 다른 사이트로 옮기면 이전 사이트의 제안을 지운다.
+    if (tab.chromeSignIn && new URL(tab.chromeSignIn.siteUrl).hostname !== url.hostname) { tab.chromeSignIn = null; this.refreshChromeSignIn(tab); }
+  }
+
+  /** 편집기가 알린 Chrome 로그인 상태. 모든 띄운 창이 진행 중임을 보이고 페이지 영역을 맞춘다. */
+  setChromeSignInState({ site = null } = {}) {
+    const next = typeof site === 'string' && site ? site.slice(0, 253) : null;
+    if (next === (this.chromeSignInActiveSite ?? null)) return { site: next };
+    this.chromeSignInActiveSite = next;
+    for (const tab of this.tabs.values()) if (tab.tabId && (this.popouts.has(tab.targetId) || tab.chromeSignIn)) this.refreshChromeSignIn(tab);
+    return { site: next };
+  }
+
+  refreshChromeSignIn(tab) {
+    const popout = this.popouts.get(tab.targetId);
+    if (popout && !popout.isDestroyed()) this.layoutPopout(tab, popout);
+    this.emit(tab, 'chrome-sign-in');
+  }
+
   layoutPopout(tab, popout) {
     if (tab.placement?.window !== popout) return;
     const { width, height } = popout.getContentBounds();
-    // 도구 막대 높이(76 CSS px)도 창의 페이지 확대를 따른다.
-    const toolbar = tab.signInPresentation ? 0 : Math.round(76 * pageZoomFactor(popout));
-    const bounds = { x: 0, y: toolbar, width, height: Math.max(0, height - toolbar) };
+    // 도구 막대(76 CSS px)와 Chrome 로그인 막대 높이도 창의 페이지 확대를 따른다.
+    const css = (tab.signInPresentation ? 0 : 76) + (this.chromeSignInOffer(tab) || this.chromeSignInActiveSite ? CHROME_SIGN_IN_BAR : 0);
+    const top = Math.round(css * pageZoomFactor(popout));
+    const bounds = { x: 0, y: top, width, height: Math.max(0, height - top) };
     tab.view.setBounds(bounds);
     void this.viewport(tab, bounds).catch(() => {});
   }
@@ -946,6 +1017,12 @@ export class OwnedBrowserHost {
     if (!ownerWindow) throw new Error('Browser popout owner is unavailable');
     if (command === 'zoom') return this.zoom(ownerWindow, { tabId: tab.tabId, factor });
     if (command === 'close') return this.detach(ownerWindow, { tabId: tab.tabId });
+    if (command === 'chrome-sign-in-dismiss') { this.dismissChromeSignIn(tab); return { dismissed: true }; }
+    if (['chrome-sign-in', 'chrome-sign-in-finish', 'chrome-sign-in-cancel'].includes(command)) {
+      // 허브 요청은 편집기 창이 보낸다. 창은 같은 명령을 받아 Chrome 로그인을 시작하거나 끝낸다.
+      this.emit(tab, 'presentation-command', { command, ...(command === 'chrome-sign-in' ? { url: this.chromeSignInOffer(tab)?.siteUrl ?? null } : {}) });
+      return { queued: true };
+    }
     if (['dock', 'take-control', 'return-agent', 'annotate', 'capture', 'downloads', 'navigate'].includes(command)) {
       if (command === 'dock') this.detach(ownerWindow, { tabId: tab.tabId });
       this.emit(tab, 'presentation-command', { command, ...(command === 'navigate' ? { url } : {}) });
@@ -1089,21 +1166,12 @@ export class OwnedBrowserHost {
     try {
       await removeScopedCookies(); await this.setCookies(state.cookies);
       for (const { entry, tab } of storage) if (tab && await applyStorage(tab, entry.origin, entry.localStorage) === false) throw new Error('The native sign-in page changed during session import');
-      // 승인된 탭을 함께 다시 연다. 전체 기한은 허브 IPC 제한(20초)보다 짧다.
+      // 승인된 탭은 새 로그인으로 다시 연다. 무거운 페이지가 늦게 열려도 이미 옮긴 로그인을 되돌리지 않도록 기다리지 않는다.
       const reloads = !reload ? [] : [...this.tabs.values()].filter((tab) => {
         if (tab.closing || tab.view.webContents.isDestroyed()) return false;
         try { return approved.has(new URL(tab.view.webContents.getURL()).origin); } catch { return false; }
       }).map((tab) => tab.view.webContents);
-      const deadline = Date.now() + 10_000;
-      await Promise.all(reloads.map((contents) => new Promise((resolve, reject) => {
-        const finish = (error) => { clearTimeout(timer); contents.off('did-finish-load', done); contents.off('did-fail-load', failed); contents.off('destroyed', closed); error ? reject(error) : resolve(); };
-        const done = () => finish();
-        const failed = (_event, _code, _description, _url, mainFrame) => { if (mainFrame) finish(new Error('Native session reload failed')); };
-        const closed = () => finish(new Error('Native session tab closed'));
-        const timer = setTimeout(() => finish(new Error('Native session reload timed out')), Math.max(1, deadline - Date.now()));
-        contents.once('did-finish-load', done); contents.on('did-fail-load', failed); contents.once('destroyed', closed);
-        contents.reload();
-      })));
+      for (const contents of reloads) contents.reload();
       return { imported: true, cookies: state.cookies.length, origins: storage.filter((item) => item.tab).length, reloaded: reloads.length };
     } catch {
       await removeScopedCookies(); await this.setCookies(previousCookies);

@@ -5,8 +5,8 @@ import crypto from 'node:crypto';
  * data-conversation-role, [data-app-action-sidebar-project-create], #chatgpt-project-name, .ProseMirror).
  * Playwright route 로 https://chatgpt.com/** 를 받아 네트워크에 나가지 않는다.
  */
-export function createChatgptFixture({ signedIn = true, projects = [], answerDelayMs = 300, drift = null, challenge = false } = {}) {
-  const state = { signedIn, projects: [...projects], conversations: new Map(), sent: [], answerDelayMs, drift, challenge, lateTurnsMs: 0, draft: '' };
+export function createChatgptFixture({ signedIn = true, projects = [], answerDelayMs = 300, drift = null, challenge = false, slowComposer = null } = {}) {
+  const state = { signedIn, projects: [...projects], conversations: new Map(), sent: [], answerDelayMs, drift, challenge, lateTurnsMs: 0, draft: '', slowComposer };
   const slugOf = (project) => `${project.id}-${project.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`;
 
   const page = () => `<!doctype html><html><head><meta charset="utf-8"><title>ChatGPT</title></head><body>
@@ -15,10 +15,17 @@ export function createChatgptFixture({ signedIn = true, projects = [], answerDel
   ${state.drift === 'project-button' ? '' : '<button type="button" aria-label="새 프로젝트 추가" data-app-action-sidebar-project-create></button>'}
 </nav>
 <main><h1 id="title"></h1><div id="thread"></div>
-  ${state.drift === 'composer' ? '<textarea id="prompt"></textarea>' : '<div class="ProseMirror" contenteditable="true" role="textbox" aria-label="ChatGPT에게 물어보세요" style="min-height:24px;width:400px"></div>'}
+  <form id="composer">${state.drift === 'composer' ? '<textarea id="prompt"></textarea>' : `<div class="ProseMirror" contenteditable="true" role="textbox" aria-label="ChatGPT에게 물어보세요" style="min-height:24px;width:400px${state.slowComposer ? ';display:none' : ''}"></div>`}<button type="submit" aria-label="Send">↑</button></form>
   <button type="button" id="stop" aria-label="중지" hidden></button>
 </main>
 <script>
+// 느린 첫 화면: 스크립트 조각을 차례로 받다가 입력창을 늦게 보인다(숨은 탭의 claude.ai·chatgpt.com 처럼).
+const slow = ${JSON.stringify(state.slowComposer)};
+if (slow) {
+  const started = Date.now(); let chunk = 0;
+  const load = () => { if (Date.now() - started >= slow.afterMs) { document.querySelector('.ProseMirror').style.display = ''; return; } fetch('/assets/chunk-' + (chunk++) + '.js').finally(() => setTimeout(load, slow.everyMs)); };
+  load();
+}
 const delay = ${state.answerDelayMs};
 const freezeTurns = ${state.drift === 'turns' ? 'true' : 'false'};
 const path = location.pathname;
@@ -52,9 +59,10 @@ document.querySelector('[data-app-action-sidebar-project-create]')?.addEventList
   });
 });
 const editor = document.querySelector('.ProseMirror');
-editor?.addEventListener('keydown', async (event) => {
-  if (event.key !== 'Enter') return;
+// 2026-10 의 실제 화면처럼 Enter 로는 보내지 않고 보내기 단추(form submit)로만 보낸다.
+document.querySelector('#composer').addEventListener('submit', async (event) => {
   event.preventDefault();
+  if (!editor) return;
   const question = editor.innerText.trim();
   editor.textContent = '';
   const sent = await fetch('/backend-api/f/conversation', { method: 'POST', body: JSON.stringify({ conversationId, projectId: projectMatch?.[1] ?? null, question }) }).then(r => r.json());
@@ -80,6 +88,7 @@ editor?.addEventListener('keydown', async (event) => {
     const url = new URL(request.url());
     if (url.origin !== 'https://chatgpt.com') return route.abort();
     if (state.challenge) return route.fulfill({ status: 403, headers: { 'cf-mitigated': 'challenge' }, contentType: 'text/html', body: '<title>Just a moment...</title>' });
+    if (url.pathname.startsWith('/assets/')) return route.fulfill({ status: 200, contentType: 'text/javascript', body: '' });
     if (url.pathname === '/api/auth/session') {
       return json(route, state.signedIn ? { accessToken: 'test-token', user: { email: 'user@example.com' } } : {});
     }

@@ -1,6 +1,22 @@
 // Website guests intentionally expose no contextBridge API. This preload only
-// reports focus and explicitly authorized login capture to Electron main.
-const { ipcRenderer } = require('electron');
+// reports focus, passkey requests and explicitly authorized login capture to Electron main.
+const { ipcRenderer, webFrame } = require('electron');
+
+// 페이지가 패스키를 요청하면 Chrome 로그인을 권하도록 알린다. 요청은 그대로 진행한다.
+// 자동완성용(conditional) 요청은 페이지를 열 때마다 오므로 알리지 않는다.
+webFrame.executeJavaScript(`(() => {
+  const container = navigator.credentials;
+  if (!container) return;
+  for (const kind of ['get', 'create']) {
+    const original = container[kind];
+    if (typeof original !== 'function') continue;
+    Object.defineProperty(container, kind, { configurable: true, writable: true, value: function (options) {
+      if (options && options.publicKey && options.mediation !== 'conditional') window.dispatchEvent(new Event('rhwp-passkey-request'));
+      return original.apply(this, arguments);
+    } });
+  }
+})()`).catch(() => {});
+window.addEventListener('rhwp-passkey-request', () => ipcRenderer.send('desktop:browser-guest-passkey'));
 window.addEventListener('focusin', (event) => {
   const field = event.target;
   ipcRenderer.send('desktop:browser-guest-focus', { sensitive: field?.type === 'password' });

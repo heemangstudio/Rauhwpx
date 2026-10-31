@@ -304,6 +304,7 @@ import {
   type PublishedDocumentLink,
 } from '../../desktop-integration.ts';
 import { showToast } from '../toast.ts';
+import { createChromeSignIn } from './chrome-sign-in.ts';
 import type { ChatDocumentLinkReply, ChatDocumentLinked, ChatDocumentLinkTarget } from '../../agent/document-link.ts';
 import { linkError } from '../../agent/document-link.ts';
 
@@ -5154,10 +5155,13 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   /* 설정 페이지 — 자기 DOM 은 settings.ts 가 짓고, 페이지 전환만
      여기서 관리한다(스킬 페이지와 같은 계약). */
+  // 패스키·Google 로그인은 데스크톱 앱에서 Google Chrome으로 넘긴다.
+  const chromeSignIn = nativeBrowserApi()?.chromeSignIn ? createChromeSignIn(bridge, (message) => showToast({ message, durationMs: 5000 })) : undefined;
   const settingsPanel = createSettingsPanel({
     bridge,
+    ...(chromeSignIn ? { chromeSignIn } : {}),
     // ChatGPT·Claude 로그인은 앱 안 브라우저를 별도 창으로 연다(설정이 만들어진 뒤에 정의된다).
-    openSignInWindow: (url) => openSignInWindow(url),
+    openSignInWindow: (url, title) => openSignInWindow(url, title),
     agentLocked: agentLockedByPlan,
     openPlans: () => openPlans('pro'),
     projectSettings: bridge.projects?.service ?? null,
@@ -5187,6 +5191,13 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     beginAgentConnect: (agent) => settingsPanel.beginAgentConnect(agent),
     openCalibration: (options) => writingStyleCalibration.open(options),
     ...(deps.license !== undefined ? { license: deps.license } : {}),
+    // ChatGPT·Claude 연결은 앱 안 브라우저가 있는 데스크톱에서만 묻는다.
+    ...(chromeSignIn ? { connectors: {
+      request: (action, args) => bridge.requestBrowser(action, args),
+      openSignInWindow: (url, title) => openSignInWindow(url, title),
+      chromeSignIn,
+      isConnected: () => bridge.getConnectionState() === 'connected',
+    } } : {}),
     taste: {
       get: () => bridge.requestTasteSettings(),
       set: (patch) => bridge.setTasteSettings(patch),
@@ -5346,7 +5357,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     return view;
   }
   function createWorkbenchBrowserView(extra: Partial<Parameters<typeof createWorkbenchBrowser>[0]>): WorkbenchBrowser {
-    return createWorkbenchBrowser({ bridge,
+    return createWorkbenchBrowser({ bridge, ...(chromeSignIn ? { chromeSignIn } : {}),
       getDestination: () => ({ threadId: currentThread.id, documentId: currentDocumentId, projectId: bridge.projects?.store.get()?.id ?? null, label: currentThread.title || '현재 채팅' }),
       onCapture: (draft) => {
         if (captureInbox.queue(draft)) {
@@ -5405,28 +5416,50 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   };
   // 설정의 로그인(ChatGPT·Claude)은 작업 칸이 아니라 앱 안 브라우저의 별도 창으로 연다.
   // 그 탭은 작업 칸에서 고르지 않는다. 창을 닫으면 탭도 닫고 closed 가 끝난다.
-  const openSignInWindow = async (url: string): Promise<SignInWindow> => {
+  const openSignInWindow = async (url: string, title: string): Promise<SignInWindow> => {
     const native = nativeBrowserApi();
     if (!native?.onEvent) throw new Error('데스크톱 앱에서만 로그인할 수 있습니다.');
     const browser = ensureWorkbenchBrowser();
-    const opened = await browser.controller.request<{ tab?: BrowserTab }>('open', { url });
-    const tab = opened?.tab;
+    // 허브는 로그인 페이지 로딩을 기다린 뒤 답한다. 탭이 생기는 즉시 오는 이벤트로 창을 먼저 띄우고 로딩은 창 안에서 보인다.
+    const openRequestId = crypto.randomUUID();
+    let created: (tab: BrowserTab) => void = () => {};
+    const early = new Promise<BrowserTab>((resolve) => { created = resolve; });
+    const unlisten = bridge.onBrowserEvent((event) => {
+      const data = event.payload && typeof event.payload === 'object' ? { ...event, ...event.payload } as import('../../agent/types.ts').BrowserEvent : event;
+      if (data.type === 'owned_browser_tab' && data.openRequestId === openRequestId && data.tab?.tabId) created(data.tab);
+    });
+    const opening = browser.controller.request<{ tab?: BrowserTab }>('open', { url, openRequestId, transient: true });
+    let tab: BrowserTab | undefined;
+    try { tab = await Promise.race([early, opening.then((opened) => opened?.tab)]); } finally { unlisten(); }
     if (!tab?.tabId) throw new Error('로그인 창을 열지 못했습니다.');
     let finish: () => void = () => {};
     const closed = new Promise<void>((resolve) => { finish = resolve; });
     let done = false;
     const close = async (): Promise<void> => {
       if (done) return;
-      done = true; stop();
-      await browser.controller.refresh().then(() => browser.controller.close(tab.tabId)).catch(() => {});
+      done = true; stop(); stopPopups();
+      await browser.controller.refresh().then(async () => {
+        for (const popup of popups) await browser.controller.close(popup).catch(() => {});
+        await browser.controller.close(tab.tabId);
+      }).catch(() => {});
       finish();
     };
     const stop = native.onEvent((event) => {
       if (event.tabId !== tab.tabId) return;
       if (event.type === 'closed' || event.type === 'presentation' && event.mode !== 'popout') void close();
     });
+    // Google처럼 로그인을 팝업으로 여는 사이트는 그 팝업도 같은 이름의 창으로 띄운다. 팝업은 로그인이 끝나면 스스로 닫힌다.
+    const popups = new Set<string>();
+    const stopPopups = bridge.onBrowserEvent((event) => {
+      const data = event.payload && typeof event.payload === 'object' ? { ...event, ...event.payload } as import('../../agent/types.ts').BrowserEvent : event;
+      if (data.type !== 'owned_browser_popup' || data.openerTabId !== tab.tabId || !data.tab?.tabId) return;
+      popups.add(data.tab.tabId);
+      void native.attach({ tabId: data.tab.tabId, expectedTargetId: data.tab.nativeTargetId, bounds: { x: 0, y: 0, width: 0, height: 0 }, mode: 'popout', interactive: true, signIn: true, title }).catch(() => {});
+    });
+    // 창을 먼저 띄웠으므로 페이지가 거절되거나 실패하면 그 창도 닫는다.
+    opening.catch(() => close());
     try {
-      await native.attach({ tabId: tab.tabId, expectedTargetId: tab.nativeTargetId, bounds: { x: 0, y: 0, width: 0, height: 0 }, mode: 'popout', interactive: true, signIn: true });
+      await native.attach({ tabId: tab.tabId, expectedTargetId: tab.nativeTargetId, bounds: { x: 0, y: 0, width: 0, height: 0 }, mode: 'popout', interactive: true, signIn: true, title });
     } catch (failure) { await close(); throw failure; }
     return { closed, close };
   };
@@ -14502,6 +14535,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       unsubscribeSharedBrowser();
       unsubscribeAgentBrowserPreview();
       unsubscribeBrowserWatches();
+      chromeSignIn?.dispose();
       unsubscribeWatchConnection();
       ++floatingBrowserSequence; floatingBrowser?.dispose(); floatingBrowserHost?.remove();
       workbenchBrowser?.dispose();

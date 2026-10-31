@@ -15,7 +15,7 @@ import { createWebAssistantStore } from './web-assistant-store.mjs';
 export const CLAUDE_ORIGIN = 'https://claude.ai';
 export const CLAUDE_PROJECT_NAME = 'HamaEditor';
 export const CLAUDE_ERROR_CODES = Object.freeze([
-  'CLAUDE_DISABLED', 'CLAUDE_UNAVAILABLE', 'CLAUDE_SIGNED_OUT', 'CLAUDE_CHALLENGE', 'CLAUDE_LIMIT', 'CLAUDE_UI_CHANGED', 'CLAUDE_TIMEOUT',
+  'CLAUDE_DISABLED', 'CLAUDE_UNAVAILABLE', 'CLAUDE_BUSY', 'CLAUDE_SIGNED_OUT', 'CLAUDE_CHALLENGE', 'CLAUDE_LIMIT', 'CLAUDE_UI_CHANGED', 'CLAUDE_TIMEOUT',
 ]);
 export const CLAUDE_DEFAULT_TIMEOUT_MS = 120_000;
 export const CLAUDE_MAX_ANSWER_CHARS = 20_000;
@@ -106,6 +106,11 @@ export async function pageClaudeProject({ orgId, name, create }) {
   return { shape: true, uuid: project.uuid, created: true };
 }
 
+/** 페이지 로딩 진행: 문서가 끝났는지와 지금까지 받은 리소스 수. */
+export function pageLoadProgress() {
+  return { complete: document.readyState === 'complete', resources: performance.getEntriesByType('resource').length };
+}
+
 /** 보이는 입력창 하나. 없으면 null. */
 export function pageClaudeComposerState() {
   const editors = [...document.querySelectorAll('[data-testid="chat-input"][contenteditable="true"], [data-testid="chat-input"] [contenteditable="true"], .ProseMirror[contenteditable="true"]')]
@@ -121,6 +126,33 @@ export function pageClaudeFocusComposer() {
   if (!editor) return false;
   editor.focus();
   return document.activeElement === editor || editor.contains(document.activeElement);
+}
+
+/** 입력창에 남은 초안을 지운다(앞선 시도가 못 보낸 글). 2026-10 의 claude.ai 는 초안을 다음 방문까지 남긴다. */
+export function pageClaudeClearComposer() {
+  const editor = [...document.querySelectorAll('[data-testid="chat-input"][contenteditable="true"], [data-testid="chat-input"] [contenteditable="true"], .ProseMirror[contenteditable="true"]')]
+    .filter((element) => { const box = element.getBoundingClientRect(); return box.width > 0 && box.height > 0; }).at(-1);
+  if (!editor) return false;
+  editor.focus();
+  if (!editor.innerText.trim()) return true;
+  document.getSelection()?.selectAllChildren(editor);
+  document.execCommand('delete');
+  return !editor.innerText.trim();
+}
+
+/** 보내기 단추를 누른다. 2026-10 의 claude.ai 는 숨은 탭에서 Enter 로 보내지 않는다. 단추가 없으면 false. */
+export function pageClaudeSubmit() {
+  const visible = (element) => { const box = element.getBoundingClientRect(); return box.width > 0 && box.height > 0; };
+  const byTestId = [...document.querySelectorAll('button[data-testid="chat-input-send"]')].filter(visible).at(-1);
+  // 표지가 바뀌면 입력창 둘레에서 이름이 '보내기'인 단추를 찾는다.
+  const editor = document.querySelector('[data-testid="chat-input"]');
+  let around = editor?.parentElement;
+  while (around && !around.querySelector('button')) around = around.parentElement;
+  const byLabel = around ? [...around.querySelectorAll('button[aria-label]')].filter(visible).find((button) => /^(send|send message|보내기|메시지 보내기|전송)$/i.test(button.getAttribute('aria-label').trim())) : null;
+  const button = byTestId ?? byLabel;
+  if (!button || button.disabled) return false;
+  button.click();
+  return true;
 }
 
 /** 답이 나오는 중인가. data-is-streaming 이 주 신호이고, 중지 단추는 언어마다 달라 보조 신호다. */
@@ -187,7 +219,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  * browser.drive(actor, { url }, (page) => …) 는 Claude 행위자의 보이지 않는 탭 하나에서 작업을 차례로 돌린다(owned-browser-service).
  */
 export function createClaudeDriver({ browser, store, timeoutMs = CLAUDE_DEFAULT_TIMEOUT_MS, maxAnswerChars = CLAUDE_MAX_ANSWER_CHARS,
-  pollMs = 500, stepTimeoutMs = 15_000, now = Date.now }) {
+  pollMs = 500, stepTimeoutMs = 15_000, settleMs = 750, now = Date.now }) {
   let queue = Promise.resolve();
   const serial = (operation) => {
     const task = queue.then(operation, operation);
@@ -197,6 +229,8 @@ export function createClaudeDriver({ browser, store, timeoutMs = CLAUDE_DEFAULT_
 
   const assertAvailable = () => {
     if (!store.enabled()) throw claudeError('CLAUDE_DISABLED', 'Claude is turned off in Settings → AI.');
+    // 사용자가 Chrome에서 로그인하는 동안 앱 브라우저는 멈춘다. 끝나면 다시 물을 수 있다.
+    if (browser.busy?.()) throw claudeError('CLAUDE_BUSY', 'The user is signing in with Google Chrome in HamaEditor. Ask again after they finish.');
     if (!browser.available()) throw claudeError('CLAUDE_UNAVAILABLE', 'Claude.ai works only in the HamaEditor desktop app with its built-in browser.');
   };
 
@@ -247,6 +281,27 @@ export function createClaudeDriver({ browser, store, timeoutMs = CLAUDE_DEFAULT_
 
   const onClaude = (page) => { try { return new URL(page.url()).origin === CLAUDE_ORIGIN; } catch { return false; } };
 
+  /**
+   * 페이지가 다 떴을 때 ready() 의 값을 돌려준다: 문서가 끝났고, ready() 가 참이고, 새 리소스가 settleMs 동안 없다.
+   * 고정 시간이 아니라 진행을 본다. 리소스가 계속 들어오는 동안은 기다리고, 준비되지 않은 채 stepTimeoutMs 동안 진행이 없으면 멈춘다.
+   */
+  const waitUntilLoaded = async (page, ready, { until, label }) => {
+    let signature = ''; let movedAt = now(); let readySince = null;
+    for (;;) {
+      const state = await evaluate(page, pageLoadProgress).catch(() => null);
+      const value = state ? await ready() : null;
+      const next = state ? `${state.complete}:${state.resources}` : `navigating:${now()}`;
+      if (next !== signature) { signature = next; movedAt = now(); }
+      if (value && state.complete) {
+        // 준비된 뒤에도 리소스가 계속 오면(분석 요청 등) 최대 5초만 더 기다린다.
+        readySince ??= now();
+        if (now() - movedAt >= settleMs || now() - readySince >= 5_000) return value;
+      } else readySince = null;
+      if (now() >= until || !value && now() - movedAt >= stepTimeoutMs) throw fail('CLAUDE_UI_CHANGED', label);
+      await sleep(Math.min(pollMs, 250));
+    }
+  };
+
   const waitFor = async (check, { until, label, interval = pollMs }) => {
     for (;;) {
       const value = await check();
@@ -278,12 +333,13 @@ export function createClaudeDriver({ browser, store, timeoutMs = CLAUDE_DEFAULT_
   const openChat = async (page, chatKey, projectUrl) => {
     const known = store.chatUrl(chatKey);
     if (known) {
-      await goto(page, known);
+      // 이미 그 채팅을 보고 있으면 다시 열지 않는다. 다시 열면 숨은 탭에서 수십 초가 걸린다.
+      if (conversationIdOf(page.url()) !== conversationIdOf(known)) await goto(page, known);
       // 지운 채팅은 다른 주소로 옮겨진다. 그때는 프로젝트에서 새 채팅을 시작한다.
       if (conversationIdOf(page.url()) === conversationIdOf(known)) return known;
       await store.forgetChat(chatKey);
     }
-    await goto(page, projectUrl);
+    if (claudeProjectUrl(page.url()) !== projectUrl) await goto(page, projectUrl);
     // 사용자가 프로젝트를 지웠으면 다른 주소로 옮겨진다. 부른 쪽이 다시 찾거나 만든다.
     return projectIdOf(page.url()) === projectIdOf(projectUrl) ? null : false;
   };
@@ -291,22 +347,32 @@ export function createClaudeDriver({ browser, store, timeoutMs = CLAUDE_DEFAULT_
   const squash = (value) => value.replace(/\s+/g, ' ').trim();
 
   const send = async (page, question, until) => {
-    await waitFor(async () => (await evaluate(page, pageClaudeComposerState)).ready, { until: Math.min(until, now() + stepTimeoutMs), label: 'composer' });
+    // 페이지가 다 뜬 뒤에만 입력창을 다룬다. 숨은 탭에서 claude.ai 는 스크립트 수백 개를 차례로 받아 20초 넘게 걸리기도 한다.
+    await waitUntilLoaded(page, async () => (await evaluate(page, pageClaudeComposerState)).ready, { until, label: 'composer' });
+    if (!await evaluate(page, pageClaudeClearComposer)) throw fail('CLAUDE_UI_CHANGED', 'composer draft');
     if (!await evaluate(page, pageClaudeFocusComposer)) throw fail('CLAUDE_UI_CHANGED', 'composer focus');
     await page.keyboard.insertText(question);
     const head = squash(question).slice(0, 40);
     await waitFor(async () => squash((await evaluate(page, pageClaudeComposerState)).text).includes(head), { until: Math.min(until, now() + 5_000), label: 'composer text' });
-    await page.keyboard.press('Enter');
+    // 보내기 단추가 있으면 그것을 누르고, 없을 때만 Enter 를 쓴다.
+    const submit = async () => { if (!await evaluate(page, pageClaudeSubmit)) await page.keyboard.press('Enter'); };
+    await submit();
+    // 보내면 입력창이 빈다. 3초 뒤에도 글이 그대로면 한 번 더 보낸다.
+    const left = await waitFor(async () => !squash((await evaluate(page, pageClaudeComposerState)).text).includes(head) || null, { until: Math.min(until, now() + 3_000), label: 'composer sent' }).catch(() => null);
+    if (!left) await submit();
     return head;
   };
 
   /** 끝남: 답이 나오는 표시가 없고 한동안 그대로이며, 대화 조회가 우리 질문 다음의 답을 준다. */
-  const awaitAnswer = async (page, { orgId, projectUrl, before, head }, until) => {
+  const awaitAnswer = async (page, { orgId, projectUrl, before, head, limited = () => null }, until) => {
+    // 사용 한도(429)는 보내자마자 온다. 기한까지 기다리지 않고 바로 알린다.
+    const stopIfLimited = () => { const reset = limited(); if (reset) throw limitError(reset); };
     // 새 채팅은 보낸 뒤 /chat/<uuid> 로 옮겨진다.
-    const conversationId = await waitFor(() => conversationIdOf(page.url()), { until: Math.min(until, now() + stepTimeoutMs), label: 'chat address' });
+    const conversationId = await waitFor(() => { stopIfLimited(); return conversationIdOf(page.url()); }, { until: Math.min(until, now() + stepTimeoutMs), label: 'chat address' });
     let stableSince = null;
     let lastSignature = '';
     for (;;) {
+      stopIfLimited();
       const view = await evaluate(page, pageClaudeStreaming);
       const signature = `${view.streaming}|${view.stop}|${view.responses}|${view.text}`;
       const settled = !view.streaming && !view.stop;
@@ -335,8 +401,8 @@ export function createClaudeDriver({ browser, store, timeoutMs = CLAUDE_DEFAULT_
     },
     /** 설정 줄의 상태. check 면 보이지 않는 탭으로 로그인을 확인한다(sessionId 는 그 탭을 붙일 편집기 창). */
     status: ({ check = false, sessionId = null } = {}) => serial(async () => {
-      const base = { enabled: store.enabled(), available: browser.available(), projectUrl: store.projectUrl() };
-      if (!check || !base.enabled || !base.available) return { ...base, signedIn: null };
+      const base = { enabled: store.enabled(), available: browser.available(), projectUrl: store.projectUrl(), ...(browser.busy?.() ? { busy: true } : {}) };
+      if (!check || !base.enabled || !base.available || base.busy) return { ...base, signedIn: null };
       return browser.drive(claudeActor(sessionId), { url: `${CLAUDE_ORIGIN}/` }, async (page) => {
         const watcher = watchPage(page);
         try {
@@ -377,7 +443,7 @@ export function createClaudeDriver({ browser, store, timeoutMs = CLAUDE_DEFAULT_
           const existing = conversationIdOf(page.url());
           const before = existing ? await evaluate(page, pageClaudeMessageIds, { orgId, conversationId: existing }) ?? [] : [];
           const head = await send(page, question, deadline);
-          const result = await awaitAnswer(page, { orgId, projectUrl, before, head }, deadline);
+          const result = await awaitAnswer(page, { orgId, projectUrl, before, head, limited: () => watcher.state.limited }, deadline);
           chatUrl = claudeChatUrl(page.url()) ?? chatUrl;
           if (!chatUrl) throw fail('CLAUDE_UI_CHANGED', 'chat address');
           await store.setChatUrl(chatKey, chatUrl);

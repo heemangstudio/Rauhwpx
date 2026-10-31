@@ -13,7 +13,7 @@ import { createWebAssistantStore } from './web-assistant-store.mjs';
 export const CHATGPT_ORIGIN = 'https://chatgpt.com';
 export const CHATGPT_PROJECT_NAME = 'HamaEditor';
 export const CHATGPT_ERROR_CODES = Object.freeze([
-  'CHATGPT_DISABLED', 'CHATGPT_UNAVAILABLE', 'CHATGPT_SIGNED_OUT', 'CHATGPT_CHALLENGE', 'CHATGPT_UI_CHANGED', 'CHATGPT_TIMEOUT',
+  'CHATGPT_DISABLED', 'CHATGPT_UNAVAILABLE', 'CHATGPT_BUSY', 'CHATGPT_SIGNED_OUT', 'CHATGPT_CHALLENGE', 'CHATGPT_UI_CHANGED', 'CHATGPT_TIMEOUT',
 ]);
 export const CHATGPT_DEFAULT_TIMEOUT_MS = 120_000;
 export const CHATGPT_MAX_ANSWER_CHARS = 20_000;
@@ -101,6 +101,11 @@ export async function pageFindProject(name) {
   return { shape: true, slug: null };
 }
 
+/** 페이지 로딩 진행: 문서가 끝났는지와 지금까지 받은 리소스 수. */
+export function pageLoadProgress() {
+  return { complete: document.readyState === 'complete', resources: performance.getEntriesByType('resource').length };
+}
+
 /** 보이는 입력창 하나. 없으면 null. */
 export function pageComposerState() {
   const editors = [...document.querySelectorAll('.ProseMirror[contenteditable="true"]')]
@@ -116,6 +121,16 @@ export function pageFocusComposer() {
   if (!editor) return false;
   editor.focus();
   return document.activeElement === editor || editor.contains(document.activeElement);
+}
+
+/** 입력창과 같은 form 의 보내기(submit) 단추를 누른다. 2026-10 의 ChatGPT 는 Enter 로 보내지 않는다. 단추가 없으면 false. */
+export function pageSubmitComposer() {
+  const editor = [...document.querySelectorAll('.ProseMirror[contenteditable="true"]')]
+    .filter((element) => { const box = element.getBoundingClientRect(); return box.width > 0 && box.height > 0; }).at(-1);
+  const submit = editor?.closest('form')?.querySelector('button[type="submit"]:not([disabled])');
+  if (!submit) return false;
+  submit.click();
+  return true;
 }
 
 /** 화면에 있는 대화 차례: 열쇠(사용자 메시지 id)와 글. */
@@ -234,7 +249,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  * browser.drive(actor, { url }, (page) => …) 는 ChatGPT 행위자의 탭 하나에서 작업을 차례로 돌린다(owned-browser-service).
  */
 export function createChatgptDriver({ browser, store, timeoutMs = CHATGPT_DEFAULT_TIMEOUT_MS, maxAnswerChars = CHATGPT_MAX_ANSWER_CHARS,
-  pollMs = 500, stepTimeoutMs = 15_000, now = Date.now }) {
+  pollMs = 500, stepTimeoutMs = 15_000, settleMs = 750, now = Date.now }) {
   let queue = Promise.resolve();
   const serial = (operation) => {
     const task = queue.then(operation, operation);
@@ -244,6 +259,8 @@ export function createChatgptDriver({ browser, store, timeoutMs = CHATGPT_DEFAUL
 
   const assertAvailable = () => {
     if (!store.enabled()) throw chatgptError('CHATGPT_DISABLED', 'ChatGPT is turned off in Settings → AI.');
+    // 사용자가 Chrome에서 로그인하는 동안 앱 브라우저는 멈춘다. 끝나면 다시 물을 수 있다.
+    if (browser.busy?.()) throw chatgptError('CHATGPT_BUSY', 'The user is signing in with Google Chrome in HamaEditor. Ask again after they finish.');
     if (!browser.available()) throw chatgptError('CHATGPT_UNAVAILABLE', 'ChatGPT works only in the HamaEditor desktop app with its built-in browser.');
   };
 
@@ -285,6 +302,27 @@ export function createChatgptDriver({ browser, store, timeoutMs = CHATGPT_DEFAUL
   };
 
   const onChatgpt = (page) => { try { return new URL(page.url()).origin === CHATGPT_ORIGIN; } catch { return false; } };
+
+  /**
+   * 페이지가 다 떴을 때 ready() 의 값을 돌려준다: 문서가 끝났고, ready() 가 참이고, 새 리소스가 settleMs 동안 없다.
+   * 고정 시간이 아니라 진행을 본다. 리소스가 계속 들어오는 동안은 기다리고, 준비되지 않은 채 stepTimeoutMs 동안 진행이 없으면 멈춘다.
+   */
+  const waitUntilLoaded = async (page, ready, { until, label }) => {
+    let signature = ''; let movedAt = now(); let readySince = null;
+    for (;;) {
+      const state = await evaluate(page, pageLoadProgress).catch(() => null);
+      const value = state ? await ready() : null;
+      const next = state ? `${state.complete}:${state.resources}` : `navigating:${now()}`;
+      if (next !== signature) { signature = next; movedAt = now(); }
+      if (value && state.complete) {
+        // 준비된 뒤에도 리소스가 계속 오면(분석 요청 등) 최대 5초만 더 기다린다.
+        readySince ??= now();
+        if (now() - movedAt >= settleMs || now() - readySince >= 5_000) return value;
+      } else readySince = null;
+      if (now() >= until || !value && now() - movedAt >= stepTimeoutMs) throw fail('CHATGPT_UI_CHANGED', label);
+      await sleep(Math.min(pollMs, 250));
+    }
+  };
 
   const waitFor = async (check, { until, label, interval = pollMs }) => {
     for (;;) {
@@ -354,7 +392,8 @@ export function createChatgptDriver({ browser, store, timeoutMs = CHATGPT_DEFAUL
 
   const send = async (page, question, until) => {
     await settle(page, Math.min(until, now() + stepTimeoutMs));
-    await waitFor(async () => (await evaluate(page, pageComposerState)).ready, { until: Math.min(until, now() + stepTimeoutMs), label: 'composer' });
+    // 페이지가 다 뜬 뒤에만 입력창을 다룬다. 숨은 탭에서 claude.ai 는 스크립트 수백 개를 차례로 받아 20초 넘게 걸리기도 한다.
+    await waitUntilLoaded(page, async () => (await evaluate(page, pageComposerState)).ready, { until, label: 'composer' });
     // 이미 있던 차례는 서버 대화에서 센다. 화면은 다시 그리는 중이면 옛 차례를 늦게 보여 새 차례로 오인하게 한다.
     const conversationId = conversationIdOf(page.url());
     const known = new Set([
@@ -367,13 +406,15 @@ export function createChatgptDriver({ browser, store, timeoutMs = CHATGPT_DEFAUL
     const squash = (value) => value.replace(/\s+/g, ' ').trim();
     const head = squash(question).slice(0, 40);
     await waitFor(async () => squash((await evaluate(page, pageComposerState)).text).includes(head), { until: Math.min(until, now() + 5_000), label: 'composer text' });
-    await page.keyboard.press('Enter');
+    // 보내기 단추가 있으면 그것을 누르고, 없을 때만 Enter 를 쓴다.
+    const submit = async () => { if (!await evaluate(page, pageSubmitComposer)) await page.keyboard.press('Enter'); };
+    await submit();
     // 새 차례는 처음 보는 열쇠이면서 이 질문을 담아야 한다.
     const fresh = async () => (await evaluate(page, pageTurns)).find((turn) => !known.has(turn.key) && squash(turn.text).includes(head))?.key ?? null;
     const sent = await waitFor(fresh, { until: Math.min(until, now() + 3_000), label: 'new turn' }).catch(() => null);
     if (sent) return sent;
-    // Enter 가 먹히지 않았으면(입력창이 글을 그대로 가짐) 한 번 더 누른다. 비었으면 보내는 중이니 기다리기만 한다.
-    if (squash((await evaluate(page, pageComposerState)).text).includes(head)) await page.keyboard.press('Enter');
+    // 보내지 않았으면(입력창이 글을 그대로 가짐) 한 번 더 보낸다. 비었으면 보내는 중이니 기다리기만 한다.
+    if (squash((await evaluate(page, pageComposerState)).text).includes(head)) await submit();
     return waitFor(fresh, { until: Math.min(until, now() + stepTimeoutMs), label: 'new turn' });
   };
 
@@ -411,8 +452,8 @@ export function createChatgptDriver({ browser, store, timeoutMs = CHATGPT_DEFAUL
     },
     /** 설정 줄의 상태. check 면 앱 브라우저로 로그인을 확인한다(sessionId 는 그 탭을 붙일 편집기 창). */
     status: ({ check = false, sessionId = null } = {}) => serial(async () => {
-      const base = { enabled: store.enabled(), available: browser.available(), projectUrl: store.projectUrl() };
-      if (!check || !base.enabled || !base.available) return { ...base, signedIn: null };
+      const base = { enabled: store.enabled(), available: browser.available(), projectUrl: store.projectUrl(), ...(browser.busy?.() ? { busy: true } : {}) };
+      if (!check || !base.enabled || !base.available || base.busy) return { ...base, signedIn: null };
       return browser.drive(chatgptActor(sessionId), { url: store.projectUrl() ?? `${CHATGPT_ORIGIN}/` }, async (page) => {
         const watcher = watchChallenge(page);
         try {

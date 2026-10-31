@@ -23,7 +23,7 @@ import {
   isLocalFontAccessSupported,
 } from '../../core/local-fonts.ts';
 
-export type SetupStep = 'theme' | 'models' | 'fonts' | 'license' | 'taste' | 'autofix';
+export type SetupStep = 'theme' | 'models' | 'fonts' | 'license' | 'connectors' | 'taste' | 'autofix';
 /** missing: 데스크톱에서 색인에 한컴 글꼴이 없다. discover: 브라우저에서 아직 못 찾았다. */
 export type FontStepKind = 'missing' | 'discover';
 
@@ -33,6 +33,8 @@ export const HIPPO_LINES = {
   theme: '화면은 어떤 게 편해요?',
   models: '같이 일할 AI를 연결해 주세요.',
   modelConnected: '연결됐어요!',
+  connectors: '쓰고 있는 ChatGPT·Claude 계정을 연결하면 AI가 그 기억을 참고해요.',
+  connectorConnected: '연결됐어요!',
   taste: 'Rau-0.1은 문서마다 자동으로 사용자님의 사용 기록을 토대로 취향을 기억해서 점점 맞추어가요. 사용할까요?',
   autofix: '예상치 못한 오류가 발생하면, AI가 자동으로 고치고 개발자에게 버그를 제보하는 기능입니다. 앱의 실행 기록 및 현재 상태 등을 개발자가 버그 수정용으로 사용할 수 있습니다.',
   discover: '문서 글꼴을 찾아볼게요.',
@@ -87,11 +89,13 @@ export function planFontStep(env: FontEnvironment): FontStepKind | null {
 /** 라이선스는 데스크톱에서 아직 키를 넣지 않았을 때만, Rau-0.1 과 자동 버그 수정은 맨 끝에 이 순서로 둔다. */
 export function planSteps(
   fontStep: FontStepKind | null,
-  options: { autofix?: boolean; license?: boolean; taste?: boolean } = {},
+  options: { autofix?: boolean; license?: boolean; connectors?: boolean; taste?: boolean } = {},
 ): SetupStep[] {
   const steps: SetupStep[] = ['theme', 'models'];
   if (fontStep) steps.push('fonts');
   if (options.license) steps.push('license');
+  // 연결(ChatGPT·Claude 계정)은 Rau-0.1 바로 앞에 둔다.
+  if (options.connectors) steps.push('connectors');
   if (options.taste) steps.push('taste');
   if (options.autofix) steps.push('autofix');
   return steps;

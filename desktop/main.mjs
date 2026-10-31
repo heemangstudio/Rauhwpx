@@ -2453,6 +2453,16 @@ ipcMain.handle('desktop:browser-popout-command', (event, payload) => {
   if (event.senderFrame !== event.sender.mainFrame) throw new Error('Browser popout IPC requires its main frame');
   return browserHost.popoutCommand(event.sender, payload);
 });
+ipcMain.on('desktop:browser-guest-passkey', (event) => {
+  const tab = [...browserHost.tabs.values()].find((value) => value.view.webContents === event.sender);
+  if (tab && event.senderFrame === event.sender.mainFrame) browserHost.offerChromeSignIn(tab, 'passkey');
+});
+// 편집기가 허브의 Chrome 로그인 상태를 알린다. 띄운 창들이 진행 중임을 보인다.
+ipcMain.handle('desktop:browser-chrome-sign-in', (event, payload) => {
+  const window = browserWindowForEvent(event);
+  if (typeof payload?.dismissTabId === 'string') { browserHost.dismissChromeSignIn(browserHost.ownedTab(payload.dismissTabId, window)); return { dismissed: true }; }
+  return browserHost.setChromeSignInState({ site: payload?.site });
+});
 ipcMain.on('desktop:browser-guest-focus', (event, payload) => {
   const tab = [...browserHost.tabs.values()].find((value) => value.view.webContents === event.sender);
   if (tab && event.senderFrame === event.sender.mainFrame) {
