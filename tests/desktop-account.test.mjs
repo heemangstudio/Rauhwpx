@@ -482,7 +482,7 @@ test('profile, devices, claims and account deletion follow the server rules', as
 
   assert.equal((await manager.deleteAccount('wrong@example.com')).code, 'confirm_mismatch');
   const refused = await manager.deleteAccount('Tester@Example.com');
-  assert.deepEqual([refused.ok, refused.code, refused.message], [false, 'subscription_active', '구독이 아직 켜져 있어요. Groble에서 구독을 해지한 뒤 다시 시도해 주세요.']);
+  assert.deepEqual([refused.ok, refused.code, refused.message], [false, 'subscription_active', '구독을 먼저 해지해 주세요.']);
   assert.equal(refused.status.state, 'signed_in');
   await manager.openManage();
   assert.equal(opened.at(-1), 'https://groble.im/manage/purchase');

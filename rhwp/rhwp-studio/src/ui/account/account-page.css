@@ -101,7 +101,7 @@ html:is(.desktop-mac, .desktop-windows) .acct-page {
   max-width: 744px;
   min-height: 100%;
   margin: 0 auto;
-  padding: 4px 32px 96px;
+  padding: 4px 32px 64px;
 }
 
 .acct-column[data-view='sign-in'] {
@@ -497,8 +497,8 @@ html:is(.desktop-mac, .desktop-windows) .acct-page {
 .acct-profile {
   display: flex;
   align-items: center;
-  gap: 24px;
-  padding: 20px 0 32px;
+  gap: 20px;
+  padding: 12px 0 24px;
 }
 
 .acct-profile-avatar {
@@ -599,12 +599,12 @@ html:is(.desktop-mac, .desktop-windows) .acct-page {
 .acct-photo-actions {
   display: flex;
   gap: 14px;
-  margin-top: 10px;
+  margin-top: 6px;
 }
 
 /* ── 칸 ──────────────────────────────────────────────── */
 .acct-section {
-  padding: 24px 0 28px;
+  padding: 20px 0 24px;
   border-top: 1px solid var(--n-ink-hairline);
 }
 
@@ -613,7 +613,7 @@ html:is(.desktop-mac, .desktop-windows) .acct-page {
   align-items: baseline;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 14px;
+  margin-bottom: 12px;
 }
 
 .acct-label {
@@ -678,16 +678,20 @@ html:is(.desktop-mac, .desktop-windows) .acct-page {
 .acct-offers {
   display: flex;
   flex-direction: column;
-  margin-top: 20px;
+  margin-top: 16px;
+}
+
+/* 무료면 요금제 이름 바로 아래 판매 칸이 온다. */
+.acct-plan-head + .acct-plan-term[hidden] + .acct-alert[hidden] + .acct-offers {
+  margin-top: 12px;
 }
 
 .acct-offer {
   display: grid;
-  grid-template-columns: minmax(72px, auto) 1fr auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
-  gap: 16px;
-  min-height: 52px;
-  border-top: 1px solid var(--n-ink-hairline);
+  gap: 12px;
+  min-height: 48px;
 }
 
 .acct-offer-name {
@@ -700,6 +704,7 @@ html:is(.desktop-mac, .desktop-windows) .acct-page {
 
 .acct-offer-price {
   color: var(--n-ink-secondary);
+  font-size: var(--ag-fs-body);
   font-variant-numeric: tabular-nums;
 }
 
@@ -727,10 +732,10 @@ html:is(.desktop-mac, .desktop-windows) .acct-page {
   --acct-hama-fill: color-mix(in oklab, var(--plan-hama) 8%, var(--n-surface-raised));
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
-  align-items: center;
-  gap: 32px;
-  margin-top: 16px;
-  padding: 24px 24px 24px 28px;
+  /* 그림의 물결이 결제 칸의 아래 끝과 한 줄에 선다. */
+  align-items: end;
+  gap: 24px;
+  padding: 20px;
   background: var(--acct-hama-fill);
   clip-path: polygon(0 8px, 4px 8px, 4px 4px, 8px 4px, 8px 0, calc(100% - 8px) 0, calc(100% - 8px) 4px, calc(100% - 4px) 4px, calc(100% - 4px) 8px, 100% 8px, 100% calc(100% - 8px), calc(100% - 4px) calc(100% - 8px), calc(100% - 4px) calc(100% - 4px), calc(100% - 8px) calc(100% - 4px), calc(100% - 8px) 100%, 8px 100%, 8px calc(100% - 4px), 4px calc(100% - 4px), 4px calc(100% - 8px), 0 calc(100% - 8px));
 }
@@ -740,7 +745,7 @@ html:is(.desktop-mac, .desktop-windows) .acct-page {
 }
 
 .acct-offer + .acct-hama-offer {
-  margin-top: 12px;
+  margin-top: 8px;
 }
 
 .acct-hama-offer-art {
@@ -796,7 +801,7 @@ html:is(.desktop-mac, .desktop-windows) .acct-page {
 .acct-hama-offer-body {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 12px;
   min-width: 0;
 }
 
@@ -902,7 +907,8 @@ html:is(.desktop-mac, .desktop-windows) .acct-page {
 .acct-stats {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
+  align-items: start;
+  gap: 24px;
 }
 
 .acct-stats[data-count='2'] {
@@ -914,9 +920,6 @@ html:is(.desktop-mac, .desktop-windows) .acct-page {
   flex-direction: column;
   gap: 2px;
   min-width: 0;
-  padding: 14px 16px 16px;
-  border-radius: var(--ag-r-card);
-  background: var(--n-ink-fill-soft);
 }
 
 .acct-stat-value {
@@ -948,7 +951,7 @@ html:is(.desktop-mac, .desktop-windows) .acct-page {
 .acct-meter {
   display: block;
   height: 4px;
-  margin: 10px 0 6px;
+  margin: 8px 0 6px;
   overflow: hidden;
   border-radius: var(--ag-r-pill);
   background: var(--n-ink-fill-selected);
@@ -977,11 +980,11 @@ html:is(.desktop-mac, .desktop-windows) .acct-page {
 
 .acct-device {
   display: grid;
-  grid-template-columns: 36px minmax(0, 1fr) auto;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
   align-items: center;
   gap: 12px;
-  min-height: 56px;
-  padding: 8px 0;
+  min-height: 52px;
+  padding: 6px 0;
 }
 
 .acct-device + .acct-device {
@@ -991,10 +994,6 @@ html:is(.desktop-mac, .desktop-windows) .acct-page {
 .acct-device-icon {
   display: grid;
   place-items: center;
-  width: 36px;
-  height: 36px;
-  border-radius: var(--ag-r-row);
-  background: var(--n-ink-fill-soft);
   color: var(--n-ink-secondary);
 }
 
@@ -1022,12 +1021,21 @@ html:is(.desktop-mac, .desktop-windows) .acct-page {
   gap: 6px;
 }
 
+/* 조용한 단추는 글자가 칸 오른쪽 끝에 닿게 안쪽 여백만큼 내민다. */
+.acct-device-actions > .acct-device-remove.acct-btn-quiet {
+  margin-right: -12px;
+}
+
 /* 라이선스 */
 .acct-license {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 10px 0;
+  padding: 8px 0;
+}
+
+.acct-license:first-child {
+  padding-top: 0;
 }
 
 .acct-license + .acct-license {
@@ -1052,7 +1060,7 @@ html:is(.desktop-mac, .desktop-windows) .acct-page {
 .acct-inline-form {
   display: flex;
   gap: 8px;
-  margin-top: 16px;
+  margin-top: 12px;
 }
 
 .acct-license-list[hidden] + .acct-local-key[hidden] + .acct-inline-form {
@@ -1070,7 +1078,7 @@ html:is(.desktop-mac, .desktop-windows) .acct-page {
 }
 
 .acct-disclosure {
-  margin-top: 14px;
+  margin-top: 10px;
 }
 
 .acct-disclosure[aria-expanded='true'] {

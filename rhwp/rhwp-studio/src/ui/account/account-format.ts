@@ -131,8 +131,8 @@ export function accountRenewalPrompt(status: AccountStatus | null): AccountRenew
       id: `payment_failed:${plan.paymentGraceEndsAt ?? ''}`,
       title: '결제가 되지 않았어요',
       detail: plan.paymentGraceEndsAt
-        ? `${formatAccountDate(plan.paymentGraceEndsAt)}까지 결제 수단을 바꾸면 그대로 이어서 써요.`
-        : '결제 수단을 바꾸면 그대로 이어서 써요.',
+        ? `${formatAccountDate(plan.paymentGraceEndsAt)}까지 결제 수단을 바꿔 주세요.`
+        : '결제 수단을 바꿔 주세요.',
       action: '결제 수단 바꾸기',
     };
   }
@@ -146,7 +146,7 @@ export function accountRenewalPrompt(status: AccountStatus | null): AccountRenew
     kind: 'lapsed',
     id: `lapsed:${lapsed.keyId}:${lapsed.expiresAt}`,
     title: `${name} 기간이 끝났어요`,
-    detail: `${formatAccountDate(lapsed.expiresAt)}에 끝났어요. Groble에서 구독을 다시 시작하거나 새로 살 수 있어요.`,
+    detail: `${formatAccountDate(lapsed.expiresAt)}에 끝났어요.`,
     action: '구독 관리',
   };
 }

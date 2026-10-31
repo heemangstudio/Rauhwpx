@@ -124,7 +124,7 @@ export async function checkAccountPage({ page, open, screenshot }) {
   await screenshot('account-delete-confirm');
   await page.click('.acct-delete-confirm');
   await page.waitForSelector('.acct-delete-manage:not([hidden])');
-  assert.match(await page.$eval('.acct-delete-sheet .acct-error', (node) => node.textContent), /구독이 아직 켜져 있어요/);
+  assert.match(await page.$eval('.acct-delete-sheet .acct-error', (node) => node.textContent), /구독을 먼저 해지해 주세요/);
   assert.ok((await calls(page)).includes('deleteAccount:jiwoo@example.com'));
   await page.click('.acct-delete-manage button');
   await page.waitForFunction(() => window.sidebarPreview.account.calls.includes('openManage'));

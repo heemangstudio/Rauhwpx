@@ -43,7 +43,7 @@ const MESSAGES: Record<string, string> = {
   too_large: '사진이 너무 커요.',
   unsupported_type: 'JPG, PNG, WebP 사진만 쓸 수 있어요.',
   confirm_mismatch: '이메일이 맞지 않아요.',
-  subscription_active: '구독이 아직 켜져 있어요. Groble에서 구독을 해지한 뒤 다시 시도해 주세요.',
+  subscription_active: '구독을 먼저 해지해 주세요.',
   sign_in_required: '먼저 로그인해 주세요.',
   already_signed_in: '이미 로그인했어요.',
   invalid: '요청을 처리하지 못했어요.',

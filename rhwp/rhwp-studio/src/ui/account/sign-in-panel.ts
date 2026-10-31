@@ -99,10 +99,9 @@ export function createSignInPanel(store: AccountStore, options: { variant: 'page
   const waiting = el('div', 'acct-signin-wait');
   const waitTitle = el('p', 'acct-signin-wait-title', '브라우저에서 로그인을 마쳐 주세요');
   waitTitle.setAttribute('role', 'status');
-  const waitMeta = el('p', 'acct-meta', '');
   const cancelWait = button('acct-btn', '취소');
   cancelWait.addEventListener('click', () => { void cancel(cancelWait); });
-  waiting.append(spinner('acct-signin-spinner'), waitTitle, waitMeta, cancelWait);
+  waiting.append(spinner('acct-signin-spinner'), waitTitle, cancelWait);
 
   // ── 기기 고르기 ──
   const choose = el('div', 'acct-signin-choose');
@@ -238,8 +237,6 @@ export function createSignInPanel(store: AccountStore, options: { variant: 'page
     outError.textContent = shownError;
     outError.hidden = !shownError;
 
-    waitMeta.textContent = status?.signIn ? PROVIDER_LABEL[status.signIn.provider] : '';
-    waitMeta.hidden = !status?.signIn;
 
     const choice = status?.deviceChoice;
     chooseTitle.textContent = `기기는 ${choice?.limit ?? status?.deviceLimit ?? 5}대까지 쓸 수 있어요`;

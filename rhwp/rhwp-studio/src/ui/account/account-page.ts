@@ -618,9 +618,7 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
     const copy = el('span', 'acct-device-copy');
     const name = el('span', 'acct-device-name', device.name);
     if (device.current) name.append(el('span', 'acct-badge', '이 기기'));
-    const meta = device.current && deviceConfirm === device.id
-      ? '빼면 이 기기에서 로그아웃돼요'
-      : `${platformLabel(device.platform)} · ${device.current ? '지금 사용 중' : formatLastSeen(device.lastSeenAt)}`;
+    const meta = `${platformLabel(device.platform)} · ${device.current ? '지금 사용 중' : formatLastSeen(device.lastSeenAt)}`;
     copy.append(name, el('span', 'acct-meta', meta));
     const actions = el('span', 'acct-device-actions');
     if (deviceConfirm === device.id) {
@@ -954,7 +952,7 @@ function openDeleteSheet(store: AccountStore, email: string): Promise<void> {
   const message = el('p', 'ag-sheet-message', '라이선스 연결이 풀리고 사진과 사용 기록이 지워져요.');
   message.id = `${id}-message`;
   sheet.setAttribute('aria-describedby', message.id);
-  const label = el('label', 'acct-delete-label', '확인을 위해 계정 이메일을 적어 주세요');
+  const label = el('label', 'acct-delete-label', '계정 이메일을 적어 주세요');
   const input = el('input', 'acct-input acct-delete-input');
   input.type = 'email';
   input.autocomplete = 'off';

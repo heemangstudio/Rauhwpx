@@ -42,7 +42,7 @@ export const HIPPO_LINES = {
   missing: '한컴 글꼴이 안 보여요. 한컴오피스를 설치하면 알아서 찾아요.',
   missingWithFolder: '한컴 글꼴이 안 보여요. 한컴오피스를 설치하거나 글꼴 폴더를 알려 주세요.',
   done: '설정이 완료되었어요!',
-  account: '편집은 무료예요. 로그인하면 산 요금제를 기기마다 이어서 써요.',
+  account: '로그인하면 요금제를 어디서나 써요.',
   signedIn: '로그인했어요!',
 } as const;
 

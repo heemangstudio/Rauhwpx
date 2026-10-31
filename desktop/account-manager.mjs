@@ -82,7 +82,7 @@ export const ACCOUNT_MESSAGES = Object.freeze({
   too_large: '사진이 너무 커요.',
   unsupported_type: 'JPG, PNG, WebP 사진만 쓸 수 있어요.',
   confirm_mismatch: '이메일이 맞지 않아요.',
-  subscription_active: '구독이 아직 켜져 있어요. Groble에서 구독을 해지한 뒤 다시 시도해 주세요.',
+  subscription_active: '구독을 먼저 해지해 주세요.',
   rate_limited: '잠시 뒤 다시 시도해 주세요.',
   sign_in_required: '먼저 로그인해 주세요.',
   already_signed_in: '이미 로그인했어요.',
@@ -118,21 +118,22 @@ function page(title, line) {
     -webkit-font-smoothing: antialiased;
   }
   main { text-align: center; padding: 24px; }
-  h1 { margin: 0 0 8px; font-size: 22px; font-weight: 600; letter-spacing: -0.01em; }
+  h1 { margin: 0; font-size: 22px; font-weight: 600; letter-spacing: -0.01em; }
+  h1 + p { margin-top: 8px; }
   p { margin: 0; font-size: 15px; color: var(--muted); }
 </style>
 </head>
 <body>
 <main>
-<h1>${title}</h1>
-<p>${line}</p>
+<h1>${title}</h1>${line ? `
+<p>${line}</p>` : ''}
 </main>
 </body>
 </html>
 `;
 }
 
-export const LOOPBACK_SUCCESS_PAGE = page('HamaEditor로 돌아가세요', '이 창은 닫아도 돼요.');
+export const LOOPBACK_SUCCESS_PAGE = page('HamaEditor로 돌아가세요', '');
 export const LOOPBACK_FAILURE_PAGE = page('로그인하지 못했어요', '앱에서 다시 시도해 주세요.');
 
 const PAGE_HEADERS = Object.freeze({
