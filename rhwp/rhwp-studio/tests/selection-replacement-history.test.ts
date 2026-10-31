@@ -80,7 +80,7 @@ if (!process.env.RHWP_REPLACEMENT_HISTORY_CHILD) {
     };
     const history = new CommandHistory();
     const handler: any = {
-      active: true, wasm, history,
+      active: true, wasm, history, eventBus: { emit() {} },
       cursor: {
         isInHeaderFooter: () => false, isInFootnote: () => false,
         isInPictureObjectSelection: () => false, isInTableObjectSelection: () => false,

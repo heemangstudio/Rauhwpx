@@ -239,6 +239,7 @@ function collectorHarness(paragraphs: string[], shared?: { doc: ReturnType<typeo
   const undoStack: object[] = [];
   const redoStack: object[] = [];
   const collector = new TasteSignalCollector({
+    learningEnabled: () => true,
     pending,
     eventBus: bus,
     reader: doc.reader,

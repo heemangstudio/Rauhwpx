@@ -331,7 +331,8 @@ export interface DocumentMemoryEntry {
   /** explicit: 사용자 요청으로 에이전트가 기록 · learned: 자동 학습 · user: 문서 기억 시트에서 고침. */
   origin: 'explicit' | 'learned' | 'user';
   /** kind 'copy' 는 같은 바이트의 다른 문서에서 복사해 온 기억이다. */
-  source?: { threadId?: string; turnId?: string; kind?: 'turn' | 'signal' | 'history' | 'copy' };
+  source?: { threadId?: string; turnId?: string; kind?: 'turn' | 'signal' | 'history' | 'copy';
+    corrections?: Array<{ evidenceId: string; passageId: string; after: string; userText: string }> };
   /** 기억의 세기 1–5. 같은 것을 다시 보면 보강되고, 어긋나면 감쇄된다. */
   strength: number;
   userCandidate?: boolean;
@@ -2141,9 +2142,11 @@ export type PendingEditsChangeEvent =
  * accepted·rejected 는 검토 결과, rewritten 은 사용자가 고쳐 쓴 에이전트 글, undone 은 되돌린 턴,
  * history 는 버전 기록에서 찾은 짝이다. 글은 모두 600자 이하로 잘라 보낸다.
  */
-export type ReviewSignalKind = 'accepted' | 'rejected' | 'rewritten' | 'undone' | 'history';
+export type ReviewSignalKind = 'accepted' | 'rejected' | 'rewritten' | 'undone' | 'history' | 'correction';
 
 export interface ReviewSignal {
+  evidenceId?: string;
+  passageId?: string;
   kind: ReviewSignalKind;
   /** ISO 시각 */
   at: string;

@@ -174,8 +174,8 @@ assert.deepEqual(validateCharShapeRuns([run(1)], 0, 3), [run(1)]);
 
 const handler = Object.create(InputHandler.prototype);
 Object.assign(handler, {
-  wasm, history: new CommandHistory(),
-  cursor: { getPosition: () => pos(0, 0), getRect: () => null },
+  wasm, history: new CommandHistory(), eventBus: { emit() {} },
+  cursor: { getPosition: () => pos(0, 0), getRect: () => null, isInHeaderFooter: () => false, isInFootnote: () => false },
   isOperationAllowedInEditMode: () => true,
   flushDeferredPaginationIfNeeded: () => {},
   // handleUndo/handleRedo 는 먼저 열린 IME 조합을 확인한다.

@@ -23,18 +23,15 @@ export interface TasteLearningToggle {
 
 export function createTasteLearningToggle(deps: TasteLearningToggleDeps): TasteLearningToggle {
   const root = el('label', 'ag-settings-control-row ag-settings-toggle-row ag-taste-learning-row');
-  const copy = el('span', 'ag-settings-control-copy');
-  copy.append(
-    el('span', 'ag-settings-control-label', '대화에서 배우기'),
-    el('span', 'ag-settings-control-description', '채팅에서 고친 말투와 용어를 기억에 쌓아요.'),
-  );
+  // 글자 없는 스위치다. 문서에서 직접 고친 글도 학습에 쓰이니 이름에 함께 밝힌다.
+  root.title = '대화와 문서 편집에서 배우기';
   const input = el('input', 'ag-settings-toggle-input');
   input.type = 'checkbox';
   input.setAttribute('role', 'switch');
-  input.setAttribute('aria-label', '대화에서 배우기');
+  input.setAttribute('aria-label', '대화와 문서 편집에서 배우기');
   const track = el('span', 'ag-settings-toggle-track');
   track.setAttribute('aria-hidden', 'true');
-  root.append(copy, input, track);
+  root.append(input, track);
 
   // 허브가 답하기 전에는 기본값(켜짐)을 보이고 잠가 둔다.
   let settings: TasteSettings | null = null;

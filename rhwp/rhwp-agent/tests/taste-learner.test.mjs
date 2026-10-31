@@ -16,6 +16,8 @@ import {
   createTasteLearner,
   fitTastePrompt,
   guardTasteOps,
+  correctionOps,
+  groundedOps,
   newTasteTurn,
   noteTasteTurnEvent,
 } from '../taste-learner.mjs';
@@ -35,7 +37,7 @@ const styleNote = (text) => json([{ op: 'add', kind: 'style', subject: '문체.�
 /**
  * 호스팅 경로의 응답만 바꿔 끼운다. outputs.rau 는 문자열이거나 (call) => 문자열·Promise.
  */
-function harness(t, { outputs = {}, settings = { enabled: true }, running = () => false, timing = {} } = {}) {
+function harness(t, { outputs = {}, settings = { enabled: true }, running = () => false, timing = {}, usable = () => true } = {}) {
   const dir = tempDir(t);
   const store = new DocumentMemoryStore({ dir });
   const userMemory = new UserMemoryStore({ dir });
@@ -50,7 +52,7 @@ function harness(t, { outputs = {}, settings = { enabled: true }, running = () =
     signals,
     settings: () => settings,
     routes: () => ({ hosted: {
-      usable: () => true,
+      usable,
       async learn(prompt, { signal } = {}) {
         const call = { prompt, provider: 'rau', model: 'rau-0.1', signal };
         calls.push(call);
@@ -674,4 +676,153 @@ test('a one-off request never overwrites a confirmed note; general phrasing or r
   assert.deepEqual(guardTasteOps(swap, once, { userTexts: ['여기는 한다체로 써 줘'], signals: [{ kind: 'accepted' }] }), []);
   assert.deepEqual(guardTasteOps(swap, once, { userTexts: ['본문은 한다체로 써 줘'] }), swap);
   assert.deepEqual(guardTasteOps(swap, [{ ...once[0], origin: 'user' }], { userTexts: ['본문은 한다체로 써 줘'] }), []);
+});
+
+test('live corrections require independent evidence, persist provenance, promote after three documents, and undo', async t => {
+  const h = harness(t, { outputs: { rau: call => {
+    const ids = [...call.prompt.matchAll(/"evidenceId":"([^"]+)"/g)].map(m => m[1]);
+    return json([
+      { op: 'add', kind: 'term', subject: '용어.고객', text: "'고객' 대신 '이용자'로 쓴다", userCandidate: true, evidenceIds: ids },
+      { op: 'add', kind: 'fact', subject: '사실.금액', text: '금액은 100원', evidenceIds: ids },
+      { op: 'add', kind: 'style', subject: '문체.근거없음', text: '문장은 짧게 쓴다', evidenceIds: ['unknown'] },
+    ]);
+  } } });
+  h.signals.onReviewSignals((documentId, info) => h.learner.signalsArrived(documentId, info));
+  const send = documentId => h.signals.ingest({ threadId: 'th1', documentId, signals: [0, 1].map(i => ({
+    kind: 'correction', at, evidenceId: `${documentId}-${i}`, passageId: `p${i}`,
+    after: `고객 ${i}`, userText: `이용자 ${i}`,
+  })) });
+  for (const [i, doc] of ['live-a', 'live-b', 'live-c'].entries()) {
+    send(doc);
+    await until(() => h.frames.length === i + 1, doc);
+    if (i < 2) {
+      assert.equal((await h.userMemory.read()).rules.length, 0);
+      const key = await h.store.resolveKey({ documentId: doc });
+      const memory = await h.store.read(key);
+      assert.equal(memory.entries.length, 1);
+      assert.equal(memory.entries[0].kind, 'term');
+      assert.equal(memory.entries[0].source.corrections.length, 2);
+      const reopened = new DocumentMemoryStore({ dir: h.store.dir });
+      assert.equal((await reopened.read(key)).entries[0].source.corrections.length, 2);
+    }
+  }
+  assert.equal((await h.userMemory.read()).rules.length, 1);
+  const frame = h.frames.at(-1);
+  await h.learner.undo({ key: frame.key, documentId: 'live-c', learnId: frame.learnId, changes: frame.changes });
+  assert.equal((await h.userMemory.read()).rules.length, 0);
+  send('live-c'); await settle();
+  assert.equal(h.calls.length, 3, 'duplicate delivery does not spend another model call');
+});
+
+
+test('correction evidence cannot teach other categories, cite invented evidence, or count one passage twice', () => {
+  const signals = [0, 1].map(i => ({ evidenceId: `e${i}`, passageId: 'same', after: '고객', userText: '이용자' }));
+  const op = { op: 'add', kind: 'term', subject: '용어.고객', text: '이용자로 쓴다', evidenceIds: ['e0', 'e1'] };
+  assert.equal(correctionOps([op], signals, []).length, 0);
+  signals[1].passageId = 'another';
+  assert.equal(correctionOps([op], signals, []).length, 1);
+  assert.equal(correctionOps([{ ...op, kind: 'fact' }], signals, []).length, 0);
+  assert.equal(correctionOps([{ ...op, evidenceIds: ['e0', 'invented'] }], signals, []).length, 0);
+  assert.equal(correctionOps([{ op: 'dampen', id: 'rule_123456789012', evidenceIds: ['e0', 'e1'] }], signals, []).length, 0);
+});
+
+test('corrections conflicting with long-term memory remain document-local', async t => {
+  const h = harness(t, { outputs: { rau: call => json([{ op: 'add', kind: 'style', subject: '문체.종결',
+    text: '합니다체로 쓴다', userCandidate: true, evidenceIds: [...call.prompt.matchAll(/"evidenceId":"([^"]+)"/g)].map(m => m[1]) }]) } });
+  await h.userMemory.escalate({ kind: 'style', subject: '문체.종결', text: '한다체로 쓴다', docKeys: ['prior-a', 'prior-b'] });
+  const initial = (await h.userMemory.read()).rules;
+  h.signals.onReviewSignals((doc, info) => h.learner.signalsArrived(doc, info));
+  for (let d = 0; d < 3; d++) {
+    h.signals.ingest({ threadId: 'th1', documentId: `conflict-${d}`, signals: [0, 1].map(i => ({
+      kind: 'correction', at, evidenceId: `e${d}-${i}`, passageId: `p${i}`, after: '제출한다', userText: '제출합니다',
+    })) });
+    await until(() => h.frames.length === d + 1, 'local correction');
+  }
+  assert.deepEqual((await h.userMemory.read()).rules, initial);
+});
+
+
+test('a next-request flush waits for corrections and failed inference keeps evidence for retry', async t => {
+  let fail = true;
+  const h = harness(t, { outputs: { rau: call => {
+    if (fail) return 'invalid output';
+    return json([{ op: 'add', kind: 'term', subject: '용어.고객', text: '이용자로 쓴다', userCandidate: true,
+      evidenceIds: [...call.prompt.matchAll(/"evidenceId":"([^"]+)"/g)].map(m => m[1]) }]);
+  } } });
+  h.signals.ingest({ threadId: 'th1', documentId: 'retry-doc', signals: [0, 1].map(i => ({
+    kind: 'correction', at, evidenceId: `retry-${i}`, passageId: `p${i}`, after: '고객', userText: '이용자',
+  })) });
+  await h.learner.flushCorrections({ documentId: 'retry-doc', threadId: 'th1' });
+  assert.equal(h.signals.peekSignals('retry-doc').length, 2);
+  assert.equal(h.frames.length, 0);
+  fail = false;
+  await h.learner.flushCorrections({ documentId: 'retry-doc', threadId: 'th1' });
+  const key = await h.store.resolveKey({ documentId: 'retry-doc' });
+  assert.equal((await h.store.read(key)).entries[0].text, '이용자로 쓴다');
+  assert.equal(h.frames.length, 1);
+});
+
+const citedIds = (call) => [...call.prompt.matchAll(/"evidenceId":"([^"]+)"/g)].map((m) => m[1]);
+const correctionFrame = (documentId) => ({ threadId: 'th1', documentId, signals: [0, 1].map((i) => ({
+  kind: 'correction', at, evidenceId: `${documentId}-${i}`, passageId: `p${i}`, after: `고객 ${i}`, userText: `이용자 ${i}`,
+})) });
+
+test('corrections in a batch keep what the user said in the same turn, and only cited ops need evidence', async (t) => {
+  const h = harness(t, { outputs: { rau: (call) => json([
+    { op: 'add', kind: 'decision', subject: '결정.예산', text: '예산표는 분기별로 나눔' },
+    { op: 'add', kind: 'term', subject: '용어.고객', text: "'고객' 대신 '이용자'로 쓴다", evidenceIds: citedIds(call) },
+  ]) } });
+  h.signals.ingest(correctionFrame('mixed-doc'));
+  await h.learner.turnEnded({ threadId: 'th1', turnId: 't1', documentId: 'mixed-doc', userText: '앞으로 예산표는 분기별로 나눠 줘', answer: '네', learn: true });
+  await until(() => h.frames.length === 1, 'mixed turn learned');
+  const { entries } = await h.store.read(await h.store.resolveKey({ documentId: 'mixed-doc' }));
+  const decision = entries.find((entry) => entry.kind === 'decision');
+  const term = entries.find((entry) => entry.kind === 'term');
+  assert.equal(decision.stated, true, 'the general statement is still recorded as stated');
+  assert.equal(decision.source.corrections, undefined);
+  assert.equal(term.source.corrections.length, 2);
+  assert.notEqual(term.stated, true);
+
+  const op = { op: 'add', kind: 'term', subject: '용어.고객', text: '이용자로 쓴다' };
+  assert.equal(groundedOps([op], [], [], false).length, 0, 'a corrections-only run has nothing else to ground an uncited op');
+  assert.equal(groundedOps([op], [], [], true).length, 1);
+});
+
+test('correction provenance survives the subject and text being tidied before storing', async (t) => {
+  const h = harness(t, { outputs: { rau: (call) => json([
+    { op: 'add', kind: 'term', subject: '용어.  고객', text: "  '고객' 대신   '이용자'로 쓴다 ", evidenceIds: citedIds(call) },
+  ]) } });
+  h.signals.onReviewSignals((documentId, info) => h.learner.signalsArrived(documentId, info));
+  h.signals.ingest(correctionFrame('tidy-doc'));
+  await until(() => h.frames.length === 1, 'learned');
+  const { entries } = await h.store.read(await h.store.resolveKey({ documentId: 'tidy-doc' }));
+  assert.equal(entries[0].source.corrections.length, 2, 'the three-document promotion rule needs this provenance');
+});
+
+test('a next-request flush keeps evidence while Rau is unreachable and never delays a message without corrections', async (t) => {
+  let reachable = false;
+  let release = () => {};
+  let hold = false;
+  const h = harness(t, {
+    usable: () => reachable,
+    outputs: { rau: async (call) => {
+      if (hold) await new Promise((resolve) => { release = resolve; });
+      return json(hold ? [] : [{ op: 'add', kind: 'term', subject: '용어.고객', text: '이용자로 쓴다', evidenceIds: citedIds(call) }]);
+    } },
+  });
+  h.signals.ingest(correctionFrame('reach-doc'));
+  await h.learner.flushCorrections({ documentId: 'reach-doc', threadId: 'th1' });
+  assert.equal(h.signals.peekSignals('reach-doc').length, 2);
+  reachable = true;
+  await h.learner.flushCorrections({ documentId: 'reach-doc', threadId: 'th1' });
+  const key = await h.store.resolveKey({ documentId: 'reach-doc' });
+  assert.equal((await h.store.read(key)).entries.length, 1);
+
+  hold = true;
+  await h.learner.turnEnded({ threadId: 'th1', turnId: 't2', documentId: 'reach-doc', userText: '표를 고쳐 줘', answer: '네', learn: true });
+  await until(() => h.calls.length === 2, 'a run is in flight');
+  const started = Date.now();
+  await h.learner.flushCorrections({ documentId: 'reach-doc', threadId: 'th1' });
+  assert.ok(Date.now() - started < 500, 'no corrections to wait for');
+  release();
 });

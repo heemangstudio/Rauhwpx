@@ -41,7 +41,7 @@ const ENTRY_ID_PATTERN = /^mem_[a-z0-9]{12}$/;
 const REPOSITORY_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const ORIGINS = new Set(['explicit', 'learned', 'user']);
 const SOURCE_KINDS = new Set(['turn', 'signal', 'history', 'copy']);
-const KIND_LABELS = Object.freeze({ decision: '결정', term: '용어', protect: '보호', style: '문체', fact: '사실' });
+const KIND_SUBJECT = Object.freeze({ decision: '결정', term: '용어', protect: '보호', style: '문체', fact: '사실' });
 
 export class DocumentMemoryError extends Error {
   constructor(code, message) {
@@ -121,7 +121,7 @@ export function wasPromoted(entry) {
 }
 
 function deriveSubject(kind, text) {
-  return `${KIND_LABELS[kind] ?? kind}.${text}`.slice(0, MAX_SUBJECT_CHARS).trim();
+  return `${KIND_SUBJECT[kind] ?? kind}.${text}`.slice(0, MAX_SUBJECT_CHARS).trim();
 }
 
 /**
@@ -169,6 +169,12 @@ function normalizeSource(value) {
     if (typeof value[field] === 'string' && value[field] && value[field].length <= 256) source[field] = value[field];
   }
   if (SOURCE_KINDS.has(value.kind)) source.kind = value.kind;
+  if (Array.isArray(value.corrections)) {
+    source.corrections = value.corrections.slice(0, 20).filter(row => row && typeof row.evidenceId === 'string'
+      && typeof row.passageId === 'string' && typeof row.after === 'string' && typeof row.userText === 'string')
+      .map(row => ({ evidenceId: row.evidenceId.slice(0, 200), passageId: row.passageId.slice(0, 200),
+        after: row.after.slice(0, 600), userText: row.userText.slice(0, 600) }));
+  }
   return Object.keys(source).length ? source : undefined;
 }
 
@@ -482,6 +488,7 @@ export class DocumentMemoryStore {
             if (raw.op === 'reinforce') {
               if (entry.strength >= MAX_ENTRY_STRENGTH) return;
               Object.assign(entry, { strength: entry.strength + 1, updatedAt: stamp, confirmedAt: stamp });
+              if (writer?.corrections) entry.source = writer;
               changes.push({ op: 'update', entryId: entry.id, entry: cloneEntry(entry), prev });
               return;
             }

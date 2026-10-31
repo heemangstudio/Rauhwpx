@@ -1818,6 +1818,7 @@ export class AgentBridgeImpl implements AgentBridge {
     });
     const paragraphReader = wasmParagraphReader(deps.wasm);
     this.tasteSignals = new TasteSignalCollector({
+      learningEnabled: () => tasteLearningEnabled === true,
       pending: this.pendingEdits,
       eventBus: deps.eventBus,
       reader: paragraphReader,
@@ -4818,6 +4819,8 @@ export class AgentBridgeImpl implements AgentBridge {
   ): Promise<string | null> {
     if (acceptance && (this.messageReceipts.has(acceptance.messageId)
       || this.queuedMessages.some((message) => message.messageId === acceptance.messageId))) return Promise.resolve(null);
+    this.tasteSignals?.flush();
+    this.reviewSignals?.flush();
     const context = this.referenceContext();
     // 영수증 id 는 채팅 메시지의 messageId 로도 저장돼 워터마크가 된다 — 새로고침 뒤에도 겹치지 않게 한다.
     const messageId = acceptance?.messageId ?? (stagedReferenceIds.length > 0 || requireReceipt

@@ -5121,6 +5121,9 @@ function dispatchUserMessage(record, sock, msg, activeSession, messageAttachment
   const liveDocument = normalizeDocumentSnapshot(msg.documentSnapshot);
   void Promise.resolve()
     .then(() => requireAgentAuthenticated(activeSession.agent))
+    .then(() => tasteLearningAllowed(activeSession.agent)
+      ? tasteLearner.flushCorrections({ documentId: activeSession.documentId, threadId: activeSession.threadId }).catch(error => log(`Rau correction flush failed: ${error?.message ?? error}`))
+      : undefined)
     .then(() => skillRegistry.promptContext(msg.text, typeof msg.skillName === 'string' ? msg.skillName : undefined, {
       phase: activeSession.planning.snapshot().phase,
       agent: activeSession.agent,
