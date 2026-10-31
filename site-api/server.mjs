@@ -382,6 +382,10 @@ export function siteRequestListener({
             return;
           }
           log(`[site-api] groble ${event?.type} ${result.duplicate ? 'duplicate' : result.action}`);
+          // The key is saved either way; a failed sync heals on the key's next Hama call.
+          if (hama && result.keyId && !result.duplicate) {
+            await hama.syncSubscriptions().catch((error) => log(`[site-api] hama plan sync failed: ${error?.message ?? error}`));
+          }
           send(200, { ok: true, duplicate: result.duplicate, action: result.action });
           // Held orders and events we could not use (unknown type, unmatched subscription) stay visible in
           // `webhooks --held` and on the dashboard, and each one is emailed to management.
@@ -758,6 +762,7 @@ export function createSiteServer(env = process.env, options = {}) {
     subscriptionProductIds: licenseConfig.subscriptionProductIds,
     signatureProductIds: licenseConfig.signatureProductIds,
     proProducts: licenseConfig.proProducts,
+    hamaProducts: licenseConfig.hamaProducts,
     products: licenseConfig.products,
     paymentGraceMs: licenseConfig.paymentGraceMs,
     paymentGraceMaxMs: licenseConfig.paymentGraceMaxMs,
@@ -789,6 +794,7 @@ export function createSiteServer(env = process.env, options = {}) {
   const hamaService = hamaConfig.enabled ? createHamaService({
     store: createFileStore(resolveHamaDbPath(env), { emptyState: emptyHamaState }),
     authenticate: (lease) => licenses.authenticateLease(lease),
+    subscriptions: () => licenses.hamaSubscriptions(),
     config: hamaConfig,
     adminToken: licenseConfig.adminToken,
     now: options.now,

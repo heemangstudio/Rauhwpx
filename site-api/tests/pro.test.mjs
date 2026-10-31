@@ -66,7 +66,7 @@ function failed({ gracePeriodEndsAt, failedAt = '2026-11-20T14:22:11+09:00', con
 }
 
 test('config: GROBLE_PRO_PRODUCT_IDS id:months with Pro prices, overrides, and products in two lists fail startup', () => {
-  assert.deepEqual(resolveLicenseConfig({}).proProducts, []);
+  assert.deepEqual(resolveLicenseConfig({}).proProducts, [{ id: 'SfYBy5', months: 1 }, { id: 'vdw3HN', months: 12 }]);
   const config = resolveLicenseConfig(PRO_ENV);
   const monthly = config.products.find((p) => p.id === PRO_MONTHLY_ID);
   const yearly = config.products.find((p) => p.id === PRO_YEARLY_ID);

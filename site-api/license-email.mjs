@@ -98,6 +98,12 @@ const LICENSE_EMAIL_COPY = {
     preheader: 'Pro 키를 담았어요. Rau-0.1 문서 기억도 바로 쓸 수 있어요.',
     noteHtml: 'Pro 키예요. 앱의 모든 기능과 <strong>Rau-0.1 문서 기억</strong>을 쓸 수 있고, 키 하나로 <strong>기기 2대</strong>(Mac · Windows)까지 쓸 수 있어요.',
   },
+  hama: {
+    subject: '[HamaEditor] Hama 라이선스 키를 보내드려요',
+    heading: 'Hama를 구독해 주셔서 고마워요.',
+    preheader: 'Hama 키를 담았어요. Hama 에이전트와 Rau-0.1 문서 기억을 바로 쓸 수 있어요.',
+    noteHtml: 'Hama 키예요. 앱의 모든 기능과 <strong>Hama 에이전트</strong>, <strong>Rau-0.1 문서 기억</strong>을 쓸 수 있고, 키 하나로 <strong>기기 2대</strong>(Mac · Windows)까지 쓸 수 있어요.',
+  },
   signature: {
     subject: '[HamaEditor] Signature 라이선스 키를 보내드려요',
     heading: 'Signature를 구매해 주셔서 고마워요.',
@@ -113,6 +119,7 @@ export function licenseEmailKind(license) {
   if (license?.emailDelivery?.renewal) return 'renewal';
   if (license?.edition === 'signature') return 'signature';
   if (license?.edition === 'pro' && !license?.emailDelivery?.resend) return 'pro';
+  if (license?.edition === 'hama' && !license?.emailDelivery?.resend) return 'hama';
   if (license?.emailDelivery?.resend) return 'resend';
   if (license?.source === 'groble' || license?.merchantUid || license?.amount > 0) return 'purchase';
   return 'free';
@@ -159,7 +166,7 @@ export function licenseEmail({
   const html = renderEmail({
     subject,
     preheader: copy.preheader ?? preheader,
-    banner: { url: bannerUrl, alt: kind === 'signature' ? 'HamaEditor · Signature 라이선스 키' : kind === 'pro' ? 'HamaEditor · Pro 라이선스 키' : 'HamaEditor · Mac 라이선스 키' },
+    banner: { url: bannerUrl, alt: kind === 'signature' ? 'HamaEditor · Signature 라이선스 키' : kind === 'pro' ? 'HamaEditor · Pro 라이선스 키' : kind === 'hama' ? 'HamaEditor · Hama 라이선스 키' : 'HamaEditor · Mac 라이선스 키' },
     heading: copy.heading,
     noteHtml: copy.noteHtml ?? DEFAULT_NOTE_HTML,
     card: { value: key, iconUrl: keyIconUrl, bgUrl: cardBgUrl },

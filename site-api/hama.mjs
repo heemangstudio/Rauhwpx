@@ -19,7 +19,9 @@ import { createMemoryStore } from './store.mjs';
  * README.md, "Hama plan".
  *
  * hama.json = { plans: { [keyId]: plan }, ledgers: { [keyId]: ledger } }
- * plan = { status: 'active'|'disabled', allowanceUsd (null = HAMA_MONTHLY_ALLOWANCE_USD), periodAnchor, enrolledAt, disabledAt? }
+ * plan = { status: 'active'|'disabled', allowanceUsd (null = HAMA_MONTHLY_ALLOWANCE_USD), periodAnchor, enrolledAt, disabledAt?, disabledReason? }
+ * A plan comes from an admin enrollment or from a paid Hama key (syncSubscriptions). disabledReason
+ * 'subscription_ended' is lifted when that key is live again; 'admin' stays until the admin enrolls it.
  * Assumes ONE replica, like licenses.mjs and gifts.mjs: all writes go through one in-process lock.
  */
 
@@ -59,6 +61,7 @@ export function parseHamaAllowance(value) {
 export function createHamaService({
   store = createMemoryStore(emptyHamaState()),
   authenticate,
+  subscriptions = async () => [],
   config = {},
   adminToken = '',
   now = Date.now,
@@ -119,12 +122,49 @@ export function createHamaService({
     };
   }
 
+  /**
+   * Puts hama.json in line with the paid Hama keys: a live key has an active plan, and a plan ends when
+   * its key is revoked or past its expiry and payment grace. An admin's disable stays. Access itself never
+   * waits for this: an ended key's lease stops authenticating, and principal() runs this for a live key.
+   */
+  async function syncSubscriptions() {
+    const list = await subscriptions();
+    if (list.length === 0) return;
+    const at = new Date(now()).toISOString();
+    await mutate((state) => {
+      let dirty = false;
+      for (const { keyId, live, periodAnchor } of list) {
+        const plan = own(state.plans, keyId);
+        if (live && !plan) {
+          state.plans[keyId] = { status: 'active', allowanceUsd: null, periodAnchor, enrolledAt: at };
+          log(`[site-api] hama plan for ${keyId} active (subscription)`);
+        } else if (live && plan.disabledReason === 'subscription_ended') {
+          plan.status = 'active';
+          delete plan.disabledAt;
+          delete plan.disabledReason;
+          log(`[site-api] hama plan for ${keyId} active again (subscription)`);
+        } else if (!live && plan?.status === 'active') {
+          Object.assign(plan, { status: 'disabled', disabledAt: at, disabledReason: 'subscription_ended' });
+          log(`[site-api] hama plan for ${keyId} ended (subscription)`);
+        } else continue;
+        dirty = true;
+      }
+      return { dirty };
+    });
+  }
+
   /** Lease → active plan. 401 unauthorized for a bad lease, 403 hama_not_enrolled without an active plan. */
   async function principal(lease) {
     if (typeof authenticate !== 'function') throw licenseError('unauthorized', 401);
     const who = await authenticate(lease);
-    const state = await read();
-    const plan = own(state.plans, who.keyId);
+    let state = await read();
+    let plan = own(state.plans, who.keyId);
+    // A paid key never waits on a sync that was missed: a crash after the webhook, or HAMA_ENABLED off at the time.
+    if (who.edition === 'hama' && (!plan || plan.disabledReason === 'subscription_ended')) {
+      await syncSubscriptions();
+      state = await read();
+      plan = own(state.plans, who.keyId);
+    }
     if (!plan || plan.status !== 'active') throw licenseError('hama_not_enrolled', 403);
     return { who, plan, ledger: own(state.ledgers, who.keyId) };
   }
@@ -267,6 +307,7 @@ export function createHamaService({
       periodEnd: iso(view.period.end),
       enrolledAt: plan.enrolledAt ?? null,
       disabledAt: plan.disabledAt ?? null,
+      disabledReason: plan.disabledReason ?? null,
       caps: view.caps,
       blocked: view.blocked,
       totalUsd: l.totalUsd,
@@ -278,6 +319,7 @@ export function createHamaService({
   const admin = {
     async list(token, { status: wanted } = {}) {
       requireAdmin(token);
+      await syncSubscriptions();
       const state = await read();
       const plans = Object.entries(state.plans)
         .filter(([, plan]) => !wanted || plan.status === wanted)
@@ -313,6 +355,7 @@ export function createHamaService({
         if (!Number.isFinite(ms)) throw licenseError('period_anchor_invalid', 400);
         anchor = new Date(ms).toISOString();
       }
+      await syncSubscriptions();
       const at = new Date(now()).toISOString();
       const view = await mutate((state) => {
         const existing = own(state.plans, keyId);
@@ -332,12 +375,16 @@ export function createHamaService({
     async disable(token, body) {
       requireAdmin(token);
       const keyId = keyIdOf(body);
+      await syncSubscriptions();
       const view = await mutate((state) => {
         const plan = own(state.plans, keyId);
         if (!plan) throw licenseError('hama_not_found', 404);
-        if (plan.status === 'disabled') return { dirty: false, value: planView(keyId, plan, own(state.ledgers, keyId)) };
+        if (plan.status === 'disabled' && plan.disabledReason !== 'subscription_ended') {
+          return { dirty: false, value: planView(keyId, plan, own(state.ledgers, keyId)) };
+        }
         plan.status = 'disabled';
         plan.disabledAt = new Date(now()).toISOString();
+        plan.disabledReason = 'admin';
         return { value: planView(keyId, plan, own(state.ledgers, keyId)) };
       });
       log(`[site-api] hama plan for ${keyId} disabled`);
@@ -347,6 +394,7 @@ export function createHamaService({
     async usage(token, { keyId: rawKeyId, limit } = {}) {
       requireAdmin(token);
       const keyId = keyIdOf({ keyId: rawKeyId });
+      await syncSubscriptions();
       const state = await read();
       const plan = own(state.plans, keyId);
       if (!plan) throw licenseError('hama_not_found', 404);
@@ -355,5 +403,5 @@ export function createHamaService({
     },
   };
 
-  return { status, admit, record, models, planActive, admin, config: settings };
+  return { status, admit, record, models, planActive, syncSubscriptions, admin, config: settings };
 }
