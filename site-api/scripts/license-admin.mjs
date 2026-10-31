@@ -27,12 +27,19 @@
 //   node scripts/license-admin.mjs accounts --email user@example.com | --id acct_... | --key-id lic_...   # accounts with devices and linked keys
 //   node scripts/license-admin.mjs account-unlink --key-id lic_...     # free a key from its account
 //   node scripts/license-admin.mjs account-link --key-id lic_... --account-id acct_...
+//   node scripts/license-admin.mjs gift-codes issue --plan basic|hama --months N | --days N --count N [--note "..."] [--redeem-by YYYY-MM-DD] [--out codes.csv]
+//                                                    # prints the codes once (or writes them only to --out); they are never shown again
+//   node scripts/license-admin.mjs gift-codes list [--batch-id gcb_...] [--status active|redeemed|revoked|expired]   # masked codes
+//   node scripts/license-admin.mjs gift-codes revoke --batch-id gcb_... | --code GIFT-... [--reason "..."]   # unredeemed codes only
+import { promises as fs } from 'node:fs';
+
 import { adminRequest, siteApiBase } from './admin-request.mjs';
 
 const [command, ...argv] = process.argv.slice(2);
-// `extend` takes the key or success-page ref as its first word.
+// `extend` takes the key or success-page ref as its first word, `gift-codes` its subcommand.
 const target = command === 'extend' && argv[0] && !argv[0].startsWith('--') ? argv[0] : undefined;
-const rest = target ? argv.slice(1) : argv;
+const sub = command === 'gift-codes' && argv[0] && !argv[0].startsWith('--') ? argv[0] : undefined;
+const rest = target || sub ? argv.slice(1) : argv;
 const args = {};
 for (let i = 0; i < rest.length; i += 1) {
   const name = rest[i].replace(/^--/, '').replace(/-([a-z])/g, (_, c) => c.toUpperCase());
@@ -49,6 +56,7 @@ if (command === 'extend') {
 const base = siteApiBase();
 const token = process.env.ADMIN_TOKEN;
 if (!token) { process.stderr.write('ADMIN_TOKEN is not set\n'); process.exit(2); }
+if (command === 'gift-codes') process.exit(await giftCodes());
 
 const posts = {
   issue: '/v1/admin/licenses/issue',
@@ -103,7 +111,7 @@ if (gets[command]) {
   }
   res = await adminRequest({ base, token, method: 'POST', path: posts[command], body });
 } else {
-  process.stderr.write('usage: license-admin.mjs issue|beta|betas|signatures|customers|lookup|orders|webhooks|attention|ack|release|apply-renewal|revoke|restore|reset-devices|remove-device|resend-email|extend|downloads|gifts|gift-disable|gift-amount|rau|accounts|account-unlink|account-link [--flags]\n');
+  process.stderr.write('usage: license-admin.mjs issue|beta|betas|signatures|customers|lookup|orders|webhooks|attention|ack|release|apply-renewal|revoke|restore|reset-devices|remove-device|resend-email|extend|downloads|gifts|gift-disable|gift-amount|rau|accounts|account-unlink|account-link|gift-codes [--flags]\n');
   process.exit(2);
 }
 const parsed = res.json;
@@ -148,3 +156,66 @@ if (command === 'beta' && res.ok && parsed?.license?.key) {
   process.stdout.write(`\n${parsed.license.name} (${parsed.license.deviceLimit} devices): ${parsed.license.key}\n`);
 }
 process.exit(res.ok ? 0 : 1);
+
+/** `gift-codes issue|list|revoke`. Only `issue` ever sees plaintext codes: on stdout once, or only in `--out`. */
+async function giftCodes() {
+  const usage = 'usage: license-admin.mjs gift-codes issue --plan basic|hama --months N | --days N --count N [--note "..."] [--redeem-by YYYY-MM-DD] [--out codes.csv]\n'
+    + '       license-admin.mjs gift-codes list [--batch-id gcb_...] [--status active|redeemed|revoked|expired]\n'
+    + '       license-admin.mjs gift-codes revoke --batch-id gcb_... | --code GIFT-... [--reason "..."]\n';
+  if (sub === 'list') {
+    const res = await adminRequest({ base, token, path: '/v1/admin/gift-codes', query: args });
+    process.stdout.write(`${res.status} ${res.json ? JSON.stringify(res.json, null, 2) : res.text}\n`);
+    if (res.ok && res.json) {
+      const lines = res.json.batches.map((b) => `${b.batchId} ${b.plan} · ${b.durationMonths ? `${b.durationMonths}개월` : `${b.durationDays}일`} · 미사용 ${b.counts.active} · 사용 ${b.counts.redeemed} · 취소 ${b.counts.revoked} · 기한 지남 ${b.counts.expired}${b.note ? ` · ${b.note}` : ''}`);
+      process.stdout.write(`\n${lines.join('\n') || '배치 없음'}\n`);
+    }
+    return res.ok ? 0 : 1;
+  }
+  if (sub === 'revoke') {
+    const res = await adminRequest({ base, token, method: 'POST', path: '/v1/admin/gift-codes/revoke', body: args });
+    process.stdout.write(`${res.status} ${res.json ? JSON.stringify(res.json, null, 2) : res.text}\n`);
+    return res.ok ? 0 : 1;
+  }
+  if (sub !== 'issue') { process.stderr.write(usage); return 2; }
+  const { months, days, out, ...fields } = args;
+  if (typeof fields.plan !== 'string' || typeof fields.count !== 'string' || (typeof months === 'string') === (typeof days === 'string')) {
+    process.stderr.write(usage);
+    return 2;
+  }
+  // Opened before the request: a code the file cannot take would be lost for good.
+  const file = typeof out === 'string' ? await fs.open(out, 'wx', 0o600).catch((error) => {
+    process.stderr.write(`--out ${out}: ${error.code === 'EEXIST' ? 'the file already exists' : error.message}\n`);
+    return null;
+  }) : undefined;
+  if (file === null) return 2;
+  let res;
+  try {
+    res = await adminRequest({
+      base,
+      token,
+      method: 'POST',
+      path: '/v1/admin/gift-codes/issue',
+      body: { ...fields, ...(typeof months === 'string' ? { durationMonths: months } : { durationDays: days }) },
+    });
+  } catch (error) {
+    await file?.close();
+    if (file) await fs.rm(out, { force: true });
+    throw error;
+  }
+  const { codes = [], ...summary } = res.json ?? {};
+  if (summary.batch) delete summary.batch.codes; // masked copies of the same codes
+  process.stdout.write(`${res.status} ${res.json ? JSON.stringify(summary, null, 2) : res.text}\n`);
+  if (file) {
+    if (res.ok) {
+      const b = summary.batch;
+      const rows = codes.map((code) => [code, b.batchId, b.plan, b.durationMonths ?? '', b.durationDays ?? '', b.redeemBy ?? ''].join(','));
+      await file.writeFile(`code,batch_id,plan,duration_months,duration_days,redeem_by\n${rows.join('\n')}\n`);
+    }
+    await file.close();
+    if (!res.ok) await fs.rm(out, { force: true });
+    else process.stdout.write(`\n${codes.length} codes written to ${out}\n`);
+  } else if (res.ok) {
+    process.stdout.write(`\n${codes.join('\n')}\n`);
+  }
+  return res.ok ? 0 : 1;
+}

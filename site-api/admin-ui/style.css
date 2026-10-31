@@ -73,7 +73,7 @@ html, body {
 /* ─────────── 관리 ─────────── */
 .manage { max-width: 1120px; margin: 0 auto; padding: 28px 28px 72px; transition: opacity .3s steps(3, end); }
 h2 { margin: 32px 0 12px; font: 400 12px/1 var(--pixel); color: var(--accent); }
-section:first-of-type h2 { margin-top: 4px; }
+[role="tabpanel"] > section:first-child > h2:first-child { margin-top: 4px; }
 
 .row { display: flex; gap: 8px; }
 input, button, select { clip-path: var(--notch); border: 0; font: inherit; color: var(--text); }
@@ -228,8 +228,8 @@ ul.devices li { display: contents; }
 }
 
 /* ─────────── 제보 ─────────── */
-h2 .count { margin-left: 8px; padding: 1px 6px; background: var(--accent); color: var(--navy); font-size: 11px; }
-h2 .storage { margin-left: 12px; color: var(--bad); }
+[role="tab"] .count { margin-left: 8px; padding: 1px 6px; background: var(--accent); color: var(--navy); font-size: 11px; }
+p.storage { margin: 0 0 12px; color: var(--bad); }
 .inbox { display: grid; grid-template-columns: minmax(240px, 320px) 1fr; gap: 16px; align-items: start; }
 .inbox-list { list-style: none; margin: 0; padding: 0; max-height: 640px; overflow-y: auto; border-top: 2px solid var(--deep); }
 .inbox-list li { border-bottom: 1px solid var(--line); }
@@ -268,3 +268,74 @@ dialog.shot img { display: block; }
 @media (max-width: 760px) {
   .inbox { grid-template-columns: 1fr; }
 }
+
+/* ─────────── 탭 ─────────── */
+.tabs { display: flex; gap: 4px; margin: 0 0 24px; box-shadow: inset 0 -2px 0 var(--deep); }
+.tabs [role="tab"] {
+  min-height: 36px; padding: 0 14px; clip-path: none; background: none; box-shadow: none;
+  font: 400 12px/1 var(--pixel); color: var(--meta);
+}
+.tabs [role="tab"]:hover:not(:disabled) { box-shadow: inset 0 -2px 0 var(--sea); color: var(--text); }
+.tabs [role="tab"][aria-selected="true"] { color: var(--mist); box-shadow: inset 0 -2px 0 var(--accent); }
+.tabs [role="tab"]:focus-visible { box-shadow: inset 0 0 0 2px var(--soft); }
+[role="tabpanel"]:focus { outline: none; }
+
+/* ─────────── 선물 코드 ─────────── */
+.gift-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px 16px; }
+.field { display: flex; flex-direction: column; gap: 6px; min-width: 0; margin: 0; padding: 0; border: 0; }
+.field.grow { flex: 1 1 180px; }
+.field > legend, .field > label { padding: 0; margin-bottom: 6px; font: 400 12px/1 var(--pixel); color: var(--meta); }
+.field > label { margin-bottom: 0; }
+.joined { display: flex; gap: 6px; }
+input.length, input.count-input { width: 84px; text-align: right; font-variant-numeric: tabular-nums; }
+.gift-form input[type="date"] { min-width: 150px; }
+.gift-form button[type="submit"] { min-height: 34px; padding: 0 16px; }
+
+/* 둘 중 하나를 고르는 칸. 진짜 라디오 단추라서 화살표 키로도 골라요. */
+.seg { display: inline-flex; gap: 2px; }
+.seg label {
+  display: inline-flex; align-items: center; min-height: 34px; padding: 0 14px; cursor: pointer;
+  clip-path: var(--notch); background: var(--night-3); box-shadow: inset 0 0 0 2px var(--deep); color: var(--muted);
+}
+.seg label:hover { box-shadow: inset 0 0 0 2px var(--sea); color: var(--text); }
+.seg input { position: absolute; opacity: 0; width: 1px; height: 1px; margin: 0; pointer-events: none; }
+.seg label:has(input:checked) { background: var(--deep); box-shadow: inset 0 0 0 2px var(--accent); color: var(--mist); }
+.seg label:has(input:focus-visible) { box-shadow: inset 0 0 0 2px var(--soft); }
+
+#generated:empty { display: none; }
+#generated { display: flex; flex-direction: column; gap: 10px; margin-top: 4px; }
+.generated { padding: 12px 14px 14px; background: var(--night-2); box-shadow: inset 0 0 0 2px var(--sea); clip-path: var(--notch); }
+.generated .head { display: flex; align-items: center; gap: 12px; }
+.generated .summary { flex: 1 1 0; min-width: 0; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.generated .actions { display: flex; gap: 6px; }
+.generated .once { margin: 4px 0 10px; }
+pre.codes {
+  max-height: 280px; margin: 0; padding: 10px 12px; overflow: auto; background: var(--night);
+  box-shadow: inset 0 0 0 1px var(--line); font-size: 13px; line-height: 1.7; user-select: all;
+}
+
+#batch-table { min-width: 1040px; }
+#batch-table th:nth-child(2) { width: 11%; }
+#batch-table th:nth-child(3) { width: 7%; }
+#batch-table th:nth-child(4) { width: 7%; }
+#batch-table th:nth-child(5) { width: 9%; }
+#batch-table th:nth-child(6) { width: 6%; }
+#batch-table th:nth-child(7) { width: 6%; }
+#batch-table th:nth-child(8) { width: 7%; }
+#batch-table th:nth-child(9) { width: 11%; }
+#batch-table th:nth-child(11) { width: 136px; }
+#batch-table td:nth-child(3) { overflow: hidden; }
+
+.codes-wrap { max-height: 420px; overflow: auto; }
+ul.codes-list {
+  list-style: none; margin: 0; padding: 0; display: grid; align-items: center; gap: 6px 24px;
+  grid-template-columns: max-content 64px max-content minmax(0, 1fr) minmax(0, 1fr) 64px;
+}
+ul.codes-list li { display: contents; }
+ul.codes-list li > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+ul.codes-list li.head > span { font: 400 12px/1.5 var(--pixel); color: var(--meta); }
+ul.codes-list li.redeemed > .status { color: var(--accent); }
+ul.codes-list li.revoked > span:not(.status), ul.codes-list li.expired > span:not(.status) { color: var(--meta); }
+ul.codes-list .status.bad { color: var(--bad); }
+ul.codes-list .action { text-align: right; }
+#panel-feedback > .error:empty { display: none; }

@@ -1,6 +1,3 @@
-import { promises as fs } from 'node:fs';
-import path from 'node:path';
-
 import {
   admission,
   billingPeriod,
@@ -10,6 +7,7 @@ import {
   usd,
   windows,
 } from './hama-ledger.mjs';
+import { createFileUsageLog } from './hama-usage.mjs';
 import { licenseError, tokenEquals } from './licenses.mjs';
 import { createMemoryStore } from './store.mjs';
 
@@ -22,7 +20,8 @@ import { createMemoryStore } from './store.mjs';
  * plan = { status: 'active'|'disabled', allowanceUsd (null = HAMA_MONTHLY_ALLOWANCE_USD), periodAnchor, enrolledAt, disabledAt?, disabledReason? }
  * A plan comes from an admin enrollment or from a paid Hama key (syncSubscriptions). disabledReason
  * 'subscription_ended' is lifted when that key is live again; 'admin' stays until the admin enrolls it.
- * Assumes ONE replica, like licenses.mjs and gifts.mjs: all writes go through one in-process lock.
+ * Every write runs exclusively through `store.update` (the file store, or Postgres with the hama
+ * domain's advisory lock). Billed calls also go to the usage log (hama-usage.mjs).
  */
 
 /** The only hosted Claude model. A constant on purpose: no env or flag can add Sonnet or Opus. */
@@ -32,7 +31,6 @@ export const HAMA_CLAUDE_MODELS = Object.freeze([HAMA_CLAUDE_MODEL]);
 export const HAMA_ANTHROPIC_PREFIX = '/v1/hama/anthropic';
 export const HAMA_OPENAI_PREFIX = '/v1/hama/openrouter';
 export const MAX_HAMA_ALLOWANCE_USD = 1000;
-const MAX_USAGE_LOG_BYTES = 4 * 1024 * 1024;
 const MAX_USAGE_LIMIT = 1000;
 
 export function emptyHamaState() {
@@ -44,11 +42,6 @@ function own(map, key) {
 }
 
 const iso = (ms) => (ms === null || ms === undefined ? null : new Date(ms).toISOString());
-
-/** Usage log file name for a key id: anything outside [A-Za-z0-9_-] becomes `_`. */
-export function usageLogName(keyId) {
-  return `${String(keyId).replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 100) || '_'}.jsonl`;
-}
 
 /** Admin-set allowance: at least a cent and at most MAX_HAMA_ALLOWANCE_USD, number or numeric string, rounded to cents. */
 export function parseHamaAllowance(value) {
@@ -67,6 +60,8 @@ export function createHamaService({
   now = Date.now,
   log = (line) => process.stderr.write(`${line}\n`),
   usageLogDir,
+  // { append, read } from hama-usage.mjs; without one (and without usageLogDir) nothing is logged.
+  usageLog = usageLogDir ? createFileUsageLog(usageLogDir) : null,
 } = {}) {
   const settings = {
     allowanceUsd: 15,
@@ -78,12 +73,6 @@ export function createHamaService({
     ...config,
   };
 
-  let mutation = Promise.resolve();
-  function withLock(fn) {
-    const result = mutation.then(fn, fn);
-    mutation = result.then(() => undefined, () => undefined);
-    return result;
-  }
   function normalize(state) {
     const next = state && typeof state === 'object' && !Array.isArray(state) ? state : {};
     for (const field of ['plans', 'ledgers']) {
@@ -91,17 +80,13 @@ export function createHamaService({
     }
     return next;
   }
+  /** `fn` runs alone on the store and returns `{ value, dirty }`; the state is saved unless `dirty` is false. */
   async function mutate(fn) {
-    return withLock(async () => {
-      const state = normalize(await store.load());
-      const result = await fn(state);
-      if (result?.dirty !== false) await store.save(state);
-      return result?.value ?? result;
-    });
+    const result = await store.update((state) => fn(normalize(state)));
+    return result?.value ?? result;
   }
   async function read() {
-    await mutation.catch(() => {});
-    return normalize(await store.load());
+    return normalize(await store.read());
   }
 
   const effectivePlan = (plan) => ({ ...plan, allowanceUsd: finite(plan.allowanceUsd) ?? settings.allowanceUsd });
@@ -236,40 +221,8 @@ export function createHamaService({
 
   // ------------------------------------------------------------- usage log
 
-  const logPath = (keyId) => path.join(usageLogDir, usageLogName(keyId));
-  const rotatedPath = (keyId) => logPath(keyId).replace(/\.jsonl$/, '.1.jsonl');
-
-  /**
-   * One JSON line per billed call. Past MAX_USAGE_LOG_BYTES the file becomes `<key>.1.jsonl` (one
-   * generation kept). Appends run one at a time so a rotation never races another write.
-   */
-  let appending = Promise.resolve();
-  function appendUsage(keyId, line) {
-    if (!usageLogDir) return Promise.resolve();
-    const run = appending.then(async () => {
-      await fs.mkdir(usageLogDir, { recursive: true });
-      const file = logPath(keyId);
-      const size = await fs.stat(file).then((s) => s.size, () => 0);
-      if (size > MAX_USAGE_LOG_BYTES) await fs.rename(file, rotatedPath(keyId));
-      await fs.appendFile(file, `${JSON.stringify(line)}\n`, { mode: 0o600 });
-    });
-    appending = run.catch(() => {});
-    return run;
-  }
-
-  async function readUsage(keyId, limit) {
-    if (!usageLogDir) return [];
-    const lines = [];
-    for (const file of [logPath(keyId), rotatedPath(keyId)]) {
-      const text = await fs.readFile(file, 'utf8').catch(() => '');
-      const parsed = text.split('\n').filter(Boolean).reverse().map((l) => {
-        try { return JSON.parse(l); } catch { return null; }
-      }).filter(Boolean);
-      lines.push(...parsed);
-      if (lines.length >= limit) break;
-    }
-    return lines.slice(0, limit);
-  }
+  const appendUsage = (keyId, line) => (usageLog ? usageLog.append(keyId, line) : Promise.resolve());
+  const readUsage = async (keyId, limit) => (usageLog ? usageLog.read(keyId, limit) : []);
 
   /**
    * Bills one finished (or cut off) call. Idempotent on `call.id`: a repeated id returns

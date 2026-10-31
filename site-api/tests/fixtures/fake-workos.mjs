@@ -1,6 +1,8 @@
 import { randomBytes } from 'node:crypto';
 import http from 'node:http';
 
+import { ignorePortProbe } from './port-probe.mjs';
+
 /**
  * In-process stand-in for the parts of WorkOS User Management the account system uses: the AuthKit
  * authorize redirect, the code exchange and user deletion. `signIn(user)` mints a code for a user
@@ -31,6 +33,7 @@ export function createFakeWorkOS({ apiKey, clientId, onCall = () => {} }) {
   }
 
   const server = http.createServer(async (req, res) => {
+    if (ignorePortProbe(req, res)) return;
     const url = new URL(req.url, 'http://fake');
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);

@@ -1,5 +1,7 @@
 import http from 'node:http';
 
+import { ignorePortProbe } from './port-probe.mjs';
+
 /**
  * In-process stand-ins for the Hama upstreams: Anthropic (`POST /v1/messages`) and OpenRouter
  * (`POST /api/v1/messages`, Anthropic-compatible, and `POST /api/v1/chat/completions`).
@@ -51,6 +53,7 @@ function createFake(handlers) {
   let waiters = [];
   const release = () => { const w = waiters; waiters = []; w.forEach((fn) => fn()); };
   const server = http.createServer(async (req, res) => {
+    if (ignorePortProbe(req, res)) return;
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
     const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : null;

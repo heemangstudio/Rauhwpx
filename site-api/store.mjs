@@ -28,9 +28,38 @@ function serializeState(next) {
   return serialized;
 }
 
+/**
+ * `read()` and `update(fn)` over a store's `load()`/`save()`, with the contract every store keeps
+ * (pg-store.mjs has the Postgres one): read() resolves to a copy of the state after this process's
+ * pending updates; update(fn) runs `fn(state)` alone, saves unless the result has `dirty: false`, and
+ * resolves to fn's return value. On a throw or a failed save nothing is persisted and the next call
+ * starts from the last durable state. A stored value that is not an object reaches fn as `{}`.
+ */
+function exclusive(store) {
+  let chain = Promise.resolve();
+  return {
+    ...store,
+    async read() {
+      await chain;
+      return store.load();
+    },
+    update(fn) {
+      const run = chain.then(async () => {
+        const loaded = await store.load();
+        const state = loaded && typeof loaded === 'object' && !Array.isArray(loaded) ? loaded : {};
+        const result = await fn(state);
+        if (result?.dirty !== false) await store.save(state);
+        return result;
+      });
+      chain = run.then(() => undefined, () => undefined);
+      return run;
+    },
+  };
+}
+
 export function createMemoryStore(initial) {
   let state = structuredClone(initial);
-  return {
+  return exclusive({
     async load() {
       return structuredClone(state);
     },
@@ -38,7 +67,7 @@ export function createMemoryStore(initial) {
       serializeState(next);
       state = structuredClone(next);
     },
-  };
+  });
 }
 
 /**
@@ -119,7 +148,7 @@ export function createFileStore(filePath, {
     }
   }
 
-  return {
+  return exclusive({
     async load() {
       // A caller that observed a failed save may safely retry from the last
       // durable file; never race a read against a still-running rename.
@@ -134,5 +163,5 @@ export function createFileStore(filePath, {
       );
       return chain;
     },
-  };
+  });
 }
