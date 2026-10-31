@@ -362,7 +362,7 @@ import { fitPopupAboveViewportTop } from './popup-fit.ts';
 import { createTurnRestoreActions } from './turn-restore-action.ts';
 import type { TurnRestoreControl } from '../../agent/turn-checkpoints.ts';
 import { desktopGiftApi, type DesktopGiftApi } from '../special-event/gift.ts';
-import { createRauUpgradeChip, desktopRauApi, type DesktopRauApi } from './rau-upgrade.ts';
+import { desktopRauApi, type DesktopRauApi } from './rau-upgrade.ts';
 import type { DesktopLicenseApi } from './settings-license.ts';
 import { createPlanStore, desktopPlanApi, planLocksAgent } from '../plan/plan-store.ts';
 import { recordAccountActivity } from '../account/account-store.ts';
@@ -3995,9 +3995,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   calibrationChipOpen.addEventListener('click', () => writingStyleCalibration.open());
   calibrationChipClose.addEventListener('click', () => settleCalibrationChip('skipped'));
 
-  /* 호스팅 Rau-0.1 업그레이드 칩 — 허브가 Basic 이 아니라는 거절을 받은 뒤 한 번. 닫으면 그 거절에는 다시 뜨지 않는다. */
   const rauApi = deps.rau === undefined ? desktopRauApi() : deps.rau;
-  const rauUpgradeChip = createRauUpgradeChip({ rau: rauApi, openPlans: planStore.api ? () => openPlans('basic') : null });
 
   function settleCalibrationChip(step: 'done' | 'skipped'): void {
     saveInitialSetup({ calibrationStep: step });
@@ -4655,7 +4653,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   // 입력기 위에 흐름으로 쌓인 것들의 높이. 떠 있는 요소는 이들을 덮지 않고 한 겹 위에 선다.
   // attached 는 입력기와 한 면을 이루는 질문 카드, stack 은 그 위의 변경 막대와 칩이다.
   // 위치만 바꾸고 크기는 건드리지 않아 관찰 고리가 생기지 않는다.
-  const composerStackNodes = [compactChanges, reconnectChip, setupChip, calibrationChip, rauUpgradeChip.root, watchStrip.root, followUpStrip.root];
+  const composerStackNodes = [compactChanges, reconnectChip, setupChip, calibrationChip, watchStrip.root, followUpStrip.root];
   let composerStackFrame = 0;
   function syncComposerStack(): void {
     const question = questionController.root;
@@ -4694,7 +4692,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       reroll: threadChanged,
     });
   }
-  chatPage.append(header, messages, focusGreeting.root, review, compactChanges, planSurface, planRestore, reconnectChip, setupChip, calibrationChip, rauUpgradeChip.root, watchStrip.root, followUpStrip.root, questionController.root, composer);
+  chatPage.append(header, messages, focusGreeting.root, review, compactChanges, planSurface, planRestore, reconnectChip, setupChip, calibrationChip, watchStrip.root, followUpStrip.root, questionController.root, composer);
   messages.after(latestDock);
   const scrollRail = createChatScrollRail({ messages, scrollToTurn: scrollConversationToTurn });
 
@@ -12919,9 +12917,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         break;
       case 'taste-learned':
         handleTasteLearned(e);
-        break;
-      case 'rau-upgrade':
-        rauUpgradeChip.show({ reason: e.reason, upgradeUrl: e.upgradeUrl });
         break;
       case 'taste-history-learned':
         handleTasteHistoryLearned(e);

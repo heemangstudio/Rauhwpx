@@ -3708,17 +3708,6 @@ export class AgentBridgeImpl implements AgentBridge {
         if (learned) this.emit({ type: 'taste-learned', ...learned });
         break;
       }
-      case 'rau-upgrade': {
-        if (msg.reason !== 'rau_requires_basic' && msg.reason !== 'rau_requires_pro') break;
-        this.emit({
-          type: 'rau-upgrade',
-          reason: 'rau_requires_basic',
-          upgradeUrl: typeof msg.upgradeUrl === 'string' && msg.upgradeUrl.startsWith('https://') ? msg.upgradeUrl : null,
-          threadId: typeof msg.threadId === 'string' ? msg.threadId : null,
-          documentId: typeof msg.documentId === 'string' ? msg.documentId : null,
-        });
-        break;
-      }
       case 'taste-undo-result': {
         if (typeof msg.requestId === 'string') this.requests.settle(msg.requestId, readTasteUndoResult(msg));
         break;

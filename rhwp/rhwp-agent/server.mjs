@@ -4993,7 +4993,7 @@ function tasteLearnerRoutes() {
   return { hosted: hostedRau };
 }
 
-/** taste-learned·rau-upgrade 는 한 창에만 보낸다 — 그 채팅을 가진 창, 없으면 그 문서를 연 창, 없으면 아무 창. */
+/** taste-learned 는 한 창에만 보낸다 — 그 채팅을 가진 창, 없으면 그 문서를 연 창, 없으면 아무 창. */
 function sendTasteFrame(frame) {
   const record = tasteRecord(frame, { socket: true })
     ?? [...sessions.values()].find((candidate) => !candidate.disposed && candidate.studioSocket)

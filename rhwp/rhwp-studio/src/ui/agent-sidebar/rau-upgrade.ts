@@ -1,11 +1,7 @@
-// 호스팅 Rau-0.1(Basic·Hama) 업그레이드 안내. 허브가 자격이 없다는 답(rau_requires_basic)을 받으면 rau-upgrade 를 한 번
-// 보내고, 사이드바는 입력창 위에 칩을 띄운다. 닫거나 업그레이드 페이지를 열면 그 거절에는 다시 띄우지 않는다.
+// 호스팅 Rau-0.1(Basic·Hama) 자격과 업그레이드 페이지. 설정의 Rau-0.1 줄이 쓴다.
 // 서버 호출과 lease 는 데스크톱 main 이 가진다. 여기서는 데스크톱의 rau API 로 자격을 묻고 페이지를 연다.
-import { createIcon } from './icons.ts';
 
-export const RAU_UPGRADE_PRICE = '월 ₩3,900';
 export const RAU_PRICING_URL = 'https://heemangstudios.com/pricing.html';
-const DISMISSED_KEY = 'rhwp.rau-upgrade.dismissed';
 
 /** 데스크톱 main 의 rau:status 답. 라이선스가 없으면 reason 이 no_license 다. */
 export interface RauStatus {
@@ -37,84 +33,4 @@ export function openRauUpgrade(api: DesktopRauApi | null, url: string | null | u
   }
   const safe = typeof url === 'string' && url.startsWith('https://') ? url : RAU_PRICING_URL;
   window.open(safe, '_blank', 'noopener,noreferrer');
-}
-
-function storage(): Storage | null {
-  try { return globalThis.localStorage ?? null; } catch { return null; }
-}
-
-export function rauUpgradeDismissed(reason: string, store: Storage | null = storage()): boolean {
-  try {
-    const dismissed = store?.getItem(DISMISSED_KEY);
-    // 예전 이름(rau_requires_pro)으로 닫은 거절도 같은 거절이다.
-    return (dismissed === 'rau_requires_pro' ? 'rau_requires_basic' : dismissed) === reason;
-  } catch { return false; }
-}
-
-export function dismissRauUpgrade(reason: string, store: Storage | null = storage()): void {
-  try { store?.setItem(DISMISSED_KEY, reason); } catch { /* 저장소가 없으면 이 창에서만 닫는다 */ }
-}
-
-export interface RauUpgradeChip {
-  root: HTMLElement;
-  /** 허브의 rau-upgrade. 이미 닫은 거절이면 띄우지 않는다. 띄웠으면 true. */
-  show(prompt: { reason: string; upgradeUrl: string | null }): boolean;
-}
-
-export function createRauUpgradeChip({
-  rau,
-  openPlans = null,
-  store = storage(),
-  onChange = () => {},
-}: {
-  rau: DesktopRauApi | null;
-  /** 앱 요금제 카드. 있으면 업그레이드 페이지 대신 카드를 연다. */
-  openPlans?: (() => void) | null;
-  store?: Storage | null;
-  onChange?: () => void;
-}): RauUpgradeChip {
-  const root = document.createElement('div');
-  root.className = 'ag-calibration-chip ag-rau-upgrade-chip';
-  root.hidden = true;
-  const open = document.createElement('button');
-  open.type = 'button';
-  open.className = 'ag-calibration-chip-open';
-  const text = document.createElement('span');
-  text.className = 'ag-calibration-chip-text';
-  text.textContent = 'Rau-0.1 호스팅은 Basic·Hama에서 써요';
-  const action = document.createElement('span');
-  action.className = 'ag-calibration-chip-action';
-  action.textContent = RAU_UPGRADE_PRICE;
-  open.append(text, action);
-  const close = document.createElement('button');
-  close.type = 'button';
-  close.className = 'ag-calibration-chip-close';
-  close.setAttribute('aria-label', '닫기');
-  close.append(createIcon('close'));
-  root.append(open, close);
-
-  let current: { reason: string; upgradeUrl: string | null } | null = null;
-  function settle(): void {
-    if (current) dismissRauUpgrade(current.reason, store);
-    current = null;
-    root.hidden = true;
-    onChange();
-  }
-  open.addEventListener('click', () => {
-    if (openPlans) openPlans();
-    else openRauUpgrade(rau, current?.upgradeUrl);
-    settle();
-  });
-  close.addEventListener('click', settle);
-
-  return {
-    root,
-    show(prompt) {
-      if (rauUpgradeDismissed(prompt.reason, store)) return false;
-      current = prompt;
-      root.hidden = false;
-      onChange();
-      return true;
-    },
-  };
 }

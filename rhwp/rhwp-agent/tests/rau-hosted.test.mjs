@@ -90,17 +90,16 @@ test('the old rau_requires_pro name is the same Basic refusal', async (t) => {
   const h = harness(t, { source });
   await h.run();
   assert.equal(h.calls.length, 0);
-  assert.deepEqual(h.frames.filter((frame) => frame.type === 'rau-upgrade').map((frame) => frame.reason), ['rau_requires_basic']);
+  await h.run();
+  assert.equal(source.prompts.length, 1, 'remembered like a Basic refusal');
 });
 
-test('a Basic refusal skips learning, prompts once, and is remembered until the license changes', async (t) => {
+test('a Basic refusal skips learning and is remembered for a day or until the license changes', async (t) => {
   const source = fakeSource(refusal('rau_requires_basic', { upgradeUrl: 'https://heemangstudios.com/pricing.html' }));
   const h = harness(t, { source });
   await h.run();
   assert.equal(h.calls.length, 0);
-  const upgrades = h.frames.filter((frame) => frame.type === 'rau-upgrade');
-  assert.equal(upgrades.length, 1);
-  assert.deepEqual([upgrades[0].reason, upgrades[0].upgradeUrl, upgrades[0].documentId], ['rau_requires_basic', 'https://heemangstudios.com/pricing.html', 'doc-1']);
+  assert.equal(h.frames.length, 0, 'nothing reaches Studio');
 
   await h.run();
   assert.equal(source.prompts.length, 1, 'the refusal is remembered');
@@ -109,15 +108,13 @@ test('a Basic refusal skips learning, prompts once, and is remembered until the 
   h.clock.t += RAU_REFUSAL_MS;
   await h.run();
   assert.equal(source.prompts.length, 2, 'asked again after a day');
-  assert.equal(h.frames.filter((frame) => frame.type === 'rau-upgrade').length, 1, 'the same refusal never prompts twice');
 
   source.licenseChanged();
   await h.run();
   assert.equal(source.prompts.length, 3, 'a license change asks at once');
-  assert.equal(h.frames.filter((frame) => frame.type === 'rau-upgrade').length, 2);
 });
 
-test('a reached cap skips hosted Rau until it resets, without prompting', async (t) => {
+test('a reached cap skips hosted Rau until it resets', async (t) => {
   const resetsAt = Date.parse('2026-11-01T00:00:00Z');
   const source = fakeSource(refusal('rau_cap_reached', { capUsd: 3, usedUsd: 3, resetsAt }));
   const h = harness(t, { source });
@@ -128,15 +125,13 @@ test('a reached cap skips hosted Rau until it resets, without prompting', async 
   h.clock.t = resetsAt;
   await h.run();
   assert.equal(source.prompts.length, 2);
-  assert.equal(h.frames.some((frame) => frame.type === 'rau-upgrade'), false);
 });
 
-test('without a license or outside the desktop app, no local route runs and nothing prompts', async (t) => {
+test('without a license or outside the desktop app, no local route runs', async (t) => {
   const noLicense = fakeSource(refusal('no_license'));
   const h = harness(t, { source: noLicense });
   await h.run();
   assert.equal(h.calls.length, 0);
-  assert.equal(h.frames.some((frame) => frame.type === 'rau-upgrade'), false);
 
   const browser = fakeSource(() => ({ text: learned }), { available: false });
   const web = harness(t, { source: browser });

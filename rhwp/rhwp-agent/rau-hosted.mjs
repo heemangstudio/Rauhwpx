@@ -85,17 +85,14 @@ function resetsAtFrom(value) {
 
 /**
  * 학습기가 쓰는 호스팅 경로. usable() 이 참일 때만 learn 을 부른다.
- * learn 은 던지지 않는다: { ok: true, text, model } 또는 { ok: false, code, upgrade? }.
- * upgrade 는 이 거절에서 처음일 때만 { reason, upgradeUrl } 로 온다(Studio 안내 한 번).
+ * learn 은 던지지 않는다: { ok: true, text, model } 또는 { ok: false, code }.
  */
 export function createHostedRau({ source, now = Date.now, refusalMs = RAU_REFUSAL_MS, capFallbackMs = RAU_CAP_FALLBACK_MS } = {}) {
   let refusedUntil = 0;
-  let refusalAnnounced = false;
   let capUntil = 0;
 
   source?.onChange?.(() => {
     refusedUntil = 0;
-    refusalAnnounced = false;
     capUntil = 0;
   });
 
@@ -115,11 +112,9 @@ export function createHostedRau({ source, now = Date.now, refusalMs = RAU_REFUSA
       const raw = typeof error?.code === 'string' ? error.code : 'server';
       const code = raw === 'rau_requires_pro' ? 'rau_requires_basic' : raw;
       if (code === 'rau_requires_basic') {
-        // 하루가 지나 다시 거절되면 그것도 새 거절이 아니다. 라이선스가 바뀌어야 다시 안내한다.
+        // 하루 동안 다시 묻지 않는다. 라이선스가 바뀌면 바로 다시 묻는다.
         refusedUntil = now() + refusalMs;
-        const upgrade = refusalAnnounced ? undefined : { reason: code, upgradeUrl: typeof error.upgradeUrl === 'string' ? error.upgradeUrl : null };
-        refusalAnnounced = true;
-        return { ok: false, code, ...(upgrade ? { upgrade } : {}) };
+        return { ok: false, code };
       }
       if (code === 'rau_cap_reached') {
         const resetsAt = resetsAtFrom(error.resetsAt);

@@ -99,10 +99,9 @@ export async function checkPlanCard({ page, open, screenshot }) {
   await page.waitForFunction(() => !document.querySelector('.ag-pricing-card'), { timeout: 4000 });
   assert.equal(await page.$eval('#agent-sidebar', (root) => root.dataset.tier), 'hama');
 
-  // 호스팅 Rau 칩도 요금제 API 가 있으면 페이지 대신 카드를 연다.
-  await open('reset=1&plan=legacy&rau=upgrade');
-  await page.waitForSelector('.ag-rau-upgrade-chip', { visible: true });
-  await page.click('.ag-rau-upgrade-chip .ag-calibration-chip-open');
+  // 기존 라이선스로 연 카드에는 그 표시가 붙는다.
+  await open('reset=1&plan=legacy');
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent('rhwp:open-plan-card', { detail: { focus: 'hama' } })));
   await cardOpen(page);
   assert.equal(await visible(page, '.ag-pricing-badge'), true, 'legacy mark');
   await closeCard(page);

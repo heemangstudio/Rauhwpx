@@ -62,7 +62,7 @@ import { mockHamaMode, mockHamaModes, mockHamaStatus, type MockHamaMode } from '
 import { createMockAutofix, mockAutofixOutcomes } from './mock-autofix.ts';
 import { setAutofixApi, type AutofixStatus } from '../ui/autofix/autofix.ts';
 import { createMockLicense, mockLicenseMode } from './mock-license.ts';
-import { createMockRau, mockRauMode, MOCK_RAU_UPGRADE_URL } from './mock-rau.ts';
+import { createMockRau, mockRauMode } from './mock-rau.ts';
 import { createMockPlan, mockCheckoutMode, mockCheckoutModes, mockPlanTier, mockPlanTiers, type MockCheckoutMode } from './mock-plan.ts';
 import {
   createMockAccount,
@@ -839,8 +839,6 @@ document.querySelector('#detach-document')!.addEventListener('click', () => {
 document.querySelector('#save-gate')!.addEventListener('click', () => {
   if (previewUnlinkedChat()) mock.emitDocumentRequired('project_edit');
 });
-document.querySelector('#rau-upgrade')!.addEventListener('click', () => mock.emitRauUpgrade(MOCK_RAU_UPGRADE_URL));
-if (mockRauMode(params) === 'upgrade') mock.emitRauUpgrade(MOCK_RAU_UPGRADE_URL);
 document
   .querySelector('#settings')!
   .addEventListener('click', () =>

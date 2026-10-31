@@ -604,17 +604,6 @@ export function createTasteLearner({
       if (onAbort) signal.removeEventListener('abort', onAbort);
     }
     if (signal.aborted) return null;
-    if (answer?.upgrade) {
-      const frame = {
-        v: 1,
-        type: 'rau-upgrade',
-        threadId: input.threadId ?? null,
-        documentId: input.documentId,
-        reason: answer.upgrade.reason,
-        upgradeUrl: answer.upgrade.upgradeUrl ?? null,
-      };
-      try { emit(frame); } catch (error) { log(`${RAU_TASTE_NAME}: emit failed: ${error?.message ?? error}`); }
-    }
     if (!answer?.ok) {
       log(`${RAU_TASTE_NAME}: hosted run skipped (${answer?.code ?? 'server'})`);
       return null;

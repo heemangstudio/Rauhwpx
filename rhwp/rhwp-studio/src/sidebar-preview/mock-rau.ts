@@ -1,12 +1,11 @@
 /**
- * 데스크톱 호스팅 Rau API 의 미리보기 대역. `?rau=free|basic|upgrade` (기본 off).
- * free 는 Basic 이 아닌 라이선스(설정의 Basic 줄에 업그레이드 단추), basic 은 쓸 수 있는 상태,
- * upgrade 는 free 에 더해 허브가 거절을 받은 것처럼 입력창 위 업그레이드 칩을 띄운다.
+ * 데스크톱 호스팅 Rau API 의 미리보기 대역. `?rau=free|basic` (기본 off).
+ * free 는 Basic 이 아닌 라이선스(설정의 Basic 줄에 업그레이드 단추), basic 은 쓸 수 있는 상태다.
  * 업그레이드 페이지는 열지 않고 보고만 한다.
  */
 import type { DesktopRauApi, RauStatus } from '../ui/agent-sidebar/rau-upgrade.ts';
 
-export const mockRauModes = ['free', 'basic', 'upgrade', 'off'] as const;
+export const mockRauModes = ['free', 'basic', 'off'] as const;
 export type MockRauMode = (typeof mockRauModes)[number];
 export const MOCK_RAU_UPGRADE_URL = 'https://heemangstudios.com/pricing.html';
 

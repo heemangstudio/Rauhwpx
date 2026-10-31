@@ -38,7 +38,6 @@ import { checkDocumentDetach } from './document-detach.check.mjs';
 import { checkDocumentNameWriter } from './document-name-writer.check.mjs';
 import { checkDocumentMemory } from './document-memory.check.mjs';
 import { checkInstructionsCard, checkTaste, checkTasteHistory } from './taste.check.mjs';
-import { checkRauUpgrade } from './rau-upgrade.check.mjs';
 import { checkPlanCard } from './plan-card.check.mjs';
 import { checkAccountPage } from './account-page.check.mjs';
 import { checkChatScrollRail } from './chat-scroll-rail.check.mjs';
@@ -66,7 +65,6 @@ const focusedChecks = {
   'document-memory': (h) => checkDocumentMemory(h),
   taste: (h) => checkTaste(h),
   'taste-history': (h) => checkTasteHistory(h),
-  'rau-upgrade': (h) => checkRauUpgrade(h),
   'plan-card': (h) => checkPlanCard(h),
   'account-page': (h) => checkAccountPage(h),
   'instructions-card': (h) => checkInstructionsCard(h),
