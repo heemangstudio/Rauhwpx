@@ -18,7 +18,7 @@ export function releaseInitialSetup(owner: object): void {
   for (const listener of [...listeners]) listener();
 }
 
-/** 이 창에서(처음 설정이나 홈의 라이선스 등록) 키를 활성화했는지. 선물 창이 환영 인사로 뜬다. */
+/** 이 창의 처음 설정에서 유료 요금제로 로그인했는지. 선물 창이 환영 인사로 뜬다. */
 let licensedHere = false;
 
 export function markLicensedHere(): void {

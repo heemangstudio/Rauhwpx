@@ -17,13 +17,14 @@ import {
   type SystemFontIndex,
 } from '../../core/desktop-fonts.ts';
 import { canPersistFontFolder } from '../../core/font-folder.ts';
+import type { AccountStatus } from '../account/account-types.ts';
 import {
   detectLocalFonts,
   getDetectedLocalFonts,
   isLocalFontAccessSupported,
 } from '../../core/local-fonts.ts';
 
-export type SetupStep = 'theme' | 'models' | 'fonts' | 'license' | 'taste' | 'autofix';
+export type SetupStep = 'theme' | 'models' | 'fonts' | 'account' | 'taste' | 'autofix';
 /** missing: 데스크톱에서 색인에 한컴 글꼴이 없다. discover: 브라우저에서 아직 못 찾았다. */
 export type FontStepKind = 'missing' | 'discover';
 
@@ -41,9 +42,8 @@ export const HIPPO_LINES = {
   missing: '한컴 글꼴이 안 보여요. 한컴오피스를 설치하면 알아서 찾아요.',
   missingWithFolder: '한컴 글꼴이 안 보여요. 한컴오피스를 설치하거나 글꼴 폴더를 알려 주세요.',
   done: '설정이 완료되었어요!',
-  license: '편집은 무료예요. Pro 키가 있으면 여기에 넣어 주세요.',
-  licenseChecking: '키를 확인하는 중이에요…',
-  licensed: '라이선스가 활성화됐어요!',
+  account: '편집은 무료예요. 로그인하면 산 요금제를 기기마다 이어서 써요.',
+  signedIn: '로그인했어요!',
 } as const;
 
 /**
@@ -84,14 +84,19 @@ export function planFontStep(env: FontEnvironment): FontStepKind | null {
   return env.canDiscover ? 'discover' : null;
 }
 
-/** 라이선스는 데스크톱에서 아직 키를 넣지 않았을 때만, Rau-0.1 과 자동 버그 수정은 맨 끝에 이 순서로 둔다. */
+/** 계정 기능이 열려 있고 아직 로그인하지 않았을 때만 계정 장을 넣는다. 계정 API 가 없으면(웹) null. */
+export function needsAccountStep(status: Pick<AccountStatus, 'available' | 'state'> | null): boolean {
+  return status !== null && status.available && status.state !== 'signed_in';
+}
+
+/** 계정은 데스크톱에서 아직 로그인하지 않았을 때만, Rau-0.1 과 자동 버그 수정은 맨 끝에 이 순서로 둔다. */
 export function planSteps(
   fontStep: FontStepKind | null,
-  options: { autofix?: boolean; license?: boolean; taste?: boolean } = {},
+  options: { autofix?: boolean; account?: boolean; taste?: boolean } = {},
 ): SetupStep[] {
   const steps: SetupStep[] = ['theme', 'models'];
   if (fontStep) steps.push('fonts');
-  if (options.license) steps.push('license');
+  if (options.account) steps.push('account');
   if (options.taste) steps.push('taste');
   if (options.autofix) steps.push('autofix');
   return steps;

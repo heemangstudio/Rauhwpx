@@ -31,9 +31,9 @@ import {
 } from './catalog.ts';
 import { createHippo } from './hippo.ts';
 import { autofixApi, autofixSettings, onAutofixSettings, updateAutofixSettings } from '../autofix/autofix.ts';
-import type { DesktopLicenseApi, LicenseStatus } from '../agent-sidebar/settings-license.ts';
-import { createLicenseStep, needsLicenseStep } from './license-step.ts';
-import { holdInitialSetup, markLicensedHere, releaseInitialSetup } from './active.ts';
+import { accountStore, type AccountStore } from '../account/account-store.ts';
+import { createAccountStep } from './account-step.ts';
+import { holdInitialSetup, markLicensedHere, releaseInitialSetup, wasLicensedHere } from './active.ts';
 import {
   completeInitialSetup,
   loadInitialSetup,
@@ -49,6 +49,7 @@ import {
   findHancomFonts,
   HANCOM_OFFICE_URL,
   HIPPO_LINES,
+  needsAccountStep,
   planSteps,
   type FontStepKind,
   type SetupStep,
@@ -56,7 +57,7 @@ import {
 
 const FONT_SEARCH_TIMEOUT_MS = 30_000;
 /** 활성화를 축하한 뒤 마지막 장면으로 넘어가기까지. */
-const LICENSED_HOLD_MS = 1_400;
+const SIGNED_IN_HOLD_MS = 1_400;
 
 const THEME_CHOICES: ReadonlyArray<{ mode: ThemeMode; label: string }> = [
   { mode: 'system', label: '시스템 설정' },
@@ -124,8 +125,8 @@ export interface InitialSetupDeps {
     get(): Promise<TasteSettings | null>;
     set(patch: Partial<TasteSettings>): Promise<TasteSettings | null>;
   } | null;
-  /** 데스크톱 라이선스. 생략하면 rhwpDesktop.license 를 쓰고, null 이면 라이선스 장이 없다. */
-  license?: DesktopLicenseApi | null;
+  /** 데스크톱 계정. 생략하면 창의 계정 상태를 쓰고, null 이면 계정 장이 없다. */
+  account?: AccountStore | null;
   /** 끝내거나 건너뛰어 다시 열 일이 없어졌을 때. */
   onFinished?: () => void;
 }
@@ -159,23 +160,22 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   let themeStep: InitialSetupRecord['themeStep'] = record.themeStep;
   let fontStepState: InitialSetupRecord['fontStep'] = record.fontStep;
   let fontSearch: 'idle' | 'searching' | 'found' | 'missing' = 'idle';
-  const licenseApi = deps.license === undefined
-    ? (window as Window & { rhwpDesktop?: { license?: DesktopLicenseApi } }).rhwpDesktop?.license ?? null
-    : deps.license;
-  let licenseStep = false;
+  const account = deps.account === undefined ? accountStore() : deps.account;
+  const accountApi = account?.api ?? null;
+  let accountStep = false;
   const fontStepReady = (deps.detectFontStep ?? detectFontStep)()
     .catch(() => null)
     .then((kind) => {
       fontStep = kind;
-      steps = planSteps(kind, { autofix: withAutofix, license: licenseStep, taste: withTaste });
+      steps = planSteps(kind, { autofix: withAutofix, account: accountStep, taste: withTaste });
       renderFonts();
       renderStep();
     });
-  // 라이선스 장은 처음 본 상태로 정한다. 이 창에서 활성화해도 장은 그대로 남는다.
-  const licenseStepReady = (licenseApi ? licenseApi.getStatus().catch(() => null) : Promise.resolve(null))
+  // 계정 장은 처음 본 상태로 정한다. 이 창에서 로그인해도 장은 그대로 남는다.
+  const accountStepReady = (accountApi ? accountApi.getStatus().catch(() => null) : Promise.resolve(null))
     .then((status) => {
-      licenseStep = needsLicenseStep(status);
-      steps = planSteps(fontStep, { autofix: withAutofix, license: licenseStep, taste: withTaste });
+      accountStep = needsAccountStep(status);
+      steps = planSteps(fontStep, { autofix: withAutofix, account: accountStep, taste: withTaste });
       renderStep();
     });
 
@@ -416,35 +416,34 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   }
   window.addEventListener('focus', onWindowFocus);
 
-  // ── 라이선스: 구매와 키 넣기. 활성화를 잠깐 보여 준 뒤 다음 장으로 넘어간다. ──
-  let licensedTimer: number | undefined;
-  const licensePanel = licenseApi
-    ? createLicenseStep({
-      api: licenseApi,
-      status: null,
-      say: (line) => hippo.say(line),
+  // ── 계정: Google·이메일 로그인. 로그인을 잠깐 보여 준 뒤 다음 장으로 넘어간다. ──
+  let signedInTimer: number | undefined;
+  const accountPanel = account && accountApi
+    ? createAccountStep({
+      store: account,
       cheer: (line) => hippo.cheer(line),
-      onLicensed: () => {
-        markLicensedHere();
-        window.clearTimeout(licensedTimer);
-        licensedTimer = window.setTimeout(() => {
-          if (overlay.isConnected && !celebrating && currentStep() === 'license') void next();
-        }, LICENSED_HOLD_MS);
+      onSignedIn: (status) => {
+        // 유료 요금제로 로그인했으면 선물 창이 환영 인사로 뜬다.
+        if (status.plan.tier !== 'free') markLicensedHere();
+        window.clearTimeout(signedInTimer);
+        signedInTimer = window.setTimeout(() => {
+          if (overlay.isConnected && !celebrating && currentStep() === 'account') void next();
+        }, SIGNED_IN_HOLD_MS);
       },
       onStateChange: () => renderStep(),
     })
     : null;
-  const licenseElement = licensePanel?.element ?? el('div', 'rhwp-setup-panel');
+  const accountElement = accountPanel?.element ?? el('div', 'rhwp-setup-panel');
 
   const body = el('div', 'rhwp-setup-body');
-  body.append(themePanel, modelsPanel, fontsPanel, licenseElement, tastePanel, autofixPanel);
+  body.append(themePanel, modelsPanel, fontsPanel, accountElement, tastePanel, autofixPanel);
   const panels: Record<SetupStep, HTMLElement> = {
     theme: themePanel,
     models: modelsPanel,
     taste: tastePanel,
     autofix: autofixPanel,
     fonts: fontsPanel,
-    license: licenseElement,
+    account: accountElement,
   };
 
   const footer = el('footer', 'rhwp-setup-footer');
@@ -519,7 +518,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     }
     if (step === 'taste') return HIPPO_LINES.taste;
     if (step === 'autofix') return HIPPO_LINES.autofix;
-    if (step === 'license') return licensePanel?.licensed() ? HIPPO_LINES.licensed : HIPPO_LINES.license;
+    if (step === 'account') return accountPanel?.signedIn() ? HIPPO_LINES.signedIn : HIPPO_LINES.account;
     if (fontSearch === 'found') return HIPPO_LINES.found;
     if (fontSearch === 'missing') return offerFolder() ? HIPPO_LINES.missingWithFolder : HIPPO_LINES.missing;
     return HIPPO_LINES.discover;
@@ -538,10 +537,10 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
       return dot;
     }));
     const last = stepIndex >= steps.length - 1;
-    // 키 없이 넘어가면 무료로 쓴다.
-    const later = step === 'license' && !licensePanel?.licensed();
+    // 로그인하지 않고 넘어가면 무료로 쓴다.
+    const later = step === 'account' && !accountPanel?.signedIn();
     primary.textContent = later ? '나중에' : last ? '완료' : '다음';
-    // 키가 없을 때는 구매 칸이 눈에 먼저 띄도록 다음 단추를 낮춘다.
+    // 로그인 전에는 로그인 단추가 눈에 먼저 띄도록 다음 단추를 낮춘다.
     primary.dataset.quiet = later ? 'true' : 'false';
     if (spokenStep !== step && overlay.isConnected) {
       spokenStep = step;
@@ -551,8 +550,8 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
 
   function focusStep(): void {
     const step = currentStep();
-    if (step === 'license' && licensePanel) {
-      licensePanel.focusTarget().focus({ preventScroll: true });
+    if (step === 'account' && accountPanel) {
+      (accountPanel.focusTarget() ?? primary).focus({ preventScroll: true });
       return;
     }
     const panel = panels[step];
@@ -585,11 +584,11 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   /* 마지막 장면: 고를 것은 치우고, 하마가 신나서 완료를 알린다. */
   let celebrating = false;
   function showDone(): void {
-    window.clearTimeout(licensedTimer);
+    window.clearTimeout(signedInTimer);
     save();
     celebrating = true;
-    // 키를 활성화했으면 선물 창이 이 장면 위에 바로 뜨도록 비켜 준다.
-    if (licensePanel?.licensed()) releaseInitialSetup(overlay);
+    // 유료 요금제로 로그인했으면 선물 창이 이 장면 위에 바로 뜨도록 비켜 준다.
+    if (accountPanel?.signedIn() && wasLicensedHere()) releaseInitialSetup(overlay);
     for (const panel of Object.values(panels)) panel.hidden = true;
     dialog.dataset.step = 'done';
     dots.hidden = true;
@@ -603,8 +602,8 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
       finish();
       return;
     }
-    // 글꼴·라이선스 장을 넣을지 알기 전에는 마지막 장을 정하지 않는다.
-    await Promise.all([fontStepReady, licenseStepReady]);
+    // 글꼴·계정 장을 넣을지 알기 전에는 마지막 장을 정하지 않는다.
+    await Promise.all([fontStepReady, accountStepReady]);
     if (stepIndex >= steps.length - 1) {
       showDone();
       return;
@@ -677,8 +676,8 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     },
     dispose(): void {
       disposed = true;
-      window.clearTimeout(licensedTimer);
-      licensePanel?.dispose();
+      window.clearTimeout(signedInTimer);
+      accountPanel?.dispose();
       hippo.dispose();
       stopAutofixSettings();
       document.removeEventListener('keydown', onKeyDown);
