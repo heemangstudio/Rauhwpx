@@ -112,6 +112,35 @@ const FREE_PLAN = Object.freeze({
 
 // ── 루프백 페이지 ────────────────────────────────────────────────────────
 // 브라우저에 남는 작은 페이지. 바깥 자원도 스크립트도 없다.
+// 사이드바 하마(chat-hama.ts)와 같은 픽셀·팔레트를 인라인 SVG 로 그린다.
+const HAMA_COLORS = { o: '#62b3e2', s: '#2f73a0' };
+const HAMA_CLOSED = [
+  '..............',
+  '..............',
+  '.....s........',
+  '.....oooooooo.',
+  '...ooooooooos.',
+  '.oooooooo.....',
+  '.ooooooo......',
+  '.os..os.......',
+];
+const HAMA_OPEN = [
+  '.......ooo....',
+  '.....s.oo.....',
+  '.....oooo.....',
+  '.....oooooos..',
+  '...oooooooo...',
+  '.oooooooo.....',
+  '.ooooooo......',
+  '.os..os.......',
+];
+
+function hamaPixels(art) {
+  return art.flatMap((row, y) => [...row.matchAll(/o+|s+/g)].map((run) => (
+    `<rect x="${run.index}" y="${y}" width="${run[0].length}" height="1" fill="${HAMA_COLORS[run[0][0]]}"/>`
+  ))).join('');
+}
+
 function page(title, line) {
   return `<!doctype html>
 <html lang="ko">
@@ -121,24 +150,43 @@ function page(title, line) {
 <meta name="color-scheme" content="light dark">
 <title>${title}</title>
 <style>
-  :root { color-scheme: light dark; --bg: #ffffff; --fg: #17181a; --muted: #6b6f76; }
-  @media (prefers-color-scheme: dark) { :root { --bg: #161718; --fg: #f2f3f5; --muted: #9a9ea6; } }
+  :root { color-scheme: light dark; --bg: #ffffff; --fg: #17181a; --muted: #6b6f76; --bubble: #eef0f3; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #161718; --fg: #f2f3f5; --muted: #9a9ea6; --bubble: #26282c; } }
   html, body { height: 100%; margin: 0; }
   body {
     display: grid; place-items: center; background: var(--bg); color: var(--fg);
     font-family: system-ui, "Segoe UI", "Malgun Gothic", sans-serif;
     -webkit-font-smoothing: antialiased;
   }
-  main { text-align: center; padding: 24px; }
-  h1 { margin: 0; font-size: 22px; font-weight: 600; letter-spacing: -0.01em; }
-  h1 + p { margin-top: 8px; }
-  p { margin: 0; font-size: 15px; color: var(--muted); }
+  main { display: flex; flex-direction: column; align-items: center; padding: 24px; text-align: center; }
+  .bubble {
+    position: relative; margin: 8px 8px 32px; padding: 10px 14px; background: var(--bubble);
+    box-shadow: -8px 0 var(--bubble), 8px 0 var(--bubble), 0 -8px var(--bubble), 0 8px var(--bubble);
+  }
+  .bubble::before, .bubble::after { content: ""; position: absolute; left: calc(50% + 16px); height: 8px; background: var(--bubble); }
+  .bubble::before { bottom: -16px; width: 16px; }
+  .bubble::after { bottom: -24px; width: 8px; }
+  h1 { margin: 0; font-size: 18px; font-weight: 600; letter-spacing: -0.01em; }
+  h1 + p { margin-top: 6px; }
+  p { margin: 0; font-size: 14px; color: var(--muted); }
+  svg { display: block; width: 112px; height: 64px; shape-rendering: crispEdges; }
+  .mouth-open { animation: talk-open 1.2s step-end 3; }
+  .mouth-closed { visibility: hidden; animation: talk-closed 1.2s step-end 3; }
+  @keyframes talk-open { 0%, 50% { visibility: visible; } 25%, 75% { visibility: hidden; } }
+  @keyframes talk-closed { 0%, 50% { visibility: hidden; } 25%, 75% { visibility: visible; } }
+  @media (prefers-reduced-motion: reduce) { .mouth-open, .mouth-closed { animation: none; } }
 </style>
 </head>
 <body>
 <main>
+<div class="bubble">
 <h1>${title}</h1>${line ? `
 <p>${line}</p>` : ''}
+</div>
+<svg viewBox="0 0 14 8" aria-hidden="true">
+<g class="mouth-closed">${hamaPixels(HAMA_CLOSED)}</g>
+<g class="mouth-open">${hamaPixels(HAMA_OPEN)}</g>
+</svg>
 </main>
 </body>
 </html>
