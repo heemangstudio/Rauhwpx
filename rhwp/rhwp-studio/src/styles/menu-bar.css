@@ -500,7 +500,6 @@ html.desktop-windows #menu-bar #editor-autofix-manual {
   margin-left: 8px;
 }
 html.desktop-windows #menu-bar #editor-autofix-manual + #editor-command-search { margin-left: 6px; }
-html.desktop-windows #menu-bar .license-pill { margin-left: auto; }
 html.desktop-windows .desktop-menu-toggle {
   width: 28px;
   height: 28px;
@@ -531,7 +530,6 @@ html.desktop-windows :is(.dh-topbar, .ag-fullscreen .ag-workspace-bar, .merge-re
   padding-right: calc(var(--desktop-caption-inset) + 8px);
 }
 @media (max-width: 1100px) {
-  html.desktop-windows #menu-bar .license-pill > :not(.license-pill-action) { display: none; }
   html.desktop-windows #editor-document-title { max-width: calc(100% - 620px); }
 }
 /* 오른쪽 위 고정 도구도 네이티브 창 단추 영역을 비워 둔다. */

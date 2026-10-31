@@ -21,11 +21,13 @@ export interface PlanStatus {
   checkout: Record<PlanSku, PlanCheckoutOption>;
   pendingCheckout: { sku: PlanSku; startedAt: number } | null;
   lastCheckout: { ok: boolean; sku: PlanSku; code?: string } | null;
+  /** 계정에 로그인했는지. 로그아웃이면 무료이고 결제는 sign_in_required 로 막힌다. */
+  signedIn: boolean;
 }
 
 export interface PlanCheckoutResult {
   ok: boolean;
-  code?: 'not_available' | 'busy';
+  code?: 'not_available' | 'busy' | 'sign_in_required';
   status: PlanStatus;
 }
 

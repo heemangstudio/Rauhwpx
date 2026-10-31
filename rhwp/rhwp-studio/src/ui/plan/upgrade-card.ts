@@ -1,32 +1,33 @@
 // 요금제 카드. 무료 / Pro / Hama 를 나란히 두고, 결제는 데스크톱 main 이 연다(rhwpDesktop.plan).
 // 결제를 시작하면 카드는 확인을 기다리고, 요금제가 산 등급으로 바뀌면 잠깐 알리고 닫힌다.
-// 키를 직접 붙여 넣는 길은 rhwpDesktop.license.activate 를 쓴다.
+// 로그아웃 상태의 결제(sign_in_required)는 카드를 닫고 계정 페이지의 로그인으로 보낸 뒤, 로그인하면 카드로 돌아온다.
+// 키를 직접 붙여 넣는 길은 계정(rhwpDesktop.account.redeem)을, 계정 API 가 없는 예전 데스크톱은 license.activate 를 쓴다.
 // 어디서든 window 의 'rhwp:open-plan-card' 이벤트로 연다(detail.focus 로 Pro·Hama 칸을 짚는다).
 import '../agent-sidebar/sheet.css';
 import './upgrade-card.css';
 import { createSheetFrame } from '../agent-sidebar/sheet.ts';
 import { createIcon } from '../agent-sidebar/icons.ts';
+import { openAccountPage } from '../account/account-page.ts';
+import { accountStore, isSignedIn, type AccountStore } from '../account/account-store.ts';
 import { createHamaMark } from './hama-mark.ts';
 import type { DesktopLicenseApi } from '../agent-sidebar/settings-license.ts';
+import { PLAN_CYCLES, planPrice, planSkuAvailable, won, type PlanFamily } from './plan-offers.ts';
 import type { PlanStore } from './plan-store.ts';
 import { tierForSku, type PlanSku, type PlanStatus, type PlanTier } from './plan-types.ts';
 
 export const OPEN_PLAN_CARD_EVENT = 'rhwp:open-plan-card';
-export type PlanCardFocus = 'pro' | 'hama';
+export type PlanCardFocus = PlanFamily;
 
-const DEFAULT_PRICE: Record<PlanSku, number | null> = { proMonthly: 3900, proYearly: 39000, hamaMonthly: 12900, hamaYearly: 139000 };
 const SUCCESS_HOLD_MS = 1200;
 
 const TIER_LABEL: Record<PlanTier, string> = { free: '무료', pro: 'Pro', legacy: '기존 라이선스', hama: 'Hama' };
 const SKU_LABEL: Record<PlanSku, string> = { proMonthly: 'Pro · 월간', proYearly: 'Pro · 연간', hamaMonthly: 'Hama · 월간', hamaYearly: 'Hama · 연간' };
-const PLAN_CYCLES: Record<PlanCardFocus, { monthly: PlanSku; yearly: PlanSku }> = {
-  pro: { monthly: 'proMonthly', yearly: 'proYearly' },
-  hama: { monthly: 'hamaMonthly', yearly: 'hamaYearly' },
-};
 
 export interface PlanCardOptions {
   store: PlanStore;
   license: DesktopLicenseApi | null;
+  /** 키 등록과 로그인. 생략하면 창의 계정 상태를 쓴다. */
+  account?: AccountStore;
   focus?: PlanCardFocus;
 }
 
@@ -36,10 +37,6 @@ export interface PlanCardHandle {
 }
 
 let openCard: { handle: PlanCardHandle; focus(target: PlanCardFocus | undefined): void } | null = null;
-
-function won(value: number): string {
-  return `₩${value.toLocaleString('ko-KR')}`;
-}
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className = '', text = ''): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
@@ -63,6 +60,7 @@ export function openPlanCard(options: PlanCardOptions): PlanCardHandle | null {
   }
   const { store, license } = options;
   const api = store.api!;
+  const account = options.account ?? accountStore();
   const frame = createSheetFrame({
     title: '요금제',
     center: true,
@@ -99,11 +97,25 @@ export function openPlanCard(options: PlanCardOptions): PlanCardHandle | null {
   const status = (): PlanStatus | null => store.status();
 
   function price(sku: PlanSku): number | null {
-    return status()?.checkout[sku]?.priceKrw ?? DEFAULT_PRICE[sku];
+    return planPrice(status(), sku);
   }
 
   function available(sku: PlanSku): boolean {
-    return status()?.checkout[sku]?.available === true;
+    return planSkuAvailable(status(), sku);
+  }
+
+  /** 카드를 닫고 계정 페이지의 로그인으로 보낸다. 로그인하면 같은 칸을 짚은 카드로 돌아온다. */
+  function sendToSignIn(): boolean {
+    const back = focused;
+    const page = openAccountPage({
+      store: account,
+      plan: store,
+      section: 'sign-in',
+      onSignedIn: () => { openPlanCard({ ...options, ...(back ? { focus: back } : {}) }); },
+    });
+    if (!page) return false;
+    finish(false);
+    return true;
   }
 
   async function begin(sku: PlanSku): Promise<void> {
@@ -113,6 +125,10 @@ export function openPlanCard(options: PlanCardOptions): PlanCardHandle | null {
     render();
     try {
       const result = await api.startCheckout(sku);
+      if (result.code === 'sign_in_required') {
+        if (!sendToSignIn()) notice = '먼저 로그인해 주세요.';
+        return;
+      }
       if (result.ok || result.code === 'busy') {
         awaiting = { sku: result.status.pendingCheckout?.sku ?? sku };
         view = 'waiting';
@@ -132,15 +148,16 @@ export function openPlanCard(options: PlanCardOptions): PlanCardHandle | null {
     try { await api.cancelCheckout(); } catch { /* 다음 상태가 다시 그린다 */ }
   }
 
+  /** 계정이 있으면 계정에 키를 등록하고, 예전 데스크톱이면 이 기기에서 키를 활성화한다. */
   async function activateKey(): Promise<void> {
     const key = keyValue.trim();
-    if (!license || !key || keyBusy) return;
+    if ((!account.api && !license) || !key || keyBusy) return;
     keyBusy = true;
     keyError = '';
     render();
     try {
-      const result = await license.activate(key);
-      if (!result.ok) keyError = result.message || '키를 활성화하지 못했어요';
+      const result = account.api ? await account.api.redeem(key) : await license!.activate(key);
+      if (!result.ok) keyError = ('message' in result && result.message) || '키를 활성화하지 못했어요';
       else {
         awaiting = { sku: null };
         settleIfDone();
@@ -178,7 +195,7 @@ export function openPlanCard(options: PlanCardOptions): PlanCardHandle | null {
     successTimer = window.setTimeout(() => finish(true), SUCCESS_HOLD_MS);
   }
 
-  function planColumn(plan: 'free' | 'pro' | 'hama', tier: PlanTier | null): HTMLElement {
+  function planColumn(plan: 'free' | PlanFamily, tier: PlanTier | null): HTMLElement {
     const column = el('article', 'ag-pricing-col');
     column.dataset.plan = plan;
     const current = tier === plan;
@@ -228,9 +245,11 @@ export function openPlanCard(options: PlanCardOptions): PlanCardHandle | null {
   }
 
   function keyLink(): HTMLButtonElement | null {
-    if (!license) return null;
+    if (!account.api && !license) return null;
     const link = button('ag-pricing-link', '키 직접 입력');
     link.addEventListener('click', () => {
+      // 키는 계정에 붙는다. 로그아웃이면 먼저 로그인한다.
+      if (account.api && !isSignedIn(account.status()) && sendToSignIn()) return;
       view = 'key';
       keyError = '';
       render();
@@ -286,7 +305,7 @@ export function openPlanCard(options: PlanCardOptions): PlanCardHandle | null {
     input.setAttribute('aria-label', '라이선스 키');
     input.value = keyValue;
     input.disabled = keyBusy;
-    const submit = el('button', 'ag-pricing-btn ag-pricing-btn-primary', '활성화');
+    const submit = el('button', 'ag-pricing-btn ag-pricing-btn-primary', account.api ? '등록' : '활성화');
     submit.type = 'submit';
     submit.disabled = keyBusy || !keyValue.trim();
     input.addEventListener('input', () => {
