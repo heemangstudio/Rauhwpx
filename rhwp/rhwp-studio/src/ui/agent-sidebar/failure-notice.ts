@@ -22,8 +22,7 @@ import {
 import { createRetryEscalation } from '../autofix/autofix.ts';
 import type { AutofixButton, AutofixButtonOptions } from '../autofix/autofix-button.ts';
 
-export type FailureActionId = 'login' | 'settings' | 'usage' | 'retry' | 'resume' | 'cancel-resume' | 'autofix'
-  | 'byok' | 'rau-upgrade';
+export type FailureActionId = 'login' | 'settings' | 'usage' | 'retry' | 'resume' | 'cancel-resume' | 'autofix';
 
 export interface FailureAction {
   id: FailureActionId;
@@ -58,8 +57,6 @@ export interface FailureViewContext {
   /** 같은 실패의 다시 시도가 두 번 실패했다 */
   escalated?: boolean;
   timeZone?: string;
-  /** 호스팅 Rau 를 체험으로 쓰는 중이다 — 크레딧이 떨어지면 다시 채워지지 않는다. */
-  rauTrial?: boolean;
 }
 
 export interface FailureView {
@@ -109,27 +106,6 @@ export function formatResetAt(at: number, now: number, timeZone?: string): strin
   }).format(at);
 }
 
-/** `[rau-credits:2026-11-30T15:00:00.000Z]` — 허브가 크레딧이 떨어진 턴 실패에 붙이는 꼬리표. */
-const RAU_CREDITS_TAG = /\[rau-credits:([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+(?:Z|[+-][0-9]{2}:[0-9]{2}))\]/;
-
-/** 호스팅 Rau 의 크레딧을 다 쓴 실패. 코드가 없던 실패도 꼬리표로 알아본다. */
-export function isRauCreditsFailure(failure: Pick<ProviderFailure, 'code' | 'message'>): boolean {
-  return failure.code === 'rau_credits_exhausted' || RAU_CREDITS_TAG.test(failure.message);
-}
-
-/** 크레딧이 다시 채워지는 시각. 실패에 실린 값, 없으면 문구의 꼬리표. */
-export function rauCreditsResetAt(failure: Pick<ProviderFailure, 'message' | 'resetAt'>): number | null {
-  if (failure.resetAt !== null) return failure.resetAt;
-  const iso = RAU_CREDITS_TAG.exec(failure.message)?.[1];
-  const at = iso ? Date.parse(iso) : NaN;
-  return Number.isFinite(at) && at > 0 ? at : null;
-}
-
-/** 11월 30일 */
-function monthDay(at: number, timeZone?: string): string {
-  return new Intl.DateTimeFormat('ko-KR', { timeZone, month: 'long', day: 'numeric' }).format(at);
-}
-
 /** 내 OpenRouter 키의 크레딧 부족. own_credits 는 다음 요청이 선물 크레딧으로 간다. */
 function isOpenRouterCredits(failure: ProviderFailure): boolean {
   return failure.code === 'openrouter_credits' || failure.code === 'own_credits';
@@ -142,10 +118,8 @@ function isPiSetupFailure(failure: ProviderFailure): boolean {
 function titleFor(failure: ProviderFailure, label: string, origin: string): string {
   switch (failure.class) {
     case 'auth_required':
-      if (failure.code === 'RAU_AGENT_NOT_ACTIVE') return 'Rau를 쓸 수 없어요';
       return isPiSetupFailure(failure) ? 'Pi 연결 설정이 필요해요' : `${label} 로그인이 필요해요`;
     case 'usage_limit':
-      if (isRauCreditsFailure(failure)) return 'Rau 크레딧을 모두 썼어요';
       if (failure.code === 'gift_credits') return '무료 크레딧을 다 썼어요';
       return isOpenRouterCredits(failure) ? 'OpenRouter 크레딧이 부족해요' : `${label} 사용 한도에 도달했어요`;
     case 'provider_error':
@@ -192,20 +166,8 @@ export function failureView(failure: ProviderFailure, origin: string, ctx: Failu
   let retryAllowed = failure.retryable;
   const settingsCodes = failure.code === 'cli_missing' || failure.code === 'PI_MODEL_MISSING'
     || (failure.code !== null && MODEL_CODES.has(failure.code));
-  if (isRauCreditsFailure(failure)) {
-    // 다시 보내도 같은 결과다. 다음 초기화를 기다리거나 내 AI 로 옮긴다. 체험은 다시 채워지지 않으니 업그레이드를 권한다.
-    const resetAt = rauCreditsResetAt(failure);
-    if (ctx.rauTrial) actions.push({ id: 'rau-upgrade', label: '업그레이드' });
-    else if (resetAt !== null && resetAt > ctx.now) line = `${monthDay(resetAt, ctx.timeZone)}에 다시 채워져요`;
-    actions.push({ id: 'byok', label: '내 AI로 전환', quiet: actions.length > 0 });
-    return { title, line, actions, detail, compact: false };
-  }
   switch (failure.class) {
     case 'auth_required':
-      if (failure.code === 'RAU_AGENT_NOT_ACTIVE') {
-        actions.push({ id: 'rau-upgrade', label: '업그레이드' }, { id: 'byok', label: '내 AI로 전환', quiet: true });
-        break;
-      }
       if (isPiSetupFailure(failure)) {
         actions.push({ id: 'settings', label: '설정 열기' });
       } else if (ctx.reconnected) {
@@ -302,7 +264,6 @@ export function failureQueueHold(
       return { reason: 'failed', detail: isPiSetupFailure(failure) ? 'Pi 설정 필요' : `${label} 로그인 필요` };
     case 'usage_limit': {
       if (isOpenRouterCredits(failure)) return { reason: 'failed', detail: 'OpenRouter 크레딧 부족' };
-      if (isRauCreditsFailure(failure)) return { reason: 'failed', detail: 'Rau 크레딧 소진' };
       const future = ctx.resetAt !== null && ctx.resetAt > ctx.now;
       return {
         reason: 'failed',
@@ -488,10 +449,7 @@ export function createFailureNotice(view: FailureView, options: FailureNoticeOpt
   close.setAttribute('aria-label', '알림 닫기');
   close.addEventListener('click', () => handlers.onDismissChange(true));
   head.append(close);
-  if (view.line) {
-    const line = el('div', 'ag-failure-line', view.line);
-    root.append(line);
-  }
+  if (view.line) root.append(el('div', 'ag-failure-line', view.line));
   return root;
 }
 
@@ -588,10 +546,6 @@ export interface FailureNoticeControllerDeps {
   resend(retry: ThreadRetryPayload, failure: ProviderFailure): boolean;
   /** 오류 제보를 연다(데스크톱). 없으면 제보 단추를 두지 않는다. */
   reportIssue?: () => void;
-  /** 호스팅 Rau 를 체험으로 쓰는 중인지 (크레딧 알림의 조치가 달라진다). */
-  rauTrial?: () => boolean;
-  /** 내 AI(BYOK)로 옮긴다 (프로바이더 전환과 같은 길). 키가 없으면 BYOK 설정을 연다. */
-  switchToByok?: () => void;
   /** 자동 수정(데스크톱). ready 는 지금 단추를 세워도 되는지(설정에서 켬). */
   autofix?: {
     ready(): boolean;
@@ -687,7 +641,6 @@ export function createFailureNoticeController(deps: FailureNoticeControllerDeps)
       resumeBlocked: blocked.has(message),
       autofix: deps.autofix?.ready() === true,
       escalated: escalated.has(message),
-      ...(isRauCreditsFailure(message.failure) ? { rauTrial: deps.rauTrial?.() === true } : {}),
     });
   }
 
@@ -831,13 +784,6 @@ export function createFailureNoticeController(deps: FailureNoticeControllerDeps)
       case 'cancel-resume':
         cancelResume(deps.thread().id);
         refresh();
-        break;
-      case 'byok':
-        deps.switchToByok?.();
-        break;
-      case 'rau-upgrade':
-        // 요금제 카드는 앱 쪽이 이 이벤트로 띄운다.
-        window.dispatchEvent(new CustomEvent('rhwp:open-plan-card', { detail: { focus: 'rau' } }));
         break;
     }
   }

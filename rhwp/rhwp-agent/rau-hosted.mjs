@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 /**
  * 호스팅 Rau-0.1 학습 (Rau 요금제·Rau 체험). 데스크톱 main 프로세스가 계정 lease 로 서버(/v1/rau/learn)에 묻고,
  * 허브는 결과만 받는다. lease 와 공급자 키는 허브로 오지 않는다. 데스크톱이 아니면(브라우저 Studio) 쓸 수 없고 내 계정
- * 경로만 쓴다. Rau 에이전트(rau-agent-hosted.mjs)와는 다른 경로다.
+ * 경로만 쓴다.
  *
  * 기억하는 것
  * - rau_plan_required: 계정·라이선스가 바뀌거나 REFUSAL_MS 가 지날 때까지 묻지 않는다. 업그레이드 안내는 거절마다 한 번.

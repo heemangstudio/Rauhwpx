@@ -27,7 +27,7 @@ const SKU_LABEL: Record<PlanSku, string> = { hamaMonthly: 'Hama · 월간', hama
 const FEATURES: Record<'free' | PlanFamily, string[]> = {
   free: ['문서 편집'],
   hama: ['내 AI 연결'],
-  rau: ['AI 포함', '매달 크레딧', 'Rau 모드'],
+  rau: ['Hama의 모든 기능', 'Rau 모드'],
 };
 
 /** Rau 마크(앱 아이콘의 Rau 글리프). */

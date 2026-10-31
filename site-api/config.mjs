@@ -76,7 +76,7 @@ export const DEFAULT_PAYMENT_GRACE_DAYS = 10;
 export const DEFAULT_PAYMENT_GRACE_MAX_DAYS = 14;
 /** Hama (bring your own AI): monthly ₩3,900 (no option on Groble) and yearly ₩39,000. `id:months:priceKrw[:optionId]`. */
 export const DEFAULT_HAMA_PRODUCTS = 'SfYBy5:1:3900,vdw3HN:12:39000:8JF8jD';
-/** Rau (hosted AI included): monthly ₩14,900 and yearly ₩149,000. */
+/** Rau (Hama plus Rau mode): monthly ₩14,900 and yearly ₩149,000. */
 export const DEFAULT_RAU_PRODUCTS = 'R3n8zG:1:14900:t3QJ4b,atqjpJ:12:149000:nqSZ94';
 export const DEFAULT_RAU_UPGRADE_URL = 'https://heemangstudios.com/pricing.html#rau';
 /** Groble's buyer 주문조회 page, where a buyer sees the subscription and pays again. */
@@ -357,7 +357,7 @@ export const DEFAULT_RAU_DEEPSEEK_PROVIDER = 'deepinfra';
 export const DEFAULT_RAU_MONTHLY_ALLOWANCE_USD = 8;
 
 /**
- * Hosted Rau (the Rau agent and Rau-0.1) from env. RAU_MODEL is an ordered comma list of `haiku` and
+ * Hosted Rau (Rau-0.1) from env. RAU_MODEL is an ordered comma list of `haiku` and
  * `deepseek`: the first runs every call, the rest are fallbacks. An old pinned OpenRouter id (it has a
  * `/`) is ignored with a warning, so a variable left from the previous setup never stops the server.
  * `warnings` are logged once at startup. Hosted Rau runs when it is not turned off and the chosen

@@ -58,7 +58,6 @@ import { typingActivity, type TypingActivity } from '../ui/agent-sidebar/typing-
 import { provideLocalPasswordsApi } from '../ui/agent-sidebar/browser-local-passwords.ts';
 import { createPreviewLocalPasswords } from './mock-local-passwords.ts';
 import { createMockGift, mockGiftMode } from './mock-gift.ts';
-import { mockRauAgentMode, mockRauAgentModes, mockRauAgentStatus, type MockRauAgentMode } from './mock-rau-agent.ts';
 import { createMockAutofix, mockAutofixOutcomes } from './mock-autofix.ts';
 import { setAutofixApi, type AutofixStatus } from '../ui/autofix/autofix.ts';
 import { createMockLicense, mockLicenseMode } from './mock-license.ts';
@@ -271,20 +270,12 @@ const mock = createMockBridge(report, () => {
     restoreState.ready.add(restoreState.turnKey);
     notifyRestore();
   }
-}, { liveChat, piGift: () => mockGift?.active() === true, rauAgent: mockRauAgentStatus(mockRauAgentMode(params)) });
+}, { liveChat, piGift: () => mockGift?.active() === true });
 mockGift?.api.onChange(() => mock.syncPiStatus());
-const rauDesktop = params.has('rauAgent');
-/** 잠긴 Rau 를 누르면 앱이 띄울 요금제 카드 요청. 요금제 대역이 있으면 진짜 카드가 뜨므로 기록만 한다. */
-const planCardRequests: unknown[] = [];
-window.addEventListener('rhwp:open-plan-card', (event) => {
-  planCardRequests.push((event as CustomEvent).detail);
+/** 업그레이드 단추가 앱에 띄워 달라는 요금제 카드. 요금제 대역이 있으면 진짜 카드가 뜨므로 기록만 한다. */
+window.addEventListener('rhwp:open-plan-card', () => {
   if (!mockPlan) report('Plan card placeholder');
 });
-/** `sidebarPreview.setRauAgent('exhausted')` — 호스팅 Rau 상태를 바꿔 rau-agent-status 를 다시 보낸다. */
-function setRauAgent(mode: MockRauAgentMode): void {
-  if (!mockRauAgentModes.includes(mode)) throw new Error(`rauAgent mode: ${mockRauAgentModes.join(', ')}`);
-  mock.setRauAgentStatus(mockRauAgentStatus(mode));
-}
 /** 자동 수정(데스크톱). `autofix=fixed|failed|unavailable|off|undecided`, 없으면 웹 빌드처럼 단추가 없다. */
 const mockAutofix = createMockAutofix(params);
 setAutofixApi(mockAutofix?.api ?? null);
@@ -659,8 +650,6 @@ const sidebar = initAgentSidebar({
   turnRestore,
   gift: mockGift?.api ?? null,
   license: mockLicense?.api ?? null,
-  // `rauAgent=` 를 주면 데스크톱 앱이다 — active·trial 이 아니면 잠긴 Rau 항목이 보인다. 생략하면 웹 Studio 라 항목이 없다.
-  desktopApp: rauDesktop,
   rau: mockRau,
   plan: mockPlan?.api ?? null,
   // 웹 빌드처럼 창 세션만 안다(앱 실행 id 는 데스크톱만). 이 사이드바가 창의 기본 허브 세션을 쓴다.
@@ -951,8 +940,6 @@ if (parallel === 'locked') {
 // Typed hooks for browser checks and custom scenario scripts.
 const preview = { ...mock, sidebar, versions, eventBus, enterFocusMode, undoState, restoreState, navigation, typingHold, linkCalls, detachCalls,
   gift: mockGift,
-  setRauAgent,
-  planCardRequests,
   autofix: mockAutofix,
   plan: mockPlan,
   account: mockAccount,

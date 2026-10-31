@@ -265,7 +265,7 @@ test('a key with an active plan in the frozen hama.json keeps Rau while it is li
   assert.equal((await broken.svc.activate({ key, deviceId: 'mac-legacy-03' })).rau.eligible, false, 'an unreadable hama.json fails closed');
 });
 
-test('key email: Hama names the own-AI connection, Rau the included AI, credits and Rau mode; neither names a model or vendor', () => {
+test('key email: Hama names the own-AI connection, Rau the own-AI connection and Rau mode with no included AI; neither names a model or vendor', () => {
   for (const [edition, kind] of [['pro', 'hama'], ['basic', 'hama'], ['hama', 'rau'], ['rau', 'rau']]) {
     assert.equal(licenseEmailKind({ edition, source: 'groble' }), kind, edition);
     assert.equal(licenseEmailKind({ edition, source: 'groble', emailDelivery: { resend: true } }), 'resend');
@@ -275,7 +275,8 @@ test('key email: Hama names the own-AI connection, Rau the included AI, credits 
   for (const text of ['Hama를 구독해 주셔서 고마워요.', '내 AI 연결', '기기 2대', '매년 자동으로 갱신돼요.']) assert.ok(hama.html.includes(text), text);
   const rau = licenseEmail({ key: 'HAMA-AAAAA-BBBBB-CCCCC-DDDDD-EEEEE', kind: 'rau', expiresAt: MONTH_END, cycleMonths: 1 });
   assert.equal(rau.subject, '[HamaEditor] Rau 라이선스 키를 보내드려요');
-  for (const text of ['Rau를 구독해 주셔서 고마워요.', 'AI 포함', '크레딧', 'Rau 모드', '기기 2대', '매달 자동으로 갱신돼요.']) assert.ok(rau.html.includes(text), text);
+  for (const text of ['Rau를 구독해 주셔서 고마워요.', '내 AI 연결', 'Rau 모드', '기기 2대', '매달 자동으로 갱신돼요.']) assert.ok(rau.html.includes(text), text);
+  for (const text of ['AI 포함', '크레딧']) assert.ok(!rau.html.includes(text), text);
   for (const mail of [hama, rau]) assert.doesNotMatch(`${mail.subject}\n${mail.html}`, VENDORS);
 });
 

@@ -1,7 +1,7 @@
 // 앱 요금제. 데스크톱 main(desktop/plan-manager.mjs)이 정하고 rhwpDesktop.plan 으로 알린다.
 // 이 꼴은 데스크톱 JSON 과 같다. 결제 주소와 ref 는 렌더러로 오지 않는다.
 
-/** free: 편집기만. hama: 내 AI 연결. rau: 호스팅 Rau 에이전트와 Rau 모드(체험 포함). */
+/** free: 편집기만. hama: 내 AI 연결. rau: Hama 에 Rau 모드(Rau-0.1)를 더한다(체험 포함). */
 export type PlanTier = 'free' | 'hama' | 'rau';
 export type PlanSku = 'hamaMonthly' | 'hamaYearly' | 'rauMonthly' | 'rauYearly';
 

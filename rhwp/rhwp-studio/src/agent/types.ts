@@ -22,11 +22,8 @@ import type { TurnInterruptionReason } from './turn-interruption-reason.ts';
 
 export const AGENT_PROTOCOL_VERSION = 5;
 
-/**
- * 'pi' 는 사용자 키로 도는 BYOK 하네스(내 OpenRouter 키·선물 크레딧)이고, 'rau' 는 Rau 플랜(과 Rau 체험)의 호스팅 하네스다.
- * 둘 다 Pi 런타임을 쓰지만 자격·모델·사용량은 따로다.
- */
-export type AgentName = 'claude' | 'codex' | 'pi' | 'rau' | 'grok' | 'cursor' | 'opencode';
+/** 'pi' 는 사용자 키로 도는 BYOK 하네스(내 OpenRouter 키·선물 크레딧)다. */
+export type AgentName = 'claude' | 'codex' | 'pi' | 'grok' | 'cursor' | 'opencode';
 
 /** 활성 턴에서 파생되는 사용자 편집 잠금 상태. */
 export interface AgentEditingLease {
@@ -890,37 +887,6 @@ export interface PiStatus {
   giftOrder?: 'first' | 'after';
 }
 
-/**
- * 호스팅 Rau 를 쓸 수 있는지. active: Rau 플랜이나 Rau 체험이 살아 있다. not_eligible: 서버가 rau_plan_required 로
- * 답했다(무료·Hama 요금제). unavailable: 브라우저 Studio, 서버 꺼짐·404, 네트워크 오류, 라이선스 없음.
- */
-export type RauAgentAvailability = 'active' | 'not_eligible' | 'unavailable';
-
-/** 이번 기간의 Rau 크레딧(USD). resetsAt 은 epoch ms — 플랜은 다음 월 초기화, 체험은 체험이 끝나는 때. */
-export interface RauCredits {
-  allowanceUsd: number;
-  usedUsd: number;
-  remainingUsd: number;
-  resetsAt: number | null;
-}
-
-/**
- * 허브 → Studio `rau-agent-status` 의 스냅샷 (사이트 API `GET /v1/rau/status` 를 정리한 것).
- * 언제나 온다 — active 가 아니면 source·credits 는 null 이고 모델은 비어 있다.
- */
-export interface RauAgentStatus {
-  availability: RauAgentAvailability;
-  source: 'plan' | 'trial' | null;
-  credits: RauCredits | null;
-  /** 크레딧을 다 써서 다음 초기화까지 보낼 수 없다. */
-  exhausted: boolean;
-  /** Rau 하네스의 모델. 언제나 하나(id 'rau', 이름 'Rau')다. */
-  models: PiModelConfig[];
-  defaultModelId: string;
-  /** Pi 런타임이 설치되어 있어 바로 채팅할 수 있다. */
-  ready: boolean;
-}
-
 /** 앱이 소유하는 연구 브라우저의 연결 상태와 세대. */
 export interface BrowserRuntime {
   runtimeId: string;
@@ -1407,8 +1373,6 @@ export type SidebarEvent =
   | { type: 'agent-setup-error'; agent: AgentName | null; authRunId?: string; code: string; message: string; detail?: string }
   | { type: 'usage-report'; usage: UsageSummary }
   | { type: 'pi-status'; status: PiStatus }
-  /** 허브 → Studio `rau-agent-status`. Rau 자격·크레딧이 바뀌었다 (요청의 답이거나 크레딧·라이선스 변화). */
-  | { type: 'rau-agent-status'; status: RauAgentStatus }
   | {
       type: 'pi-setup-progress';
       requestId: string;

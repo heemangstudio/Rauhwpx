@@ -2447,6 +2447,24 @@ button.ag-skill-copy {
   color: var(--ag-opencode);
 }
 
+/* 피커는 언제나 한 줄이다. 좁아지면 먼저 여백을 줄이고, 그래도 모자라면 고르지 않은 항목은 마크만 남긴다. */
+.ag-config-panel .ag-provider-menu {
+  flex-wrap: nowrap;
+  container-type: inline-size;
+}
+
+@container (max-width: 320px) {
+  .ag-config-panel .ag-provider-menu .ag-provider-item {
+    padding-inline: 5px;
+  }
+}
+
+@container (max-width: 262px) {
+  .ag-provider-item:not([aria-checked='true']) .ag-provider-name {
+    display: none;
+  }
+}
+
 .ag-model-item:hover,
 .ag-model-item:focus-visible {
   background: var(--ag-hover);

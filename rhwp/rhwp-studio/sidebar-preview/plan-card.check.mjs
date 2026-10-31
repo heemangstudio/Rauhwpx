@@ -63,7 +63,7 @@ export async function checkPlanCard({ page, open, screenshot }) {
   assert.equal(await page.$eval('.ag-pricing-col[data-plan="free"]', (col) => col.dataset.current), 'true');
   const columnText = (plan) => page.$eval(`.ag-pricing-col[data-plan="${plan}"] .ag-pricing-features`, (list) => [...list.children].map((li) => li.textContent));
   assert.deepEqual(await columnText('hama'), ['내 AI 연결']);
-  assert.deepEqual(await columnText('rau'), ['AI 포함', '매달 크레딧', 'Rau 모드']);
+  assert.deepEqual(await columnText('rau'), ['Hama의 모든 기능', 'Rau 모드']);
   const cardText = await page.$eval('.ag-pricing-card', (card) => card.textContent);
   assert.doesNotMatch(cardText, /Haiku|Claude|DeepSeek|Codex|OpenRouter/, 'no vendor or model names');
   const rauButtons = await page.$$eval('.ag-pricing-col[data-plan="rau"] button', (buttons) => buttons.map((b) => [b.dataset.sku, b.disabled, b.textContent]));
