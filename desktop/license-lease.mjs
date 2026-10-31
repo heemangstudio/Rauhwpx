@@ -127,9 +127,9 @@ export function verifyLease(lease, {
 
 // 계정 lease(v2). 같은 서명 키와 kid 로 서명한다. 계약은 site-api/license-lease.mjs 의 signAccountLease 와 같다.
 //   payload = { v: 2, kid, accountId, deviceId, keyId, tier, plan, issuedAt, expiresAt[, licenseExpiresAt][, paymentGraceEndsAt] }
-// keyId 는 계정의 대표 라이선스(없으면 null), tier 는 'free' | 'pro' | 'legacy' | 'hama'. v1 검증은 v2 를, v2 검증은 v1 을 받지 않는다.
+// keyId 는 계정의 대표 라이선스(없으면 null), tier 는 'free' | 'basic' | 'legacy' | 'hama'(예전 이름 'pro' 도 받는다). v1 검증은 v2 를, v2 검증은 v1 을 받지 않는다.
 export const ACCOUNT_LEASE_VERSION = 2;
-export const ACCOUNT_TIERS = Object.freeze(['free', 'pro', 'legacy', 'hama']);
+export const ACCOUNT_TIERS = Object.freeze(['free', 'basic', 'pro', 'legacy', 'hama']);
 const ACCOUNT_PLANS = new Set(['monthly', 'annual', 'lifetime']);
 
 function optionalEpoch(value) {

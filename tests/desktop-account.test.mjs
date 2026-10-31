@@ -106,7 +106,7 @@ const portOf = (server) => callsTo(server, '/v1/account/auth/start').at(-1).body
 
 test('account leases v2 verify offline and never pass as v1 leases', () => {
   const payload = {
-    v: 2, kid: DEV_KEYPAIR.kid, accountId: 'acct_1', deviceId: 'dev-a', keyId: 'lic_1', tier: 'pro', plan: 'monthly',
+    v: 2, kid: DEV_KEYPAIR.kid, accountId: 'acct_1', deviceId: 'dev-a', keyId: 'lic_1', tier: 'basic', plan: 'monthly',
     issuedAt: T0, expiresAt: T0 + 7 * DAY,
   };
   const lease = signLease(payload);
@@ -164,11 +164,11 @@ test('sign-in goes through the browser and the loopback with PKCE, and only the 
   const code = new URL(location).searchParams.get('code');
   assert.ok(!file.includes(code) && !file.includes(tokenCall.verifier));
 
-  const key = server.issueKey({ edition: 'pro', plan: 'monthly' });
+  const key = server.issueKey({ edition: 'basic', plan: 'monthly' });
   const redeemed = await manager.redeem(key);
-  assert.deepEqual([redeemed.ok, redeemed.alreadyLinked, redeemed.status.plan.tier], [true, false, 'pro']);
+  assert.deepEqual([redeemed.ok, redeemed.alreadyLinked, redeemed.status.plan.tier], [true, false, 'basic']);
   const lease = await manager.currentLease();
-  assert.equal(verifyAccountLease(lease, { publicKeys: DEV_PUBLIC_KEYS, deviceId: tokenCall.device.id, accountId: status.account.id, now: T0 }).payload.tier, 'pro');
+  assert.equal(verifyAccountLease(lease, { publicKeys: DEV_PUBLIC_KEYS, deviceId: tokenCall.device.id, accountId: status.account.id, now: T0 }).payload.tier, 'basic');
   assert.equal(leases.at(-1), lease);
   for (const shown of [started.status, status, redeemed.status]) {
     const text = JSON.stringify(shown);
@@ -404,19 +404,19 @@ test('activity is counted once per id, sent in batches every 5 minutes, retried 
 test('the local license key links to the account once, and every outcome shows on the status', async (t) => {
   const ctx = await setup(t);
   const { server, local } = ctx;
-  local.key = server.issueKey({ edition: 'pro', plan: 'annual' });
+  local.key = server.issueKey({ edition: 'basic', plan: 'annual' });
   await signIn(ctx);
   let status = await waitFor(async () => {
     const current = await ctx.manager.getStatus();
     return current.localKey?.state === 'linked' ? current : null;
   }, 'linked key');
-  assert.deepEqual([status.plan.tier, status.localKey.maskedKey], ['pro', `${local.key.slice(0, 10)}-•••••-•••••-•••••-${local.key.slice(-5)}`]);
+  assert.deepEqual([status.plan.tier, status.localKey.maskedKey], ['basic', `${local.key.slice(0, 10)}-•••••-•••••-•••••-${local.key.slice(-5)}`]);
   assert.equal(JSON.parse(await readFile(join(ctx.dir, 'account.json'), 'utf8')).migratedKeyHash, licenseKeyHash(local.key));
   await ctx.manager.licenseChanged();
   assert.equal(callsTo(server, '/v1/account/redeem').length, 1, 'a linked key is not redeemed again');
 
   server.createSession({ email: 'other@example.com', deviceId: 'other-device-1' });
-  local.key = server.issueKey({ edition: 'pro', email: 'other@example.com' });
+  local.key = server.issueKey({ edition: 'basic', email: 'other@example.com' });
   await ctx.manager.licenseChanged();
   status = await ctx.manager.getStatus();
   assert.equal(status.localKey.state, 'linked_elsewhere');
@@ -477,13 +477,13 @@ test('profile, devices, claims and account deletion follow the server rules', as
   assert.deepEqual([removed.ok, removed.status.devices.length], [true, 1]);
   assert.equal((await manager.removeDevice('other-device-3')).code, 'device_not_found');
 
-  const orderKey = server.issueKey({ edition: 'pro', plan: 'monthly' });
+  const orderKey = server.issueKey({ edition: 'basic', plan: 'monthly' });
   server.addOrder('ORDER-1', { email: 'buyer@groble.test', key: orderKey });
   server.addOrder('ORDER-2', { email: 'buyer@groble.test' });
   assert.equal((await manager.claim('ORDER-1', 'someone@else.test')).message, '주문을 찾지 못했어요. 주문번호와 Groble 이메일을 확인해 주세요.');
   assert.equal((await manager.claim('ORDER-2', 'buyer@groble.test')).code, 'order_not_ready');
   const claimed = await manager.claim('ORDER-1', 'BUYER@groble.test');
-  assert.deepEqual([claimed.ok, claimed.status.plan.tier, claimed.status.plan.manageUrl], [true, 'pro', 'https://groble.im/manage/purchase']);
+  assert.deepEqual([claimed.ok, claimed.status.plan.tier, claimed.status.plan.manageUrl], [true, 'basic', 'https://groble.im/manage/purchase']);
 
   assert.equal((await manager.deleteAccount('wrong@example.com')).code, 'confirm_mismatch');
   const refused = await manager.deleteAccount('Tester@Example.com');

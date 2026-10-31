@@ -264,7 +264,7 @@ test('the site sells no retired product and every page names the operator', asyn
   }
   // Existing GLJFC9 and Signature keys still renew and validate against these products.
   const { resolveLicenseConfig } = await import('../site-api/config.mjs');
-  const byKind = Object.fromEntries(resolveLicenseConfig({}).products.map((product) => [product.kind, product]));
+  const byKind = Object.fromEntries(resolveLicenseConfig({}).products.filter((product) => !product.edition).map((product) => [product.kind, product]));
   assert.equal(P.CONFIG.CHECKOUT_URLS.signature, `https://groble.im/payment/${byKind.signature.id}`);
   assert.equal(P.CONFIG.CHECKOUT_URLS.annual, `https://groble.im/payment/${byKind.subscription.id}`);
 });
@@ -276,12 +276,13 @@ test('pricing page prices come from CONFIG.PRICES, so the no-JS text cannot drif
   const tagged = [...pricing.matchAll(/data-price="([^"]+)"[^>]*>([^<]*)</g)];
   assert.ok(tagged.length >= 5);
   for (const [, key, text] of tagged) assert.equal(text, P.priceText(key), `data-price="${key}"`);
-  assert.equal(P.priceText('proYearlySaving', { proMonthly: 3900, proYearly: 39000 }), '₩7,800');
-  assert.equal(P.priceText('proYearlyPerMonth', { proMonthly: 3900, proYearly: 39000 }), '₩3,250');
+  assert.equal(P.priceText('basicYearlySaving', { basicMonthly: 3900, basicYearly: 39000 }), '₩7,800');
+  assert.equal(P.priceText('basicYearlyPerMonth', { basicMonthly: 3900, basicYearly: 39000 }), '₩3,250');
   assert.equal(P.priceText('hama', { hama: null }), '미정');
   assert.equal(P.priceText('hama', { hama: 12900 }), '₩12,900');
   assert.equal(P.formatWon(1234567), '₩1,234,567');
-  // The license server's PRO_UPGRADE_URL points at pricing.html#pro.
+  // The license server's BASIC_UPGRADE_URL points at pricing.html#basic; shipped apps still open #pro.
+  assert.match(pricing, /id="basic"/);
   assert.match(pricing, /id="pro"/);
   for (const [, sku] of pricing.matchAll(/data-buy-sku="([^"]+)"/g)) assert.ok(sku in P.CONFIG.CHECKOUT_URLS, sku);
   const hama = pricing.slice(pricing.indexOf('id="hama"'), pricing.indexOf('</article>', pricing.indexOf('id="hama"')));
@@ -290,15 +291,15 @@ test('pricing page prices come from CONFIG.PRICES, so the no-JS text cannot drif
   assert.match(pricing, /bindBuyButtons/);
 });
 
-test('a Pro buy button without a Groble link stays a disabled 곧 출시 button and never navigates', () => {
+test('a Basic buy button without a Groble link stays a disabled 곧 출시 button and never navigates', () => {
   const urls = P.CONFIG.CHECKOUT_URLS;
-  const saved = urls.proMonthly;
+  const saved = urls.basicMonthly;
   const label = { hidden: true };
   const consent = { checked: true, hidden: true, addEventListener() {}, closest: () => label };
   const card = { querySelector: (sel) => (sel === '[data-consent]' ? consent : null) };
   const make = () => ({
     textContent: '곧 출시', attrs: { 'aria-disabled': 'true' }, listeners: {},
-    getAttribute(name) { return name === 'data-buy-sku' ? 'proMonthly' : name === 'data-buy-label' ? 'Groble에서 월간 결제하기' : null; },
+    getAttribute(name) { return name === 'data-buy-sku' ? 'basicMonthly' : name === 'data-buy-label' ? 'Groble에서 월간 결제하기' : null; },
     setAttribute(name, value) { this.attrs[name] = value; },
     addEventListener(type, fn) { this.listeners[type] = fn; },
     closest: () => card,
@@ -306,7 +307,7 @@ test('a Pro buy button without a Groble link stays a disabled 곧 출시 button 
   const location = { href: '' };
   const docWith = (buy) => ({ defaultView: { localStorage: memoryStorage(), location }, querySelectorAll: (sel) => (sel === '[data-buy]' ? [buy] : []) });
   try {
-    urls.proMonthly = '';
+    urls.basicMonthly = '';
     const soon = make();
     P.bindBuyButtons(docWith(soon));
     let prevented = false;
@@ -317,15 +318,15 @@ test('a Pro buy button without a Groble link stays a disabled 곧 출시 button 
     assert.equal(soon.attrs['aria-disabled'], 'true');
     assert.equal(label.hidden, true, 'no consent box for a product that is not on sale');
 
-    urls.proMonthly = 'https://groble.im/payment/PRO-M';
+    urls.basicMonthly = 'https://groble.im/payment/BASIC-M';
     const live = make();
     P.bindBuyButtons(docWith(live));
     assert.equal(live.textContent, 'Groble에서 월간 결제하기');
     assert.equal(live.attrs['aria-disabled'], 'false');
     assert.equal(label.hidden, false);
     live.listeners.click({ preventDefault() {} });
-    assert.match(location.href, /^https:\/\/groble\.im\/payment\/PRO-M\?ref=hama-/);
+    assert.match(location.href, /^https:\/\/groble\.im\/payment\/BASIC-M\?ref=hama-/);
   } finally {
-    urls.proMonthly = saved;
+    urls.basicMonthly = saved;
   }
 });

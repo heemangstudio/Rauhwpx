@@ -83,15 +83,15 @@ test('home offers CLI updates only to signed-in paid members and keeps app updat
       { id: 'codex', fromVersion: '1', targetVersion: '2', status: 'available', message: null },
     ],
   };
-  const plan = (tier: 'free' | 'pro' | 'legacy' | 'hama', signedIn: boolean, agentUnlocked: boolean) => (
+  const plan = (tier: 'free' | 'basic' | 'legacy' | 'hama', signedIn: boolean, agentUnlocked: boolean) => (
     { tier, signedIn, agentUnlocked } as import('../src/ui/plan/plan-types.ts').PlanStatus
   );
-  for (const restricted of [null, plan('pro', false, true), plan('free', true, false), plan('free', true, true), plan('pro', true, false)]) {
+  for (const restricted of [null, plan('basic', false, true), plan('free', true, false), plan('free', true, true), plan('basic', true, false)]) {
     assert.equal(homeUpdateSign(all, state({ status: 'idle' }), restricted, plain), null);
     const app = homeUpdateSign(all, state({ status: 'available' }), restricted, plain)!;
     assert.deepEqual(app.actions.map((action) => action.id), ['download']);
   }
-  for (const tier of ['pro', 'legacy', 'hama'] as const) {
+  for (const tier of ['basic', 'legacy', 'hama'] as const) {
     const sign = homeUpdateSign(all, state({ status: 'idle' }), plan(tier, true, true), plain)!;
     assert.equal(sign.lines.length, 2);
     assert.deepEqual(sign.actions.map((action) => action.id), ['update-all']);

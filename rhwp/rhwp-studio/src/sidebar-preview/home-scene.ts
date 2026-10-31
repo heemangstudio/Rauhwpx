@@ -1,6 +1,6 @@
 /**
  * `?home=1`: 문서 홈을 표본 최근 문서로 띄운다. 첫 쪽 그림은 열린 문서처럼 캔버스로 그린 표본 종이다.
- * 위 막대의 Hama 입구는 `plan=` 의 요금제 대역을 따르고(Pro·기존 라이선스에만 보인다), 계정 단추는 `account=` 가 있을 때 선다.
+ * 위 막대의 Hama 입구는 `plan=` 의 요금제 대역을 따르고(Basic·기존 라이선스에만 보인다), 계정 단추는 `account=` 가 있을 때 선다.
  * 문서 열기·만들기 같은 동작은 보고만 한다.
  */
 import { createDocumentHome, type DocumentHome } from '../home/document-home.ts';

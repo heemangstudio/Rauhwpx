@@ -8,7 +8,7 @@ import { resolveLicenseConfig } from '../config.mjs';
 import { generateLeaseKeyPair } from '../license-lease.mjs';
 import { licenseEmail } from '../license-email.mjs';
 import { createSiteServer } from '../server.mjs';
-import { proPaid, signedGroblePost } from './fixtures/groble-pro.mjs';
+import { basicPaid, signedGroblePost } from './fixtures/groble-basic.mjs';
 
 const ADMIN = 'admin-token-for-hama-subscription-tests';
 const SECRET = 'whsec_test_hama_subscription';
@@ -22,7 +22,7 @@ const MONTHLY = 'R3n8zG';
 const YEARLY = 'atqjpJ';
 const ON = { HAMA_ENABLED: 'true' };
 
-const hamaPaid = (overrides = {}) => proPaid({
+const hamaPaid = (overrides = {}) => basicPaid({
   merchantUid: 'hama_m1',
   ref: 'hama-sub-1',
   email: 'hama@example.com',
@@ -102,14 +102,14 @@ async function bought(s, event = hamaPaid()) {
 
 test('config: the real product ids and prices are the defaults, env overrides them, and a product on two lists fails startup', () => {
   const config = resolveLicenseConfig({});
-  assert.deepEqual(config.proProducts, [{ id: 'SfYBy5', months: 1 }, { id: 'vdw3HN', months: 12 }]);
+  assert.deepEqual(config.basicProducts, [{ id: 'SfYBy5', months: 1 }, { id: 'vdw3HN', months: 12 }]);
   assert.deepEqual(config.hamaProducts, [{ id: MONTHLY, months: 1 }, { id: YEARLY, months: 12 }]);
   const row = (c, id) => {
     const p = c.products.find((x) => x.id === id);
     return [p.kind, p.edition, p.cycleMonths, p.expectedPrice, p.minAmount];
   };
-  assert.deepEqual(row(config, 'SfYBy5'), ['subscription', 'pro', 1, 3900, 3900]);
-  assert.deepEqual(row(config, 'vdw3HN'), ['subscription', 'pro', 12, 39000, 39000]);
+  assert.deepEqual(row(config, 'SfYBy5'), ['subscription', 'basic', 1, 3900, 3900]);
+  assert.deepEqual(row(config, 'vdw3HN'), ['subscription', 'basic', 12, 39000, 39000]);
   assert.deepEqual(row(config, MONTHLY), ['subscription', 'hama', 1, 12900, 12900]);
   assert.deepEqual(row(config, YEARLY), ['subscription', 'hama', 12, 139000, 139000]);
 
@@ -119,7 +119,7 @@ test('config: the real product ids and prices are the defaults, env overrides th
   assert.deepEqual(row(custom, 'abc').slice(3), [14900, 10000]);
   assert.deepEqual(row(custom, 'def').slice(3), [149000, 149000]);
 
-  assert.throws(() => resolveLicenseConfig({ GROBLE_HAMA_PRODUCT_IDS: 'SfYBy5:1' }), /both pro and hama/);
+  assert.throws(() => resolveLicenseConfig({ GROBLE_HAMA_PRODUCT_IDS: 'SfYBy5:1' }), /both basic and hama/);
   assert.throws(() => resolveLicenseConfig({ GROBLE_HAMA_PRODUCT_IDS: 'abc:6' }), /GROBLE_HAMA_PRODUCT_IDS entry is not id:1 or id:12/);
 });
 
@@ -311,7 +311,7 @@ test('a key bought while HAMA_ENABLED is off still has Rau at the Hama cap, and 
 
 test('a Pro key never enters the Hama plan, and an admin-enrolled manual key is left to the admin', async (t) => {
   const s = await setup(t);
-  await s.webhook(proPaid({ contentId: 'SfYBy5', price: 3900, cycle: 1, ref: 'hama-sub-pro' }));
+  await s.webhook(basicPaid({ contentId: 'SfYBy5', price: 3900, cycle: 1, ref: 'hama-sub-pro' }));
   const pro = await s.activate((await s.byRef('hama-sub-pro')).key, 'mac-pro-00001');
   const refused = await s.hamaStatus(pro.lease);
   assert.deepEqual([refused.status, (await refused.json()).error], [403, 'hama_not_enrolled']);

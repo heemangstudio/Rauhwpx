@@ -519,9 +519,9 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
     const row = el('div', `acct-offer${family === 'hama' ? ' acct-hama-offer' : ''}`);
     row.dataset.plan = family;
     const head = el('div', 'acct-offer-head');
-    head.append(el('h3', 'acct-offer-name', family === 'pro' ? 'Pro' : 'Hama'));
+    head.append(el('h3', 'acct-offer-name', family === 'basic' ? 'Basic' : 'Hama'));
     if (family === 'hama') head.append(createHamaScene('acct-hama-scene'));
-    const copy = el('p', 'acct-offer-description', family === 'pro'
+    const copy = el('p', 'acct-offer-description', family === 'basic'
       ? '내 Codex·Claude를 연결해 문서 작업을 함께해요.'
       : '별도 AI 연결 없이 Hama와 바로 시작해요.');
     const monthlyPrice = planPrice(planStatus, monthly);
@@ -540,9 +540,9 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
         actions.append(soon);
       }
       for (const sku of skus) {
-        const buy = button(sku === yearly ? 'acct-link acct-offer-yearly' : `acct-btn${family === 'pro' ? ' acct-btn-primary' : ''}`, sku === monthly ? '월간 구독' : '연간 구독');
+        const buy = button(sku === yearly ? 'acct-link acct-offer-yearly' : `acct-btn${family === 'basic' ? ' acct-btn-primary' : ''}`, sku === monthly ? '월간 구독' : '연간 구독');
         buy.dataset.sku = sku;
-        buy.setAttribute('aria-label', `${family === 'pro' ? 'Pro' : 'Hama'} ${sku === monthly ? '월간' : '연간'} 구독`);
+        buy.setAttribute('aria-label', `${family === 'basic' ? 'Basic' : 'Hama'} ${sku === monthly ? '월간' : '연간'} 구독`);
         buy.disabled = checkoutBusy !== null || pending != null;
         if (checkoutBusy === sku) setBusy(buy, true);
         buy.addEventListener('click', () => { void checkout(sku); });

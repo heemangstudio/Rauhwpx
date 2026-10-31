@@ -938,13 +938,13 @@ html:is(.desktop-mac, .desktop-windows) .acct-page.acct-embedded {
   font-size: var(--ag-fs-meta);
 }
 
-.acct-offer[data-plan='pro'] .acct-btn-primary {
+.acct-offer[data-plan='basic'] .acct-btn-primary {
   background: #f2f2f2;
   color: #171717;
   box-shadow: inset 0 0 0 1px rgb(0 0 0 / 8%);
 }
 
-.acct-offer[data-plan='pro'] .acct-btn-primary:hover:not(:disabled) {
+.acct-offer[data-plan='basic'] .acct-btn-primary:hover:not(:disabled) {
   background: #fff;
 }
 

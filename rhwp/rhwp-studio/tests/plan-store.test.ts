@@ -11,8 +11,8 @@ function status(tier: PlanTier, agentUnlocked = tier !== 'free'): PlanStatus {
     source: 'live',
     cachedUntil: null,
     checkout: {
-      proMonthly: { available: true, priceKrw: 3900 },
-      proYearly: { available: true, priceKrw: 39000 },
+      basicMonthly: { available: true, priceKrw: 3900 },
+      basicYearly: { available: true, priceKrw: 39000 },
       hamaMonthly: { available: true, priceKrw: 12900 },
       hamaYearly: { available: true, priceKrw: 139000 },
     },
@@ -35,10 +35,10 @@ test('the lock and the home Hama entry follow the tier', () => {
   assert.equal(planLocksAgent(status('free')), true);
   // 라이선스를 강제하지 않는 개발 빌드는 무료여도 열린다.
   assert.equal(planLocksAgent(status('free', true)), false);
-  for (const tier of ['pro', 'legacy', 'hama'] as const) assert.equal(planLocksAgent(status(tier)), false, tier);
+  for (const tier of ['basic', 'legacy', 'hama'] as const) assert.equal(planLocksAgent(status(tier)), false, tier);
   // 유료 사용자는 문서 홈에서 Hama 로 올라간다.
   assert.deepEqual(
-    (['free', 'pro', 'legacy', 'hama'] as const).map((tier) => showsHamaHomeEntry(status(tier))),
+    (['free', 'basic', 'legacy', 'hama'] as const).map((tier) => showsHamaHomeEntry(status(tier))),
     [false, true, true, false],
   );
   assert.equal(showsHamaHomeEntry(null), false);
@@ -61,9 +61,9 @@ test('the store follows status changes and an unknown status does not lock', asy
   await Promise.resolve();
   await Promise.resolve();
   assert.equal(planLocksAgent(store.status()), true);
-  for (const cb of listeners) cb(status('pro'));
+  for (const cb of listeners) cb(status('basic'));
   assert.equal(planLocksAgent(store.status()), false, 'unlocks live on change');
-  assert.deepEqual(seen, ['free', 'pro']);
+  assert.deepEqual(seen, ['free', 'basic']);
   store.dispose();
   assert.equal(listeners.size, 0, 'dispose unsubscribes from the desktop');
 });

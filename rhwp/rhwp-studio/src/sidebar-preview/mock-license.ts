@@ -21,7 +21,7 @@ function freeStatus(): LicenseStatus {
   return { state: 'free', paid: false, edition: null, plan: null, rau: { eligible: false }, license: null, offline: false };
 }
 
-/** 기간이 끝난 연간 키. 편집은 되고 Pro 만 꺼진다. */
+/** 기간이 끝난 연간 키. 편집은 되고 Basic 만 꺼진다. */
 function expiredStatus(): LicenseStatus {
   return {
     ...freeStatus(),
@@ -43,7 +43,7 @@ function licensedStatus(key: string): LicenseStatus {
   return {
     state: 'licensed',
     paid: true,
-    edition: 'pro',
+    edition: 'basic',
     plan: 'annual',
     rau: { eligible: true },
     offline: false,

@@ -56,7 +56,7 @@ test('setup gates provider connection by account and plan, and resumes after che
     await page.click('.ag-pricing-close');
     await finished();
 
-    await start('pro');
+    await start('basic');
     await page.click('[data-path="ai"]');
     await step('models');
     await page.click('.rhwp-setup-primary');

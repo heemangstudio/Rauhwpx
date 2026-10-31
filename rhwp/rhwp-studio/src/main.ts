@@ -3139,7 +3139,7 @@ function templateBridge() {
   return attachedSession.activeChat?.bridge ?? null;
 }
 
-/** 문서 홈의 Hama 입구(Pro·기존 라이선스). 데스크톱 요금제 API 가 없으면 두지 않는다. */
+/** 문서 홈의 Hama 입구(Basic·기존 라이선스). 데스크톱 요금제 API 가 없으면 두지 않는다. */
 function mountHomeHamaEntry(slot: HTMLElement): void {
   const store = sharedPlanStore();
   if (!store) return;

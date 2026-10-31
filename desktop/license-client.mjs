@@ -6,10 +6,14 @@
 //   expired 는 licenseExpiresAt·paymentFixUrl 도 준다. 결제가 실패한 연간 키는 licenseState 'payment_failed' 와
 //   paymentGraceEndsAt 을 함께 받고, 그 끝은 lease 에도 서명되어 있다. 권한은 lease 안의 서명한 licenseExpiresAt 으로 정하고, autoRenew 는 표시에만 쓴다.
 // tier 는 'paid' | 'beta'. 표시에만 쓰고 권한은 서명한 lease 로만 정한다.
-// edition('pro' | 'hama')·plan('monthly' | 'annual' | 'lifetime')·rau.eligible 도 표시에만 쓴다. 예전 서버는 보내지 않는다.
+// edition('basic' | 'hama')·plan('monthly' | 'annual' | 'lifetime')·rau.eligible 도 표시에만 쓴다. 예전 서버는 보내지 않는다.
+// 요청마다 X-Hama-Plan-Names: basic 을 보낸다. 이 머리글을 아는 서버는 edition 'basic'·rau_requires_basic 으로 답하고,
+// 모르는 서버는 예전 이름('pro'·rau_requires_pro)으로 답하므로 앱은 둘 다 받는다.
 export const DEFAULT_LICENSE_API_BASE = 'https://rau-credits-production.up.railway.app';
 export const LICENSE_ERRORS = Object.freeze(['invalid_key', 'revoked', 'expired', 'device_limit', 'not_activated', 'device_id_invalid', 'server_not_configured', 'grandfather_disabled', 'not_eligible', 'install_id_invalid']);
 const REQUEST_TIMEOUT_MS = 10_000;
+/** 서버에 새 요금제 이름(basic)으로 답해 달라고 알린다. 키 서버로 가는 모든 요청에 붙인다. */
+export const PLAN_NAMES_HEADERS = Object.freeze({ 'X-Hama-Plan-Names': 'basic' });
 
 export class LicenseServerError extends Error {
   constructor(code, message = code, { status = null, tier = null, licenseExpiresAt = null, paymentFixUrl = null } = {}) {
@@ -43,7 +47,7 @@ export function createLicenseClient({
     try {
       response = await fetchImpl(`${base}${path}`, {
         method: body === undefined ? 'GET' : 'POST',
-        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json', ...PLAN_NAMES_HEADERS },
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(timeoutMs),
       });

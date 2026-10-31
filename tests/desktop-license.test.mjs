@@ -143,15 +143,15 @@ test('activation turns on paid features, and settings show a masked key', async 
   assert.equal(server.calls.at(-1).body.appVersion, '3.1.0');
   assert.deepEqual(changes.at(-1), 'licensed');
   assert.equal(result.status.paid, true);
-  // 예전 서버와 예전 키는 edition·plan·rau 를 보내지 않는다. Pro 판이 아니고 Rau 자격은 모른다.
+  // 예전 서버와 예전 키는 edition·plan·rau 를 보내지 않는다. Basic 판이 아니고 Rau 자격은 모른다.
   assert.deepEqual([result.status.edition, result.status.plan, result.status.rau], [null, null, { eligible: null }]);
 });
 
-test('the Pro server\'s edition, plan and Rau eligibility are stored and follow the lease', async (t) => {
+test('the Basic server\'s edition, plan and Rau eligibility are stored and follow the lease', async (t) => {
   const { manager, make, server, clock } = await setup(t);
   const key = server.issueKey({ plan: 'monthly', rauEligible: true });
   let status = (await manager.activate(key)).status;
-  assert.deepEqual([status.paid, status.edition, status.plan, status.rau], [true, 'pro', 'monthly', { eligible: true }]);
+  assert.deepEqual([status.paid, status.edition, status.plan, status.rau], [true, 'basic', 'monthly', { eligible: true }]);
   status = await make().status();
   assert.deepEqual([status.paid, status.plan, status.rau.eligible], [true, 'monthly', true], 'kept across restarts');
   server.setOffline(true);
@@ -161,6 +161,33 @@ test('the Pro server\'s edition, plan and Rau eligibility are stored and follow 
   server.setOffline(false);
   status = await make().check({ force: true });
   assert.deepEqual([status.state, status.paid, status.plan], ['licensed', true, 'monthly']);
+});
+
+test('every key server request asks for the basic plan name, and the old pro name still reads as basic', async (t) => {
+  const { dir, server, make } = await setup(t);
+  const sent = [];
+  // 머리글을 모르는 예전 서버: 'pro' 로 답한다.
+  const oldServerFetch = (url, init) => {
+    sent.push(init?.headers?.['X-Hama-Plan-Names']);
+    const { 'X-Hama-Plan-Names': _names, ...headers } = init?.headers ?? {};
+    return server.fetch(url, { ...init, headers });
+  };
+  const manager = createLicenseManager({
+    statePath: join(dir, 'license.json'),
+    client: createLicenseClient({ baseUrl: 'https://keys.test', fetchImpl: oldServerFetch }),
+    publicKeys: DEV_PUBLIC_KEYS,
+    now: () => T0,
+    log: quiet,
+  });
+  const status = (await manager.activate(server.issueKey({ plan: 'monthly' }))).status;
+  assert.ok(sent.length > 0 && sent.every((names) => names === 'basic'), String(sent));
+  assert.equal(status.edition, 'basic');
+  // 예전 앱이 적어 둔 상태 파일의 'pro' 도 basic 으로 읽는다.
+  const file = join(dir, 'license.json');
+  const saved = JSON.parse(await readFile(file, 'utf8'));
+  saved.license.edition = 'pro';
+  await writeFile(file, JSON.stringify(saved));
+  assert.equal((await make().status()).edition, 'basic');
 });
 
 test('activation errors come back as user-facing messages', async (t) => {

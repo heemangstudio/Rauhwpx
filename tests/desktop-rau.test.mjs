@@ -26,16 +26,18 @@ test('learn posts the prompt with the lease as a bearer token and returns the te
   assert.equal(calls[0].url, 'https://keys.test/v1/rau/learn');
   assert.equal(calls[0].init.method, 'POST');
   assert.equal(calls[0].init.headers.Authorization, `Bearer ${LEASE}`);
+  assert.equal(calls[0].init.headers['X-Hama-Plan-Names'], 'basic');
   assert.deepEqual(JSON.parse(calls[0].init.body), { prompt: 'prompt' });
 });
 
 test('every contract error maps to its code with the details the hub needs', async () => {
   const cases = [
     [401, { ok: false, error: 'unauthorized' }, (e) => e.code === 'unauthorized'],
-    [403, { ok: false, error: 'rau_requires_pro', upgradeUrl: 'https://heemangstudios.com/pricing.html?plan=pro' },
-      (e) => e.code === 'rau_requires_pro' && e.upgradeUrl === 'https://heemangstudios.com/pricing.html?plan=pro'],
+    [403, { ok: false, error: 'rau_requires_basic', upgradeUrl: 'https://heemangstudios.com/pricing.html#basic' },
+      (e) => e.code === 'rau_requires_basic' && e.upgradeUrl === 'https://heemangstudios.com/pricing.html#basic'],
+    // 머리글을 모르는 예전 서버의 이름도 같은 거절이다.
     [403, { ok: false, error: 'rau_requires_pro', upgradeUrl: 'https://evil.example/pay' },
-      (e) => e.code === 'rau_requires_pro' && e.upgradeUrl === PRICING_URL],
+      (e) => e.code === 'rau_requires_basic' && e.upgradeUrl === PRICING_URL],
     [402, { ok: false, error: 'rau_cap_reached', capUsd: 3, usedUsd: 3.01, resetsAt: 1_800_000_000_000 },
       (e) => e.code === 'rau_cap_reached' && e.capUsd === 3 && e.usedUsd === 3.01 && e.resetsAt === 1_800_000_000_000],
     [429, { ok: false, error: 'rate_limited' }, (e) => e.code === 'rate_limited'],
@@ -70,7 +72,7 @@ test('the hub gets the result or the error code, never the lease, and nothing is
   const ok = await handleRauRequest(licensed, { type: 'rhwp-rau-request', id: 'r1', operation: 'learn', prompt: 'p' });
   assert.deepEqual(ok, { type: 'rhwp-rau-response', id: 'r1', ok: true, value: { text: 'learned', model: 'rau-0.1' } });
   const refused = await handleRauRequest(licensed, { type: 'rhwp-rau-request', id: 'r2', operation: 'learn', prompt: 'refuse' });
-  assert.deepEqual([refused.ok, refused.code, refused.upgradeUrl], [false, 'rau_requires_pro', 'https://heemangstudios.com/pricing.html']);
+  assert.deepEqual([refused.ok, refused.code, refused.upgradeUrl], [false, 'rau_requires_basic', 'https://heemangstudios.com/pricing.html']);
   for (const response of [ok, refused]) assert.equal(JSON.stringify(response).includes(LEASE), false);
 
   const before = calls.length;
@@ -83,7 +85,7 @@ test('the hub gets the result or the error code, never the lease, and nothing is
 test('Studio asks for eligibility and opens only our upgrade pages, from trusted windows only', async () => {
   const handlers = new Map();
   const opened = [];
-  const { calls, fetchImpl } = fakeFetch([200, { ok: true, eligible: false, reason: 'rau_requires_pro', upgradeUrl: 'https://groble.im/pro', capUsd: 3, usedUsd: 0, remainingUsd: 3, resetsAt: null }]);
+  const { calls, fetchImpl } = fakeFetch([200, { ok: true, eligible: false, reason: 'rau_requires_pro', upgradeUrl: 'https://groble.im/basic', capUsd: 3, usedUsd: 0, remainingUsd: 3, resetsAt: null }]);
   let lease = null;
   installRauHost({
     ipcMain: { handle: (channel, fn) => handlers.set(channel, fn) },
@@ -97,11 +99,11 @@ test('Studio asks for eligibility and opens only our upgrade pages, from trusted
   assert.equal(calls.length, 0);
   lease = LEASE;
   const status = await handlers.get('rau:status')(trusted);
-  assert.deepEqual([status.eligible, status.reason, status.upgradeUrl], [false, 'rau_requires_pro', 'https://groble.im/pro']);
+  assert.deepEqual([status.eligible, status.reason, status.upgradeUrl], [false, 'rau_requires_basic', 'https://groble.im/basic']);
   assert.equal(JSON.stringify(status).includes(LEASE), false);
 
   await handlers.get('rau:open-upgrade')(trusted, 'file:///etc/passwd');
-  await handlers.get('rau:open-upgrade')(trusted, 'https://heemangstudios.com/pricing.html#pro');
-  assert.deepEqual(opened, [PRICING_URL, 'https://heemangstudios.com/pricing.html#pro']);
+  await handlers.get('rau:open-upgrade')(trusted, 'https://heemangstudios.com/pricing.html#basic');
+  assert.deepEqual(opened, [PRICING_URL, 'https://heemangstudios.com/pricing.html#basic']);
   assert.throws(() => handlers.get('rau:status')({}), /Untrusted Rau IPC sender/);
 });

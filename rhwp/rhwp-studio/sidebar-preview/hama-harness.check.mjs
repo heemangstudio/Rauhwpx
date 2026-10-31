@@ -19,10 +19,10 @@ export async function checkHamaHarness({ page, origin, open, screenshot }) {
   await openPicker();
   assert.equal(await shown('.ag-provider-item[data-agent="hama"]'), false, 'web Studio hides Hama');
 
-  // 데스크톱, 라이선스는 있지만 Hama 플랜이 아님(Pro·기존 키) — 사이드바에는 업그레이드 안내가 없다.
+  // 데스크톱, 라이선스는 있지만 Hama 플랜이 아님(Basic·기존 키) — 사이드바에는 업그레이드 안내가 없다.
   await open('reset=1&hama=notenrolled');
   await openPicker();
-  assert.equal(await shown('.ag-provider-item[data-agent="hama"]'), false, 'Pro sees no Hama item');
+  assert.equal(await shown('.ag-provider-item[data-agent="hama"]'), false, 'Basic sees no Hama item');
 
   // 데스크톱, 라이선스 없음(Free) — 잠긴 항목은 플랜 안내를 열고 하네스를 바꾸지 않는다.
   await open('reset=1&hama=off');

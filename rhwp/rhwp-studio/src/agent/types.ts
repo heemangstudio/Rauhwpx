@@ -902,7 +902,7 @@ export interface HamaCapWindow {
 
 /**
  * Hama 를 쓸 수 있는지. active: 플랜이 살아 있다. not_enrolled: 서버가 403 hama_not_enrolled 로 답했다
- * (Free·Pro 포함 Hama 플랜이 아닌 모든 라이선스). unavailable: 브라우저 Studio, 서버 꺼짐·404, 네트워크 오류, 라이선스 없음.
+ * (Free·Basic 포함 Hama 플랜이 아닌 모든 라이선스). unavailable: 브라우저 Studio, 서버 꺼짐·404, 네트워크 오류, 라이선스 없음.
  */
 export type HamaAvailability = 'active' | 'not_enrolled' | 'unavailable';
 
@@ -1353,8 +1353,8 @@ export type SidebarEvent =
   | { type: 'document-memory-changed'; documentId: string; key: string; revision: number }
   /** 취향 학습이 이 채팅의 대화에서 기억을 바꿨다. 턴이 끝난 뒤, 흔히 다른 채팅을 보는 중에 온다. */
   | ({ type: 'taste-learned' } & TasteLearned)
-  /** 허브 → Studio `rau-upgrade`. 호스팅 Rau-0.1 이 Pro 가 아니라고 거절했다. 거절마다 한 번 온다. */
-  | { type: 'rau-upgrade'; reason: 'rau_requires_pro'; upgradeUrl: string | null; threadId: string | null; documentId: string | null }
+  /** 허브 → Studio `rau-upgrade`. 호스팅 Rau-0.1 이 Basic 이 아니라고 거절했다. 거절마다 한 번 온다. */
+  | { type: 'rau-upgrade'; reason: 'rau_requires_basic'; upgradeUrl: string | null; threadId: string | null; documentId: string | null }
   /** 취향 학습 설정 — 요청의 답이거나 다른 창에서 바꾼 알림. */
   | { type: 'taste-settings'; settings: TasteSettings }
   /** 기록에서 배우기가 이 문서의 기억을 바꿨다 (문서를 연 뒤 자동으로, 또는 문서 기억 시트에서). */

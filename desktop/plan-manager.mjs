@@ -1,9 +1,9 @@
-// 앱 요금제(무료·Pro·예전 키·Hama)와 앱 안 결제. 메인 프로세스가 하나 만들어 Studio 의 업그레이드 카드와
+// 앱 요금제(무료·Basic·예전 키·Hama)와 앱 안 결제. 메인 프로세스가 하나 만들어 Studio 의 업그레이드 카드와
 // 에이전트 잠금에 상태(PlanStatus)를 준다.
 //
 // 규칙
 // - 요금제는 계정에서 정한다(라이선스 관리자는 더 이상 정하지 않는다). Hama 가 켜져 있으면 hama, 확인한 계정
-//   lease 가 있으면 그 tier('free'·'pro'·'legacy'·'hama'), 로그인하지 않았으면 free. 라이선스를 보지 않는 개발
+//   lease 가 있으면 그 tier('free'·'basic'·'legacy'·'hama'), 로그인하지 않았으면 free. 라이선스를 보지 않는 개발
 //   빌드(enforce 끔)는 요금제와 상관없이 에이전트를 연다.
 // - 오프라인 캐시: lease 로 정한 요금제를 그 계정 id 와 함께 userData/plan.json 에 적어 두고, 로그인한 채 lease 를
 //   확인할 수 없을 때만(오프라인으로 lease 가 끝남 등) 마지막 확인에서 7일까지 그 요금제를 보여 준다. 화면 표시용일
@@ -18,11 +18,11 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { DEFAULT_LICENSE_API_BASE } from './license-client.mjs';
+import { DEFAULT_LICENSE_API_BASE, PLAN_NAMES_HEADERS } from './license-client.mjs';
 import { PLAN_CHECKOUT } from './plan-config.mjs';
 
 export const PLAN_STATE_FILE = 'plan.json';
-export const PLAN_SKUS = Object.freeze(['proMonthly', 'proYearly', 'hamaMonthly', 'hamaYearly']);
+export const PLAN_SKUS = Object.freeze(['basicMonthly', 'basicYearly', 'hamaMonthly', 'hamaYearly']);
 /** lease 를 확인할 수 없을 때 마지막 확인의 요금제를 보여 주는 기간. */
 export const PLAN_CACHE_MS = 7 * 24 * 60 * 60 * 1000;
 /** 결제 시작 뒤 이 시간 동안은 자주, 그 뒤로는 드물게 묻는다. */
@@ -38,7 +38,9 @@ const VERIFIED_PERSIST_MS = 60 * 60 * 1000;
 const BY_REF_TIMEOUT_MS = 10_000;
 /** Groble sellerReference 규칙. 서버(site-api/licenses.mjs REF_RE)와 같다. */
 const REF_RE = /^[A-Za-z0-9\-_.:=~]{1,128}$/;
-const CACHED_TIERS = new Set(['pro', 'hama', 'legacy']);
+const CACHED_TIERS = new Set(['basic', 'hama', 'legacy']);
+/** 예전 앱이 'pro' 이름으로 적어 둔 결제. 읽을 때 basic 으로 바꾸고 새 이름으로만 쓴다. */
+const LEGACY_SKU_NAMES = Object.freeze({ proMonthly: 'basicMonthly', proYearly: 'basicYearly' });
 /** 다시 물어도 바뀌지 않는 키 연결 실패. 결제 확인을 끝내고 키를 직접 넣게 한다. 그 밖(네트워크·로그아웃 등)은 계속 묻는다. */
 const FINAL_REDEEM_CODES = new Set(['invalid_key', 'revoked', 'invalid_format', 'key_linked_elsewhere']);
 
@@ -70,16 +72,18 @@ function sanitizeState(raw) {
   const state = emptyState();
   if (!raw || typeof raw !== 'object' || Array.isArray(raw) || raw.v !== 1) return state;
   // 계정 id 가 없는 예전 캐시(라이선스로 정한 요금제)는 버린다.
-  if (CACHED_TIERS.has(raw.tier) && typeof raw.accountId === 'string' && raw.accountId
+  const cachedTier = raw.tier === 'pro' ? 'basic' : raw.tier; // Basic 의 예전 이름
+  if (CACHED_TIERS.has(cachedTier) && typeof raw.accountId === 'string' && raw.accountId
     && Number.isSafeInteger(raw.verifiedAt) && raw.verifiedAt > 0) {
-    state.tier = raw.tier;
+    state.tier = cachedTier;
     state.accountId = raw.accountId;
     state.verifiedAt = raw.verifiedAt;
   }
   const pending = raw.pendingCheckout;
-  if (pending && PLAN_SKUS.includes(pending.sku) && typeof pending.ref === 'string' && REF_RE.test(pending.ref)
+  const sku = Object.hasOwn(LEGACY_SKU_NAMES, pending?.sku) ? LEGACY_SKU_NAMES[pending.sku] : pending?.sku;
+  if (pending && PLAN_SKUS.includes(sku) && typeof pending.ref === 'string' && REF_RE.test(pending.ref)
     && Number.isSafeInteger(pending.startedAt) && pending.startedAt > 0) {
-    state.pendingCheckout = { sku: pending.sku, ref: pending.ref, startedAt: pending.startedAt };
+    state.pendingCheckout = { sku, ref: pending.ref, startedAt: pending.startedAt };
   }
   return state;
 }
@@ -251,7 +255,7 @@ export function createPlanManager({
   async function askByRef(ref) {
     const response = await fetchImpl(`${base}/v1/license/by-ref?ref=${encodeURIComponent(ref)}`, {
       method: 'GET',
-      headers: { Accept: 'application/json' },
+      headers: { Accept: 'application/json', ...PLAN_NAMES_HEADERS },
       signal: AbortSignal.timeout(BY_REF_TIMEOUT_MS),
     });
     if (!response.ok) return null;

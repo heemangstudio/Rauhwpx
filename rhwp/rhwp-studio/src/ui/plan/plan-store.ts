@@ -29,9 +29,9 @@ export function planLocksAgent(status: PlanStatus | null): boolean {
   return status !== null && status.tier === 'free' && !status.agentUnlocked;
 }
 
-/** 문서 홈의 Hama 입구. Hama 로 올라갈 수 있는 유료 등급(Pro·기존 라이선스)에만. */
+/** 문서 홈의 Hama 입구. Hama 로 올라갈 수 있는 유료 등급(Basic·기존 라이선스)에만. */
 export function showsHamaHomeEntry(status: PlanStatus | null): boolean {
-  return status?.tier === 'pro' || status?.tier === 'legacy';
+  return status?.tier === 'basic' || status?.tier === 'legacy';
 }
 
 export function createPlanStore(api: DesktopPlanApi | null): PlanStore {

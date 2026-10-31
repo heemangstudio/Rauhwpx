@@ -14,16 +14,16 @@
       onetime: 'https://groble.im/payment/uRshdR',
       annual: 'https://groble.im/payment/GLJFC9',
       signature: 'https://groble.im/payment/8Xy27f',
-      // PLACEHOLDER: the Groble Pro products don't exist yet. Paste each checkout link here to open sales.
-      proMonthly: '',
-      proYearly: ''
+      // PLACEHOLDER: the Groble Basic products don't exist yet. Paste each checkout link here to open sales.
+      basicMonthly: '',
+      basicYearly: ''
     },
     // Prices in won, VAT included. pricing.html fills every [data-price] from here, and
     // purchase.test.cjs fails when the page's static fallback text drifts from these numbers.
     // null means the price isn't set yet.
     PRICES: {
-      proMonthly: 3900,
-      proYearly: 39000,
+      basicMonthly: 3900,
+      basicYearly: 39000,
       hama: null
     },
     // License server. success.html queries GET {API_BASE}/v1/license/by-ref?ref= .
@@ -134,7 +134,7 @@
   }
 
   // Renewal notice for subscription keys. Takes the expiry (epoch ms) the server sets to the end of the day in Korea time,
-  // and the key's plan from by-ref ('monthly' for Pro monthly; anything else renews yearly). Keys without a term (null) give an empty string.
+  // and the key's plan from by-ref ('monthly' for Basic monthly; anything else renews yearly). Keys without a term (null) give an empty string.
   function renewalText(licenseExpiresAt, plan) {
     if (typeof licenseExpiresAt !== 'number' || !isFinite(licenseExpiresAt)) return '';
     var date = new Intl.DateTimeFormat('ko-KR', { dateStyle: 'long', timeZone: 'Asia/Seoul' }).format(new Date(licenseExpiresAt));
@@ -212,12 +212,12 @@
   // Text for each [data-price] key. Unknown keys give null and leave the element alone.
   function priceText(key, prices) {
     var p = prices || CONFIG.PRICES;
-    var monthly = p.proMonthly, yearly = p.proYearly;
+    var monthly = p.basicMonthly, yearly = p.basicYearly;
     switch (key) {
-      case 'proMonthly': return formatWon(monthly);
-      case 'proYearly': return formatWon(yearly);
-      case 'proYearlyPerMonth': return formatWon(Math.round(yearly / 12));
-      case 'proYearlySaving': return formatWon(monthly * 12 - yearly);
+      case 'basicMonthly': return formatWon(monthly);
+      case 'basicYearly': return formatWon(yearly);
+      case 'basicYearlyPerMonth': return formatWon(Math.round(yearly / 12));
+      case 'basicYearlySaving': return formatWon(monthly * 12 - yearly);
       case 'hama': return typeof p.hama === 'number' ? formatWon(p.hama) : '미정';
       default: return null;
     }

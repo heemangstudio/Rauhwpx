@@ -1671,7 +1671,7 @@ const accountManager = createAccountManager({
   },
 });
 const accountHost = installAccountHost({ ipcMain, manager: accountManager, isTrustedStudioEvent, studioWebContents });
-// 앱 요금제: 계정으로 무료·Pro·예전 키·Hama 를 정하고, 앱 안 결제를 ref 로 확인해 키를 계정에 연결한다.
+// 앱 요금제: 계정으로 무료·Basic·예전 키·Hama 를 정하고, 앱 안 결제를 ref 로 확인해 키를 계정에 연결한다.
 const planManager = createPlanManager({
   accountManager,
   enforce: licenseEnforced,

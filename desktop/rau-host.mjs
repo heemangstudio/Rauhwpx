@@ -1,7 +1,7 @@
 // 호스팅 Rau-0.1 을 Electron 에 연결한다: Studio IPC(상태·업그레이드 페이지)와 허브 자식 프로세스 요청.
 // lease 는 여기서만 쓰고 Studio·허브로 보내지 않는다.
 import { PRICING_URL } from './license-manager.mjs';
-import { RauServerError, upgradeUrlFrom } from './rau-client.mjs';
+import { RAU_REQUIRES_BASIC_CODES, RauServerError, upgradeUrlFrom } from './rau-client.mjs';
 
 /** 키가 없거나 lease 가 지금 검증되지 않을 때. 서버에 묻지 않는다. */
 const NO_LICENSE = 'no_license';
@@ -13,8 +13,8 @@ async function statusFor({ client, currentLease }) {
   try {
     return { ok: true, ...(await client.status(lease)) };
   } catch (error) {
-    if (error?.code === 'rau_requires_pro') {
-      return { ok: true, eligible: false, reason: 'rau_requires_pro', upgradeUrl: upgradeUrlFrom(error.upgradeUrl) };
+    if (RAU_REQUIRES_BASIC_CODES.includes(error?.code)) {
+      return { ok: true, eligible: false, reason: 'rau_requires_basic', upgradeUrl: upgradeUrlFrom(error.upgradeUrl) };
     }
     return { ok: false, code: error?.code ?? 'server' };
   }
@@ -38,10 +38,11 @@ export function installRauHost({ ipcMain, shell, client, currentLease, isTrusted
 
 /** 허브에 돌려줄 오류 칸. lease 와 서버 원문은 넣지 않는다. */
 function errorFields(error) {
-  const code = error instanceof RauServerError || typeof error?.code === 'string' ? error.code : 'server';
+  const raw = error instanceof RauServerError || typeof error?.code === 'string' ? error.code : 'server';
+  const code = RAU_REQUIRES_BASIC_CODES.includes(raw) ? 'rau_requires_basic' : raw;
   return {
     code,
-    ...(code === 'rau_requires_pro' ? { upgradeUrl: upgradeUrlFrom(error.upgradeUrl) } : {}),
+    ...(code === 'rau_requires_basic' ? { upgradeUrl: upgradeUrlFrom(error.upgradeUrl) } : {}),
     ...(code === 'rau_cap_reached' ? { capUsd: error.capUsd, usedUsd: error.usedUsd, resetsAt: error.resetsAt } : {}),
   };
 }

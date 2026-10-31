@@ -14,10 +14,10 @@ export type LicenseState =
 
 export interface LicenseStatus {
   state: LicenseState;
-  /** 서명한 lease 로 Pro 기능을 쓸 수 있는지. */
+  /** 서명한 lease 로 Basic 기능을 쓸 수 있는지. */
   paid: boolean;
   /** 서버가 알려 준 판. 예전 서버는 보내지 않는다. */
-  edition?: 'pro' | 'hama' | null;
+  edition?: 'basic' | 'hama' | null;
   plan?: 'monthly' | 'annual' | 'lifetime' | null;
   /** 호스팅 Rau 자격. 모르면 null. */
   rau?: { eligible: boolean | null };

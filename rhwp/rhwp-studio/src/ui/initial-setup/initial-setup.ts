@@ -380,7 +380,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
 
   const plansPanel = el('div', 'rhwp-setup-panel rhwp-setup-plans');
   const planSummary = el('div', 'rhwp-setup-plan-summary');
-  for (const [name, copy] of [['Pro', '내 Codex·Claude 계정으로 문서 작업'], ['Hama', '기본 제공 AI 크레딧으로 바로 시작']]) {
+  for (const [name, copy] of [['Basic', '내 Codex·Claude 계정으로 문서 작업'], ['Hama', '기본 제공 AI 크레딧으로 바로 시작']]) {
     const row = el('div', 'rhwp-setup-plan-row');
     row.append(el('strong', '', name), el('span', '', copy));
     planSummary.append(row);

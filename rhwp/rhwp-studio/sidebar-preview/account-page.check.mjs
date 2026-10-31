@@ -93,7 +93,7 @@ export async function checkAccountPage({ page, open, screenshot }) {
   assert.equal(await page.$('.acct-signed .acct-device-list [data-device-id="dev-office"]'), null, 'the removed device is gone');
 
   // 이름: 비우면 막고, 새 이름은 저장된다.
-  await open('reset=1&home=1&account=pro');
+  await open('reset=1&home=1&account=basic');
   await openFromButton(page);
   await screenshot('account-page-pro');
   await page.click('.acct-name-edit');
@@ -169,9 +169,9 @@ export async function checkAccountPage({ page, open, screenshot }) {
 
   // 로그아웃 상태의 결제: 카드가 닫히고 로그인으로 간 뒤, 로그인하면 같은 칸의 카드로 돌아온다.
   await open('reset=1&home=1&account=signed-out');
-  await page.evaluate(() => window.dispatchEvent(new CustomEvent('rhwp:open-plan-card', { detail: { focus: 'pro' } })));
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent('rhwp:open-plan-card', { detail: { focus: 'basic' } })));
   await page.waitForSelector('.ag-pricing-card', { visible: true });
-  await page.click('.ag-pricing-col[data-plan="pro"] [data-sku="proMonthly"]');
+  await page.click('.ag-pricing-col[data-plan="basic"] [data-sku="basicMonthly"]');
   await page.waitForSelector('.acct-page.acct-page-open', { visible: true });
   await page.waitForFunction(() => !document.querySelector('.ag-pricing-card'));
   assert.deepEqual(await page.evaluate(() => window.sidebarPreview.plan.checkouts), [], 'no checkout while signed out');
@@ -184,13 +184,13 @@ export async function checkAccountPage({ page, open, screenshot }) {
   await page.click('.acct-page [data-provider="google"]');
   await page.waitForFunction(() => !document.querySelector('.acct-page'), { timeout: 6000 });
   assert.ok((await calls(page)).includes('signIn:google:sign_up'), 'sign-up is passed with the sign-in');
-  await page.waitForSelector('.ag-pricing-col[data-plan="pro"][data-focus="true"]', { visible: true });
+  await page.waitForSelector('.ag-pricing-col[data-plan="basic"][data-focus="true"]', { visible: true });
   await page.click('.ag-pricing-col[data-plan="hama"] [data-sku="hamaMonthly"]');
   await page.waitForSelector('.ag-pricing-card[data-view="waiting"]');
   assert.deepEqual(await page.evaluate(() => window.sidebarPreview.plan.checkouts), ['hamaMonthly']);
 
   // 계정 페이지의 Hama 자리: 연간을 누르면 그 자리에서 결제 확인을 기다린다.
-  await open('reset=1&home=1&account=pro&checkoutHold=1');
+  await open('reset=1&home=1&account=basic&checkoutHold=1');
   await openFromButton(page);
   await page.click('.acct-hama-offer [data-sku="hamaYearly"]');
   await page.waitForSelector('.acct-hama-offer .acct-offer-wait', { visible: true });
@@ -214,11 +214,11 @@ export async function checkAccountPage({ page, open, screenshot }) {
     const { openAccountPage } = await import('/src/ui/account/account-page.ts');
     openAccountPage();
   });
-  await page.waitForSelector('.acct-offer[data-plan="pro"] [data-sku="proMonthly"]:not(:disabled)', { visible: true });
+  await page.waitForSelector('.acct-offer[data-plan="basic"] [data-sku="basicMonthly"]:not(:disabled)', { visible: true });
   assert.equal(await page.$$eval('.acct-offer', (nodes) => nodes.length), 2, 'default account page shows both upgrades');
-  await page.click('.acct-offer[data-plan="pro"] [data-sku="proMonthly"]');
-  await page.waitForSelector('.acct-offer[data-plan="pro"] .acct-offer-wait', { visible: true });
-  assert.deepEqual(await page.evaluate(() => window.sidebarPreview.plan.checkouts), ['proMonthly']);
+  await page.click('.acct-offer[data-plan="basic"] [data-sku="basicMonthly"]');
+  await page.waitForSelector('.acct-offer[data-plan="basic"] .acct-offer-wait', { visible: true });
+  assert.deepEqual(await page.evaluate(() => window.sidebarPreview.plan.checkouts), ['basicMonthly']);
 
   // 설정의 계정 탭은 요약 단추 대신 전체 계정 화면을 안에 붙인다.
   await open('reset=1&fullscreen=1&account=free&checkoutHold=1');
@@ -233,9 +233,9 @@ export async function checkAccountPage({ page, open, screenshot }) {
   await page.click('#ag-settings-pane-account .acct-name-form button[type="submit"]');
   await page.waitForFunction(() => document.querySelector('#ag-settings-pane-account .acct-name')?.textContent === '설정 사용자');
   await screenshot('settings-account-full');
-  await page.click('#ag-settings-pane-account [data-sku="proMonthly"]');
+  await page.click('#ag-settings-pane-account [data-sku="basicMonthly"]');
   await page.waitForSelector('#ag-settings-pane-account .acct-offer-wait', { visible: true });
-  assert.deepEqual(await page.evaluate(() => window.sidebarPreview.plan.checkouts), ['proMonthly']);
+  assert.deepEqual(await page.evaluate(() => window.sidebarPreview.plan.checkouts), ['basicMonthly']);
   await page.click('#ag-settings-tab-theme');
   await page.waitForFunction(() => !document.querySelector('.acct-embedded'));
   await page.click('#ag-settings-tab-account');

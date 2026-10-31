@@ -119,7 +119,7 @@ export function createMockAccountServer({
     return license.expiresAt === null || now() < license.expiresAt;
   }
 
-  const rank = (license) => (license.edition === 'hama' ? 3 : license.edition === 'pro' ? 2 : 1);
+  const rank = (license) => (license.edition === 'hama' ? 3 : license.edition === 'basic' ? 2 : 1);
 
   function linked(account) {
     return [...keys.values()].filter((license) => license.accountId === account.id);
@@ -133,7 +133,7 @@ export function createMockAccountServer({
 
   function tierOf(primary) {
     if (!primary) return 'free';
-    return rank(primary) === 3 ? 'hama' : rank(primary) === 2 ? 'pro' : 'legacy';
+    return rank(primary) === 3 ? 'hama' : rank(primary) === 2 ? 'basic' : 'legacy';
   }
 
   function deviceView(id, device, currentId) {
@@ -491,7 +491,7 @@ export function createMockAccountServer({
     /** 그 경로의 다음 호출들에 순서대로 답한다. 값은 [status, body] 또는 함수. */
     script(path, ...responses) { scripted.set(path, [...(scripted.get(path) ?? []), ...responses]); },
     /** 계정에 붙일 수 있는 키를 만든다. email 이 있으면 그 구매 이메일로 자동 연결된다. */
-    issueKey({ edition = 'pro', plan = 'monthly', tier = 'paid', email = null, expiresAt = plan === 'lifetime' ? null : now() + 30 * DAY, autoRenew = true, status = 'active' } = {}) {
+    issueKey({ edition = 'basic', plan = 'monthly', tier = 'paid', email = null, expiresAt = plan === 'lifetime' ? null : now() + 30 * DAY, autoRenew = true, status = 'active' } = {}) {
       keyCounter += 1;
       const rawKey = Array.from(randomBytes(25), (n) => '0123456789ABCDEFGHJKMNPQRSTVWXYZ'[n & 31]).join('');
       const key = `HAMA-${rawKey.match(/.{5}/g).join('-')}`;
@@ -522,7 +522,7 @@ export function createMockAccountServer({
       return { token: newSession(account, deviceId), accountId: account.id };
     },
     /** 앱이 by-ref 로 물은 결제를 모두 키로 끝낸다. */
-    completeCheckouts({ edition = 'pro', plan = 'monthly' } = {}) {
+    completeCheckouts({ edition = 'basic', plan = 'monthly' } = {}) {
       const issued = [];
       for (const [ref, checkout] of checkouts) {
         if (checkout.key) continue;
