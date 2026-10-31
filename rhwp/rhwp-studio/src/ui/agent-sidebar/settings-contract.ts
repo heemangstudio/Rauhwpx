@@ -1,14 +1,14 @@
 import type { EditorScalarSettings } from '../../core/user-settings.ts';
 
-export const SETTINGS_DESTINATIONS = ['editing', 'theme', 'ai', 'browser', 'skills', 'project', 'archive', 'license'] as const;
+export const SETTINGS_DESTINATIONS = ['editing', 'theme', 'ai', 'browser', 'skills', 'project', 'archive', 'account'] as const;
 export type SettingsDestination = (typeof SETTINGS_DESTINATIONS)[number];
 
 /** AI 설정 아래의 세부 탭. */
 export const AI_SETTINGS_SECTIONS = ['connection', 'usage', 'custom'] as const;
 export type AiSettingsSection = (typeof AI_SETTINGS_SECTIONS)[number];
 
-/** 이전 설정 링크와 세션 값에서 사용하던 연결 탭 이름. */
-export type LegacySettingsDestination = 'connections';
+/** 이전 설정 링크와 세션 값에서 사용하던 이름. 연결 탭은 AI 로, 라이선스 탭은 계정으로 간다. */
+export type LegacySettingsDestination = 'connections' | 'license';
 
 /** AI 세부 탭을 바로 여는 주소. */
 export type AiSettingsDestination = `ai-${AiSettingsSection}`;
@@ -24,9 +24,10 @@ export function aiSettingsSection(value: unknown): AiSettingsSection | undefined
   return AI_SETTINGS_SECTIONS.find((candidate) => candidate === section);
 }
 
-/** 이전 연결 탭과 AI 세부 탭 주소를 AI 탭으로 보낸다. */
+/** 이전 연결 탭과 AI 세부 탭 주소는 AI 탭으로, 이전 라이선스 탭은 계정 탭으로 보낸다. */
 export function normalizeSettingsDestination(value: unknown): SettingsDestination | undefined {
   if (aiSettingsSection(value)) return 'ai';
+  if (value === 'license') return 'account';
   return SETTINGS_DESTINATIONS.some((destination) => destination === value)
     ? value as SettingsDestination
     : undefined;

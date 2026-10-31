@@ -58,7 +58,8 @@ import type { SidebarBridge } from '../../agent/bridge.ts';
 import { installOutcomeFromStatus, SetupTerminalResync } from '../../agent/pending-requests.ts';
 import type { ThreadSummary } from '../../agent/threads.ts';
 import { createArchiveSettingsPane } from './settings-archive.ts';
-import { createLicenseSettingsSection } from './settings-license.ts';
+import { createAccountSettingsSection } from '../account/account-settings.ts';
+import { accountStore } from '../account/account-store.ts';
 import { createPiGiftLine } from './settings-gift.ts';
 import { createAutofixSettingsSection } from './settings-autofix.ts';
 import { createTasteSettingsSection } from './settings-taste.ts';
@@ -533,9 +534,8 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   const body = el('div', 'ag-settings-body');
   const panes = new Map<SettingsDestination, HTMLElement>();
   const navButtons = new Map<SettingsDestination, HTMLButtonElement>();
-  // 데스크톱 앱의 라이선스 상태와 '이 기기 비활성화'. 웹에는 라이선스 탭이 없다.
-  const desktopLicense = (globalThis as { rhwpDesktop?: { license?: Parameters<typeof createLicenseSettingsSection>[0] } })
-    .rhwpDesktop?.license;
+  // 데스크톱 앱의 계정. 웹에는 계정 탭이 없다.
+  const desktopAccount = accountStore();
   const destinations: ReadonlyArray<{ id: SettingsDestination; label: string; icon: SettingsNavIconId }> = [
     { id: 'editing', label: '편집', icon: 'editing' },
     { id: 'theme', label: '테마', icon: 'theme' },
@@ -544,7 +544,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     { id: 'skills', label: '스킬', icon: 'skills' },
     { id: 'project', label: '프로젝트', icon: 'project' },
     { id: 'archive', label: '보관함', icon: 'archive' },
-    ...(desktopLicense ? [{ id: 'license' as const, label: '라이선스', icon: 'license' as const }] : []),
+    ...(desktopAccount.api ? [{ id: 'account' as const, label: '계정', icon: 'account' as const }] : []),
   ];
   const aiSections: ReadonlyArray<{ id: AiSettingsSection; label: string; icon: SettingsNavIconId }> = [
     { id: 'connection', label: '연결', icon: 'connection' },
@@ -633,20 +633,11 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     },
   });
   panes.get('theme')?.appendChild(themeSettings.element);
-  // 라이선스를 보지 않는 빌드면 탭을 숨기고, 그 탭에 있었다면 편집으로 돌린다.
-  const licenseSection = desktopLicense
-    ? createLicenseSettingsSection(desktopLicense, {
-      onAvailableChange: (available) => {
-        const tab = navButtons.get('license');
-        if (tab) tab.hidden = !available;
-        if (!available && currentDestination === 'license') selectDestination('editing');
-      },
-    })
-    : null;
-  if (licenseSection) {
-    const licenseContent = el('div', 'ag-settings-destination-content');
-    licenseContent.append(licenseSection.root);
-    panes.get('license')?.append(licenseContent);
+  const accountSection = desktopAccount.api ? createAccountSettingsSection(desktopAccount) : null;
+  if (accountSection) {
+    const accountContent = el('div', 'ag-settings-destination-content');
+    accountContent.append(accountSection.root);
+    panes.get('account')?.append(accountContent);
   }
   const projectPane = createProjectSettingsPane({
     service: () => projectSettings ?? projectClientOf(bridge)?.service ?? null,
@@ -1704,7 +1695,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       case 'browser':
       case 'skills':
       case 'archive':
-      case 'license':
+      case 'account':
         return false;
       case 'project':
         return projectPane.isDirty();
@@ -1985,7 +1976,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
         case 'browser':
       case 'skills':
         case 'archive':
-        case 'license':
+        case 'account':
           return true;
         case 'project':
           projectPane.cancel();
@@ -2006,7 +1997,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       case 'browser':
       case 'skills':
       case 'archive':
-      case 'license':
+      case 'account':
         return true;
       case 'project':
         return projectPane.apply();
@@ -3939,7 +3930,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       instructionsEditor.destroy();
       unsubscribeInitialSetup();
       providerUpdateHippo?.dispose();
-      licenseSection?.dispose();
+      accountSection?.dispose();
       autofixSection?.dispose();
       piGift?.dispose();
       editingSettings.dispose();

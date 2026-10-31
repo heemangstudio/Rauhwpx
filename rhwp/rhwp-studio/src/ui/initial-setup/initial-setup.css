@@ -568,241 +568,97 @@
   outline-offset: var(--ag-focus-offset);
 }
 
-/* ── 라이선스: 픽셀 열쇠가 있는 구매 칸과 키 칸 ── */
+/* ── 계정: 로그인 판(계정 페이지와 같은 것)과 로그인을 마친 자리 ── */
 
-.rhwp-setup-license {
-  display: flex;
-  flex-direction: column;
+.rhwp-setup-account .acct-signin-out {
   gap: 8px;
 }
 
-.rhwp-setup-license-buy {
+.rhwp-setup-account .acct-signin-provider {
+  min-height: 40px;
+}
+
+.rhwp-setup-account .acct-signin-or {
+  margin: 4px 0;
+}
+
+.rhwp-setup-account .acct-signin-email {
+  flex-direction: row;
+}
+
+.rhwp-setup-account .acct-signin-email .acct-input {
+  flex: 1 1 auto;
+  min-height: 36px;
+  font-size: var(--ag-fs-secondary);
+}
+
+.rhwp-setup-account .acct-signin-email .acct-btn {
+  min-height: 36px;
+  font-size: var(--ag-fs-secondary);
+}
+
+.rhwp-setup-account .acct-signin-wait {
+  padding: 12px 0 4px;
+}
+
+.rhwp-setup-account .acct-signin-wait .acct-btn {
+  margin-top: 10px;
+}
+
+.rhwp-setup-account .acct-signin-choose-title {
+  font-size: var(--ag-fs-body);
+}
+
+.rhwp-setup-account-done {
   position: relative;
-  box-sizing: border-box;
   display: flex;
   align-items: center;
-  gap: 14px;
-  width: 100%;
-  padding: 14px 14px 14px 12px;
-  border: 1px solid transparent;
+  gap: 12px;
+  padding: 12px 44px 12px 12px;
+  border: 1px solid var(--n-ink);
   border-radius: var(--ag-r-card);
-  background: var(--n-ink-fill-soft);
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  cursor: default;
-  transition: var(--ag-transition-color);
-}
-
-.rhwp-setup-license-buy:hover:not(:disabled) {
-  background: var(--n-ink-fill-hover);
-}
-
-.rhwp-setup-license-buy:active:not(:disabled) {
-  background: var(--n-ink-fill-pressed);
-  transition: none;
-}
-
-.rhwp-setup-license-buy:focus-visible {
-  outline: var(--ag-focus-ring);
-  outline-offset: var(--ag-focus-offset);
-}
-
-.rhwp-setup-license[data-state='licensed'] .rhwp-setup-license-buy {
-  border-color: var(--n-ink);
   background: var(--n-surface);
+  outline: none;
 }
 
-.rhwp-setup-license[data-state='licensed'] .rhwp-setup-check {
+.rhwp-setup-account-done[hidden] {
+  display: none;
+}
+
+.rhwp-setup-account-avatar {
+  width: 36px;
+  height: 36px;
+}
+
+.rhwp-setup-account-avatar .acct-avatar-initial {
+  font-size: 15px;
+}
+
+.rhwp-setup-account-copy {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.rhwp-setup-account-name {
+  font-size: var(--ag-fs-body);
+  font-weight: var(--ag-fw-medium);
+}
+
+.rhwp-setup-account-email {
+  overflow: hidden;
+  color: var(--n-ink-secondary);
+  font-size: var(--ag-fs-meta);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rhwp-setup-account-done .rhwp-setup-check {
   top: 50%;
   right: 14px;
   margin-top: -9px;
   opacity: 1;
   transform: none;
-}
-
-/* 열쇠 자리. 그림 크기(57×21)에 맞춘 각진 받침 위에 둔다. */
-.rhwp-setup-key {
-  position: relative;
-  flex: none;
-  display: grid;
-  place-items: center;
-  width: 72px;
-  height: 48px;
-  border-radius: var(--ag-r-chip);
-  background: var(--n-ink-fill-soft);
-}
-
-.rhwp-setup-key-art {
-  display: block;
-  image-rendering: pixelated;
-}
-
-.rhwp-setup-key-face {
-  fill: #f0b93a; /* token-ok */
-}
-
-.rhwp-setup-key-shadow {
-  fill: #b07a16; /* token-ok */
-}
-
-.rhwp-setup-key-glint {
-  fill: #fff3c4; /* token-ok */
-}
-
-/* 열쇠 위 반짝임. 하마의 반짝임과 같은 3px 십자다. */
-.rhwp-setup-key::after {
-  content: '';
-  position: absolute;
-  top: 9px;
-  right: 9px;
-  width: 3px;
-  height: 3px;
-  background: #f0b93a; /* token-ok */
-  box-shadow:
-    0 -3px 0 #f0b93a, 0 3px 0 #f0b93a, -3px 0 0 #f0b93a, 3px 0 0 #f0b93a; /* token-ok */
-  opacity: 0;
-}
-
-.rhwp-setup-license-buy:hover .rhwp-setup-key::after,
-.rhwp-setup-license[data-state='licensed'] .rhwp-setup-key::after {
-  animation: rhwp-setup-twinkle 600ms steps(1, end) infinite;
-}
-
-/* 활성화되면 열쇠가 한 번 폴짝 뛴다(3px 단위). */
-.rhwp-setup-license[data-state='licensed'] .rhwp-setup-key-art {
-  animation: rhwp-setup-key-hop 420ms steps(1, end) 1;
-}
-
-@keyframes rhwp-setup-key-hop {
-  0% { transform: none; }
-  25% { transform: translateY(-3px); }
-  50% { transform: translateY(-6px); }
-  75% { transform: translateY(-3px); }
-  100% { transform: none; }
-}
-
-.rhwp-setup-license-copy {
-  flex: 1 1 auto;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.rhwp-setup-license-title {
-  font-size: var(--ag-fs-body);
-  font-weight: var(--ag-fw-medium);
-  letter-spacing: var(--ag-track-tight);
-  line-height: var(--ag-lh-tight);
-}
-
-.rhwp-setup-license-detail {
-  overflow: hidden;
-  color: var(--n-ink-secondary);
-  font-size: var(--ag-fs-secondary);
-  line-height: var(--ag-lh-tight);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.rhwp-setup-license-go {
-  flex: none;
-  display: grid;
-  place-items: center;
-  width: 24px;
-  height: 24px;
-  color: var(--n-ink-secondary);
-}
-
-.rhwp-setup-license-go .ag-icon {
-  width: 13px;
-  height: 13px;
-}
-
-.rhwp-setup-license[data-state='licensed'] .rhwp-setup-license-go {
-  display: none;
-}
-
-/* 체크 자리만 남긴다. */
-.rhwp-setup-license[data-state='licensed'] .rhwp-setup-license-buy {
-  padding-right: 44px;
-}
-
-.rhwp-setup-license-form {
-  display: flex;
-  gap: 8px;
-}
-
-.rhwp-setup-license-form[hidden] {
-  display: none;
-}
-
-.rhwp-setup-license-input {
-  flex: 1 1 auto;
-  min-width: 0;
-  box-sizing: border-box;
-  height: 36px;
-  padding: 0 10px;
-  border: 1px solid var(--n-ink-hairline);
-  border-radius: var(--ag-r-row);
-  background: var(--n-surface);
-  color: var(--n-ink);
-  font: inherit;
-  font-family: var(--font-family-mono, monospace);
-  font-size: 12px;
-  letter-spacing: 0;
-  text-transform: uppercase;
-  transition: border-color var(--ag-dur-fast) var(--ag-ease-out);
-}
-
-.rhwp-setup-license-input::placeholder {
-  color: var(--n-ink-tertiary);
-  font-family: var(--ag-font);
-  letter-spacing: var(--ag-track-tight);
-  text-transform: none;
-}
-
-.rhwp-setup-license-input:focus {
-  border-color: var(--n-ink-secondary);
-  outline: none;
-}
-
-.rhwp-setup-license-redeem {
-  flex: none;
-  height: 36px;
-  padding: 0 14px;
-  border: 1px solid var(--n-ink-hairline);
-  border-radius: var(--ag-r-row);
-  background: var(--n-ink-fill-soft);
-  color: var(--n-ink);
-  font: inherit;
-  font-size: var(--ag-fs-body);
-  font-weight: var(--ag-fw-medium);
-  letter-spacing: var(--ag-track-tight);
-  cursor: default;
-  transition: var(--ag-transition-color);
-}
-
-.rhwp-setup-license-redeem:hover:not(:disabled) {
-  background: var(--n-ink-fill-hover);
-}
-
-.rhwp-setup-license-redeem:disabled {
-  color: var(--n-ink-tertiary);
-}
-
-.rhwp-setup-license-redeem[aria-busy='true'] {
-  animation: rhwp-setup-redeem-wait 900ms steps(2, end) infinite;
-}
-
-@keyframes rhwp-setup-redeem-wait {
-  50% { opacity: 0.5; }
-}
-
-.rhwp-setup-license-redeem:focus-visible {
-  outline: var(--ag-focus-ring);
-  outline-offset: var(--ag-focus-offset);
 }
 
 /* ── 아래: 진행 점과 다음 ── */
@@ -885,9 +741,6 @@
   .rhwp-setup-check,
   .rhwp-setup-dot,
   .rhwp-setup-font-icon,
-  .rhwp-setup-key::after,
-  .rhwp-setup-key-art,
-  .rhwp-setup-license-redeem,
   .rhwp-setup-hippo-stage::before,
   .rhwp-setup-hippo-stage::after {
     animation: none;
