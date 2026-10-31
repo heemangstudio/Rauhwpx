@@ -120,7 +120,8 @@ function expiryLine(license) {
   const renews = license.subscription?.autoRenew === false ? '갱신 안 함' : '자동 갱신';
   const failed = license.subscription?.status === 'past_due' && license.subscription.paymentGraceEndsAt
     ? ` · 결제 실패, ${kstDate(license.subscription.paymentGraceEndsAt)}까지 유예` : '';
-  const plan = `${license.edition === 'pro' || license.edition === 'hama' ? `${license.edition} ` : ''}${license.plan ?? 'annual'}`;
+  const edition = license.edition === 'pro' ? 'basic' : license.edition;
+  const plan = `${edition === 'basic' || edition === 'hama' ? `${edition} ` : ''}${license.plan ?? 'annual'}`;
   return `${license.key} ${plan} · ${license.status} · ${kstDate(license.expiresAt)}까지 · ${renews}${failed}`;
 }
 if (command === 'downloads' && res.ok && parsed) {
@@ -134,7 +135,7 @@ if (res.ok && listed.length && listed.every((l) => l.key)) {
   process.stdout.write(`\n${listed.map(expiryLine).join('\n')}\n`);
 }
 if (command === 'rau' && res.ok && parsed) {
-  const lines = [`${parsed.model} · ${parsed.period} · cap Pro $${parsed.capsUsd.pro}, Hama $${parsed.capsUsd.hama} · resets ${parsed.resetsAt}`];
+  const lines = [`${parsed.model} · ${parsed.period} · cap Basic $${parsed.capsUsd.basic ?? parsed.capsUsd.pro}, Hama $${parsed.capsUsd.hama} · resets ${parsed.resetsAt}`];
   for (const a of parsed.allowances) lines.push(`${a.keyId} ${a.status} · $${a.usedUsd ?? '?'} / $${a.capUsd}`);
   process.stdout.write(`\n${lines.join('\n')}\n`);
 }

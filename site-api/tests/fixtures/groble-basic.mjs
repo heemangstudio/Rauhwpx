@@ -1,26 +1,26 @@
 import { grobleSignature } from '../../groble-webhook.mjs';
 
-// Groble `subscription_payment.completed` for the Pro products, shaped like
+// Groble `subscription_payment.completed` for the Basic products, shaped like
 // https://groble.im/help/guides/webhook-events (read 2026-10-19). Product ids are test-only.
 
-export const PRO_MONTHLY_ID = 'ProMo1';
-export const PRO_YEARLY_ID = 'ProYr1';
-export const PRO_ENV = { GROBLE_PRO_PRODUCT_IDS: `${PRO_MONTHLY_ID}:1,${PRO_YEARLY_ID}:12` };
-export const PRO_PRODUCTS = [{ id: PRO_MONTHLY_ID, months: 1 }, { id: PRO_YEARLY_ID, months: 12 }];
+export const BASIC_MONTHLY_ID = 'BasMo1';
+export const BASIC_YEARLY_ID = 'BasYr1';
+export const BASIC_ENV = { GROBLE_BASIC_PRODUCT_IDS: `${BASIC_MONTHLY_ID}:1,${BASIC_YEARLY_ID}:12` };
+export const BASIC_PRODUCTS = [{ id: BASIC_MONTHLY_ID, months: 1 }, { id: BASIC_YEARLY_ID, months: 12 }];
 
 /**
- * One paid Pro round. `cycle` is the event's `billingCycleMonths`; `null` drops the field.
+ * One paid Basic round. `cycle` is the event's `billingCycleMonths`; `null` drops the field.
  * Round 1 is INITIAL, later rounds RENEWAL.
  */
-export function proPaid({
+export function basicPaid({
   merchantUid = 'pro_m1',
   ref = 'hama-pro-1',
   email = 'pro@example.com',
-  contentId = PRO_MONTHLY_ID,
-  price = contentId === PRO_YEARLY_ID ? 39000 : 3900,
+  contentId = BASIC_MONTHLY_ID,
+  price = contentId === BASIC_YEARLY_ID ? 39000 : 3900,
   round = 1,
   paidAt = '2026-10-20T14:22:11+09:00',
-  cycle = contentId === PRO_YEARLY_ID ? 12 : 1,
+  cycle = contentId === BASIC_YEARLY_ID ? 12 : 1,
 } = {}) {
   return {
     id: `evt_pro_${merchantUid}`,
@@ -30,8 +30,8 @@ export function proPaid({
     data: { object: {
       merchantUid,
       ...(ref ? { sellerReference: ref } : {}),
-      buyer: { type: 'MEMBER', displayName: '프로 구독자', email },
-      content: { id: contentId, title: 'HamaEditor Pro', type: 'SERVICE', paymentType: 'SUBSCRIPTION' },
+      buyer: { type: 'MEMBER', displayName: '베이직 구독자', email },
+      content: { id: contentId, title: 'HamaEditor Basic', type: 'SERVICE', paymentType: 'SUBSCRIPTION' },
       pricing: { currency: 'KRW', originalAmount: price, finalAmount: price },
       payment: { purchasedAt: paidAt },
       subscription: {

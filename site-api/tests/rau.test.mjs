@@ -12,14 +12,14 @@ import { generateLeaseKeyPair } from '../license-lease.mjs';
 import { MAX_RAU_PROMPT_BYTES } from '../rau.mjs';
 import { createSiteServer } from '../server.mjs';
 import { createFakeOpenRouter } from './fixtures/fake-openrouter.mjs';
-import { PRO_ENV, PRO_YEARLY_ID, proPaid, signedGroblePost } from './fixtures/groble-pro.mjs';
+import { BASIC_ENV, BASIC_YEARLY_ID, basicPaid, signedGroblePost } from './fixtures/groble-basic.mjs';
 
 const ADMIN = 'admin-token-for-rau-tests';
 const SECRET = 'whsec_test_rau';
 const PROVISIONING = 'pk-test-rau-provisioning';
 const PAIR = generateLeaseKeyPair();
 const T0 = Date.parse('2026-10-20T14:22:11+09:00');
-const UPGRADE = 'https://heemangstudios.com/pricing.html#pro';
+const UPGRADE = 'https://heemangstudios.com/pricing.html#basic';
 const PINNED = 'deepseek/deepseek-v4.1-flash';
 const CLI = fileURLToPath(new URL('../scripts/license-admin.mjs', import.meta.url));
 // Rau-0.1 answers JSON-ish text; the server returns it as is.
@@ -41,7 +41,7 @@ async function setup(t, env = {}, { dir, clock = { now: T0 } } = {}) {
     ADMIN_TOKEN: ADMIN,
     OPENROUTER_PROVISIONING_KEY: PROVISIONING,
     OPENROUTER_API_BASE: apiBase,
-    ...PRO_ENV,
+    ...BASIC_ENV,
     ...env,
   }, { log: () => {}, emailProvider: null, alertProvider: null, now: () => clock.now });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -62,7 +62,7 @@ async function setup(t, env = {}, { dir, clock = { now: T0 } } = {}) {
     return { lease: res.lease, deviceId, keyId: res.keyId, key };
   }
   async function pro({ n = 1, contentId } = {}) {
-    const event = proPaid({ merchantUid: `pro_${n}`, ref: `hama-pro-${n}`, email: `pro${n}@example.com`, ...(contentId ? { contentId } : {}) });
+    const event = basicPaid({ merchantUid: `pro_${n}`, ref: `hama-pro-${n}`, email: `pro${n}@example.com`, ...(contentId ? { contentId } : {}) });
     assert.equal((await (await signedGroblePost(origin, SECRET, event)).json()).action, 'issued');
     const { key } = await (await fetch(`${origin}/v1/license/by-ref?ref=hama-pro-${n}`)).json();
     return activate(key);
@@ -81,9 +81,9 @@ async function setup(t, env = {}, { dir, clock = { now: T0 } } = {}) {
 
 test('config: pinned model and reasoning effort by default, overrides honored, aliases and bad efforts refused at startup', () => {
   const defaults = resolveRauConfig({});
-  assert.deepEqual([defaults.model, defaults.reasoningEffort, defaults.maxOutputTokens, defaults.monthlyCapsUsd, defaults.enabled], [PINNED, 'low', 2000, { pro: 2, hama: 5 }, true]);
-  const custom = resolveRauConfig({ RAU_MODEL: 'deepseek/deepseek-v4.2-flash', RAU_REASONING_EFFORT: 'Minimal', RAU_MONTHLY_CAP_USD_PRO: '2.5', RAU_MONTHLY_CAP_USD_HAMA: '7', RAU_ENABLED: 'false' });
-  assert.deepEqual([custom.model, custom.reasoningEffort, custom.monthlyCapsUsd, custom.enabled], ['deepseek/deepseek-v4.2-flash', 'minimal', { pro: 2.5, hama: 7 }, false]);
+  assert.deepEqual([defaults.model, defaults.reasoningEffort, defaults.maxOutputTokens, defaults.monthlyCapsUsd, defaults.enabled], [PINNED, 'low', 2000, { basic: 2, hama: 5 }, true]);
+  const custom = resolveRauConfig({ RAU_MODEL: 'deepseek/deepseek-v4.2-flash', RAU_REASONING_EFFORT: 'Minimal', RAU_MONTHLY_CAP_USD_BASIC: '2.5', RAU_MONTHLY_CAP_USD_HAMA: '7', RAU_ENABLED: 'false' });
+  assert.deepEqual([custom.model, custom.reasoningEffort, custom.monthlyCapsUsd, custom.enabled], ['deepseek/deepseek-v4.2-flash', 'minimal', { basic: 2.5, hama: 7 }, false]);
   assert.throws(() => resolveRauConfig({ RAU_MODEL: '~deepseek/deepseek-flash-latest' }), /pinned/);
   assert.throws(() => resolveRauConfig({ RAU_REASONING_EFFORT: 'max' }), /RAU_REASONING_EFFORT must be one of/);
   assert.throws(() => resolveRauConfig({ RAU_ENABLED: 'maybe' }), /RAU_ENABLED/);
@@ -141,7 +141,7 @@ test('every key that is not an active Pro key gets rau_requires_pro with the upg
   const s = await setup(t);
   const kinds = {};
   // GLJFC9 ₩9,900/yr subscription.
-  const annual = proPaid({ merchantUid: 'gl_1', ref: 'hama-sub-1', contentId: 'GLJFC9', price: 9900, cycle: 12 });
+  const annual = basicPaid({ merchantUid: 'gl_1', ref: 'hama-sub-1', contentId: 'GLJFC9', price: 9900, cycle: 12 });
   await signedGroblePost(s.origin, SECRET, annual);
   kinds.annual = (await (await fetch(`${s.origin}/v1/license/by-ref?ref=hama-sub-1`)).json()).key;
   kinds.lifetime = (await s.admin('/v1/admin/licenses/issue', {})).license.key;
@@ -166,6 +166,9 @@ test('every key that is not an active Pro key gets rau_requires_pro with the upg
     assert.deepEqual(await res.json(), { ok: false, error: 'rau_requires_pro', upgradeUrl: UPGRADE }, kind);
     const st = await (await s.status(lease)).json();
     assert.deepEqual([st.eligible, st.reason, st.upgradeUrl, st.usedUsd], [false, 'rau_requires_pro', UPGRADE, null], kind);
+    // An app that knows the Basic name hears it; the shipped apps above keep hearing rau_requires_pro.
+    const named = await s.post('/v1/rau/learn', { prompt: 'Rau-0.1 prompt' }, { ...s.auth(lease), 'X-Hama-Plan-Names': 'basic' });
+    assert.equal((await named.json()).error, 'rau_requires_basic', kind);
   };
   for (const [kind, lease] of Object.entries(leases)) await check(kind, lease);
 
@@ -262,12 +265,12 @@ test('a new month sets the key limit again exactly once and starts a fresh ledge
   assert.equal(file.allowances[first.keyId].period, '2026-11');
 });
 
-test('RAU_MONTHLY_CAP_USD_PRO sets new keys and re-limits existing ones once after a restart', async (t) => {
+test('RAU_MONTHLY_CAP_USD_PRO (the old name of RAU_MONTHLY_CAP_USD_BASIC) sets new keys and re-limits existing ones once after a restart', async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'site-api-rau-cap-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true, maxRetries: 5 }));
   const clock = { now: T0 };
   const before = await setup(t, {}, { dir, clock });
-  const { key, deviceId, lease } = await before.pro({ contentId: PRO_YEARLY_ID });
+  const { key, deviceId, lease } = await before.pro({ contentId: BASIC_YEARLY_ID });
   assert.equal((await before.learn(lease)).status, 200);
   const keyHash = [...before.upstream.keys.keys()][0];
 
@@ -287,7 +290,7 @@ test('RAU_MONTHLY_CAP_USD_PRO sets new keys and re-limits existing ones once aft
   assert.equal(after.creates()[0].body.limit, 2.5);
 });
 
-test('each plan gets its own cap: Pro $2, Hama $5, both $5, in status, usage, the OpenRouter limit and the license answer', async (t) => {
+test('each plan gets its own cap: Basic $2, Hama $5, both $5, in status, usage, the OpenRouter limit and the license answer', async (t) => {
   const s = await setup(t, HAMA);
   const pro = await s.pro();
   const hama = await s.activate((await s.admin('/v1/admin/licenses/issue', {})).license.key);
@@ -315,7 +318,7 @@ test('each plan gets its own cap: Pro $2, Hama $5, both $5, in status, usage, th
   assert.ok(!s.creates().some((c) => c.body.name === `hama-rau-${legacy.keyId}`));
 
   const listed = await (await fetch(`${s.origin}/v1/admin/rau`, { headers: s.auth(ADMIN) })).json();
-  assert.deepEqual(listed.capsUsd, { pro: 2, hama: 5 });
+  assert.deepEqual(listed.capsUsd, { basic: 2, hama: 5 });
   const remaining = Object.fromEntries(listed.allowances.map((a) => [a.keyId, [a.capUsd, a.remainingUsd]]));
   assert.deepEqual(remaining[hama.keyId], [5, 4.9997]);
   assert.deepEqual(remaining[pro.keyId], [2, 1.9997]);

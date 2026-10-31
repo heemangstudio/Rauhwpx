@@ -74,18 +74,28 @@ export const DEFAULT_SIGNATURE_PRICE = 29000;
 export const DEFAULT_PAYMENT_GRACE_DAYS = 10;
 /** A failed renewal never keeps a key usable longer than this past its expiry, so a monthly key's grace stays under a month. */
 export const DEFAULT_PAYMENT_GRACE_MAX_DAYS = 14;
-export const DEFAULT_PRO_PRODUCT_IDS = 'SfYBy5:1,vdw3HN:12';
-export const DEFAULT_PRO_MONTHLY_PRICE = 3900;
-export const DEFAULT_PRO_YEARLY_PRICE = 39000;
+export const DEFAULT_BASIC_PRODUCT_IDS = 'SfYBy5:1,vdw3HN:12';
+export const DEFAULT_BASIC_MONTHLY_PRICE = 3900;
+export const DEFAULT_BASIC_YEARLY_PRICE = 39000;
 export const DEFAULT_HAMA_PRODUCT_IDS = 'R3n8zG:1,atqjpJ:12';
 export const DEFAULT_HAMA_MONTHLY_PRICE = 12900;
 export const DEFAULT_HAMA_YEARLY_PRICE = 139000;
-export const DEFAULT_PRO_UPGRADE_URL = 'https://heemangstudios.com/pricing.html#pro';
+export const DEFAULT_BASIC_UPGRADE_URL = 'https://heemangstudios.com/pricing.html#basic';
 /** Groble's buyer 주문조회 page, where a buyer sees the subscription and pays again. */
 export const DEFAULT_PAYMENT_FIX_URL = 'https://groble.im/manage/purchase';
 
 function trimmed(value) {
   return typeof value === 'string' ? value.trim() : '';
+}
+
+/**
+ * Basic was called Pro until 2026-10-31. A `*_BASIC_*` variable wins; the old `*_PRO_*` name is still read
+ * so a Railway service that only has the old variables keeps its values. Returns `[name, value]` for errors.
+ */
+function basicEnv(env, basicName, proName) {
+  const value = trimmed(env[basicName]);
+  if (value) return [basicName, value];
+  return [proName, trimmed(env[proName])];
 }
 
 function commaList(text, fallback) {
@@ -115,7 +125,7 @@ function productPriceOverrides(text) {
   return overrides;
 }
 
-/** `GROBLE_PRO_PRODUCT_IDS` or `GROBLE_HAMA_PRODUCT_IDS`: `id:months` entries, months 1 (monthly) or 12 (yearly). */
+/** `GROBLE_BASIC_PRODUCT_IDS` or `GROBLE_HAMA_PRODUCT_IDS`: `id:months` entries, months 1 (monthly) or 12 (yearly). */
 export function parsePlanProducts(name, text) {
   const products = [];
   if (!text) return products;
@@ -136,15 +146,15 @@ export function buildProductCatalog({
   onetimeProductIds,
   subscriptionProductIds,
   signatureProductIds,
-  proProducts = [],
+  basicProducts = [],
   expectedPrice,
   minAmount,
   signatureExpectedPrice,
   signatureMinAmount,
-  proMonthlyPrice = DEFAULT_PRO_MONTHLY_PRICE,
-  proMonthlyMinAmount = proMonthlyPrice,
-  proYearlyPrice = DEFAULT_PRO_YEARLY_PRICE,
-  proYearlyMinAmount = proYearlyPrice,
+  basicMonthlyPrice = DEFAULT_BASIC_MONTHLY_PRICE,
+  basicMonthlyMinAmount = basicMonthlyPrice,
+  basicYearlyPrice = DEFAULT_BASIC_YEARLY_PRICE,
+  basicYearlyMinAmount = basicYearlyPrice,
   hamaProducts = [],
   hamaMonthlyPrice = DEFAULT_HAMA_MONTHLY_PRICE,
   hamaMonthlyMinAmount = hamaMonthlyPrice,
@@ -173,9 +183,9 @@ export function buildProductCatalog({
   for (const [label, kind, ids, price, min] of groups) {
     for (const id of ids) add(label, { id, kind, expectedPrice: price, minAmount: min });
   }
-  // Pro and Hama products are subscriptions with their own billing cycle; it wins over the event's.
+  // Basic and Hama products are subscriptions with their own billing cycle; it wins over the event's.
   const plans = [
-    ['pro', proProducts, proMonthlyPrice, proMonthlyMinAmount, proYearlyPrice, proYearlyMinAmount],
+    ['basic', basicProducts, basicMonthlyPrice, basicMonthlyMinAmount, basicYearlyPrice, basicYearlyMinAmount],
     ['hama', hamaProducts, hamaMonthlyPrice, hamaMonthlyMinAmount, hamaYearlyPrice, hamaYearlyMinAmount],
   ];
   for (const [edition, list, monthlyPrice, monthlyMin, yearlyPrice, yearlyMin] of plans) {
@@ -215,25 +225,26 @@ export function resolveLicenseConfig(env = process.env) {
   const onetimeProductIds = commaList(trimmed(env.GROBLE_ONETIME_PRODUCT_IDS) || trimmed(env.GROBLE_CONTENT_ID), DEFAULT_ONETIME_PRODUCT_IDS);
   const subscriptionProductIds = commaList(trimmed(env.GROBLE_SUBSCRIPTION_PRODUCT_IDS), DEFAULT_SUBSCRIPTION_PRODUCT_IDS);
   const signatureProductIds = commaList(trimmed(env.GROBLE_SIGNATURE_PRODUCT_IDS), DEFAULT_SIGNATURE_PRODUCT_IDS);
-  const proProducts = parsePlanProducts('GROBLE_PRO_PRODUCT_IDS', trimmed(env.GROBLE_PRO_PRODUCT_IDS) || DEFAULT_PRO_PRODUCT_IDS);
+  const [basicProductsName, basicProductsText] = basicEnv(env, 'GROBLE_BASIC_PRODUCT_IDS', 'GROBLE_PRO_PRODUCT_IDS');
+  const basicProducts = parsePlanProducts(basicProductsName, basicProductsText || DEFAULT_BASIC_PRODUCT_IDS);
   const hamaProducts = parsePlanProducts('GROBLE_HAMA_PRODUCT_IDS', trimmed(env.GROBLE_HAMA_PRODUCT_IDS) || DEFAULT_HAMA_PRODUCT_IDS);
-  const proMonthlyPrice = integerKrw('GROBLE_PRO_MONTHLY_PRICE', trimmed(env.GROBLE_PRO_MONTHLY_PRICE), DEFAULT_PRO_MONTHLY_PRICE);
-  const proYearlyPrice = integerKrw('GROBLE_PRO_YEARLY_PRICE', trimmed(env.GROBLE_PRO_YEARLY_PRICE), DEFAULT_PRO_YEARLY_PRICE);
+  const basicMonthlyPrice = integerKrw(...basicEnv(env, 'GROBLE_BASIC_MONTHLY_PRICE', 'GROBLE_PRO_MONTHLY_PRICE'), DEFAULT_BASIC_MONTHLY_PRICE);
+  const basicYearlyPrice = integerKrw(...basicEnv(env, 'GROBLE_BASIC_YEARLY_PRICE', 'GROBLE_PRO_YEARLY_PRICE'), DEFAULT_BASIC_YEARLY_PRICE);
   const hamaMonthlyPrice = integerKrw('GROBLE_HAMA_MONTHLY_PRICE', trimmed(env.GROBLE_HAMA_MONTHLY_PRICE), DEFAULT_HAMA_MONTHLY_PRICE);
   const hamaYearlyPrice = integerKrw('GROBLE_HAMA_YEARLY_PRICE', trimmed(env.GROBLE_HAMA_YEARLY_PRICE), DEFAULT_HAMA_YEARLY_PRICE);
   const products = buildProductCatalog({
     onetimeProductIds,
     subscriptionProductIds,
     signatureProductIds,
-    proProducts,
+    basicProducts,
     expectedPrice: price,
     minAmount,
     signatureExpectedPrice,
     signatureMinAmount,
-    proMonthlyPrice,
-    proMonthlyMinAmount: integerKrw('GROBLE_PRO_MONTHLY_MIN_AMOUNT', trimmed(env.GROBLE_PRO_MONTHLY_MIN_AMOUNT), proMonthlyPrice),
-    proYearlyPrice,
-    proYearlyMinAmount: integerKrw('GROBLE_PRO_YEARLY_MIN_AMOUNT', trimmed(env.GROBLE_PRO_YEARLY_MIN_AMOUNT), proYearlyPrice),
+    basicMonthlyPrice,
+    basicMonthlyMinAmount: integerKrw(...basicEnv(env, 'GROBLE_BASIC_MONTHLY_MIN_AMOUNT', 'GROBLE_PRO_MONTHLY_MIN_AMOUNT'), basicMonthlyPrice),
+    basicYearlyPrice,
+    basicYearlyMinAmount: integerKrw(...basicEnv(env, 'GROBLE_BASIC_YEARLY_MIN_AMOUNT', 'GROBLE_PRO_YEARLY_MIN_AMOUNT'), basicYearlyPrice),
     hamaProducts,
     hamaMonthlyPrice,
     hamaMonthlyMinAmount: integerKrw('GROBLE_HAMA_MONTHLY_MIN_AMOUNT', trimmed(env.GROBLE_HAMA_MONTHLY_MIN_AMOUNT), hamaMonthlyPrice),
@@ -246,8 +257,9 @@ export function resolveLicenseConfig(env = process.env) {
   if (paymentGraceMaxDays >= 28) throw new Error(`GROBLE_PAYMENT_GRACE_MAX_DAYS must stay under a month (< 28): ${paymentGraceMaxDays}`);
   const paymentFixUrl = trimmed(env.GROBLE_PAYMENT_FIX_URL) || DEFAULT_PAYMENT_FIX_URL;
   if (!/^https:\/\/(?:www\.)?groble\.im\//.test(paymentFixUrl)) throw new Error(`GROBLE_PAYMENT_FIX_URL must be an https://groble.im/ page: ${paymentFixUrl}`);
-  const proUpgradeUrl = trimmed(env.PRO_UPGRADE_URL) || DEFAULT_PRO_UPGRADE_URL;
-  if (!/^https:\/\//.test(proUpgradeUrl)) throw new Error(`PRO_UPGRADE_URL must be an https:// page: ${proUpgradeUrl}`);
+  const [upgradeUrlName, upgradeUrlText] = basicEnv(env, 'BASIC_UPGRADE_URL', 'PRO_UPGRADE_URL');
+  const basicUpgradeUrl = upgradeUrlText || DEFAULT_BASIC_UPGRADE_URL;
+  if (!/^https:\/\//.test(basicUpgradeUrl)) throw new Error(`${upgradeUrlName} must be an https:// page: ${basicUpgradeUrl}`);
   return {
     webhookSecret: trimmed(env.GROBLE_WEBHOOK_SECRET),
     webhookSecretPrevious: trimmed(env.GROBLE_WEBHOOK_SECRET_PREVIOUS),
@@ -257,12 +269,12 @@ export function resolveLicenseConfig(env = process.env) {
     signatureExpectedPrice,
     signatureMinAmount,
     products,
-    proProducts,
+    basicProducts,
     hamaProducts,
     paymentGraceMs: paymentGraceDays * 24 * 60 * 60 * 1000,
     paymentGraceMaxMs: paymentGraceMaxDays * 24 * 60 * 60 * 1000,
     paymentFixUrl,
-    proUpgradeUrl,
+    basicUpgradeUrl,
     expectedPrice: price,
     minAmount,
     signingPrivateKey: trimmed(env.LICENSE_SIGNING_PRIVATE_KEY),
@@ -427,7 +439,7 @@ export function resolveRauConfig(env = process.env) {
     reasoningEffort,
     maxOutputTokens,
     monthlyCapsUsd: {
-      pro: positiveNumber('RAU_MONTHLY_CAP_USD_PRO', trimmed(env.RAU_MONTHLY_CAP_USD_PRO), 2),
+      basic: positiveNumber(...basicEnv(env, 'RAU_MONTHLY_CAP_USD_BASIC', 'RAU_MONTHLY_CAP_USD_PRO'), 2),
       hama: positiveNumber('RAU_MONTHLY_CAP_USD_HAMA', trimmed(env.RAU_MONTHLY_CAP_USD_HAMA), 5),
     },
     apiBase: (trimmed(env.OPENROUTER_API_BASE) || DEFAULT_OPENROUTER_API_BASE).replace(/\/+$/, ''),

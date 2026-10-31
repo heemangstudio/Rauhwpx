@@ -160,14 +160,22 @@ export function planOf(license) {
   return keyCycleMonths(license) === 1 ? 'monthly' : 'annual';
 }
 
+/**
+ * A key's edition. Basic keys sold before the rename are stored as 'pro'; they read as 'basic' and are
+ * never rewritten, so a rollback still finds the records it wrote.
+ */
+export function editionOf(license) {
+  return license?.edition === 'pro' ? 'basic' : license?.edition;
+}
+
 /** Editions sold as a subscription on their own billing cycle. */
 function isPlanEdition(edition) {
-  return edition === 'pro' || edition === 'hama';
+  return edition === 'basic' || edition === 'pro' || edition === 'hama';
 }
 
 /**
  * The plan hosted Rau-0.1 serves a license on, or null: 'hama' for a Hama subscription key or any live
- * key with an active Hama plan, 'pro' for a Pro subscription key. Live means not revoked, before its
+ * key with an active Hama plan, 'basic' for a Basic subscription key. Live means not revoked, before its
  * expiry or inside its payment grace. A Hama key qualifies on its edition, so a paid key keeps Rau with
  * HAMA_ENABLED off. Without a Hama plan, lifetime, Signature, GLJFC9, beta, grandfathered and manual keys never qualify.
  */
@@ -176,7 +184,7 @@ export function rauPlanOf(license, nowMs, graceMaxMs, hamaActive = false) {
   const end = accessEndOf(license, graceMaxMs);
   if (end !== null && nowMs >= end) return null;
   if (hamaActive || license.edition === 'hama') return 'hama';
-  return license.edition === 'pro' && end !== null ? 'pro' : null;
+  return editionOf(license) === 'basic' && end !== null ? 'basic' : null;
 }
 
 /** `HAMA-ABCDE-•••••-•••••-•••••-VWXYZ`: the first and last groups only. */
@@ -212,7 +220,7 @@ function signatureView(license) {
   const prioritySupport = license.edition === 'signature' && license.status === 'active';
   return {
     prioritySupport,
-    ...(license.edition ? { edition: license.edition } : {}),
+    ...(license.edition ? { edition: editionOf(license) } : {}),
     ...(license.productId && (license.edition === 'signature' || isPlanEdition(license.edition)) ? { productId: license.productId } : {}),
     ...(license.updatesUntil ? { updatesUntil: license.updatesUntil } : {}),
     ...(license.support ? { support: license.support } : {}),
@@ -326,7 +334,7 @@ export function createLicensesService({
   minAmount = expectedPrice,
   signatureExpectedPrice = 29000,
   signatureMinAmount = signatureExpectedPrice,
-  proProducts = [],
+  basicProducts = [],
   hamaProducts = [],
   products,
   grandfatherCutoff = undefined,
@@ -347,7 +355,7 @@ export function createLicensesService({
     minAmount,
     signatureExpectedPrice,
     signatureMinAmount,
-    proProducts,
+    basicProducts,
     hamaProducts,
   })).map((product) => [product.id, product]));
   const graceEndOf = (license) => paymentGraceEndOf(license, paymentGraceMaxMs);
@@ -467,20 +475,20 @@ export function createLicensesService({
     if (subscription !== (product.kind === 'subscription')) return `wrong_product:${contentId}`;
     const expectedType = product.kind === 'subscription' ? 'SUBSCRIPTION' : 'ONE_TIME';
     if (paymentType && paymentType !== expectedType) return `wrong_payment_type:${paymentType}`;
-    // A Pro or Hama product bills on its own cycle. An event that names another one is held instead of
+    // A Basic or Hama product bills on its own cycle. An event that names another one is held instead of
     // trusted, so a monthly buyer can never get a year; a missing or unreadable field uses the product's.
     const eventMonths = eventCycleMonths(object);
     if (product.cycleMonths && eventMonths !== undefined && eventMonths !== product.cycleMonths) return `cycle_mismatch:${eventMonths}`;
     return priceProblem(object, product, { renewal });
   }
 
-  /** Months the round buys: a Pro or Hama product's own cycle, else the event's, else 12 (GLJFC9). */
+  /** Months the round buys: a Basic or Hama product's own cycle, else the event's, else 12 (GLJFC9). */
   function orderCycleMonths(object) {
     const product = catalog.get(str(object?.content?.id, 128) ?? '');
     return product?.cycleMonths ?? eventCycleMonths(object) ?? SUBSCRIPTION_CYCLE_MONTHS;
   }
 
-  /** Pro and Hama keys carry the edition, product and cycle on the record itself. */
+  /** Basic and Hama keys carry the edition, product and cycle on the record itself. */
   function planEntitlement(product, months) {
     return isPlanEdition(product?.edition) ? { edition: product.edition, productId: product.id, billingCycleMonths: months } : {};
   }
@@ -633,7 +641,7 @@ export function createLicensesService({
     // A late renewal (a retry or re-payment after the key lapsed) starts the new year on the day it was paid.
     const paidMs = paidAtOf(order);
     const from = Math.max(expiryOf(license) ?? paidMs, paidMs);
-    // Each round buys the key's own cycle: a monthly Pro key gains a month, an annual key a year.
+    // Each round buys the key's own cycle: a monthly Basic key gains a month, an annual key a year.
     const to = subscriptionEnd(from, keyCycleMonths(license));
     license.expiresAt = iso(to);
     order.status = 'renewed';
@@ -943,7 +951,7 @@ export function createLicensesService({
         status: 'issued',
         key: license.key,
         licenseExpiresAt: expiryOf(license),
-        ...(isPlanEdition(license.edition) ? { edition: license.edition, plan: planOf(license) } : {}),
+        ...(isPlanEdition(license.edition) ? { edition: editionOf(license), plan: planOf(license) } : {}),
         ...(license.edition === 'signature' ? {
           edition: 'signature',
           prioritySupport: true,
@@ -1026,9 +1034,9 @@ export function createLicensesService({
         prioritySupport: license.status === 'active',
         updatesUntil: parseTime(license.updatesUntil) ?? null,
       } : {}),
-      ...(isPlanEdition(license.edition) ? { edition: license.edition } : {}),
+      ...(isPlanEdition(license.edition) ? { edition: editionOf(license) } : {}),
       plan: planOf(license),
-      // Hosted Rau-0.1 (POST /v1/rau/learn) answers only active Pro and Hama keys and active Hama plans.
+      // Hosted Rau-0.1 (POST /v1/rau/learn) answers only active Basic and Hama keys and active Hama plans.
       rau: { eligible: rauPlan !== null },
     };
   }
@@ -1086,7 +1094,7 @@ export function createLicensesService({
    * Returns `{ keyId, deviceId, platform, source, tier, edition, active }`; anything else is
    * `unauthorized` (401). `allowInactive` also answers for a revoked or expired key (`active: false`),
    * so hosted Rau can tell such a key to upgrade; the lease itself must still be ours and unexpired.
-   * `withRauPlan` adds `rauPlan` ('hama', 'pro' or null).
+   * `withRauPlan` adds `rauPlan` ('hama', 'basic' or null).
    */
   async function authenticateLease(lease, { allowInactive = false, withRauPlan = false } = {}) {
     if (!signingKey) throw licenseError('unauthorized', 401);
@@ -1107,7 +1115,7 @@ export function createLicensesService({
       platform: device.platform,
       source: license.source,
       tier: tierOf(license),
-      edition: license.edition ?? null,
+      edition: editionOf(license) ?? null,
       active,
       ...(withRauPlan ? { rauPlan: await rauPlanFor(license) } : {}),
     };

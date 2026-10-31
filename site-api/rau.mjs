@@ -4,7 +4,7 @@ import { createRateLimiter } from './rate-limit.mjs';
 import { createMemoryStore } from './store.mjs';
 
 /**
- * Hosted Rau-0.1 (the taste learner) for active Pro keys and active Hama plans. The app sends its
+ * Hosted Rau-0.1 (the taste learner) for active Basic keys and active Hama plans. The app sends its
  * license lease and a prompt; the server calls the model on OpenRouter with a key of its own, so the
  * app never holds a provider key. Each license gets one OpenRouter key, `hama-rau-<keyId>`, created
  * with `limit` = its plan's cap and `limit_reset: 'monthly'` (UTC calendar month). A license with
@@ -93,7 +93,7 @@ export function createRauService({
   store = createMemoryStore(emptyRauState()),
   authenticate,
   config = {},
-  upgradeUrl = 'https://heemangstudios.com/pricing.html#pro',
+  upgradeUrl = 'https://heemangstudios.com/pricing.html#basic',
   adminToken = '',
   fetchImpl = globalThis.fetch,
   now = Date.now,
@@ -105,11 +105,11 @@ export function createRauService({
     model = 'deepseek/deepseek-v4.1-flash',
     reasoningEffort = 'low',
     maxOutputTokens = 2000,
-    monthlyCapsUsd = { pro: 2, hama: 5 },
+    monthlyCapsUsd = { basic: 2, hama: 5 },
     apiBase = 'https://openrouter.ai/api/v1',
   } = config;
   const configured = Boolean(enabled && provisioningKey);
-  const caps = { pro: usd(monthlyCapsUsd.pro), hama: usd(monthlyCapsUsd.hama) };
+  const caps = { basic: usd(monthlyCapsUsd.basic), hama: usd(monthlyCapsUsd.hama) };
   const openrouter = createOpenRouterClient({ apiBase, provisioningKey, fetchImpl });
 
   let mutation = Promise.resolve();
@@ -148,8 +148,8 @@ export function createRauService({
   async function principal(lease) {
     if (typeof authenticate !== 'function') throw rauError('unauthorized', 401);
     const who = await authenticate(lease);
-    // Not eligible: the cap an upgrade to Pro would buy.
-    return { ...who, eligible: Boolean(who.rauPlan), capUsd: caps[who.rauPlan ?? 'pro'] };
+    // Not eligible: the cap an upgrade to Basic would buy.
+    return { ...who, eligible: Boolean(who.rauPlan), capUsd: caps[who.rauPlan ?? 'basic'] };
   }
 
   // ------------------------------------------------------------ allowance
@@ -263,7 +263,7 @@ export function createRauService({
     if (!configured) throw rauError('rau_not_configured', 503);
     const usage = usageView(0, who.capUsd);
     if (!who.eligible) {
-      return { ok: true, eligible: false, reason: 'rau_requires_pro', upgradeUrl, capUsd: who.capUsd, usedUsd: null, remainingUsd: null, resetsAt: usage.resetsAt };
+      return { ok: true, eligible: false, reason: 'rau_requires_basic', upgradeUrl, capUsd: who.capUsd, usedUsd: null, remainingUsd: null, resetsAt: usage.resetsAt };
     }
     const allowance = own((await read()).allowances, who.keyId);
     const used = allowance?.status === 'active' ? await periodUsed(allowance, rauPeriod(now())) : 0;
@@ -278,7 +278,7 @@ export function createRauService({
   async function learn(lease, raw) {
     const who = await principal(lease);
     if (!configured) throw rauError('rau_not_configured', 503);
-    if (!who.eligible) throw rauError('rau_requires_pro', 403, { upgradeUrl });
+    if (!who.eligible) throw rauError('rau_requires_basic', 403, { upgradeUrl });
     const prompt = parseRauPrompt(raw);
     if (!perLicense.check(who.keyId, RAU_REQUESTS_PER_MINUTE, MINUTE)) throw rauRateLimited(60);
     if ((inFlight.get(who.keyId) ?? 0) >= RAU_CONCURRENCY_PER_LICENSE) throw rauRateLimited(5);

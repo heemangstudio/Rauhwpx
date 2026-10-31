@@ -216,6 +216,26 @@ async function readAccountJson(req) {
   }
 }
 
+/**
+ * Basic was called Pro until 2026-10-31. An app that sends `X-Hama-Plan-Names: basic` hears the new
+ * names; every other client (shipped apps, the website) still hears `edition: 'pro'` and
+ * `rau_requires_pro`, the names it matches on.
+ */
+export const PLAN_NAMES_HEADER = 'x-hama-plan-names';
+
+function acceptsBasicPlanName(req) {
+  return String(req.headers?.[PLAN_NAMES_HEADER] ?? '').toLowerCase().split(',').some((name) => name.trim() === 'basic');
+}
+
+export function legacyPlanNames(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return body;
+  const out = { ...body };
+  if (out.edition === 'basic') out.edition = 'pro';
+  if (out.error === 'rau_requires_basic') out.error = 'rau_requires_pro';
+  if (out.reason === 'rau_requires_basic') out.reason = 'rau_requires_pro';
+  return out;
+}
+
 export function siteRequestListener({
   uniqueInstalls,
   waitlist,
@@ -241,6 +261,7 @@ export function siteRequestListener({
   });
   return async (req, res) => {
     const ip = clientIp(req);
+    const planNames = acceptsBasicPlanName(req) ? (body) => body : legacyPlanNames;
     // 웹사이트는 text/plain 으로 보내 preflight 없이 다른 origin 에서 호출한다.
     let cors = {};
     const send = (status, body, headers = {}) => {
@@ -251,7 +272,7 @@ export function siteRequestListener({
         ...cors,
         ...headers,
       });
-      res.end(isHtml ? body : JSON.stringify(body));
+      res.end(isHtml ? body : JSON.stringify(planNames(body)));
     };
     const allow = (bucket, max, windowMs) => {
       if (limiter.check(`${bucket}:${ip}`, max, windowMs)) return;
@@ -913,7 +934,7 @@ export function createSiteServer(env = process.env, options = {}) {
     onetimeProductIds: licenseConfig.onetimeProductIds,
     subscriptionProductIds: licenseConfig.subscriptionProductIds,
     signatureProductIds: licenseConfig.signatureProductIds,
-    proProducts: licenseConfig.proProducts,
+    basicProducts: licenseConfig.basicProducts,
     hamaProducts: licenseConfig.hamaProducts,
     products: licenseConfig.products,
     paymentGraceMs: licenseConfig.paymentGraceMs,
@@ -982,10 +1003,10 @@ export function createSiteServer(env = process.env, options = {}) {
   };
   const rau = createRauService({
     store: createFileStore(resolveRauDbPath(env), { emptyState: emptyRauState }),
-    // A revoked or expired key still authenticates here, so it hears rau_requires_pro instead of 401.
+    // A revoked or expired key still authenticates here, so it hears rau_requires_basic instead of 401.
     authenticate: (lease) => accounts.authenticateLease(lease, { allowInactive: true, withRauPlan: true, purpose: 'rau' }),
     config: resolveRauConfig(env),
-    upgradeUrl: licenseConfig.proUpgradeUrl,
+    upgradeUrl: licenseConfig.basicUpgradeUrl,
     adminToken: licenseConfig.adminToken,
     fetchImpl: options.fetchImpl,
     now: options.now,
