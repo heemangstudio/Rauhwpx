@@ -439,7 +439,7 @@ export function resolveAccountsDbPath(env = process.env) {
 }
 
 export const DEFAULT_ACCOUNT_AUTH_REDIRECT_URI = 'https://rau-credits-production.up.railway.app/v1/account/auth/callback';
-export const DEFAULT_ACCOUNT_AUTH_PROVIDERS = 'email,google,apple';
+export const DEFAULT_ACCOUNT_AUTH_PROVIDERS = 'email,google';
 export const DEFAULT_ACCOUNT_DEVICE_LIMIT = 5;
 
 /**

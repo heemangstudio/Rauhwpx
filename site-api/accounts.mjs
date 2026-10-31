@@ -103,7 +103,7 @@ export function createAccountsService({
   workos = null,
   signingKey = null,
   leaseKid = DEFAULT_LEASE_KID,
-  providers = ['email', 'google', 'apple'],
+  providers = ['email', 'google'],
   deviceLimit = DEVICE_LIMIT_PER_ACCOUNT,
   adminToken = '',
   now = Date.now,
