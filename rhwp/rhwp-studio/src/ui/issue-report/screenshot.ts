@@ -1,7 +1,8 @@
 /**
- * 문제 보고 스크린숏. 메인이 창 전체를 찍고, 여기서 화면에 걸친 문서 쪽(편집 용지, 문서 홈의 미리보기)만
- * 알아볼 수 없게 흐린다. 나머지 화면은 그대로 둔다. 흐리지 않은 원본은 메모리에만 두고 '블러 해제'
- * 때만 보낸다.
+ * 문제 보고 스크린숏. 메인이 창 전체를 찍고, 여기서 창 전체를 글자를 알아볼 수 없게 흐린다. 화면마다 문서와
+ * 프로젝트 내용이 놓이는 곳(편집 용지, 문서 홈, 프로젝트 보드의 카드, 채팅)이 달라 고른 영역만 흐리면 어딘가
+ * 새어 나간다. 화면에 걸친 문서 쪽(편집 용지, 문서 홈의 미리보기)은 확대해도 글자가 살아나지 않게 쪽 폭에
+ * 맞춘 더 큰 칸으로 한 번 더 흐린다. 흐리지 않은 원본은 메모리에만 두고 '블러 해제' 때만 보낸다.
  */
 export interface CssRect {
   x: number;
@@ -15,6 +16,8 @@ export interface CssRect {
 /** 쪽 폭을 이만큼의 칸으로 나눈다. 한 줄의 글자 수보다 적어 글자 하나가 한 칸을 넘지 못한다. */
 const BLOCKS_PER_PAGE_WIDTH = 32;
 const MIN_BLOCK_CSS_PX = 12;
+/** 창 전체 흐림의 칸. 화면 글자(12~20px)를 지우면서 창의 배치(패널, 대화상자, 알림 띠)는 알아볼 만큼 남긴다. */
+const BLOCKS_PER_WINDOW_WIDTH = 120;
 const SCREENSHOT_MAX_BYTES = 4 * 1024 * 1024 - 64 * 1024;
 
 function shown(el: Element): boolean {
@@ -70,6 +73,21 @@ export function visibleDocumentRects(root: Document = document): CssRect[] {
   return rects;
 }
 
+/**
+ * 흐림을 켰을 때 가릴 곳(CSS px, 창 기준): 창 전체와, 그 위에 더 큰 칸으로 문서 쪽. 어느 화면이든 창 밖으로
+ * 새는 곳이 없다. 나중 영역이 원본에서 다시 흐리므로 문서 쪽은 창 전체보다 거친 칸이 이긴다.
+ */
+export function reportBlurRects(root: Document = document): CssRect[] {
+  const width = window.innerWidth;
+  const height = window.innerHeight;
+  const rects: CssRect[] = [];
+  if (width >= 1 && height >= 1) {
+    rects.push({ x: 0, y: 0, width, height, block: Math.max(MIN_BLOCK_CSS_PX, Math.round(width / BLOCKS_PER_WINDOW_WIDTH)) });
+  }
+  rects.push(...visibleDocumentRects(root));
+  return rects;
+}
+
 /** 칸마다 평균을 낸 뒤 부드럽게 늘린다 — 모자이크보다 덜 거슬리고 글자는 남지 않는다. */
 function obscure(ctx: CanvasRenderingContext2D, source: CanvasImageSource, rect: CssRect, scale: number, limit: { w: number; h: number }): void {
   const x = Math.max(0, Math.floor(rect.x * scale));
@@ -100,7 +118,7 @@ function obscure(ctx: CanvasRenderingContext2D, source: CanvasImageSource, rect:
 export interface PreparedScreenshot {
   /** 메인이 찍은 PNG 그대로. */
   sharp: Blob;
-  /** 문서 쪽을 흐린 PNG. 흐릴 곳이 없으면 sharp 와 같다. */
+  /** 흐린 PNG. 흐릴 곳이 없으면 sharp 와 같다. */
   blurred: Blob;
   /** 흐린 곳이 있었는지 — 없으면 '블러 해제'를 보이지 않는다. */
   hasBlur: boolean;
