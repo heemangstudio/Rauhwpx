@@ -186,9 +186,10 @@ export async function checkAccountPage({ page, open, screenshot }) {
   assert.ok((await calls(page)).includes('signIn:google:sign_up'), 'sign-up is passed with the sign-in');
   // 로그인한 계정은 Hama 라 Rau 만 남는다.
   await page.waitForSelector('.ag-pricing-col[data-plan="hama"][data-focus="true"]', { visible: true });
-  await page.click('.ag-pricing-col[data-plan="rau"] [data-sku="rauMonthly"]');
-  await page.waitForSelector('.ag-pricing-card[data-view="waiting"]');
-  assert.deepEqual(await page.evaluate(() => window.sidebarPreview.plan.checkouts), ['rauMonthly']);
+  assert.deepEqual(
+    await page.$$eval('.ag-pricing-col[data-plan="rau"] button', (buttons) => buttons.map((b) => b.textContent)),
+    ['7일 무료 체험'],
+  );
 
   // 계정 페이지의 Rau 자리(Hama 계정): 체험 단추가 먼저 서고, 연간을 누르면 그 자리에서 결제 확인을 기다린다.
   await open('reset=1&home=1&account=hama&checkoutHold=1');

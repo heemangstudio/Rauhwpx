@@ -113,7 +113,7 @@ export async function checkPlanCard({ page, open, screenshot }) {
   await page.waitForSelector('.ag-pricing-col[data-plan="rau"][data-focus="true"]');
   assert.deepEqual(
     await page.$$eval('.ag-pricing-col[data-plan="rau"] button', (buttons) => buttons.map((b) => b.textContent)),
-    ['7일 무료 체험', '월간', '연간'],
+    ['7일 무료 체험'],
   );
   await screenshot?.('plan-card-trial');
   await page.click('.ag-pricing-col[data-plan="rau"] .ag-pricing-btn-trial');

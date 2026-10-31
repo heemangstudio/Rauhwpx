@@ -34,31 +34,12 @@
   transition: var(--ag-transition-color);
 }
 
-.ag-pricing-back {
-  display: inline-flex;
-  flex: none;
-  align-items: center;
-  justify-content: center;
-  width: 36px;
-  height: 36px;
-  padding: 0;
-  border: 0;
-  border-radius: var(--ag-r-row);
-  background: transparent;
-  color: var(--n-ink-secondary);
-  cursor: default;
-  transition: var(--ag-transition-color);
-}
-
-.ag-pricing-back:hover,
 .ag-pricing-close:hover {
   background: var(--n-ink-fill-hover);
   color: var(--n-ink);
 }
 
 .ag-pricing-close:focus-visible,
-.ag-pricing-back:focus-visible,
-.ag-pricing-skip:focus-visible,
 .ag-pricing-btn:focus-visible {
   outline: var(--ag-focus-ring);
   outline-offset: var(--ag-focus-offset);
@@ -241,22 +222,6 @@
 
 .ag-pricing-notice[hidden] {
   display: none;
-}
-
-.ag-pricing-skip {
-  flex: none;
-  height: 36px;
-  margin-left: auto;
-  padding: 0 12px;
-  border: 0;
-  border-radius: var(--ag-r-row);
-  background: transparent;
-  color: var(--n-ink-secondary);
-  font: inherit;
-  font-size: var(--ag-fs-body);
-  font-weight: var(--ag-fw-medium);
-  letter-spacing: var(--ag-track-tight);
-  cursor: default;
 }
 
 /* 결제 확인·완료: 한가운데 짧은 상태 한 줄. */

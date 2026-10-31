@@ -338,9 +338,10 @@ test('Rau subscribers who skip provider connection see the Rau introduction and 
   await tick();
   ui.element.querySelectorAll('.rhwp-setup-path')[1]!.click();
   await tick();
+  assert.equal(ui.element.querySelector('.rhwp-setup-dialog')!.dataset.step, 'rau');
   primary.click();
   await tick();
-  assert.equal(ui.element.querySelector('.rhwp-setup-dialog')!.dataset.step, 'rau');
+  assert.equal(ui.element.querySelector('.rhwp-setup-dialog')!.dataset.step, 'models');
   primary.click();
   await tick();
   assert.equal(finished(), 1);

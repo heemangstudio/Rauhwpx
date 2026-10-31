@@ -51,10 +51,29 @@ export interface PlanCardOptions {
   /** 결제 전 로그인할 계정. 생략하면 창의 계정 상태를 쓴다. */
   account?: AccountStore;
   focus?: PlanCardFocus;
-  /** 요금제를 고르지 않고 닫는 단추의 글. 처음 설정에서만 넘긴다. */
-  skipLabel?: string;
-  /** 있으면 왼쪽 아래에 뒤로 단추를 두고, 누르면 카드를 닫은 뒤 부른다. 처음 설정에서만 넘긴다. */
-  onBack?: () => void;
+}
+
+export type PlanChooserView = 'plans' | 'waiting' | 'done';
+
+export interface PlanChooserOptions {
+  store: PlanStore;
+  account?: AccountStore;
+  focus?: PlanCardFocus;
+  /** 결제나 체험을 확인하고 잠깐 알린 뒤. */
+  onFinish: () => void;
+  /** 완료를 알리는 시간. 다음 화면이 알려 주면 0 을 넘긴다. */
+  doneHoldMs?: number;
+  /** 그릴 때마다. busy 면 결제나 체험이 진행 중이다. */
+  onRender?: (view: PlanChooserView, busy: boolean) => void;
+  /** 로그인으로 보낸다. 생략하면 계정 페이지만 연다. 보내지 못하면 false. */
+  signIn?: (focus: PlanCardFocus | undefined) => boolean;
+}
+
+export interface PlanChooser {
+  element: HTMLElement;
+  focusColumn(target: PlanCardFocus | undefined): void;
+  focusTarget(): HTMLElement | null;
+  dispose(): void;
 }
 
 export interface PlanCardHandle {
@@ -77,37 +96,17 @@ function button(className: string, text: string): HTMLButtonElement {
   return node;
 }
 
-/** 열린 카드가 있으면 그 카드를 짚고, 없으면 새로 연다. 요금제 API 가 없으면 열지 않는다. */
-export function openPlanCard(options: PlanCardOptions): PlanCardHandle | null {
-  if (!options.store.api) return null;
-  if (openCard) {
-    openCard.focus(options.focus);
-    return openCard.handle;
-  }
+/**
+ * 세 칸과 결제·체험 흐름. 틀이 없어 시트 카드와 처음 설정의 요금제 장이 함께 쓴다.
+ * 결제나 체험을 확인하고 잠깐 알린 뒤 onFinish 를 부른다.
+ */
+export function createPlanChooser(options: PlanChooserOptions): PlanChooser {
   const { store } = options;
   const api = store.api!;
   const account = options.account ?? accountStore();
-  const frame = createSheetFrame({
-    title: '요금제',
-    center: true,
-    role: 'dialog',
-    className: 'ag-pricing-card',
-    dragIgnore: 'button, label, input',
-  });
-  const { sheet, header } = frame;
-
-  const head = el('div', 'ag-pricing-head');
-  header.replaceWith(head);
-  const close = button('ag-pricing-close', '');
-  close.setAttribute('aria-label', '닫기');
-  close.append(createIcon('close'));
-  head.append(header, close);
-
   const body = el('div', 'ag-pricing-body');
-  sheet.append(body);
 
-  type View = 'plans' | 'waiting' | 'done';
-  let view: View = 'plans';
+  let view: PlanChooserView = 'plans';
   /** 결제한 상품의 등급이 되면 성공. */
   let awaiting: { sku: PlanSku; fromTier: PlanTier } | null = null;
   const awaitingFor = (sku: PlanSku): { sku: PlanSku; fromTier: PlanTier } => ({ sku, fromTier: status()?.tier ?? 'free' });
@@ -170,22 +169,15 @@ export function openPlanCard(options: PlanCardOptions): PlanCardHandle | null {
 
   function showDone(): void {
     view = 'done';
-    if (successTimer === null) successTimer = window.setTimeout(() => finish(true), SUCCESS_HOLD_MS);
+    if (successTimer === null) successTimer = window.setTimeout(options.onFinish, options.doneHoldMs ?? SUCCESS_HOLD_MS);
     render();
   }
 
-  /** 카드를 닫고 계정 페이지의 로그인으로 보낸다. 로그인하면 같은 칸을 짚은 카드로 돌아온다. */
+  /** 계정 페이지의 로그인으로 보낸다. 시트 카드는 닫았다가 로그인하면 같은 칸을 짚어 돌아온다. */
   function sendToSignIn(): boolean {
-    const back = focused;
-    const page = openAccountPage({
-      store: account,
-      plan: store,
-      section: 'sign-in',
-      onSignedIn: () => { openPlanCard({ ...options, ...(back ? { focus: back } : {}) }); },
-    });
-    if (!page) return false;
-    finish(false);
-    return true;
+    return options.signIn
+      ? options.signIn(focused)
+      : openAccountPage({ store: account, plan: store, section: 'sign-in' }) !== null;
   }
 
   async function begin(sku: PlanSku): Promise<void> {
@@ -245,7 +237,7 @@ export function openPlanCard(options: PlanCardOptions): PlanCardHandle | null {
     }
     doneTier = tierForSku(awaiting!.sku);
     view = 'done';
-    successTimer = window.setTimeout(() => finish(true), SUCCESS_HOLD_MS);
+    successTimer = window.setTimeout(options.onFinish, options.doneHoldMs ?? SUCCESS_HOLD_MS);
   }
 
   function planColumn(plan: 'free' | PlanFamily, tier: PlanTier | null): HTMLElement {
@@ -277,7 +269,8 @@ export function openPlanCard(options: PlanCardOptions): PlanCardHandle | null {
     } else if (plan !== 'free' && !(plan === 'hama' && tier === 'rau')) {
       if (trial === 'active') actions.append(el('span', 'ag-pricing-current ag-pricing-trial-tag', '체험 중'));
       const { monthly, yearly } = PLAN_CYCLES[plan];
-      const skus = [monthly, yearly].filter(available);
+      // 체험을 쓸 수 있으면 체험만 권한다. 체험을 쓴 뒤에 결제 단추가 선다.
+      const skus = trial === 'available' ? [] : [monthly, yearly].filter(available);
       if (trial === 'available') {
         const start = button('ag-pricing-btn ag-pricing-btn-primary ag-pricing-btn-trial', trialButtonLabel(account.status()?.trial));
         start.dataset.trial = 'rau';
@@ -314,24 +307,8 @@ export function openPlanCard(options: PlanCardOptions): PlanCardHandle | null {
     const message = el('p', 'ag-pricing-notice', notice);
     message.setAttribute('role', 'status');
     message.hidden = !notice;
-    if (options.onBack) {
-      const back = button('ag-pricing-back', '');
-      back.setAttribute('aria-label', '뒤로');
-      back.title = '뒤로';
-      back.append(createIcon('arrowLeft'));
-      back.addEventListener('click', () => {
-        options.onBack!();
-        finish(false);
-      });
-      foot.append(back);
-    }
     foot.append(message);
-    if (options.skipLabel) {
-      const skip = button('ag-pricing-skip', options.skipLabel);
-      skip.addEventListener('click', () => finish(false));
-      foot.append(skip);
-    }
-    if (notice || options.skipLabel || options.onBack) body.append(foot);
+    if (notice) body.append(foot);
   }
 
   function renderWaiting(): void {
@@ -364,7 +341,7 @@ export function openPlanCard(options: PlanCardOptions): PlanCardHandle | null {
 
   function render(): void {
     body.replaceChildren();
-    sheet.dataset.view = view;
+    options.onRender?.(view, view !== 'plans' || checkoutBusy || trialBusy);
     if (view === 'plans') renderPlans();
     else if (view === 'waiting') renderWaiting();
     else renderDone();
@@ -375,7 +352,7 @@ export function openPlanCard(options: PlanCardOptions): PlanCardHandle | null {
       focused = target;
       if (view === 'plans') render();
     }
-    if (target) sheet.querySelector(`.ag-pricing-col[data-plan="${target}"]`)?.scrollIntoView({ block: 'nearest' });
+    if (target) body.querySelector(`.ag-pricing-col[data-plan="${target}"]`)?.scrollIntoView({ block: 'nearest' });
   }
 
   if (status()?.pendingCheckout) {
@@ -397,23 +374,79 @@ export function openPlanCard(options: PlanCardOptions): PlanCardHandle | null {
     render();
   });
 
-  let resolveClosed!: () => void;
-  const closed = new Promise<void>((resolve) => { resolveClosed = resolve; });
-  const finish = frame.present(
-    () => sheet.querySelector<HTMLElement>(focused ? `.ag-pricing-col[data-plan="${focused}"] button:not([disabled])` : '.ag-pricing-btn-primary:not([disabled])')
-      ?? close,
-    () => {
+  return {
+    element: body,
+    focusColumn,
+    focusTarget: () => body.querySelector<HTMLElement>(
+      focused ? `.ag-pricing-col[data-plan="${focused}"] button:not([disabled])` : '.ag-pricing-btn-primary:not([disabled])',
+    ),
+    dispose(): void {
       unsubscribe();
       unsubscribeAccount();
       if (successTimer !== null) window.clearTimeout(successTimer);
+    },
+  };
+}
+
+/** 열린 카드가 있으면 그 카드를 짚고, 없으면 새로 연다. 요금제 API 가 없으면 열지 않는다. */
+export function openPlanCard(options: PlanCardOptions): PlanCardHandle | null {
+  if (!options.store.api) return null;
+  if (openCard) {
+    openCard.focus(options.focus);
+    return openCard.handle;
+  }
+  const { store } = options;
+  const account = options.account ?? accountStore();
+  const frame = createSheetFrame({
+    title: '요금제',
+    center: true,
+    role: 'dialog',
+    className: 'ag-pricing-card',
+    dragIgnore: 'button, label, input',
+  });
+  const { sheet, header } = frame;
+
+  const head = el('div', 'ag-pricing-head');
+  header.replaceWith(head);
+  const close = button('ag-pricing-close', '');
+  close.setAttribute('aria-label', '닫기');
+  close.append(createIcon('close'));
+  head.append(header, close);
+
+  const chooser = createPlanChooser({
+    store,
+    account,
+    ...(options.focus ? { focus: options.focus } : {}),
+    onFinish: () => finish(true),
+    onRender: (view) => { sheet.dataset.view = view; },
+    signIn: (back) => {
+      const page = openAccountPage({
+        store: account,
+        plan: store,
+        section: 'sign-in',
+        onSignedIn: () => { openPlanCard({ ...options, ...(back ? { focus: back } : {}) }); },
+      });
+      if (!page) return false;
+      finish(false);
+      return true;
+    },
+  });
+  sheet.append(chooser.element);
+
+  let resolveClosed!: () => void;
+  const closed = new Promise<void>((resolve) => { resolveClosed = resolve; });
+  const finish = frame.present(
+    () => chooser.focusTarget() ?? close,
+    () => {
+      chooser.dispose();
       openCard = null;
       resolveClosed();
     },
   );
   close.addEventListener('click', () => finish(false));
   const handle: PlanCardHandle = { close: () => finish(false), closed };
-  openCard = { handle, focus: focusColumn };
-  if (focused) requestAnimationFrame(() => focusColumn(focused));
+  openCard = { handle, focus: chooser.focusColumn };
+  if (options.focus) requestAnimationFrame(() => chooser.focusColumn(options.focus));
   return handle;
 }
 

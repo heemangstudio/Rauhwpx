@@ -156,7 +156,7 @@ test('AI 경로는 로그인과 유료 요금제를 확인한 뒤 연결로 이�
   assert.deepEqual(planSteps('missing', { ai: true, account: true }), ['intro', 'theme', 'fonts', 'welcome', 'account']);
   assert.deepEqual(planSteps(null, { ai: true, account: true, signedIn: true, tier: 'free' }), ['intro', 'theme', 'welcome', 'account', 'plans']);
   assert.deepEqual(planSteps(null, { ai: true, signedIn: true, tier: 'hama' }), ['intro', 'theme', 'welcome', 'models']);
-  assert.deepEqual(planSteps(null, { ai: true, signedIn: true, tier: 'rau' }), ['intro', 'theme', 'welcome', 'models', 'rau']);
+  assert.deepEqual(planSteps(null, { ai: true, signedIn: true, tier: 'rau' }), ['intro', 'theme', 'welcome', 'rau', 'models']);
   assert.deepEqual(planSteps(null, { ai: true, signedIn: false, tier: 'rau', account: true }), ['intro', 'theme', 'welcome', 'account']);
 });
 

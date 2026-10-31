@@ -61,6 +61,15 @@
   transform: none;
 }
 
+.rhwp-setup-dialog[data-step='plans'] {
+  width: min(640px, 100%);
+}
+
+/* 결제·체험을 확인하는 동안 아래 단추로 장을 옮기지 않는다. */
+.rhwp-setup-dialog[data-plan-busy='true'] .rhwp-setup-footer {
+  visibility: hidden;
+}
+
 .rhwp-setup-dialog[data-step='rau'] .rhwp-setup-hippo {
   display: none;
 }
@@ -76,6 +85,10 @@
   gap: 12px;
   padding: 0 12px 12px;
   text-align: center;
+}
+
+.rhwp-setup-upgrade .rhwp-setup-hint {
+  margin: 0;
 }
 
 .rhwp-setup-party-hama {
@@ -99,26 +112,6 @@
   font-size: var(--ag-fs-body);
   line-height: var(--ag-lh-body);
   word-break: keep-all;
-}
-
-.rhwp-setup-upgrade-action {
-  margin-top: 8px;
-  padding: 10px 24px;
-  border: 0;
-  border-radius: var(--ag-r-row);
-  background: var(--ag-primary-bg);
-  color: var(--ag-primary-fg);
-  font: inherit;
-  cursor: pointer;
-}
-
-.rhwp-setup-upgrade-action:hover {
-  background: var(--ag-primary-bg-hover);
-}
-
-.rhwp-setup-upgrade-action:focus-visible {
-  outline: var(--ag-focus-ring);
-  outline-offset: var(--ag-focus-offset);
 }
 
 /* ── 안내 카드 ── */
@@ -739,6 +732,37 @@
 .rhwp-setup-dot:focus-visible {
   outline: 2px solid var(--n-ink);
   outline-offset: 1px;
+}
+
+.rhwp-setup-back {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  margin-right: -8px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--ag-r-row);
+  background: transparent;
+  color: var(--n-ink-secondary);
+  cursor: default;
+  transition: var(--ag-transition-color);
+}
+
+.rhwp-setup-back[hidden] {
+  display: none;
+}
+
+.rhwp-setup-back:hover {
+  background: var(--n-ink-fill-hover);
+  color: var(--n-ink);
+}
+
+.rhwp-setup-back:focus-visible {
+  outline: var(--ag-focus-ring);
+  outline-offset: var(--ag-focus-offset);
 }
 
 .rhwp-setup-primary {

@@ -29,8 +29,10 @@ import {
 } from './catalog.ts';
 import { createHippo } from './hippo.ts';
 import { createPartyHama } from '../agent-sidebar/chat-hama.ts';
+import { trialButtonLabel } from '../account/account-format.ts';
 import { accountStore, type AccountStore } from '../account/account-store.ts';
 import type { PlanStore } from '../plan/plan-store.ts';
+import type { PlanChooser, PlanChooserOptions } from '../plan/upgrade-card.ts';
 import { createAccountStep } from './account-step.ts';
 import { holdInitialSetup, markLicensedHere, releaseInitialSetup } from './active.ts';
 import {
@@ -119,8 +121,8 @@ export interface InitialSetupDeps {
   /** 데스크톱 계정. 생략하면 창의 계정 상태를 쓰고, null 이면 계정 장이 없다. */
   account?: AccountStore | null;
   plan?: PlanStore;
-  /** 기존 결제 카드가 닫힐 때까지 기다린다. 열 수 없으면 false, 뒤로 단추로 닫았으면 'back'. */
-  openPlans?: () => Promise<boolean | 'back'>;
+  /** 요금제 장에 넣을 세 칸. 없으면 안내 한 줄만 둔다. */
+  createPlanChooser?: (hooks: Pick<PlanChooserOptions, 'onFinish' | 'onRender' | 'doneHoldMs'>) => PlanChooser | null;
   /** 끝내거나 건너뛰어 다시 열 일이 없어졌을 때. */
   onFinished?: () => void;
 }
@@ -155,10 +157,10 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   const accountApi = account?.api ?? null;
   let accountStep = false;
   let ai = false;
-  let choosingPlan = false;
-  /** 요금제 장에 들어올 때 카드를 한 번만 연다. 열지 못하면 이 장에서 다시 시도한다. */
-  let planCardTried = false;
+  /** 결제·체험이 진행 중이면 그 결과를 알릴 때까지 장을 바꾸지 않는다. */
+  let planBusy = false;
   function rebuildSteps(preferred = currentStep()): void {
+    if (planBusy) return;
     const plan = deps.plan?.status();
     steps = planSteps(fontStep, {
       ai, account: accountStep,
@@ -389,17 +391,17 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   welcomePanel.append(freePath, aiPath, routeNotice);
 
   const plansPanel = el('div', 'rhwp-setup-panel rhwp-setup-plans');
-  const planAction = button('rhwp-setup-upgrade-action', '요금제 선택');
-  const planError = el('p', 'rhwp-setup-notice');
-  planError.setAttribute('role', 'status');
-  planError.hidden = true;
-  planAction.addEventListener('click', () => { void choosePlan(); });
-  plansPanel.append(planAction, planError);
+  const planNotice = el('p', 'rhwp-setup-notice', '요금제는 데스크톱 앱에서 선택할 수 있어요.');
+  planNotice.setAttribute('role', 'status');
+  planNotice.hidden = true;
+  let planChooser: PlanChooser | null = null;
+  plansPanel.append(planNotice);
 
   const rauPanel = el('div', 'rhwp-setup-panel rhwp-setup-upgrade');
+  const rauTitle = el('h2', 'rhwp-setup-upgrade-title');
   rauPanel.append(
     createPartyHama(),
-    el('h2', 'rhwp-setup-upgrade-title', '이제 Rau와 함께해요'),
+    rauTitle,
     el('p', 'rhwp-setup-upgrade-copy', 'Rau 모드가 작업하면서 내 글 취향을 배워요.'),
     el('p', 'rhwp-setup-hint', '배운 취향은 언제든 보고 되돌릴 수 있어요.'),
   );
@@ -411,46 +413,39 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     account: accountElement, plans: plansPanel, models: modelsPanel, rau: rauPanel,
   };
 
-  async function choosePlan(): Promise<void> {
-    if (choosingPlan) return;
-    if (!deps.openPlans) {
-      planError.textContent = '요금제는 데스크톱 앱에서 선택할 수 있어요.';
-      planError.hidden = false;
-      return;
-    }
-    choosingPlan = true;
-    planAction.disabled = true;
-    overlay.hidden = true;
-    try {
-      const opened = await deps.openPlans();
-      if (disposed || !overlay.isConnected) return;
-      if (opened === 'back') {
-        stepIndex = Math.max(0, stepIndex - 1);
+  function mountPlanChooser(): void {
+    if (planChooser) return;
+    planChooser = deps.createPlanChooser?.({
+      // 다음 장(Rau 축하, Hama 는 하마의 말)이 완료를 알린다.
+      doneHoldMs: 0,
+      onFinish: () => {
+        unmountPlanChooser();
+        if (!deps.plan?.status() || deps.plan.status()!.tier === 'free') {
+          finish();
+          return;
+        }
+        const tier = deps.plan.status()!.tier;
+        markLicensedHere();
+        rebuildSteps(tier === 'rau' ? 'rau' : 'models');
         renderStep();
-        return;
-      }
-      if (!opened) {
-        planError.textContent = '요금제를 열지 못했어요. 다시 시도해 주세요.';
-        planError.hidden = false;
-        return;
-      }
-      if (!deps.plan?.status() || deps.plan.status()!.tier === 'free') {
-        finish();
-        return;
-      }
-      markLicensedHere();
-      rebuildSteps('models');
-      renderStep();
-      focusStep();
-    } catch {
-      planError.textContent = '요금제를 열지 못했어요. 다시 시도해 주세요.';
-      planError.hidden = false;
-    } finally {
-      choosingPlan = false;
-      planAction.disabled = false;
-      overlay.hidden = false;
-      if (overlay.isConnected) focusStep();
-    }
+        focusStep();
+        if (tier === 'hama') hippo.cheer(HIPPO_LINES.hamaReady);
+      },
+      onRender: (_view, busy) => {
+        planBusy = busy;
+        dialog.dataset.planBusy = busy ? 'true' : 'false';
+      },
+    }) ?? null;
+    if (planChooser) plansPanel.prepend(planChooser.element);
+    planNotice.hidden = planChooser !== null;
+  }
+
+  function unmountPlanChooser(): void {
+    planChooser?.dispose();
+    planChooser?.element.remove();
+    planChooser = null;
+    planBusy = false;
+    delete dialog.dataset.planBusy;
   }
 
   const footer = el('footer', 'rhwp-setup-footer');
@@ -458,7 +453,16 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   dots.setAttribute('role', 'group');
   dots.setAttribute('aria-label', '설정 단계');
   const primary = button('rhwp-setup-primary', '다음');
-  footer.append(dots, primary);
+  const back = button('rhwp-setup-back');
+  back.setAttribute('aria-label', '뒤로');
+  back.title = '뒤로';
+  back.appendChild(createIcon('arrowLeft'));
+  back.addEventListener('click', () => {
+    stepIndex = Math.max(0, stepIndex - 1);
+    renderStep();
+    focusStep();
+  });
+  footer.append(back, dots, primary);
 
   dialog.append(head, body, footer);
   overlay.appendChild(dialog);
@@ -520,6 +524,11 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   let spokenStep: SetupStep | null = null;
   function renderStep(): void {
     const step = currentStep();
+    if (step === 'plans') mountPlanChooser();
+    if (step === 'rau') {
+      const trial = account?.status()?.trial;
+      rauTitle.textContent = trial?.state === 'active' ? `${trialButtonLabel(trial)}을 시작했어요` : '이제 Rau와 함께해요';
+    }
     for (const [name, panel] of Object.entries(panels) as Array<[SetupStep, HTMLElement]>) {
       panel.hidden = name !== step;
     }
@@ -553,16 +562,15 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
       spokenStep = step;
       hippo.say(lineFor(step));
     }
-    if (step !== 'plans') {
-      planCardTried = false;
-    } else if (!planCardTried && !choosingPlan && overlay.isConnected) {
-      planCardTried = true;
-      void choosePlan();
-    }
+    back.hidden = step !== 'plans';
   }
 
   function focusStep(): void {
     const step = currentStep();
+    if (step === 'plans' && planChooser?.focusTarget()) {
+      planChooser.focusTarget()!.focus({ preventScroll: true });
+      return;
+    }
     if (step === 'account' && accountPanel) {
       (accountPanel.focusTarget() ?? primary).focus({ preventScroll: true });
       return;
@@ -615,7 +623,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   skip.addEventListener('click', () => finish());
 
   function onKeyDown(event: KeyboardEvent): void {
-    if (choosingPlan || !overlay.isConnected || !overlay.classList.contains('rhwp-setup-open')) return;
+    if (!overlay.isConnected || !overlay.classList.contains('rhwp-setup-open')) return;
     if (!initialSetupTakesEscape(event, document)) return;
     event.preventDefault();
     finish();
@@ -628,7 +636,6 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     document.body.appendChild(overlay);
     overlay.setAttribute('aria-hidden', 'false');
     ai = false;
-    planCardTried = false;
     steps = planSteps(fontStep);
     stepIndex = 0;
     spokenStep = null;
@@ -645,6 +652,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   }
 
   function close(): void {
+    unmountPlanChooser();
     releaseInitialSetup(overlay);
     if (!overlay.isConnected) return;
     overlay.classList.remove('rhwp-setup-open');
@@ -654,7 +662,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   }
 
   const stopPlan = deps.plan?.subscribe(() => {
-    if (choosingPlan || disposed) return;
+    if (disposed) return;
     rebuildSteps();
     renderStep();
   }) ?? (() => {});
@@ -681,6 +689,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
       disposed = true;
       window.clearTimeout(signedInTimer);
       stopPlan();
+      unmountPlanChooser();
       accountPanel?.dispose();
       hippo.dispose();
       document.removeEventListener('keydown', onKeyDown);

@@ -51,19 +51,20 @@ test('setup gates provider connection by account and plan, and resumes after che
 
     await start('free');
     await page.click('[data-path="ai"]');
-    await page.waitForSelector('.ag-pricing-card', { visible: true });
+    await step('plans');
+    await page.waitForSelector('.rhwp-setup-plans .ag-pricing-grid', { visible: true });
     assert.equal(await page.$('.rhwp-setup-dot[aria-label="AI 연결"]'), null);
-    await page.click('.ag-pricing-back');
+    await page.click('.rhwp-setup-back');
     await step('welcome');
     await page.click('[data-path="ai"]');
-    await page.waitForSelector('.ag-pricing-card', { visible: true });
-    await page.click('.ag-pricing-skip');
+    await step('plans');
+    await page.click('.rhwp-setup-primary');
     await finished();
 
     await start('free');
     await page.click('[data-path="ai"]');
-    await page.waitForSelector('.ag-pricing-card', { visible: true });
-    await page.click('.ag-pricing-close');
+    await step('plans');
+    await page.click('.rhwp-setup-skip');
     await finished();
 
     await start('hama');
@@ -74,21 +75,22 @@ test('setup gates provider connection by account and plan, and resumes after che
 
     await start('rau');
     await page.click('[data-path="ai"]');
-    await step('models');
-    await page.click('.rhwp-setup-primary');
     await step('rau');
     await page.screenshot({ path: resolve(artifacts, 'setup-rau-introduction.png') });
+    await page.click('.rhwp-setup-primary');
+    await step('models');
     await page.click('.rhwp-setup-primary');
     await finished();
 
     await start('free');
     await page.click('[data-path="ai"]');
-    await page.waitForSelector('.ag-pricing-card', { visible: true });
+    await step('plans');
     // 무료 계정은 Rau 체험을 쓸 수 있다. 체험 시작은 네트워크 요청 없는 mock-account 다.
     await page.click('.ag-pricing-col[data-plan="rau"] .ag-pricing-btn-trial');
-    await step('models');
-    await page.click('.rhwp-setup-primary');
     await step('rau');
+    assert.match(await page.$eval('.rhwp-setup-upgrade .rhwp-setup-upgrade-title', (node) => node.textContent ?? ''), /무료 체험을 시작했어요/);
+    await page.click('.rhwp-setup-primary');
+    await step('models');
     await page.click('.rhwp-setup-primary');
     await finished();
   } finally {
