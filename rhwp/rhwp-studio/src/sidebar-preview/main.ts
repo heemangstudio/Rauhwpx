@@ -280,8 +280,10 @@ const mock = createMockBridge(report, () => {
   }
 }, { liveChat, piGift: () => mockGift?.active() === true });
 mockGift?.api.onChange(() => mock.syncPiStatus());
-/** 업그레이드 단추가 앱에 띄워 달라는 요금제 카드. 요금제 대역이 있으면 진짜 카드가 뜨므로 기록만 한다. */
-window.addEventListener('rhwp:open-plan-card', () => {
+/** 업그레이드 단추·잠긴 Rau 탭이 앱에 띄워 달라는 요금제 카드. 요금제 대역이 있으면 진짜 카드가 뜨므로 기록만 한다. */
+const planCardRequests: unknown[] = [];
+window.addEventListener('rhwp:open-plan-card', (event) => {
+  planCardRequests.push((event as CustomEvent).detail);
   if (!mockPlan) report('Plan card placeholder');
 });
 /** 자동 수정(데스크톱). `autofix=fixed|failed|unavailable|off|undecided`, 없으면 웹 빌드처럼 단추가 없다. */
@@ -967,6 +969,7 @@ if (parallel === 'locked') {
 // Typed hooks for browser checks and custom scenario scripts.
 const preview = { ...mock, sidebar, versions, eventBus, enterFocusMode, undoState, restoreState, navigation, typingHold, linkCalls, detachCalls,
   gift: mockGift,
+  planCardRequests,
   autofix: mockAutofix,
   plan: mockPlan,
   account: mockAccount,
