@@ -109,8 +109,6 @@ export function initialSetupTakesEscape(
 export interface InitialSetupDeps {
   openAgentSetup: (agent: AgentName) => void;
   beginAgentConnect?: (agent: AgentName) => void;
-  /** 예전 2단계 흐름의 보정 창 열기. 카드는 더 이상 쓰지 않는다. */
-  openCalibration?: (options?: { elevate?: boolean }) => void;
   storage?: InitialSetupStorage | null;
   /** 글꼴 단계가 필요한지. 미리보기는 고정값을 넘긴다. */
   detectFontStep?: () => Promise<FontStepKind | null>;
@@ -132,7 +130,6 @@ export interface InitialSetupUi {
   open(): void;
   close(): void;
   handleEvent(event: SidebarEvent): void;
-  notifyCalibrationClosed(completed: boolean): void;
   dispose(): void;
 }
 
@@ -589,7 +586,6 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
       themeStep: themeStep === 'done' ? 'done' : 'skipped',
       providerStep: configuredAgents().length > 0 ? 'configured' : 'skipped',
       fontStep: fontStepState === 'done' ? 'done' : 'skipped',
-      calibrationStep: record.calibrationStep === 'done' ? 'done' : 'pending',
     }, storage);
   }
 
@@ -679,9 +675,6 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
       if (overlay.isConnected && currentStep() === 'models' && configuredAgents().length > before) {
         hippo.cheer(HIPPO_LINES.modelConnected);
       }
-    },
-    notifyCalibrationClosed(): void {
-      // 카드에는 보정 단계가 없다. 사이드바 칩이 결과를 기록한다.
     },
     dispose(): void {
       disposed = true;

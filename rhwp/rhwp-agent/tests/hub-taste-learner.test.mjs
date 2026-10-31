@@ -1,7 +1,8 @@
-// 허브의 Rau-0.1 연결: 턴 끝 학습 → taste-learned 하나(직접 쓰기 + 학습), 되돌리기, 설정 토글,
-// 여러 문서의 취향 → AGENTS.md 제안 하나와 확인 표시. 모델은 가짜 HostedRau 이다.
+// 허브의 Rau-0.1 연결: 턴 끝 학습 → taste-learned 하나, 되돌리기, 설정 토글,
+// 여러 문서의 취향 → 기억 승격과 <user_memory> 싣기(Rau 요금제만). 모델과 자격은 가짜 HostedRau 이다.
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
+import crypto from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -23,6 +24,7 @@ function fakePreload(root) {
   const outputs = path.join(root, 'outputs.json');
   const release = path.join(root, 'release');
   const aborted = path.join(root, 'learner-aborted');
+  const eligibility = path.join(root, 'eligibility');
   const claudeUrl = new URL('../agents/claude.mjs', import.meta.url).href;
   const hostedUrl = new URL('../rau-hosted.mjs', import.meta.url).href;
   const cliSetupUrl = new URL('../cli-setup-manager.mjs', import.meta.url).href;
@@ -66,7 +68,14 @@ function fakePreload(root) {
   `;
   const hostedStub = `
     import { appendFileSync as __append, existsSync as __exists, readFileSync as __read, writeFileSync as __write } from 'node:fs';
-    export function createHostedRau() { return { usable: () => true, async learn(prompt, { signal } = {}) {
+    const __eligibility = () => (__exists(${JSON.stringify(eligibility)}) ? __read(${JSON.stringify(eligibility)}, 'utf8').trim() : 'active');
+    export function createHostedRau() { return {
+      usable: () => true,
+      unusableCode: () => null,
+      cachedEligibility: __eligibility,
+      eligibility: async () => __eligibility(),
+      onEligibilityChange: () => () => {},
+      async learn(prompt, { signal } = {}) {
       __append(${JSON.stringify(learnerLog)}, JSON.stringify(prompt) + '\\n');
       const queue = __exists(${JSON.stringify(outputs)}) ? JSON.parse(__read(${JSON.stringify(outputs)}, 'utf8')) : [];
       const output = queue.shift() ?? '{"ops":[]}';
@@ -111,6 +120,7 @@ function fakePreload(root) {
     learnerPrompts: () => lines(learnerLog),
     aborted: () => existsSync(aborted),
     queueOutputs: (...values) => writeFileSync(outputs, JSON.stringify(values)),
+    setEligibility: (value) => writeFileSync(eligibility, value),
     mcpToken: () => readFileSync(path.join(root, 'mcp-token'), 'utf8'),
   };
 }
@@ -152,11 +162,12 @@ const learnedStyle = JSON.stringify({ ops: [{ op: 'add', kind: 'style', subject:
 const isTurnEnd = (frame) => frame.type === 'agent-event' && frame.event?.type === 'turn-end';
 
 /** 가짜 Pi·학습기를 끼운 허브와 Studio 창 하나. */
-async function startTasteHub(t) {
+async function startTasteHub(t, { prepare } = {}) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'rhwp-hub-taste-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const fake = fakePreload(root);
   for (const dir of ['instructions', 'style', 'skills', 'cli', 'memory']) mkdirSync(path.join(root, dir));
+  await prepare?.(root);
   const hub = await startHub(t, {
     fakePi: true,
     nodeArgs: ['--import', fake.preload],
@@ -175,6 +186,7 @@ async function startTasteHub(t) {
   const studio = bufferedSocket(`ws://127.0.0.1:${hub.port}/studio?token=${capabilities.studio}&sessionId=taste-owner`, { origin: 'rauhwpx://app' });
   await once(studio.socket, 'open');
   await studio.next((frame) => frame.type === 'welcome');
+  await studio.next((frame) => frame.type === 'style-learn-status');
   t.after(() => studio.socket.terminate());
   let seq = 0;
   const request = (frame, type) => {
@@ -193,11 +205,14 @@ async function startTasteHub(t) {
   return { hub, root, fake, studio, request, start, say };
 }
 
-test('Rau-0.1 learns at turn end, shows one marker per turn, undoes, honours the toggle and proposes one AGENTS.md line', async (t) => {
-  const { hub, root, fake, studio, request, start, say } = await startTasteHub(t);
+test('Rau-0.1 learns at turn end, undoes, escalates a two-document habit into 기억, gates <user_memory> on the Rau plan and honours the toggle', async (t) => {
+  const { hub, fake, studio, request, start, say } = await startTasteHub(t);
 
   const auto = { enabled: true, provider: 'auto', model: null, effort: null };
   assert.deepEqual((await request({ type: 'taste-settings-request' }, 'taste-settings')).settings, auto);
+  const initialMemory = await request({ type: 'user-memory-request', op: 'list' }, 'user-memory-result');
+  assert.deepEqual([initialMemory.ok, initialMemory.memory.rules, initialMemory.memory.availability, initialMemory.memory.available, initialMemory.memory.legacy],
+    [true, [], 'active', true, null]);
 
   // 1. 학습기가 턴에서 배운다 → 표시 하나. 에이전트는 기억을 쓰지 않는다.
   await start('thread-1', 'doc-1');
@@ -216,10 +231,11 @@ test('Rau-0.1 learns at turn end, shows one marker per turn, undoes, honours the
   const learned = await studio.next((frame) => frame.type === 'taste-learned');
   assert.equal(learned.threadId, 'thread-1');
   assert.equal(learned.turnId, turnEnd.event.turnId);
-  assert.deepEqual(learned.items.map((item) => [item.op, item.text, item.origin]), [
-    ['add', '3장 수정 금지', 'learned'],
-    ['add', '본문은 한다체 사용', 'learned'],
+  assert.deepEqual(learned.items.map((item) => [item.op, item.text, item.origin, item.change, item.tier]), [
+    ['add', '3장 수정 금지', 'learned', 'new', 'document'],
+    ['add', '본문은 한다체 사용', 'learned', 'new', 'document'],
   ]);
+  assert.deepEqual(learned.items[1].strength, { from: 0, to: 1 });
   const [learnerPrompt] = fake.learnerPrompts();
   assert.match(learnerPrompt, /한다체로 써 줘/);
   assert.match(learnerPrompt, /한다체로 고쳤습니다/, 'the root answer is captured from text deltas');
@@ -239,45 +255,57 @@ test('Rau-0.1 learns at turn end, shows one marker per turn, undoes, honours the
   const listed = await request({ type: 'document-memory-request', op: 'list', documentId: 'doc-1' }, 'document-memory-result');
   assert.deepEqual(listed.memory.entries.map((entry) => entry.text), ['본문은 한다체 사용']);
 
-  // 3. 두 번째 문서에서 같은 취향 → AGENTS.md 제안 하나.
+  // 3. 두 번째 문서에서 같은 습관 → 기억 승격. AGENTS.md 제안은 없다. 두 문서의 메모는 규칙으로 접힌다.
   await start('thread-2', 'doc-2');
   fake.queueOutputs(learnedStyle);
   await say('여기도 한다체로 써 줘');
-  const draftFrame = await studio.next((frame) => frame.type === 'agent-instructions-draft');
   const second = await studio.next((frame) => frame.type === 'taste-learned');
-  assert.equal(draftFrame.draft.requestedBy, 'Rau-0.1');
-  assert.match(draftFrame.draft.content, /## Rau-0\.1\n- 본문은 한다체 사용/);
-  assert.match(draftFrame.draft.reason, /2개 문서/);
-  assert.deepEqual(second.proposal, { draftId: draftFrame.draft.id });
+  assert.deepEqual(second.items.map((item) => [item.tier, item.change, item.text]), [['account', 'escalated', '본문은 한다체 사용']]);
+  assert.equal('proposal' in second, false);
+  const broadcast = await studio.next((frame) => frame.type === 'user-memory' && frame.memory.rules.length === 1);
+  assert.deepEqual(broadcast.memory.rules.map((rule) => [rule.kind, rule.text, rule.strength, rule.documents]), [['style', '본문은 한다체 사용', 2, 2]]);
+  await studio.next((frame) => frame.type === 'document-memory-changed' && frame.documentId === 'doc-1');
+  const doc1 = await request({ type: 'document-memory-request', op: 'list', documentId: 'doc-1' }, 'document-memory-result');
+  assert.deepEqual(doc1.memory.entries, [], 'doc-1\'s note folded into the rule');
+  assert.equal(studio.buffered.some((frame) => /^agent-instructions-draft/.test(frame.type)), false);
+  assert.equal(fake.learnerPrompts().length, 2);
 
-  // 4. 제안이 기다리는 동안 다른 문서가 같은 취향을 배워도 두 번째 제안은 없다.
+  // 4. Rau 요금제면 다음 턴에 <user_memory> 가 AGENTS.md 와 문서 기억 사이에 한 번 실린다.
   await start('thread-3', 'doc-3');
-  fake.queueOutputs(learnedStyle);
-  await say('이 문서도 한다체');
-  const third = await studio.next((frame) => frame.type === 'taste-learned');
-  assert.equal(third.proposal, undefined);
-  assert.equal(studio.buffered.some((frame) => frame.type === 'agent-instructions-draft'), false);
+  await request({ type: 'document-memory-request', op: 'apply', documentId: 'doc-3', ops: [{ op: 'add', kind: 'term', subject: '용어.고객', text: "'고객' 대신 '이용자'" }] }, 'document-memory-result');
+  await say('표를 하나 넣어 줘');
+  const withMemory = fake.prompts().at(-1);
+  const order = ['<app_agents_md', '<user_memory revision=', '<document_memory revision='].map((tag) => withMemory.indexOf(tag));
+  assert.ok(order.every((index) => index >= 0) && order[0] < order[1] && order[1] < order[2], `memory blocks in order: ${order}`);
+  assert.match(withMemory, /<user_memory[^>]*>[\s\S]*\[문체, 강도 2\] 본문은 한다체 사용[\s\S]*<\/user_memory>/);
+  await say('한 줄 더');
+  assert.doesNotMatch(fake.prompts().at(-1), /<user_memory/, 'the same memory is not sent twice to one provider session');
 
-  // 5. 제안이 기다리는 동안 사용자가 AGENTS.md 를 고쳐도, 확인하면 그 위에 줄을 붙이고 취향 항목들을 promoted 로 적는다.
-  const current = await request({ type: 'agent-instructions-request' }, 'agent-instructions');
-  const edited = await request({
-    type: 'agent-instructions-save', content: '# 내 지시\n- 짧게 답하기\n', expectedRevision: current.status.revision,
-  }, 'agent-instructions');
-  assert.equal(edited.status.revision, current.status.revision + 1);
-  studio.send({ type: 'agent-instructions-draft-confirm', requestId: 'confirm', draftId: draftFrame.draft.id, confirmationToken: draftFrame.draft.confirmationToken });
-  const saved = await studio.next((frame) => frame.type === 'agent-instructions' && frame.requestId === 'confirm');
-  assert.match(saved.status.content, /^# 내 지시\n- 짧게 답하기\n\n## Rau-0\.1\n- 본문은 한다체 사용/);
-  const deadline = Date.now() + 5_000;
-  let promoted = [];
-  while (Date.now() < deadline) {
-    const doc1 = await request({ type: 'document-memory-request', op: 'list', documentId: 'doc-1' }, 'document-memory-result');
-    promoted = doc1.memory.entries.filter((entry) => entry.promoted === true);
-    if (promoted.length) break;
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
-  assert.equal(promoted.length, 1);
+  // 5. Hama·무료로 바뀌면 비었다고 한 번 알리고, 그 뒤로는 싣지 않는다. Rau 탭의 쓸 수 있음도 바뀐다.
+  fake.setEligibility('not_eligible');
+  await say('또 한 줄');
+  assert.match(fake.prompts().at(-1), /<user_memory[^>]*>[\s\S]*No user habits apply now\.[\s\S]*<\/user_memory>/);
+  assert.doesNotMatch(fake.prompts().at(-1), /본문은 한다체 사용/);
+  await say('마지막 줄');
+  assert.doesNotMatch(fake.prompts().at(-1), /<user_memory/);
+  const gated = await request({ type: 'user-memory-request', op: 'list' }, 'user-memory-result');
+  assert.deepEqual([gated.memory.availability, gated.memory.available, gated.memory.rules.length], ['not_eligible', false, 1]);
+  fake.setEligibility('active');
 
-  // 6. 끄면 다음 턴에 학습기를 부르지 않는다.
+  // 6. Rau 탭의 되돌리기 — 승격을 되돌리면 접혔던 문서 메모가 돌아온다.
+  const escalation = gated.memory.events.find((event) => event.kind === 'escalated');
+  assert.equal(escalation.undoable, true);
+  const reverted = await request({ type: 'user-memory-request', op: 'undo', eventId: escalation.id }, 'user-memory-result');
+  assert.deepEqual([reverted.ok, reverted.memory.rules, reverted.memory.retired[0]?.reason], [true, [], 'undone']);
+  await studio.next((frame) => frame.type === 'document-memory-changed' && frame.documentId === 'doc-1');
+  const back = await request({ type: 'document-memory-request', op: 'list', documentId: 'doc-1' }, 'document-memory-result');
+  assert.deepEqual(back.memory.entries.map((entry) => entry.text), ['본문은 한다체 사용']);
+  const stale = await request({ type: 'user-memory-request', op: 'undo', eventId: escalation.id }, 'user-memory-result');
+  assert.deepEqual([stale.ok, stale.error?.code], [false, 'USER_MEMORY_UNDO_STALE']);
+  const added = await request({ type: 'user-memory-request', op: 'add', rule: { kind: 'term', text: "'고객' 대신 '이용자'" } }, 'user-memory-result');
+  assert.deepEqual(added.memory.rules.map((rule) => [rule.origin, rule.strength]), [['user', 3]]);
+
+  // 7. 끄면 다음 턴에 학습기를 부르지 않는다.
   const off = await request({ type: 'taste-settings-set', enabled: false }, 'taste-settings');
   assert.deepEqual(off.settings, { ...auto, enabled: false });
   const before = fake.learnerPrompts().length;
@@ -286,7 +314,7 @@ test('Rau-0.1 learns at turn end, shows one marker per turn, undoes, honours the
   assert.equal(fake.learnerPrompts().length, before);
   assert.equal(studio.buffered.some((frame) => frame.type === 'taste-learned'), false);
 
-  // 7. 공급자·모델·추론을 고른다. 잘못된 값은 거절하고 설정을 그대로 둔다.
+  // 8. 공급자·모델·추론을 고른다. 잘못된 값은 거절하고 설정을 그대로 둔다.
   const chosen = await request({ type: 'taste-settings-set', provider: 'pi', model: 'qwen/qwen3-max', effort: 'high' }, 'taste-settings');
   assert.deepEqual(chosen.settings, { enabled: false, provider: 'auto', model: null, effort: null });
   const rejected = await request({ type: 'taste-settings-set', provider: 'openai' }, 'taste-settings');
@@ -355,4 +383,55 @@ test('Rau-0.1 waits for review after a safe-mode write, learns plan feedback, an
   hub.child.kill('SIGTERM');
   await once(hub.child, 'exit');
   assert.equal(fake.aborted(), true, `shutdown aborts the running learner call: ${hub.stderr().slice(-3000)}`);
+});
+
+/** 예전 말투 맞추기가 남긴 폴더 — 원고 하나와 추가 지침. */
+function writeLegacyStyle(root) {
+  const dir = path.join(root, 'style');
+  mkdirSync(path.join(dir, 'sources'), { recursive: true });
+  const bytes = Buffer.from('저는 보고서를 한다체로 씁니다. 회의는 화요일에 연다.', 'utf8');
+  const id = crypto.createHash('sha256').update(bytes).digest('hex');
+  const storedName = `01-${id}.txt`;
+  writeFileSync(path.join(dir, 'sources', storedName), bytes);
+  writeFileSync(path.join(dir, 'style.md'), '# 말투\n');
+  writeFileSync(path.join(dir, 'metadata.json'), JSON.stringify({ language: 'ko', updatedAt: '2026-10-01T00:00:00.000Z' }));
+  writeFileSync(path.join(dir, 'additional-instruction.md'), '문장은 짧게 쓴다.\n');
+  writeFileSync(path.join(dir, 'sources.json'), JSON.stringify({ version: 1, files: [{ id, sha256: id, storedName, name: '예전 원고.txt', type: 'text/plain', size: bytes.length, addedAt: '2026-10-01T00:00:00.000Z' }] }));
+}
+
+test('문체 학습 replaces 말투 맞추기: the legacy instruction moves to AGENTS.md, uploads and the old samples learn into 기억', { timeout: 60_000 }, async (t) => {
+  const { root, fake, studio, request } = await startTasteHub(t, { prepare: writeLegacyStyle });
+  const connected = await studio.next((frame) => frame.type === 'user-memory');
+  assert.deepEqual([connected.memory.legacy, connected.memory.availability], [{ files: 1 }, 'active']);
+  assert.equal(studio.buffered.some((frame) => /^writing-style-/.test(frame.type)), false, 'no 말투 맞추기 frames');
+  const instructions = await request({ type: 'agent-instructions-request' }, 'agent-instructions');
+  assert.match(instructions.status.content, /## 말투 지침\n문장은 짧게 쓴다\./);
+
+  // 올린 파일 → 진행 → 결과(모든 창). 규칙이 기억에 들어간다.
+  const invalid = await request({ type: 'style-learn-start', files: [] }, 'style-learn-error');
+  assert.equal(invalid.code, 'INVALID_FILES');
+  fake.queueOutputs(JSON.stringify({ rules: [{ kind: 'style', subject: '문체.종결', text: '본문은 한다체 사용' }] }));
+  const text = '이번 분기 매출은 늘었다. 원인은 신규 고객이다.';
+  studio.send({ type: 'style-learn-start', requestId: 'upload-1', files: [{ name: '보고서.txt', type: 'text/plain', size: Buffer.byteLength(text), content: Buffer.from(text).toString('base64') }] });
+  const running = await studio.next((frame) => frame.type === 'style-learn-status' && frame.job);
+  assert.deepEqual(running.job.files, ['보고서.txt']);
+  const progress = await studio.next((frame) => frame.type === 'style-learn-progress' && frame.stage === 'extracting' && frame.completed === 1);
+  assert.deepEqual(progress.found, [{ kind: 'style', subject: '문체.종결', text: '본문은 한다체 사용' }]);
+  const result = await studio.next((frame) => frame.type === 'style-learn-result' && frame.requestId === 'upload-1');
+  assert.deepEqual(result.summary.new.map((item) => [item.subject, item.strength]), [['문체.종결', { from: 0, to: 1 }]]);
+  assert.deepEqual(result.memory.rules.map((rule) => [rule.origin, rule.uploads]), [['upload', 1]]);
+  assert.match(fake.learnerPrompts().at(-1), /"file_text":"이번 분기 매출은 늘었다/);
+  await studio.next((frame) => frame.type === 'style-learn-status' && frame.job === null);
+  const status = await request({ type: 'style-learn-status-request' }, 'style-learn-status');
+  assert.equal(status.job, null);
+
+  // 예전 원고로 배우기 — 성공하면 폴더를 지우고 legacy 가 사라진다.
+  fake.queueOutputs(JSON.stringify({ rules: [{ kind: 'style', subject: '문체.종결', text: '본문은 한다체 사용' }] }));
+  studio.send({ type: 'style-learn-legacy', requestId: 'legacy-1', accept: true });
+  const legacyResult = await studio.next((frame) => frame.type === 'style-learn-result' && frame.requestId === 'legacy-1');
+  assert.deepEqual(legacyResult.summary.reinforced.map((item) => item.strength), [{ from: 1, to: 2 }]);
+  assert.equal(legacyResult.memory.legacy, null);
+  assert.equal(existsSync(path.join(root, 'style')), false, 'the old folder is deleted after a successful learn');
+  const again = await request({ type: 'style-learn-legacy', accept: false }, 'style-learn-error');
+  assert.equal(again.code, 'INVALID_FILES', 'nothing is left to import');
 });

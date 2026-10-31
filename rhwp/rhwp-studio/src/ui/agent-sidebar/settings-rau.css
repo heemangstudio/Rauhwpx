@@ -1,0 +1,1214 @@
+/* ─── 설정 → Rau (계정의 기억 · 문체 학습) ─────────────────
+   카드와 행은 설정 탭의 토큰(--ag-set-*)을 따르고, 물과 하마에만 Hama 파랑을 쓴다.
+   움직임을 줄이면 튀어나오기·물결·색종이는 멈추고 끝 그림만 보인다. */
+
+.ag-rau-pane {
+  --rau-water: #3d9bd1;
+  --rau-water-soft: color-mix(in oklab, var(--rau-water) 12%, transparent);
+  --rau-water-faint: color-mix(in oklab, var(--rau-water) 6%, transparent);
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+  /* 한국어는 낱말 가운데서 끊지 않는다. 긴 파일 이름만 어디서든 끊는다. */
+  word-break: keep-all;
+  overflow-wrap: break-word;
+}
+
+:root[data-theme-effective='dark'] .ag-rau-pane {
+  --rau-water: #62b3e2;
+}
+
+.ag-rau-pane [hidden] {
+  display: none !important;
+}
+
+.ag-rau-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.ag-rau-section-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 0 4px;
+}
+
+.ag-settings-page .ag-rau-section-head .ag-settings-section-title,
+.ag-settings-page .ag-rau-retired-summary .ag-settings-section-title {
+  color: var(--n-ink);
+  font-size: var(--ag-fs-body);
+  font-weight: var(--ag-fw-strong);
+}
+
+.ag-rau-section-lead {
+  margin: -4px 0 2px;
+  padding: 0 4px;
+  color: var(--n-ink-secondary);
+  font-size: var(--ag-fs-secondary);
+  line-height: var(--ag-lh-secondary, 1.5);
+}
+
+.ag-rau-count {
+  color: var(--n-ink-tertiary);
+  font-size: var(--ag-fs-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.ag-rau-empty {
+  margin: 0;
+  padding: 14px 16px;
+  border-radius: var(--ag-set-radius);
+  background: var(--ag-set-card);
+  box-shadow: inset 0 0 0 1px var(--ag-set-edge);
+  color: var(--n-ink-secondary);
+  font-size: var(--ag-fs-secondary);
+}
+
+.ag-rau-tag {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: var(--ag-r-pill);
+  background: var(--n-ink-fill-soft);
+  color: var(--n-ink-secondary);
+  font-size: var(--ag-fs-meta);
+  font-weight: var(--ag-fw-medium);
+  white-space: nowrap;
+}
+
+.ag-rau-tag[data-kind='new'],
+.ag-rau-tag[data-kind='escalated'],
+.ag-rau-tag[data-kind='restored'] {
+  background: var(--rau-water-soft);
+  color: color-mix(in oklab, var(--rau-water) 78%, var(--n-ink));
+}
+
+.ag-rau-tag[data-kind='reinforced'] {
+  background: color-mix(in oklab, var(--ag-ok, #2f7d4f) 14%, transparent);
+  color: color-mix(in oklab, var(--ag-ok, #2f7d4f) 85%, var(--n-ink));
+}
+
+.ag-rau-tag[data-kind='dampened'],
+.ag-rau-tag[data-kind='retired'],
+.ag-rau-tag[data-kind='deleted'] {
+  background: var(--n-ink-fill-soft);
+  color: var(--n-ink-tertiary);
+}
+
+.ag-rau-icon-btn {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--ag-r-row);
+  background: transparent;
+  color: var(--n-ink-secondary);
+  cursor: default;
+  transition: var(--ag-transition-color);
+}
+
+.ag-rau-icon-btn .ag-icon {
+  width: 15px;
+  height: 15px;
+}
+
+.ag-rau-icon-btn:hover:not(:disabled) {
+  background: var(--n-ink-fill-hover);
+  color: var(--n-ink);
+}
+
+.ag-rau-icon-btn:disabled {
+  color: var(--n-ink-quaternary);
+}
+
+.ag-rau-pane :is(button, summary, input, textarea):focus-visible {
+  outline: var(--ag-focus-ring);
+  outline-offset: var(--ag-focus-offset);
+}
+
+.ag-rau-link {
+  align-self: flex-start;
+  padding: 2px 4px;
+  border: 0;
+  background: transparent;
+  color: var(--n-ink-secondary);
+  font: inherit;
+  font-size: var(--ag-fs-secondary);
+  cursor: default;
+}
+
+.ag-rau-link:hover {
+  color: var(--n-ink);
+  text-decoration: underline;
+}
+
+/* ── 머리: 물가의 하마 ─────────────────────────────── */
+
+.ag-rau-hero {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: calc(var(--ag-set-radius) + 4px);
+  background:
+    radial-gradient(120% 90% at 0% 100%, var(--rau-water-soft), transparent 62%),
+    var(--ag-set-card);
+  box-shadow: inset 0 0 0 1px var(--ag-set-edge);
+}
+
+.ag-rau-hero-top {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 20px 20px 14px;
+}
+
+.ag-rau-hero-art {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 112px;
+  height: 72px;
+  border-radius: 14px;
+  background: linear-gradient(to bottom, var(--rau-water-faint), var(--rau-water-soft));
+  color: var(--rau-water);
+}
+
+.ag-rau-hero-scene {
+  width: 96px;
+  height: 54px;
+  overflow: visible;
+  color: var(--rau-water);
+}
+
+.ag-rau-hero .hama-scene-hama,
+.ag-rau-hero .hama-scene-spark,
+.ag-rau-hero .hama-scene-spark-arms {
+  fill: currentColor;
+}
+
+.ag-rau-hero .hama-scene-spark-arms {
+  fill: color-mix(in oklab, currentColor 55%, transparent);
+  animation: ag-rau-twinkle 2.6s steps(1, end) infinite;
+}
+
+.ag-rau-hero .hama-scene-spark-b { animation: ag-rau-twinkle 3.4s steps(1, end) 0.9s infinite; }
+.ag-rau-hero .hama-scene-spark-c { animation: ag-rau-twinkle 2.2s steps(1, end) 1.6s infinite; }
+
+.ag-rau-hero .hama-scene-water {
+  fill: color-mix(in oklab, currentColor 45%, var(--ag-set-card));
+}
+
+.ag-rau-hero .hama-scene-water-light {
+  fill: color-mix(in oklab, currentColor 22%, var(--ag-set-card));
+}
+
+@keyframes ag-rau-twinkle {
+  0%, 62% { opacity: 1; }
+  63%, 84% { opacity: 0; }
+  85%, 100% { opacity: 1; }
+}
+
+.ag-rau-hero-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.ag-settings-page .ag-rau-hero .ag-rau-hero-name {
+  color: var(--n-ink);
+  font-size: var(--ag-fs-display, 20px);
+  font-weight: var(--ag-fw-strong);
+  letter-spacing: var(--ag-track-tight, -0.01em);
+  line-height: 1.15;
+}
+
+.ag-rau-hero-status {
+  margin: 0;
+  color: var(--n-ink-secondary);
+  font-size: var(--ag-fs-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 대화에서 배우기: 카드 안의 한 줄 — 제 테두리와 바탕은 걷고, 머리선만 하마 그림과 같은 여백에서 긋는다. */
+.ag-settings-page .ag-rau-hero > .ag-taste-learning-row {
+  min-height: 56px;
+  margin: 0 20px;
+  padding: 12px 0 14px;
+  border: 0;
+  border-top: 1px solid var(--ag-set-sep, var(--ag-set-edge));
+  border-radius: 0;
+  background: transparent;
+}
+
+.ag-rau-notice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 12px 12px;
+  padding: 10px 12px;
+  border-radius: var(--ag-r-row);
+  background: var(--n-ink-fill-soft);
+  color: var(--n-ink-secondary);
+  font-size: var(--ag-fs-secondary);
+}
+
+.ag-rau-notice[data-tone='warn'] {
+  background: color-mix(in oklab, #d9a13b 14%, transparent);
+  color: color-mix(in oklab, #a8701a 70%, var(--n-ink));
+}
+
+.ag-rau-notice > .ag-icon {
+  flex: none;
+  width: 15px;
+  height: 15px;
+}
+
+.ag-rau-notice-text {
+  flex: 1 1 auto;
+  margin: 0;
+}
+
+/* ── 문체 학습 ───────────────────────────────────── */
+
+.ag-rau-learn-stage {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ag-rau-drop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 124px;
+  padding: 20px 16px;
+  border: 1.5px dashed color-mix(in oklab, var(--rau-water) 40%, var(--n-ink-hairline-strong));
+  border-radius: calc(var(--ag-set-radius) + 2px);
+  background: var(--rau-water-faint);
+  color: var(--n-ink);
+  font: inherit;
+  text-align: center;
+  cursor: default;
+  transition: background var(--ag-dur-base) var(--ag-ease-out), border-color var(--ag-dur-base) var(--ag-ease-out), transform var(--ag-dur-base) var(--ag-spring);
+}
+
+.ag-rau-drop:hover:not(:disabled),
+.ag-rau-drop.ag-dragging {
+  border-color: var(--rau-water);
+  background: var(--rau-water-soft);
+}
+
+.ag-rau-drop.ag-dragging {
+  transform: scale(1.01);
+}
+
+.ag-rau-drop:disabled {
+  border-color: var(--n-ink-hairline-strong);
+  background: var(--n-ink-fill-soft);
+  color: var(--n-ink-tertiary);
+}
+
+.ag-rau-drop-icon {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 12px;
+  background: var(--ag-set-card);
+  box-shadow: inset 0 0 0 1px var(--ag-set-edge);
+  color: var(--rau-water);
+}
+
+.ag-rau-drop:disabled .ag-rau-drop-icon {
+  color: var(--n-ink-tertiary);
+}
+
+.ag-rau-drop-icon .ag-icon {
+  width: 18px;
+  height: 18px;
+}
+
+.ag-rau-drop-title {
+  font-size: var(--ag-fs-body);
+  font-weight: var(--ag-fw-medium);
+}
+
+.ag-rau-drop-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  color: var(--n-ink-tertiary);
+  font-size: var(--ag-fs-meta);
+  line-height: 1.5;
+}
+
+.ag-rau-drop-meta-line {
+  letter-spacing: 0.01em;
+}
+
+.ag-rau-learn-message,
+.ag-rau-message {
+  margin: 0;
+  padding: 0 4px;
+  color: var(--n-ink-secondary);
+  font-size: var(--ag-fs-secondary);
+}
+
+.ag-rau-legacy {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 12px;
+  padding: 12px 14px;
+  border-radius: var(--ag-set-radius);
+  background: var(--rau-water-soft);
+  color: var(--n-ink);
+  font-size: var(--ag-fs-secondary);
+}
+
+.ag-rau-legacy > .ag-icon {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  color: var(--rau-water);
+}
+
+.ag-rau-legacy-text {
+  flex: 1 1 220px;
+  margin: 0;
+}
+
+.ag-rau-legacy-actions {
+  display: flex;
+  gap: 6px;
+}
+
+/* 도는 카드 */
+.ag-rau-run {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 18px 18px;
+  border-radius: calc(var(--ag-set-radius) + 2px);
+  background:
+    linear-gradient(to bottom, transparent 60%, var(--rau-water-faint)),
+    var(--ag-set-card);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--rau-water) 30%, var(--ag-set-edge));
+  animation: ag-rau-card-in 360ms var(--ag-spring, cubic-bezier(0.2, 0.9, 0.3, 1.2)) both;
+}
+
+.ag-rau-run-top {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+/* 하마는 3배 픽셀로 그려진다. 1.5배 더 키워 4.5배 — 물가에 서서 발목까지 물에 담근다.
+   Hama 가 transform 을 인라인으로 쓰므로 키우기는 따로 쓰는 scale 속성으로 한다(둘이 겹쳐진다). */
+.ag-rau-run-hippo {
+  --rau-shore: 17px;
+  position: relative;
+  flex: none;
+  width: 128px;
+  height: 80px;
+  overflow: hidden;
+  border-radius: 14px;
+  background:
+    linear-gradient(to top, var(--rau-water-soft) var(--rau-shore), transparent var(--rau-shore)),
+    linear-gradient(to bottom, transparent, var(--rau-water-faint));
+}
+
+.ag-rau-run-hippo .ag-hama-hippo {
+  position: absolute;
+  bottom: 0;
+  left: 6px;
+  margin: 0 !important;
+  scale: 1.5;
+  transform-origin: 0 100%;
+}
+
+.ag-rau-run-hippo .ag-hama-hippo canvas {
+  image-rendering: pixelated;
+}
+
+/* 수면: 하마 발목에서 천천히 출렁인다. */
+.ag-rau-run-hippo::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  bottom: calc(var(--rau-shore) - 1px);
+  left: 0;
+  height: 2px;
+  background: color-mix(in oklab, var(--rau-water) 45%, transparent);
+  animation: ag-rau-ripple 2.4s ease-in-out infinite;
+}
+
+@keyframes ag-rau-ripple {
+  0%, 100% { transform: scaleX(0.92); opacity: 0.55; }
+  50% { transform: scaleX(1); opacity: 0.9; }
+}
+
+.ag-rau-run-copy {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.ag-rau-run-title {
+  margin: 0;
+  color: var(--n-ink);
+  font-size: var(--ag-fs-body);
+  font-weight: var(--ag-fw-strong);
+}
+
+.ag-rau-run[data-stage='done'] .ag-rau-run-title {
+  color: color-mix(in oklab, var(--rau-water) 80%, var(--n-ink));
+}
+
+.ag-rau-run-meta {
+  margin: 0;
+  color: var(--n-ink-secondary);
+  font-size: var(--ag-fs-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.ag-rau-run-file {
+  overflow: hidden;
+  margin: 0;
+  color: var(--n-ink-tertiary);
+  font-size: var(--ag-fs-meta);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ag-rau-run-cancel {
+  flex: none;
+  align-self: flex-start;
+}
+
+.ag-rau-run-bar {
+  position: relative;
+  height: 6px;
+  overflow: hidden;
+  border-radius: var(--ag-r-pill);
+  background: var(--n-ink-fill-soft);
+}
+
+.ag-rau-run-fill {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background:
+    linear-gradient(90deg, transparent, color-mix(in oklab, #fff 45%, transparent), transparent) 0 0 / 40% 100% no-repeat,
+    var(--rau-water);
+  transform-origin: 0 50%;
+  transition: transform 700ms var(--ag-ease-out, ease-out);
+  animation: ag-rau-shimmer 1.6s linear infinite;
+}
+
+.ag-rau-run[data-stage='done'] .ag-rau-run-fill {
+  animation: none;
+}
+
+@keyframes ag-rau-shimmer {
+  from { background-position: -40% 0, 0 0; }
+  to { background-position: 140% 0, 0 0; }
+}
+
+.ag-rau-run-found-head {
+  margin: 2px 0 -4px;
+  color: var(--n-ink-tertiary);
+  font-size: var(--ag-fs-meta);
+  font-weight: var(--ag-fw-medium);
+}
+
+.ag-rau-found {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 220px;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.ag-rau-found-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: var(--ag-r-row);
+  background: var(--n-ink-fill-soft);
+  font-size: var(--ag-fs-secondary);
+}
+
+.ag-rau-found-item:first-child.ag-rau-pop {
+  background: var(--rau-water-soft);
+  transition: background 1.6s ease;
+}
+
+.ag-rau-found-text {
+  min-width: 0;
+  color: var(--n-ink);
+}
+
+.ag-rau-pop {
+  animation: ag-rau-pop 520ms cubic-bezier(0.2, 1.1, 0.3, 1.25) both;
+}
+
+@keyframes ag-rau-pop {
+  0% { opacity: 0; transform: translateY(6px) scale(0.94); }
+  60% { opacity: 1; transform: translateY(-1px) scale(1.015); }
+  100% { opacity: 1; transform: none; }
+}
+
+@keyframes ag-rau-card-in {
+  from { opacity: 0; transform: translateY(6px) scale(0.985); }
+  to { opacity: 1; transform: none; }
+}
+
+/* 결과 카드 */
+.ag-rau-result,
+.ag-rau-error {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px;
+  border-radius: calc(var(--ag-set-radius) + 2px);
+  background:
+    radial-gradient(90% 70% at 0% 0%, var(--rau-water-soft), transparent 70%),
+    var(--ag-set-card);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--rau-water) 30%, var(--ag-set-edge));
+  animation: ag-rau-card-in 420ms var(--ag-spring, cubic-bezier(0.2, 0.9, 0.3, 1.2)) both;
+}
+
+.ag-rau-result-head {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.ag-rau-result-art {
+  position: relative;
+  flex: none;
+  width: 104px;
+  height: 80px;
+}
+
+.ag-rau-result-art .rhwp-setup-party-hama {
+  width: 104px;
+  height: 80px;
+  image-rendering: pixelated;
+  animation: ag-rau-hop 900ms cubic-bezier(0.3, 1.4, 0.5, 1) 120ms both;
+}
+
+@keyframes ag-rau-hop {
+  0% { transform: translateY(10px) scale(0.9); opacity: 0; }
+  45% { transform: translateY(-8px) scale(1.04); opacity: 1; }
+  70% { transform: translateY(1px) scale(0.99); }
+  100% { transform: none; opacity: 1; }
+}
+
+/* 픽셀 색종이: 하마 모자 위에서 터져 흩어진다. */
+.ag-rau-confetti {
+  --angle: calc(var(--i) * 36deg - 90deg);
+  position: absolute;
+  top: 18px;
+  left: 50%;
+  width: 4px;
+  height: 4px;
+  background: var(--rau-water);
+  opacity: 0;
+  animation: ag-rau-confetti 1100ms cubic-bezier(0.15, 0.7, 0.3, 1) 260ms both;
+}
+
+.ag-rau-confetti:nth-child(3n) { background: #f2b84b; }
+.ag-rau-confetti:nth-child(3n + 1) { background: #e8737a; }
+
+@keyframes ag-rau-confetti {
+  0% { opacity: 1; transform: rotate(var(--angle)) translateX(0); }
+  70% { opacity: 1; }
+  100% { opacity: 0; transform: rotate(var(--angle)) translateX(52px) translateY(14px); }
+}
+
+.ag-rau-result-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.ag-rau-result-title {
+  margin: 0;
+  color: var(--n-ink);
+  font-size: var(--ag-fs-title, 16px);
+  font-weight: var(--ag-fw-strong);
+}
+
+.ag-rau-result-lead {
+  margin: 0;
+  color: var(--n-ink-secondary);
+  font-size: var(--ag-fs-secondary);
+}
+
+.ag-rau-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.ag-rau-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  border-radius: var(--ag-r-row);
+  background: var(--n-ink-fill-soft);
+}
+
+.ag-rau-stat[data-kind='new']:not(.ag-rau-stat-zero) {
+  background: var(--rau-water-soft);
+}
+
+.ag-rau-stat-value {
+  color: var(--n-ink);
+  font-size: var(--ag-fs-display, 20px);
+  font-weight: var(--ag-fw-strong);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+
+.ag-rau-stat-label {
+  color: var(--n-ink-secondary);
+  font-size: var(--ag-fs-meta);
+}
+
+.ag-rau-stat-zero .ag-rau-stat-value {
+  color: var(--n-ink-quaternary);
+}
+
+.ag-rau-result-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ag-rau-result-group-title {
+  margin: 0 0 6px;
+  color: var(--n-ink-tertiary);
+  font-size: var(--ag-fs-meta);
+  font-weight: var(--ag-fw-medium);
+}
+
+.ag-rau-result-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ag-rau-result-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 38px;
+  padding: 8px 12px 8px 10px;
+  border-radius: var(--ag-r-row);
+  background: color-mix(in oklab, var(--n-ink-fill-soft) 70%, transparent);
+}
+
+.ag-rau-result-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.ag-rau-result-text {
+  margin: 0;
+  color: var(--n-ink);
+  font-size: var(--ag-fs-secondary);
+  line-height: 1.45;
+}
+
+/* 강도 칸은 폭을 정해 그릇이 모든 줄에서 같은 자리에 선다. */
+.ag-rau-result-item > .ag-strength {
+  min-width: 46px;
+}
+
+/* 두 줄짜리(어긋남)는 종류 표를 첫 줄에 맞춘다. */
+.ag-rau-result-item:has(.ag-rau-result-note) {
+  align-items: flex-start;
+}
+
+.ag-rau-result-item:has(.ag-rau-result-note) > .ag-rau-tag {
+  margin-top: 1px;
+}
+
+.ag-rau-result-group[data-kind='retired'] .ag-rau-result-text,
+.ag-rau-result-group[data-kind='dampened'] .ag-rau-result-text {
+  color: var(--n-ink-secondary);
+}
+
+.ag-rau-result-note {
+  margin: 0;
+  color: var(--n-ink-tertiary);
+  font-size: var(--ag-fs-meta);
+}
+
+.ag-rau-result-skipped {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: var(--n-ink-tertiary);
+  font-size: var(--ag-fs-meta);
+}
+
+.ag-rau-result-skipped .ag-icon {
+  flex: none;
+  width: 13px;
+  height: 13px;
+}
+
+.ag-rau-result-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.ag-rau-error {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  background: var(--ag-set-card);
+  box-shadow: inset 0 0 0 1px var(--ag-set-edge);
+}
+
+.ag-rau-error > .ag-icon {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  color: var(--ag-err, #c94a4a);
+}
+
+.ag-rau-error-quiet > .ag-icon {
+  color: var(--n-ink-tertiary);
+}
+
+.ag-rau-error-text {
+  flex: 1 1 240px;
+  margin: 0;
+  color: var(--n-ink);
+  font-size: var(--ag-fs-secondary);
+}
+
+.ag-rau-error .ag-rau-result-actions {
+  margin-left: auto;
+}
+
+/* 올린 원고 */
+.ag-rau-uploads {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0 4px;
+}
+
+.ag-rau-uploads-head {
+  margin: 4px 0 2px;
+  color: var(--n-ink-tertiary);
+  font-size: var(--ag-fs-meta);
+  font-weight: var(--ag-fw-medium);
+}
+
+.ag-rau-upload-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ag-rau-upload {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 26px;
+  color: var(--n-ink-secondary);
+  font-size: var(--ag-fs-secondary);
+}
+
+.ag-rau-upload .ag-icon {
+  flex: none;
+  width: 13px;
+  height: 13px;
+  color: var(--n-ink-tertiary);
+}
+
+.ag-rau-upload-name {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--n-ink);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ag-rau-upload-meta {
+  flex: none;
+  margin-left: auto;
+  color: var(--n-ink-tertiary);
+  font-size: var(--ag-fs-meta);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── 기억 ──────────────────────────────────────── */
+
+.ag-rau-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.ag-rau-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ag-rau-group-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 0 4px;
+}
+
+.ag-settings-page .ag-rau-group-title {
+  color: var(--n-ink-secondary);
+  font-size: var(--ag-fs-meta);
+}
+
+.ag-rau-group-count {
+  color: var(--n-ink-tertiary);
+  font-size: var(--ag-fs-meta);
+  font-variant-numeric: tabular-nums;
+}
+
+.ag-rau-rules,
+.ag-rau-event-list,
+.ag-rau-retired-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  border-radius: var(--ag-set-radius);
+  background: var(--ag-set-card);
+  box-shadow: inset 0 0 0 1px var(--ag-set-edge);
+  list-style: none;
+}
+
+.ag-rau-rule,
+.ag-rau-event,
+.ag-rau-retired-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 48px;
+  padding: 9px 10px 9px 14px;
+}
+
+.ag-rau-rule + .ag-rau-rule,
+.ag-rau-event + .ag-rau-event,
+.ag-rau-retired-row + .ag-rau-retired-row {
+  box-shadow: inset 0 1px 0 var(--ag-set-edge);
+}
+
+.ag-rau-rule-body,
+.ag-rau-event-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.ag-rau-rule-text,
+.ag-rau-event-text {
+  margin: 0;
+  color: var(--n-ink);
+  font-size: var(--ag-fs-secondary);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.ag-rau-rule-meta,
+.ag-rau-event-meta {
+  margin: 0;
+  color: var(--n-ink-tertiary);
+  font-size: var(--ag-fs-meta);
+}
+
+.ag-rau-rule-actions {
+  display: flex;
+  flex: none;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity var(--ag-dur-fast) var(--ag-ease-out);
+}
+
+.ag-rau-rule:hover .ag-rau-rule-actions,
+.ag-rau-rule:focus-within .ag-rau-rule-actions {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .ag-rau-rule-actions {
+    opacity: 1;
+  }
+}
+
+.ag-rau-rule-new {
+  animation: ag-rau-rule-new 1.8s var(--ag-ease-out, ease-out) both;
+}
+
+@keyframes ag-rau-rule-new {
+  0% { background: var(--rau-water-soft); opacity: 0; transform: translateY(-4px); }
+  15% { opacity: 1; transform: none; }
+  60% { background: var(--rau-water-soft); }
+  100% { background: transparent; }
+}
+
+.ag-rau-rule-leaving {
+  opacity: 0.4;
+  transition: opacity var(--ag-dur-base) var(--ag-ease-out);
+}
+
+.ag-rau-rule-editing {
+  align-items: flex-start;
+  background: var(--n-ink-fill-soft);
+}
+
+.ag-rau-rule-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
+.ag-settings-page .ag-rau-rule-input {
+  width: 100%;
+  max-width: none;
+  min-height: 52px;
+  height: auto;
+  padding: 7px 9px;
+  resize: vertical;
+  font-size: var(--ag-fs-secondary);
+  line-height: 1.45;
+}
+
+.ag-rau-rule-editor-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ag-rau-rule-editor-actions .ag-rau-kind {
+  margin-right: auto;
+}
+
+.ag-rau-kind {
+  display: inline-flex;
+  flex: none;
+  padding: 2px;
+  border-radius: var(--ag-r-row);
+  background: var(--n-ink-fill-soft);
+}
+
+.ag-rau-kind-option {
+  height: 26px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: calc(var(--ag-r-row) - 2px);
+  background: transparent;
+  color: var(--n-ink-secondary);
+  font: inherit;
+  font-size: var(--ag-fs-secondary);
+  cursor: default;
+}
+
+.ag-rau-kind-option[aria-checked='true'] {
+  background: var(--ag-set-card);
+  box-shadow: 0 0 0 1px var(--ag-set-edge), 0 1px 2px rgb(0 0 0 / 0.06);
+  color: var(--n-ink);
+  font-weight: var(--ag-fw-medium);
+}
+
+.ag-rau-add {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border-radius: var(--ag-set-radius);
+  background: var(--ag-set-card);
+  box-shadow: inset 0 0 0 1px var(--ag-set-edge);
+}
+
+.ag-settings-page .ag-rau-add-input {
+  flex: 1 1 auto;
+  max-width: none;
+  height: 30px;
+  padding: 0 9px;
+}
+
+.ag-rau-add-submit {
+  flex: none;
+  height: 30px;
+}
+
+/* ── 최근 변화 ─────────────────────────────────── */
+
+/* 표·글·강도·되돌리기를 칸에 고정해 줄마다 글과 그릇이 같은 세로줄에 선다. */
+.ag-rau-event {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr) 52px 28px;
+  column-gap: 10px;
+}
+
+.ag-rau-event > .ag-rau-tag {
+  grid-column: 1;
+  justify-self: start;
+}
+
+.ag-rau-event > .ag-rau-event-body { grid-column: 2; }
+.ag-rau-event > .ag-rau-change { grid-column: 3; }
+.ag-rau-event > .ag-rau-event-undo { grid-column: 4; }
+
+.ag-rau-event-prev {
+  color: var(--n-ink-tertiary);
+  text-decoration-color: color-mix(in oklab, var(--n-ink-tertiary) 60%, transparent);
+}
+
+.ag-rau-change {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+}
+
+/* ── 물러난 기억 ───────────────────────────────── */
+
+.ag-rau-retired {
+  gap: 0;
+}
+
+.ag-rau-retired[open] {
+  gap: 10px;
+}
+
+.ag-rau-retired-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 0 4px;
+  list-style: none;
+  cursor: default;
+}
+
+.ag-rau-retired-summary::-webkit-details-marker {
+  display: none;
+}
+
+.ag-rau-retired-summary::after {
+  content: '';
+  align-self: center;
+  width: 6px;
+  height: 6px;
+  margin-left: 2px;
+  border-right: 1.5px solid var(--n-ink-tertiary);
+  border-bottom: 1.5px solid var(--n-ink-tertiary);
+  transform: rotate(-45deg);
+  transition: transform var(--ag-dur-base) var(--ag-ease-out);
+}
+
+.ag-rau-retired[open] > .ag-rau-retired-summary::after {
+  transform: rotate(45deg) translate(-1px, -1px);
+}
+
+.ag-rau-retired:not([open]) > :not(summary) {
+  display: none;
+}
+
+/* details 의 내용은 펼친 쪽 상자에 들어가 gap 이 닿지 않는다 — 설명과 목록 사이는 여백으로 띄운다. */
+.ag-rau-retired > .ag-rau-section-lead {
+  margin-top: 2px;
+}
+
+.ag-rau-retired > .ag-rau-retired-list {
+  margin-top: 8px;
+}
+
+.ag-rau-retired-row .ag-rau-rule-text {
+  color: var(--n-ink-secondary);
+}
+
+.ag-rau-restore {
+  flex: none;
+  height: 28px;
+  padding: 0 12px;
+}
+
+@media (max-width: 560px) {
+  .ag-rau-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .ag-rau-hero-top {
+    gap: 12px;
+    padding: 16px 14px 12px;
+  }
+
+  .ag-rau-hero-art {
+    width: 84px;
+    height: 56px;
+  }
+
+  .ag-rau-hero-scene {
+    width: 72px;
+    height: 40px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ag-rau-pane *,
+  .ag-rau-pane *::before,
+  .ag-rau-pane *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+
+  .ag-rau-confetti {
+    display: none;
+  }
+}

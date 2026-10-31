@@ -39,13 +39,14 @@ import {
   resolveCheckpointTitleCliRoute,
 } from './agents/checkpoint-title.mjs';
 import { SkillRegistry } from './skills.mjs';
-import { WritingStyleStore, assertWritingStyleAppendCompatible } from './writing-style.mjs';
 import { importRebrandedHubData } from './rebrand-import.mjs';
 import { AgentInstructionsStore } from './agent-instructions.mjs';
 import { DocumentMemoryStore } from './document-memory-store.mjs';
 import { createDocumentMemoryHub, newSessionDocumentMemory } from './document-memory-hub.mjs';
-import { calibrateWritingStyle } from './style-calibrator.mjs';
-import { buildWritingStyleCatalog, resolveWritingStyleSelection } from './writing-style-catalog.mjs';
+import { UserMemoryStore } from './user-memory-store.mjs';
+import { createUserMemoryHub, newSessionUserMemory } from './user-memory-hub.mjs';
+import { createStyleLearner } from './style-learning.mjs';
+import { defaultWritingStyleRoot, migrateLegacyWritingStyle, readLegacySources, removeLegacyWritingStyle } from './writing-style-legacy.mjs';
 import {
   assertCellArgsPlacement, documentIdArgError, filterToolDefinitions, FOREIGN_READ_TOOL_NAMES, LIVE_UNTRACKED_READ_TOOL_NAMES,
   TOOL_DEFINITIONS,
@@ -133,7 +134,6 @@ import {
   RAU_TASTE_NAME,
   TASTE_CLOSE_GRACE_MS,
   TasteSettingsStore,
-  appendRauInstruction,
   createTasteLearner,
   newTasteTurn,
   noteTasteTurnEvent,
@@ -370,7 +370,6 @@ if (process.env.NODE_ENV !== 'test' || process.env.RHWP_REBRAND_IMPORT === '1') 
     log(`2.0.11 data import failed: ${error?.message ?? error}`);
   });
 }
-const writingStyleStore = await new WritingStyleStore().init();
 const agentInstructionsStore = await new AgentInstructionsStore().init();
 // 문서 기억은 문서마다 따로 둔다 (RHWP_DOCUMENT_MEMORY_DIR). 읽는 문서만 메모리에 올린다.
 const documentMemoryHub = createDocumentMemoryHub({
@@ -380,7 +379,7 @@ const documentMemoryHub = createDocumentMemoryHub({
 });
 // 대화에서 배우기 설정 (Settings → AI → Rau-0.1). 문서 기억 폴더에 둔다.
 const tasteSettings = await new TasteSettingsStore({ dir: documentMemoryHub.store.dir }).init();
-const skillRegistry = await new SkillRegistry({ bundledRoot: BUNDLED_SKILLS, writingStyleStore }).init();
+const skillRegistry = await new SkillRegistry({ bundledRoot: BUNDLED_SKILLS }).init();
 const PI_ROOT = defaultPiRoot();
 const openRouter = createOpenRouter({ cacheDir: PI_ROOT });
 const secretStore = createIpcSecretStore();
@@ -393,6 +392,44 @@ if (process.env.RHWP_AGENT_MODE === 'production' && !secretStore.available) {
 const giftSource = createIpcGiftSource();
 // 호스팅 Rau-0.1(Pro): 데스크톱 main 이 라이선스 lease 로 대신 묻는다. 브라우저 Studio 에서는 쓸 수 없다.
 const hostedRau = createHostedRau({ source: createIpcRauSource() });
+// 기억(계정 단계) — 문서 기억 폴더의 user-memory.json 하나. Rau 요금제·체험일 때만 턴에 싣는다.
+const userMemoryStore = new UserMemoryStore({ dir: documentMemoryHub.store.dir });
+// 예전 말투 맞추기 폴더. 지침은 AGENTS.md 로 옮기고, 남은 원고는 Rau 탭이 문체 학습으로 가져올지 묻는다.
+// 테스트 허브는 RHWP_WRITING_STYLE_DIR 로 고른 폴더만 옮긴다 — 사용자의 실제 폴더를 지우지 않게.
+const WRITING_STYLE_LEGACY_ROOT = process.env.NODE_ENV === 'test' && !process.env.RHWP_WRITING_STYLE_DIR
+  ? null
+  : defaultWritingStyleRoot();
+let writingStyleLegacy = null;
+if (WRITING_STYLE_LEGACY_ROOT) {
+  try {
+    writingStyleLegacy = await migrateLegacyWritingStyle({
+      root: WRITING_STYLE_LEGACY_ROOT, instructions: agentInstructionsStore, userMemory: userMemoryStore, log,
+    });
+  } catch (error) {
+    log(`writing-style migration failed: ${error?.message ?? error}`);
+  }
+}
+const userMemoryHub = createUserMemoryHub({
+  store: userMemoryStore,
+  hosted: hostedRau,
+  documentStore: documentMemoryHub.store,
+  legacy: () => writingStyleLegacy,
+  changed: (documentId, key, revision) => documentMemoryHub.changed(documentId, key, revision),
+  broadcast: (frame) => broadcastToStudios(frame),
+  log,
+});
+// 문체 학습 — 진행·결과·오류는 모든 창에 보낸다(다른 창에서 올린 학습도 Rau 탭에 보인다).
+const styleLearner = createStyleLearner({
+  hosted: hostedRau,
+  userMemory: userMemoryStore,
+  projectRoot: ROOT,
+  emit: (frame) => {
+    broadcastToStudios(frame);
+    if (frame.type === 'style-learn-result') void userMemoryHub.publish();
+  },
+  memorySnapshot: () => userMemoryHub.snapshot(),
+  log,
+});
 const piManager = createPiManager({
   rootDir: PI_ROOT, openRouter, secretStore, giftSource, routingSort: process.env.RHWP_PI_ROUTING_SORT,
 });
@@ -578,6 +615,7 @@ const TASTE_LEARNER_AVAILABLE = process.env.RHWP_TASTE_LEARNER === '1'
   || (process.env.RHWP_TASTE_LEARNER !== '0' && process.env.NODE_ENV !== 'test');
 const tasteLearner = createTasteLearner({
   store: documentMemoryHub.store,
+  userMemory: userMemoryStore,
   signals: tasteSignals,
   settings: () => (TASTE_LEARNER_AVAILABLE ? tasteSettings.get() : { enabled: false }),
   routes: (context) => tasteLearnerRoutes(context),
@@ -587,7 +625,7 @@ const tasteLearner = createTasteLearner({
   )),
   emit: (frame) => sendTasteFrame(frame),
   changed: (documentId, key, revision) => documentMemoryHub.changed(documentId, key, revision),
-  promote: (proposal) => proposeRauInstruction(proposal),
+  accountChanged: () => { void userMemoryHub.publish(); },
   log,
 });
 tasteSignals.onReviewSignals((documentId, info) => {
@@ -654,7 +692,6 @@ const projectTrashTimer = setInterval(() => {
 }, 6 * 60 * 60 * 1000);
 projectTrashTimer.unref?.();
 void projectStore.purgeExpired().catch((error) => log(`project trash purge failed: ${error?.message ?? error}`));
-let writingStyleCalibrationOwner = null;
 // If a bounded provider cleanup cannot prove tree exit, retain the backend
 // object (and therefore its exact child/process-group identity) until this hub
 // exits. A replacement provider must never share the same work/home paths.
@@ -730,8 +767,6 @@ const sessions = new HubSessionRegistry({
       missedTurnEnd: null,
       // 기록 전달이 불확실해진 네이티브 세션 (`${agent}:${sessionId}`) — 다시 이어 받지 않는다.
       untrustedNativeSessions: new Set(),
-      styleCalibration: null,
-      pendingInstructionDraft: null,
       // documentId → Studio 가 알린 원본 digest·파일 이름. 다시 발급된 documentId 를 같은 문서 기억에 묶는다.
       documentSources: new Map(),
       auxiliaryProcesses: new Set(),
@@ -1201,7 +1236,7 @@ function drainChatContinuation(record) {
   // 사용자 메시지가 아니므로 다른 요청과 사용자가 잡고 있는 탭은 그대로 둔다.
   beginAgentTurn(record, activeSession, { userTurn: false });
   try {
-    activeSession.backend.sendUserMessage(addAgentInstructionsContext(taken.text, documentMemoryHub.takeBlock(activeSession)));
+    activeSession.backend.sendUserMessage(addAgentInstructionsContext(taken.text, memoryBlocks(activeSession)));
   } catch (error) {
     failPendingProviderCallsForTurn(record, activeSession, activeSession.turnId);
     activeSession.status = 'idle';
@@ -1593,87 +1628,7 @@ function publishedSkillOutcome(outcome) {
 }
 
 function broadcastAgentInstructions(status, changedBy) {
-  for (const record of sessions.values()) {
-    const draft = record.pendingInstructionDraft;
-    if (!draft || draft.expectedRevision === status.revision) continue;
-    if (typeof draft.rauLine === 'string') {
-      rebaseRauInstructionDraft(record, draft, status);
-      continue;
-    }
-    clearInstructionDraft(record, 'stale');
-  }
   broadcastToStudios({ v: 1, type: 'agent-instructions', status, changedBy });
-}
-
-function instructionDraftFrame(draft) {
-  return {
-    id: draft.id,
-    content: draft.content,
-    expectedRevision: draft.expectedRevision,
-    reason: draft.reason,
-    requestedBy: draft.requestedBy,
-    createdAt: new Date(draft.createdAt).toISOString(),
-    expiresAt: new Date(draft.expiresAt).toISOString(),
-    confirmationToken: draft.confirmationToken,
-    threadId: draft.threadId ?? null,
-    origin: typeof draft.rauLine === 'string' ? 'rau' : 'agent',
-  };
-}
-
-function clearInstructionDraft(record, outcome) {
-  const draft = record.pendingInstructionDraft;
-  if (!draft) return null;
-  record.pendingInstructionDraft = null;
-  if (draft.expiryTimer) clearTimeout(draft.expiryTimer);
-  sendJson(record.studioSocket, {
-    v: 1,
-    type: 'agent-instructions-draft-cleared',
-    draftId: draft.id,
-    outcome,
-  });
-  return draft;
-}
-
-function currentInstructionDraft(record) {
-  const draft = record.pendingInstructionDraft;
-  if (!draft) return null;
-  if (draft.expiresAt <= Date.now()) {
-    clearInstructionDraft(record, 'expired');
-    return null;
-  }
-  return draft;
-}
-
-function sendInstructionDraft(record, sock = record.studioSocket) {
-  const draft = currentInstructionDraft(record);
-  if (!draft) return false;
-  return sendJson(sock, {
-    v: 1,
-    type: 'agent-instructions-draft',
-    draft: instructionDraftFrame(draft),
-  });
-}
-
-function authorizedInstructionDraft(record, msg) {
-  const draft = currentInstructionDraft(record);
-  if (!draft
-    || typeof msg.draftId !== 'string'
-    || msg.draftId !== draft.id
-    || typeof msg.confirmationToken !== 'string'
-    || !timingSafeTextEqual(msg.confirmationToken, draft.confirmationToken)) {
-    throw workflowError(
-      'INSTRUCTIONS_CONFIRMATION_INVALID',
-      'The instruction proposal is missing, expired, or no longer authorized.',
-    );
-  }
-  return draft;
-}
-
-function consumeAuthorizedInstructionDraft(record, msg) {
-  const draft = authorizedInstructionDraft(record, msg);
-  record.pendingInstructionDraft = null;
-  if (draft.expiryTimer) clearTimeout(draft.expiryTimer);
-  return draft;
 }
 
 /**
@@ -1731,9 +1686,6 @@ function flushProviderCredentialHomes(homes) {
 /** CLI 설치·인증을 cli-setup-manager 가 관리하는 에이전트들. */
 const CLI_SETUP_AGENTS = ['claude', 'codex'];
 const KNOWN_AGENTS = new Set([...CLI_SETUP_AGENTS, 'pi']);
-const AGENT_INSTRUCTION_DRAFT_TTL_MS = 5 * 60 * 1000;
-// 학습기의 제안은 사용자가 설정을 열 때까지 기다린다.
-const RAU_INSTRUCTION_DRAFT_TTL_MS = 24 * 60 * 60 * 1000;
 
 const CLAUDE_MODELS = new Set(['opus', 'fable', 'sonnet', 'haiku']);
 const CODEX_LINEUPS = new Set(['astra', 'sol', 'luna', 'terra']);
@@ -2928,34 +2880,6 @@ function broadcastTemplateCatalog(change = null) {
   }
 }
 
-function writingStyleCatalog(record) {
-  const activeSession = record.agentSession;
-  return buildWritingStyleCatalog({
-    health: providerHealth.cached(),
-    piStatus,
-    codexModels: record.modelCatalogs?.codex,
-    claudeModels: record.modelCatalogs?.claude,
-    currentSelection: activeSession ? { agent: activeSession.agent, model: activeSession.model, effort: activeSession.effort } : null,
-  });
-}
-
-function sendStyleProgress(record, event) {
-  const calibration = record.styleCalibration;
-  if (!calibration) return;
-  const snapshot = {
-    v: 1,
-    type: 'writing-style-progress',
-    requestId: calibration.requestId,
-    jobId: calibration.jobId,
-    startedAt: calibration.startedAt,
-    agent: calibration.agent,
-    model: calibration.model,
-    ...event,
-  };
-  calibration.progress = snapshot;
-  sendJson(record.studioSocket, snapshot);
-}
-
 // 비동기 응답이 도착할 때쯤 스튜디오 탭이 교체되었을 수 있다 — 현재 소켓에만 보낸다.
 function replyToStudio(record, sock, obj) {
   if (sock !== record.studioSocket) return;
@@ -3394,7 +3318,7 @@ function drainTemplateCompletion(record) {
   try {
     activeSession.backend.sendUserMessage(addAgentInstructionsContext(
       buildCopyLayoutCompletionPrompt(entry.result),
-      documentMemoryHub.takeBlock(activeSession),
+      memoryBlocks(activeSession),
     ));
   } catch (error) {
     failPendingProviderCallsForTurn(record, activeSession, activeSession.turnId);
@@ -3461,7 +3385,7 @@ function drainPlanningDocumentSaved(record) {
     activeSession.backend.sendUserMessage(addAgentInstructionsContext(addActiveDocumentContext(
       activeSession,
       addTemplateContext(record, activeSession, prompt),
-    ), documentMemoryHub.takeBlock(activeSession)));
+    ), memoryBlocks(activeSession)));
   } catch (error) {
     failPendingProviderCallsForTurn(record, activeSession, activeSession.turnId);
     activeSession.status = 'idle';
@@ -3861,7 +3785,10 @@ function sendCompactionEvents(record, events, turnId) {
     // 압축 전 사용량을 재접속 스냅샷과 다음 압축의 beforeTokens 로 다시 쓰지 않는다.
     // Claude 의 post_tokens 는 시스템 프롬프트·도구 정의를 빼고 세므로 다음 호출을 기다린다.
     // 압축된 기록에는 앞서 실은 문서 기억이 남지 않을 수 있다 — 다음 턴에 다시 싣는다.
-    if (event.phase === 'completed') documentMemoryHub.forgetDelivery(activeSession);
+    if (event.phase === 'completed') {
+      documentMemoryHub.forgetDelivery(activeSession);
+      userMemoryHub.forgetDelivery(activeSession);
+    }
     if (event.phase === 'completed' && activeSession?.contextUsage) {
       activeSession.contextUsage = activeSession.agent !== 'claude' && event.afterTokens !== undefined
         ? { ...activeSession.contextUsage, usedTokens: event.afterTokens }
@@ -4045,8 +3972,10 @@ function makeBackendEventHandler(record, generation) {
         if (!succeeded) activeSession.bootstrapHistory = activeSession.fallbackHistory;
         // 이어 받지 못한 세션은 앞서 실은 기억을 모른다 — 이번 글이 실었는지도 확신할 수 없어 다음 턴에 다시 싣는다.
         documentMemoryHub.forgetDelivery(activeSession);
+        userMemoryHub.forgetDelivery(activeSession);
       }
       documentMemoryHub.settleDelivery(activeSession, succeeded);
+      userMemoryHub.settleDelivery(activeSession, succeeded);
       // 기록을 실은 턴이 성공하지 못했고 공급자가 그 턴을 받았을 수 있다 → 전달 불확실.
       const carried = delivery && (delivery.primary || (evt.resumeLost && delivery.fallback));
       if (!succeeded && carried && (activeSession.providerTurnStarted || evt.handoffUncertain === true)) {
@@ -4672,7 +4601,7 @@ async function linkChatDocument(record, sock, msg) {
   linked();
   await sendProjectBound(record);
   resumeLibrarianFor(projectId);
-  await documentMemoryHub.prepare(record, activeSession);
+  await prepareMemory(record, activeSession);
 }
 
 /**
@@ -4746,7 +4675,7 @@ async function detachChatDocument(record, sock, msg) {
   }
   sendJson(sock, { v: 1, type: 'chat-document-detached', ...(requestId ? { requestId } : {}), threadId, documentId });
   await sendProjectBound(record);
-  await documentMemoryHub.prepare(record, activeSession);
+  await prepareMemory(record, activeSession);
 }
 
 /** 맡아 둔 detach_document 의 답을 보낸다 — 새 브리지가 붙었거나, 기다릴 만큼 기다렸거나, 떼지 못하고 되돌아왔다. */
@@ -4906,97 +4835,74 @@ function sendTasteFrame(frame) {
   if (!record || !sendJson(record.studioSocket, frame)) log(`${RAU_TASTE_NAME}: no Studio window for ${frame.learnId ?? frame.type}`);
 }
 
+/** 문체 학습을 시작한다. 검사에 걸리면 그 창에만 style-learn-error 를 보낸다. 진행·결과는 모든 창에 간다. */
+function startStyleLearning(sock, requestId, files, { onSuccess } = {}) {
+  let started;
+  try {
+    started = styleLearner.start({ requestId, files, onSuccess });
+  } catch (error) {
+    sendJson(sock, { v: 1, type: 'style-learn-error', requestId, code: error?.code ?? 'STYLE_LEARN_FAILED', message: String(error?.message ?? error) });
+    return false;
+  }
+  log(`style learning ${started.jobId} started (${Array.isArray(files) ? files.length : 0} files)`);
+  broadcastToStudios({ v: 1, type: 'style-learn-status', job: styleLearner.status() });
+  void started.done.finally(() => broadcastToStudios({ v: 1, type: 'style-learn-status', job: styleLearner.status() }));
+  return true;
+}
+
+/** 예전 말투 맞추기 원고 — 받아들이면 그 원고로 문체 학습을 돌리고 성공한 뒤 폴더를 지운다. 거절하면 곧바로 지운다. */
+async function answerStyleLegacy(sock, requestId, accept) {
+  const fail = (code, message) => sendJson(sock, { v: 1, type: 'style-learn-error', requestId, code, message });
+  if (!writingStyleLegacy) {
+    fail('INVALID_FILES', 'There are no earlier writing samples to learn from.');
+    return;
+  }
+  const forget = async () => {
+    await removeLegacyWritingStyle(WRITING_STYLE_LEGACY_ROOT);
+    writingStyleLegacy = null;
+    log('removed the earlier writing-style folder');
+  };
+  if (!accept) {
+    await forget().catch((error) => log(`writing-style folder removal failed: ${error?.message ?? error}`));
+    await userMemoryHub.publish();
+    return;
+  }
+  let files;
+  try {
+    files = await readLegacySources(WRITING_STYLE_LEGACY_ROOT);
+  } catch (error) {
+    fail(error?.code ?? 'INVALID_FILES', String(error?.message ?? error));
+    return;
+  }
+  if (files.length === 0) {
+    await forget().catch(() => {});
+    await userMemoryHub.publish();
+    fail('NO_TEXT', 'The earlier writing samples could not be read.');
+    return;
+  }
+  startStyleLearning(sock, requestId, files, { onSuccess: forget });
+}
+
 function sendTasteSettings(sock, requestId, extra = {}) {
   sendJson(sock, { v: 1, type: 'taste-settings', ...(requestId ? { requestId } : {}), ok: true, settings: tasteSettings.get(), ...extra });
 }
 
 /**
- * 여러 문서에서 배운 사용자 취향을 AGENTS.md 의 `## Rau-0.1` 아래 한 줄로 제안한다(설정의 확인 카드).
- * 모든 창을 통틀어 Rau-0.1 제안은 하나만 두고, 다른 제안이 기다리는 창은 건드리지 않는다.
- * 확인할 때 그때의 AGENTS.md 에 다시 붙이므로(rauLine) 기다리는 동안 사용자가 고쳐도 낡지 않는다.
- * @returns {{ draftId: string } | { exists: true } | null} 만든 제안, 이미 있는 줄, 또는 자리 없음
+ * 턴 앞에 싣는 글: AGENTS.md(<app_agents_md>) → 기억(<user_memory>) → 문서 기억(<document_memory>) → 요청.
+ * 앞의 것이 이긴다. memoryBlock 은 memoryBlocks() 가 만든 두 기억 블록이다.
  */
-function proposeRauInstruction({ line, documents, refs, threadId, documentId }) {
-  const status = agentInstructionsStore.snapshot();
-  const content = appendRauInstruction(status.content, line);
-  if (content === null) return { exists: true };
-  const live = [...sessions.values()].filter((record) => !record.disposed);
-  if (live.some((record) => currentInstructionDraft(record)?.requestedBy === RAU_TASTE_NAME)) return null;
-  const record = tasteRecord({ threadId, documentId }, { socket: true });
-  if (!record || currentInstructionDraft(record)) return null;
-  let prepared;
-  try {
-    prepared = agentInstructionsStore.prepareUpdate(content, { expectedRevision: status.revision });
-  } catch (error) {
-    log(`${RAU_TASTE_NAME}: instruction proposal skipped: ${error?.code ?? error?.message ?? error}`);
-    return null;
-  }
-  const createdAt = Date.now();
-  const draft = {
-    id: crypto.randomUUID(),
-    confirmationToken: crypto.randomUUID(),
-    content: prepared.content,
-    expectedRevision: prepared.expectedRevision,
-    reason: `${documents}개 문서에서 같은 취향을 배웠습니다.`,
-    requestedBy: RAU_TASTE_NAME,
-    createdAt,
-    expiresAt: createdAt + RAU_INSTRUCTION_DRAFT_TTL_MS,
-    rauRefs: refs,
-    rauLine: line,
-  };
-  record.pendingInstructionDraft = draft;
-  draft.expiryTimer = setTimeout(() => {
-    if (record.pendingInstructionDraft?.id === draft.id) clearInstructionDraft(record, 'expired');
-  }, RAU_INSTRUCTION_DRAFT_TTL_MS);
-  draft.expiryTimer.unref?.();
-  if (!sendInstructionDraft(record)) {
-    clearTimeout(draft.expiryTimer);
-    record.pendingInstructionDraft = null;
-    return null;
-  }
-  log(`${RAU_TASTE_NAME}: proposed an AGENTS.md line learned in ${documents} documents`);
-  return { draftId: draft.id };
+function addAgentInstructionsContext(prompt, memoryBlock = '') {
+  return [agentInstructionsStore.promptBlock(), memoryBlock, prompt].filter(Boolean).join('\n\n');
 }
 
-/**
- * Rau-0.1 변경안은 AGENTS.md 가 바뀌어도 낡지 않는다 — 그 줄을 새 내용에 다시 붙여 보낸다. 사용자가 그 줄을
- * 직접 넣었으면 변경안을 거두고 그 취향을 올린 것으로 적는다.
- */
-function rebaseRauInstructionDraft(record, draft, status) {
-  const content = appendRauInstruction(status.content, draft.rauLine);
-  if (content === null) {
-    clearInstructionDraft(record, 'stale');
-    void tasteLearner.promotionSettled(draft.rauRefs, 'confirmed', { text: draft.rauLine }).catch(() => {});
-    return;
-  }
-  try {
-    const prepared = agentInstructionsStore.prepareUpdate(content, { expectedRevision: status.revision });
-    draft.content = prepared.content;
-    draft.expectedRevision = prepared.expectedRevision;
-  } catch (error) {
-    log(`${RAU_TASTE_NAME}: instruction proposal dropped: ${error?.code ?? error?.message ?? error}`);
-    clearInstructionDraft(record, 'stale');
-    return;
-  }
-  sendInstructionDraft(record);
+/** 이번 턴에 실을 기억 블록 — 기억(계정 단계)이 먼저, 문서 기억이 다음. 받은 것과 같으면 싣지 않는다. */
+function memoryBlocks(session, options = {}) {
+  return [userMemoryHub.takeBlock(session, options), documentMemoryHub.takeBlock(session, options)].filter(Boolean).join('\n\n');
 }
 
-/**
- * 확인한 변경안을 쓴다. Rau-0.1 변경안은 지금의 AGENTS.md 에 그 줄을 다시 붙인다 — 이미 있으면 그대로 둔다.
- * 확인 토큰은 consumeAuthorizedInstructionDraft 가 이미 검사했다.
- */
-function writeConfirmedInstructionDraft(draft) {
-  if (typeof draft.rauLine !== 'string') {
-    return agentInstructionsStore.update(draft.content, { expectedRevision: draft.expectedRevision });
-  }
-  const status = agentInstructionsStore.snapshot();
-  const content = appendRauInstruction(status.content, draft.rauLine);
-  if (content === null) return Promise.resolve(status);
-  return agentInstructionsStore.update(content, { expectedRevision: status.revision });
-}
-
-function addAgentInstructionsContext(prompt, documentMemoryBlock = '') {
-  return [agentInstructionsStore.promptBlock(), documentMemoryBlock, prompt].filter(Boolean).join('\n\n');
+/** 턴을 열기 전에 두 기억을 읽어 둔다 (자격 확인은 길어야 잠깐). */
+async function prepareMemory(record, session) {
+  await Promise.all([documentMemoryHub.prepare(record, session), userMemoryHub.prepare()]);
 }
 
 /**
@@ -5219,6 +5125,7 @@ function dispatchUserMessage(record, sock, msg, activeSession, messageAttachment
       phase: activeSession.planning.snapshot().phase,
       agent: activeSession.agent,
       requestContext: liveDocumentBlock(liveDocument),
+      personalProfile: userMemoryHub.personalProfile(),
     }))
     .then(async (prompt) => {
       // Skill context is loaded asynchronously. An interrupt can settle this
@@ -5233,7 +5140,7 @@ function dispatchUserMessage(record, sock, msg, activeSession, messageAttachment
         prompt = `The current plan remains open for review. Answer questions and research normally. If this message requests concrete changes to the plan, revise it directly with present_implementation_plan; do not ask the user to request a draft again. Never treat discussion as approval to edit the document.\n\nCurrent plan:\n${JSON.stringify(activeSession.planning.latestPlan.plan)}\n\n${prompt}`;
       }
       // 프로젝트 요약은 메모·발췌를 읽느라 비동기다 — 기다린 뒤 턴이 여전히 이 턴인지 다시 본다.
-      await documentMemoryHub.prepare(record, activeSession);
+      await prepareMemory(record, activeSession);
       const referencedPrompt = await addReferenceContext(activeSession, msg.text, prompt, messageAttachments, normalizeMentions(msg.mentions), {
         required: msg.requireAcceptance === true,
         documentMentions: normalizeDocumentMentions(msg.documentMentions),
@@ -5255,7 +5162,7 @@ function dispatchUserMessage(record, sock, msg, activeSession, messageAttachment
       );
       const replaceSession = activeSession.replaceSessionPending === true;
       // 새 공급자 세션은 앞서 실은 기억을 모른다 — 세션 교체와 재개 실패 대체 글에는 늘 싣는다.
-      const memoryBlock = documentMemoryHub.takeBlock(activeSession, { force: replaceSession });
+      const memoryBlock = memoryBlocks(activeSession, { force: replaceSession });
       // 기록 예산은 기록을 뺀 이번 프롬프트를 기준으로 턴마다 계산한다.
       const plainText = addAgentInstructionsContext(turnPrompt, memoryBlock);
       const resumedNative = activeSession.resumed && !replaceSession;
@@ -5274,7 +5181,7 @@ function dispatchUserMessage(record, sock, msg, activeSession, messageAttachment
       const options = {
         ...(primary ? { handoff: handoffPayload(primary, plainText) } : {}),
         ...(withResumeFallback ? {
-          resumeFallbackText: handoffPromptText(full, turnPrompt, documentMemoryHub.takeBlock(activeSession, { force: true })),
+          resumeFallbackText: handoffPromptText(full, turnPrompt, memoryBlocks(activeSession, { force: true })),
         } : {}),
         ...(withResumeFallback && full ? { resumeFallbackHandoff: handoffPayload(full, plainText) } : {}),
         ...(replaceSession ? { replaceSession: true } : {}),
@@ -5757,6 +5664,7 @@ async function startSession(
     replaceSessionPending: false,
     reportResumeLost: untrustedCursor,
     documentMemory: newSessionDocumentMemory(),
+    userMemory: newSessionUserMemory(),
     contextUsage: resumed && continuing && currentSession.agent === agent ? currentSession.contextUsage ?? null : null,
     compaction: null,
     manualCompaction: null,
@@ -5921,7 +5829,7 @@ async function approveImplementationPlan(record, sock, msg) {
       record,
       activeSession,
       addEditReportContext(record, activeSession, approvedPrompt),
-    ), documentMemoryHub.takeBlock(activeSession)));
+    ), memoryBlocks(activeSession)));
   } catch (error) {
     if (record.agentSession === activeSession) {
       if (activeSession.planning.phase === 'switching') {
@@ -5978,7 +5886,7 @@ async function requestImplementationPlanChanges(record, sock, msg, {
         record,
         activeSession,
         referenced,
-      ), documentMemoryHub.takeBlock(activeSession)));
+      ), memoryBlocks(activeSession)));
       return;
     }
     if (feedback) {
@@ -5996,7 +5904,7 @@ async function requestImplementationPlanChanges(record, sock, msg, {
         record,
         activeSession,
         referenced,
-      ), documentMemoryHub.takeBlock(activeSession)));
+      ), memoryBlocks(activeSession)));
     }
   } catch (error) {
     if (record.agentSession === activeSession) {
@@ -6191,7 +6099,7 @@ async function handleStudioMessage(record, sock, msg) {
         });
         await sendProjectBound(record);
         resumeLibrarianFor(record.boundProjectId);
-        void documentMemoryHub.prepare(record, s);
+        void prepareMemory(record, s);
       } catch (e) {
         // 시작하지 못한 채팅의 작업 공간은 지금 세션의 표시에 쓰지 않는다.
         if (!record.agentSession || record.agentSession.documentId !== msg.documentId) record.projectRepository = previousRepository;
@@ -6476,7 +6384,29 @@ async function handleStudioMessage(record, sock, msg) {
         status: agentInstructionsStore.snapshot(),
         changedBy: 'system',
       });
-      sendInstructionDraft(record, sock);
+      return;
+    }
+    case 'user-memory-request': {
+      if (typeof msg.requestId !== 'string' || !msg.requestId || msg.requestId.length > 256) return;
+      void userMemoryHub.studioRequest(msg)
+        .then((reply) => sendJson(sock, { v: 1, type: 'user-memory-result', requestId: msg.requestId, ...reply }));
+      return;
+    }
+    case 'style-learn-start': {
+      startStyleLearning(sock, typeof msg.requestId === 'string' ? msg.requestId : null, msg.files);
+      if (Array.isArray(msg.files)) msg.files.length = 0;
+      return;
+    }
+    case 'style-learn-cancel': {
+      styleLearner.cancel(typeof msg.jobId === 'string' ? msg.jobId : undefined);
+      return;
+    }
+    case 'style-learn-status-request': {
+      sendJson(sock, { v: 1, type: 'style-learn-status', requestId: typeof msg.requestId === 'string' ? msg.requestId : undefined, job: styleLearner.status() });
+      return;
+    }
+    case 'style-learn-legacy': {
+      void answerStyleLegacy(sock, typeof msg.requestId === 'string' ? msg.requestId : null, msg.accept === true);
       return;
     }
     case 'taste-settings-request': {
@@ -6521,6 +6451,7 @@ async function handleStudioMessage(record, sock, msg) {
           learnIds: Array.isArray(msg.learnIds) ? msg.learnIds.slice(0, 64) : [],
           changes: msg.changes,
           entryId: msg.entryId,
+          ...(msg.eventIds !== undefined ? { eventIds: msg.eventIds } : {}),
         });
       })().then((result) => sendJson(sock, { v: 1, type: 'taste-undo-result', requestId, ok: true, learnId, ...result }))
         .catch((error) => sendJson(sock, {
@@ -6549,82 +6480,6 @@ async function handleStudioMessage(record, sock, msg) {
         message: String(error?.message ?? error),
         status: agentInstructionsStore.snapshot(),
       }));
-      return;
-    }
-    case 'agent-instructions-draft-confirm': {
-      let draft;
-      try {
-        draft = consumeAuthorizedInstructionDraft(record, msg);
-        // Consume the one-use capability before the asynchronous write.
-      } catch (error) {
-        sendJson(sock, {
-          v: 1,
-          type: 'agent-instructions-error',
-          requestId: msg.requestId ?? null,
-          code: error?.code ?? 'INSTRUCTIONS_CONFIRMATION_INVALID',
-          message: String(error?.message ?? error),
-          status: agentInstructionsStore.snapshot(),
-        });
-        return;
-      }
-      void writeConfirmedInstructionDraft(draft).then((status) => {
-        sendJson(sock, {
-          v: 1,
-          type: 'agent-instructions',
-          requestId: msg.requestId ?? null,
-          status,
-          changedBy: `agent-confirmed:${draft.requestedBy}`,
-        });
-        sendJson(sock, {
-          v: 1,
-          type: 'agent-instructions-draft-cleared',
-          draftId: draft.id,
-          outcome: 'confirmed',
-        });
-        broadcastAgentInstructions(status, `agent-confirmed:${draft.requestedBy}`);
-        if (draft.rauRefs) void tasteLearner.promotionSettled(draft.rauRefs, 'confirmed', { text: draft.rauLine }).catch(() => {});
-      }).catch((error) => {
-        sendJson(sock, {
-          v: 1,
-          type: 'agent-instructions-draft-cleared',
-          draftId: draft.id,
-          outcome: 'stale',
-        });
-        sendJson(sock, {
-          v: 1,
-          type: 'agent-instructions-error',
-          requestId: msg.requestId ?? null,
-          code: error?.code ?? 'INSTRUCTIONS_SAVE_FAILED',
-          message: String(error?.message ?? error),
-          status: agentInstructionsStore.snapshot(),
-        });
-      });
-      return;
-    }
-    case 'agent-instructions-draft-reject': {
-      let draft;
-      try {
-        draft = consumeAuthorizedInstructionDraft(record, msg);
-      } catch (error) {
-        sendJson(sock, {
-          v: 1,
-          type: 'agent-instructions-error',
-          requestId: msg.requestId ?? null,
-          code: error?.code ?? 'INSTRUCTIONS_CONFIRMATION_INVALID',
-          message: String(error?.message ?? error),
-          status: agentInstructionsStore.snapshot(),
-        });
-        return;
-      }
-      sendJson(sock, {
-        v: 1,
-        type: 'agent-instructions-draft-cleared',
-        requestId: msg.requestId ?? null,
-        draftId: draft.id,
-        outcome: 'rejected',
-      });
-      // 거절한 취향은 다시 제안하지 않는다.
-      if (draft.rauRefs) void tasteLearner.promotionSettled(draft.rauRefs, 'rejected', { text: draft.rauLine }).catch(() => {});
       return;
     }
     case 'chat-permission-set': {
@@ -7236,144 +7091,6 @@ async function handleStudioMessage(record, sock, msg) {
           replyToStudio(record, sock, { v: 1, type: 'pi-status', requestId, status });
         })
         .catch((e) => sendPiError(record, sock, requestId, e, 'PI_MODELS_INVALID'));
-      return;
-    }
-    case 'writing-style-status-request': {
-      void writingStyleStore.status()
-        .then((status) => sendJson(sock, { v: 1, type: 'writing-style-status', requestId: msg.requestId ?? null, status }))
-        .catch((e) => sendJson(sock, { v: 1, type: 'writing-style-error', requestId: msg.requestId ?? null, code: 'STYLE_STATUS_FAILED', message: String(e?.message ?? e) }));
-      return;
-    }
-    case 'writing-style-catalog-request': {
-      const requestId = msg.requestId ?? null;
-      const refresh = msg.refresh === true;
-      void Promise.all([
-        providerHealth.check(refresh),
-        refresh ? refreshPiStatus() : Promise.resolve(piStatus),
-      ])
-        .then(() => sendJson(sock, {
-          v: 1, type: 'writing-style-catalog', requestId, ...writingStyleCatalog(record),
-        }))
-        .catch((e) => sendJson(sock, {
-          v: 1, type: 'writing-style-error', requestId,
-          code: e?.code ?? 'STYLE_CATALOG_FAILED', message: String(e?.message ?? e),
-        }));
-      return;
-    }
-    case 'writing-style-calibrate': {
-      const requestId = msg.requestId ?? null;
-      if (record.styleCalibration || writingStyleCalibrationOwner !== null) {
-        sendJson(sock, { v: 1, type: 'writing-style-error', requestId, code: 'CALIBRATION_BUSY', message: 'A writing-style calibration is already running.' });
-        return;
-      }
-      let selection;
-      try {
-        selection = resolveWritingStyleSelection(
-          { agent: msg.agent, model: msg.model, effort: msg.effort },
-          {
-            health: providerHealth.cached(),
-            piStatus,
-            codexModels: record.modelCatalogs?.codex,
-            claudeModels: record.modelCatalogs?.claude,
-            currentSelection: record.agentSession ? { agent: record.agentSession.agent, model: record.agentSession.model, effort: record.agentSession.effort } : null,
-          },
-        );
-      } catch (e) {
-        sendJson(sock, {
-          v: 1, type: 'writing-style-error', requestId,
-          code: e?.code ?? 'INVALID_CALIBRATION_SELECTION', message: String(e?.message ?? e),
-        });
-        return;
-      }
-      const jobId = crypto.randomUUID();
-      writingStyleCalibrationOwner = record;
-      record.styleCalibration = {
-        requestId, jobId, startedAt: new Date().toISOString(),
-        agent: selection.agent, model: selection.model, progress: null,
-      };
-      sendStyleProgress(record, {
-        state: 'preparing', phase: 'preparing', activity: 'collecting-samples',
-        detail: msg.append === true ? 'Combining saved and new writing samples' : 'Preparing writing samples',
-        completed: 0, total: 1,
-      });
-      let calibrationSources = null;
-      void Promise.resolve()
-        .then(async () => {
-          if (msg.append === true) {
-            const current = await writingStyleStore.status();
-            assertWritingStyleAppendCompatible(current, {
-              language: msg.language,
-              baseRevision: typeof msg.baseRevision === 'string' ? msg.baseRevision : null,
-            });
-          }
-          calibrationSources = await writingStyleStore.calibrationSources(msg.files, { append: msg.append === true });
-          if (Array.isArray(msg.files)) msg.files.length = 0;
-          return calibrateWritingStyle(
-            {
-              language: msg.language,
-              files: calibrationSources,
-              agent: selection.agent,
-              model: await resolveModel(selection.agent, selection.model, record),
-              effort: selection.effort,
-            },
-            {
-              useOpenRouter: selection.agent === 'pi',
-              piManager,
-              openRouter: piRouter,
-              projectRoot: ROOT,
-              workDir: record.workDir,
-              isolatedHome: record.isolatedHome,
-              sessionId: record.sessionId,
-              providerEnvs: { claude: claudeRuntimeEnv(record.isolatedHome) },
-              spawnProcess: (command, args, options) => auxSpawnProcess(record, command, args, options),
-              terminateProcess: terminateProcessTree,
-              cleanupProcessOutcome: (child) => beginAuxiliaryProcessCleanupOutcome(record, child),
-              onProgress: (event) => {
-                if (record.styleCalibration?.jobId === jobId) sendStyleProgress(record, event);
-              },
-            },
-          );
-        })
-        .then(async (profile) => {
-          if (record.styleCalibration?.jobId === jobId) sendStyleProgress(record, {
-            state: 'saving', phase: 'saving', activity: 'saving-profile',
-            detail: 'Saving the profile and its source samples', completed: 0, total: 1,
-          });
-          const status = await writingStyleStore.save(profile, { sources: calibrationSources });
-          if (record.styleCalibration?.jobId === jobId) sendStyleProgress(record, {
-            state: 'saving', phase: 'saving', activity: 'saving-profile',
-            detail: 'Saved the calibrated writing profile', completed: 1, total: 1,
-          });
-          sendJson(record.studioSocket, { v: 1, type: 'writing-style-result', requestId, jobId, status });
-          sendJson(record.studioSocket, { v: 1, type: 'writing-style-status', requestId, status });
-        })
-        .catch((e) => sendJson(record.studioSocket, {
-          v: 1,
-          type: 'writing-style-error',
-          requestId,
-          jobId,
-          code: e?.code ?? 'CALIBRATION_FAILED',
-          message: String(e?.message ?? e),
-        }))
-        .finally(() => {
-          if (record.styleCalibration?.jobId === jobId) record.styleCalibration = null;
-          if (writingStyleCalibrationOwner === record) writingStyleCalibrationOwner = null;
-        });
-      return;
-    }
-    case 'writing-style-instruction-set': {
-      const requestId = msg.requestId ?? null;
-      void writingStyleStore.setAdditionalInstruction(msg.instruction)
-        .then((status) => sendJson(record.studioSocket, {
-          v: 1, type: 'writing-style-status', requestId, status,
-        }))
-        .catch((e) => sendJson(record.studioSocket, {
-          v: 1,
-          type: 'writing-style-error',
-          requestId,
-          code: 'STYLE_INSTRUCTION_FAILED',
-          message: String(e?.message ?? e),
-        }));
       return;
     }
     case 'chat-steer': {
@@ -8144,66 +7861,9 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
         return;
       }
       if (tool === 'read_document_memory') {
-        void documentMemoryHub.runTool(record, record.agentSession)
-          .then(sendResult)
+        void Promise.all([documentMemoryHub.runTool(record, record.agentSession), userMemoryHub.toolAccount()])
+          .then(([memory, account]) => sendResult({ ...memory, ...(account ? { account } : {}) }))
           .catch((error) => sendError(error, 'DOCUMENT_MEMORY_FAILED'));
-        return;
-      }
-      if (tool === 'update_agent_instructions') {
-        try {
-          const status = agentInstructionsStore.snapshot();
-          const prepared = agentInstructionsStore.prepareUpdate(args.content, {
-            expectedRevision: args.expectedRevision,
-          });
-          if (prepared.content === status.content) {
-            sendResult({ ...status, changed: false, pendingConfirmation: false });
-            return;
-          }
-          if (!record.studioSocket || record.studioSocket.readyState !== record.studioSocket.OPEN) {
-            throw workflowError(
-              'INSTRUCTIONS_CONFIRMATION_UNAVAILABLE',
-              'HamaEditor Studio must be connected so the user can confirm the instruction proposal.',
-            );
-          }
-          if (record.pendingInstructionDraft) clearInstructionDraft(record, 'replaced');
-          const requestedBy = sock.agentLabel ?? record.agentSession?.agent ?? 'unknown';
-          const createdAt = Date.now();
-          const draft = {
-            id: crypto.randomUUID(),
-            confirmationToken: crypto.randomUUID(),
-            content: prepared.content,
-            expectedRevision: prepared.expectedRevision,
-            reason: typeof args.reason === 'string' ? args.reason : null,
-            requestedBy,
-            threadId: record.agentSession?.threadId ?? null,
-            createdAt,
-            expiresAt: createdAt + AGENT_INSTRUCTION_DRAFT_TTL_MS,
-          };
-          record.pendingInstructionDraft = draft;
-          draft.expiryTimer = setTimeout(() => {
-            if (record.pendingInstructionDraft?.id === draft.id) {
-              clearInstructionDraft(record, 'expired');
-            }
-          }, AGENT_INSTRUCTION_DRAFT_TTL_MS);
-          draft.expiryTimer.unref?.();
-          if (!sendInstructionDraft(record)) {
-            record.pendingInstructionDraft = null;
-            throw workflowError(
-              'INSTRUCTIONS_CONFIRMATION_UNAVAILABLE',
-              'HamaEditor Studio disconnected before the instruction proposal could be shown.',
-            );
-          }
-          sendResult({
-            ...status,
-            changed: false,
-            pendingConfirmation: true,
-            draftId: draft.id,
-            expiresAt: new Date(draft.expiresAt).toISOString(),
-            ...(draft.reason ? { reason: draft.reason } : {}),
-          });
-        } catch (error) {
-          sendError(error, 'INSTRUCTIONS_DRAFT_FAILED');
-        }
         return;
       }
       if (definition.category === 'project-read' || definition.category === 'project-write' || definition.category === 'project-ingest') {
@@ -9762,7 +9422,10 @@ httpServer.on('upgrade', (req, socket, head) => {
         status: agentInstructionsStore.snapshot(),
         changedBy: 'system',
       });
-      sendInstructionDraft(record, ws);
+      void userMemoryHub.snapshot()
+        .then((memory) => replyToStudio(record, ws, { v: 1, type: 'user-memory', memory }))
+        .catch((e) => log(`user memory on connect failed: ${e?.message ?? e}`));
+      sendJson(ws, { v: 1, type: 'style-learn-status', job: styleLearner.status() });
       // 대화에서 배우기 — Studio 는 이 값을 들은 뒤에만 기록에서 배우기의 출처 기록을 남긴다.
       sendJson(ws, { v: 1, type: 'taste-settings', ok: true, settings: tasteSettings.get() });
       const activeSession = record.agentSession;
@@ -9795,21 +9458,6 @@ httpServer.on('upgrade', (req, socket, head) => {
       void skillRegistry.catalog()
         .then((catalog) => sendJson(ws, { v: 1, type: 'skills-catalog', catalog }))
         .catch((e) => log(`skills catalog on connect failed: ${e?.message ?? e}`));
-      void writingStyleStore.status()
-        .then((status) => sendJson(ws, { v: 1, type: 'writing-style-status', status }))
-        .catch((e) => sendJson(ws, {
-          v: 1, type: 'writing-style-error', code: e?.code ?? 'STYLE_STATUS_FAILED', message: String(e?.message ?? e),
-        }));
-      const calibration = record.styleCalibration;
-      if (calibration) {
-        sendJson(ws, calibration.progress ?? {
-          v: 1, type: 'writing-style-progress',
-          requestId: calibration.requestId, jobId: calibration.jobId,
-          startedAt: calibration.startedAt, agent: calibration.agent, model: calibration.model,
-          state: 'preparing', phase: 'preparing', activity: 'collecting-samples',
-          detail: 'Preparing writing samples', completed: 0, total: 1,
-        });
-      }
       for (const job of record.templateJobs.values()) {
         if (job.status === 'running') {
           sendTemplateJobEvent(record, {
@@ -9829,7 +9477,6 @@ httpServer.on('upgrade', (req, socket, head) => {
       void agentSetupStatuses(record.sessionId).then((statuses) => {
         replyToStudio(record, ws, { v: 1, type: 'agent-setup-status', statuses });
       }).catch((e) => log(`agent setup status on connect failed: ${e?.message ?? e}`));
-      sendJson(ws, { v: 1, type: 'writing-style-catalog', ...writingStyleCatalog(record) });
       sendJson(ws, { v: 1, type: 'templates-catalog', ...templateStore.list() });
       sendJson(ws, { v: 1, type: 'usage-report', usage: usageSnapshot() });
       if (piStatus.keyConfigured && !openRouterCredits) {
@@ -9854,6 +9501,8 @@ httpServer.listen(REQUESTED_PORT, '127.0.0.1', () => {
   hubPort = address.port;
   process.stdout.write(`RHWP_HUB_READY ${JSON.stringify({ port: hubPort, pid: process.pid, launchId: LAUNCH_ID })}\n`);
   log(`rhwp-agent hub listening on ws://127.0.0.1:${hubPort} (protocol v${PROTOCOL_VERSION})`);
+  // 기억(계정 단계)의 자격은 첫 턴 전에 미리 묻는다 — 턴은 길어야 잠깐만 기다린다.
+  void hostedRau.eligibility({ waitMs: 0 });
   log('claude/codex/pi can be installed and authenticated from Studio settings');
   if (TOOL_TRACE_PATH) log(`tool trace enabled: ${TOOL_TRACE_PATH}`);
   void ensureBootWork();
@@ -9884,10 +9533,6 @@ async function disposeRecord(record, reason) {
   record.disposed = true;
   authRuns.cancelForSession(record.sessionId, reason);
   cancelCheckpointTitleJobs(record);
-  if (record.pendingInstructionDraft?.expiryTimer) {
-    clearTimeout(record.pendingInstructionDraft.expiryTimer);
-  }
-  record.pendingInstructionDraft = null;
   clearStudioReattachGrace(record);
   clearStudioReattachFlush(record);
   settleUserQuestion(record, { status: 'expired', reason: 'hub-restarted' });

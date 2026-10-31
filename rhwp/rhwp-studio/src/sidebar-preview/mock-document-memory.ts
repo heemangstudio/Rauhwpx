@@ -1,7 +1,7 @@
 /**
  * 미리보기의 문서 기억 — 허브 document-memory-store 를 흉내 내는 메모리 저장소.
  *
- * 문서마다 revision·항목을 들고, 허브처럼 상한(40개·8 000자), 주제 충돌(같은 주제의 add 는 고침),
+ * 문서마다 revision·항목을 들고, 허브처럼 상한(40개·8 000자), 주제 충돌(같은 주제의 add 는 고침 — 같은 글이면 강도 +1),
  * expectedRevision 충돌을 지킨다. 쓰면 붙은 모든 모의 브리지에 document-memory-changed 를 보낸다.
  * `?memory=sample` 은 사업 제안서에 표본 네 개를, `?memory=empty` 는 빈 기억을 둔다.
  * 기록에서 배우기는 문서마다 처음 한 번 Rau-0.1 항목 하나를 배우고, 그다음부터는 배울 기록이 없다고 답한다.
@@ -44,11 +44,11 @@ function sampleEntries(): T.DocumentMemoryEntry[] {
     text: string,
     extra: Partial<T.DocumentMemoryEntry> = {},
   ): T.DocumentMemoryEntry => ({
-    id: newId(), kind, subject, text, origin: 'explicit', evidence: 1,
+    id: newId(), kind, subject, text, origin: 'explicit', strength: 2,
     createdAt: at, updatedAt: at, confirmedAt: at, ...extra,
   });
   return [
-    entry('style', '문체.종결', '본문은 한다체 사용', { origin: 'learned', evidence: 3 }),
+    entry('style', '문체.종결', '본문은 한다체 사용', { origin: 'learned', strength: 4 }),
     entry('term', '용어.고객', "'고객' 대신 '이용자'로 통일"),
     entry('decision', '결정.예산표', '예산표는 분기별로 나눔'),
     entry('protect', '보호.결론', '결론 문단 수정 금지', { anchor: { quote: MISSING_QUOTE, paraIdx: 42 } }),
@@ -120,14 +120,14 @@ function apply(store: Store, ops: readonly T.DocumentMemoryOp[]): T.DocumentMemo
     const same = entries.findIndex((entry) => entry.subject === subject);
     if (same >= 0) {
       const prev = entries[same]!;
-      const next = { ...prev, kind: op.kind, text, origin: 'user' as const, evidence: prev.evidence + 1, updatedAt: now, confirmedAt: now };
+      const next = { ...prev, kind: op.kind, text, origin: 'user' as const, strength: prev.text === text ? Math.min(5, prev.strength + 1) : 3, updatedAt: now, confirmedAt: now };
       entries[same] = next;
       changes.push({ op: 'update', entryId: next.id, entry: next, prev });
       continue;
     }
     if (entries.length >= MAX_ENTRIES) return fail('MEMORY_FULL', 'entries');
     const entry: T.DocumentMemoryEntry = {
-      id: newId(), kind: op.kind, subject, text, origin: 'user', evidence: 1,
+      id: newId(), kind: op.kind, subject, text, origin: 'user', strength: 3,
       createdAt: now, updatedAt: now, confirmedAt: now,
       ...(op.anchor ? { anchor: op.anchor } : {}),
     };
@@ -210,10 +210,13 @@ export function createMockDocumentMemory(
       if (!result.ok || !result.changes?.length) return { status: 'failed' as const, code: result.error?.code ?? 'MEMORY_INVALID' };
       const change = result.changes[0]!;
       const entry = store.entries.find((item) => item.id === change.entryId);
-      if (entry) entry.origin = 'learned';
+      if (entry) Object.assign(entry, { origin: 'learned', strength: 1 });
       changed(id, store);
       const learnId = `learn-history-${sequence}`;
-      const items: T.TasteLearnItem[] = [{ op: change.op, entryId: change.entryId, text: entry?.text ?? '', origin: 'learned' }];
+      const items: T.TasteLearnItem[] = [{
+        op: change.op, entryId: change.entryId, text: entry?.text ?? '', origin: 'learned',
+        change: 'new', tier: 'document', kind: 'style', strength: { from: 0, to: entry?.strength ?? 1 },
+      }];
       emit({ type: 'taste-history-learned', documentId: id, learnId, key: store.key, items, changes: result.changes });
       return {
         status: 'learned' as const,

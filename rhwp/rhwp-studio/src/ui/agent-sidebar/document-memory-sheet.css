@@ -346,3 +346,141 @@
 .ag-memory-list[hidden] {
   display: none;
 }
+
+/* ─── 강도 ─────────────────────────────────────────────
+   Rau 탭과 같은 물그릇(strength-gauge.css)을 줄 왼쪽에 둔다. 첫 줄 글자의 가운데에 맞춘다. */
+.ag-memory-row > .ag-strength {
+  min-width: 20px;
+  margin: 7px 4px 0 0;
+}
+
+/* ─── 두 층: 이 문서 · 기억에서 ───────────────────────────
+   Rau 요금제에서만 보인다. 머리는 Rau 탭의 칸 머리처럼 굵은 본문 크기, 종류는 그 아래 작은 회색. */
+.ag-memory-tier + .ag-memory-tier {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--n-ink-hairline);
+}
+
+.ag-memory-tier-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.ag-memory-tier-title {
+  margin: 0;
+  font-size: var(--ag-fs-body);
+  font-weight: var(--ag-fw-strong);
+  line-height: var(--ag-lh-tight);
+  color: var(--n-ink);
+}
+
+.ag-memory-tier[data-tier='document'] > .ag-memory-tier-title {
+  margin-bottom: 8px;
+}
+
+.ag-memory-tier-count {
+  color: var(--n-ink-tertiary);
+  font-size: var(--ag-fs-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Rau 탭으로 — 머리 오른쪽 끝의 조용한 글자 단추(기록에서 배우기와 같은 결). */
+.ag-memory-tier-link,
+.ag-memory-more {
+  flex: none;
+  height: 24px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--ag-r-chip);
+  background: transparent;
+  font: inherit;
+  font-size: var(--ag-fs-secondary);
+  font-weight: var(--ag-fw-medium);
+  color: var(--n-ink-secondary);
+  cursor: default;
+  transition: var(--ag-transition-color);
+}
+
+.ag-memory-tier-link {
+  margin: 0 -8px 0 auto;
+  align-self: center;
+}
+
+.ag-memory-more {
+  margin: 4px 0 0 -8px;
+}
+
+.ag-memory-tier-link:hover,
+.ag-memory-more:hover {
+  background: var(--n-ink-fill-hover);
+  color: var(--n-ink);
+}
+
+.ag-memory-tier-link:active,
+.ag-memory-more:active {
+  background: var(--n-ink-fill-pressed);
+  transition: none;
+}
+
+.ag-memory-tier-link:focus-visible,
+.ag-memory-more:focus-visible {
+  outline: var(--ag-focus-ring);
+  outline-offset: var(--ag-focus-offset);
+}
+
+.ag-memory-tier-lead,
+.ag-memory-tier-empty {
+  margin: 4px 0 8px;
+  font-size: var(--ag-fs-secondary);
+  line-height: var(--ag-lh-secondary);
+  color: var(--n-ink-secondary);
+}
+
+.ag-memory-tier-empty {
+  margin-bottom: 0;
+}
+
+/* 계정 기억 줄은 읽기만 한다 — 누를 곳이 없으니 떠오르지 않는다. */
+.ag-memory-row[data-readonly='true']:hover {
+  background: transparent;
+}
+
+.ag-memory-row[data-readonly='true'] .ag-memory-text {
+  cursor: auto;
+}
+
+.ag-memory-meta {
+  flex: none;
+  color: var(--n-ink-tertiary);
+}
+
+/* 문서 기억이 같은 주제의 계정 기억보다 앞선다. 문서 줄에는 물빛 이름표, 계정 줄은 흐리게. */
+.ag-memory-override {
+  flex: none;
+  padding: 0 4px;
+  border-radius: var(--ag-r-code);
+  background: color-mix(in oklab, #3d9bd1 12%, transparent);
+  color: color-mix(in oklab, #3d9bd1 70%, var(--n-ink));
+}
+
+:root[data-theme-effective='dark'] .ag-memory-override {
+  background: color-mix(in oklab, #62b3e2 16%, transparent);
+  color: color-mix(in oklab, #62b3e2 80%, var(--n-ink));
+}
+
+.ag-memory-row[data-overridden='true'] .ag-memory-text {
+  color: var(--n-ink-secondary);
+}
+
+.ag-memory-row[data-overridden='true'] > .ag-strength {
+  opacity: 0.55;
+}
+
+.ag-memory-row[data-overridden='true'] .ag-memory-override {
+  background: transparent;
+  padding: 0;
+  color: var(--n-ink-tertiary);
+}

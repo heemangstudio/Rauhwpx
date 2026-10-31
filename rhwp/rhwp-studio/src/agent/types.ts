@@ -34,15 +34,6 @@ export interface AgentEditingLease {
 export type PermissionProfile = 'safe' | 'unrestricted';
 /** Codex Fast 서비스 티어. 다른 프로바이더는 항상 standard. */
 export type ServiceTier = 'standard' | 'fast';
-export type WritingStyleLanguage = 'ko' | 'en';
-export type WritingStyleProgressState =
-  | 'queued'
-  | 'reading'
-  | 'extracting'
-  | 'preparing'
-  | 'analyzing'
-  | 'synthesizing'
-  | 'saving';
 export type AgentWorkflow = 'direct' | 'plan' | 'question';
 export type AgentPhase = 'direct' | 'planning' | 'questioning' | 'awaiting-approval' | 'switching' | 'implementing';
 
@@ -325,23 +316,6 @@ export interface AgentInstructionsStatus {
   scope: 'rauhwpx-app';
 }
 
-/** 에이전트가 제안했지만 사용자가 아직 승인하지 않은 앱 지시 변경안. */
-export interface AgentInstructionsDraft {
-  id: string;
-  content: string;
-  expectedRevision: number;
-  reason: string | null;
-  requestedBy: string;
-  createdAt: string;
-  expiresAt: string;
-  /** Studio만 받는 단기·일회용 승인 capability. */
-  confirmationToken: string;
-  /** 초안을 만든 채팅. 대화 흐름의 승인 카드가 이 채팅에 뜬다. */
-  threadId: string | null;
-  /** agent = 에이전트의 update_agent_instructions, rau = Rau-0.1 의 취향 제안. */
-  origin: 'agent' | 'rau';
-}
-
 /** 문서 기억 항목의 종류 — 결정·용어·보호·문체·사실. */
 export type DocumentMemoryKind = 'decision' | 'term' | 'protect' | 'style' | 'fact';
 
@@ -358,9 +332,9 @@ export interface DocumentMemoryEntry {
   origin: 'explicit' | 'learned' | 'user';
   /** kind 'copy' 는 같은 바이트의 다른 문서에서 복사해 온 기억이다. */
   source?: { threadId?: string; turnId?: string; kind?: 'turn' | 'signal' | 'history' | 'copy' };
-  evidence: number;
+  /** 기억의 세기 1–5. 같은 것을 다시 보면 보강되고, 어긋나면 감쇄된다. */
+  strength: number;
   userCandidate?: boolean;
-  promoted?: boolean;
   createdAt: string;
   updatedAt: string;
   confirmedAt: string;
@@ -405,6 +379,9 @@ export interface DocumentMemoryResult {
   error?: { code: string; message: string };
 }
 
+/** 구분선 한 줄이 기억에 한 일. 옛 구분선에는 없어서 op 로 짐작한다(add 새로 · update 고침 · remove 물러남). */
+export type TasteLearnChange = 'new' | 'reinforced' | 'dampened' | 'escalated' | 'retired' | 'updated';
+
 /** 취향 학습(Rau-0.1)이 한 번에 바꾼 기억 하나. remove 의 text 는 지운 글이다. */
 export interface TasteLearnItem {
   op: 'add' | 'update' | 'remove';
@@ -413,6 +390,14 @@ export interface TasteLearnItem {
   /** update 에서 글이 바뀌었을 때만. */
   prevText?: string;
   origin: 'explicit' | 'learned';
+  change?: TasteLearnChange;
+  /** document = 문서 기억, account = 계정의 기억(Rau 요금제). 없으면 문서 기억이다. */
+  tier?: 'document' | 'account';
+  kind?: string;
+  /** 세기가 바뀌었다. from 0 은 새로 생김, to 0 은 물러남. */
+  strength?: { from: number; to: number };
+  /** account 항목의 기억 사건 — 되돌리기에 그대로 보낸다. */
+  eventIds?: string[];
 }
 
 /** 허브 → Studio `taste-learned`. 학습 한 번(턴 끝 또는 신호)에서 기억이 바뀌었을 때만 온다. */
@@ -427,8 +412,6 @@ export interface TasteLearned {
   items: TasteLearnItem[];
   /** 저장소 변경 목록. Studio 는 읽지 않고 그대로 저장했다가 되돌리기에 보낸다. */
   changes: unknown[];
-  /** 이번 학습이 AGENTS.md 변경안을 냈다(설정 → AI → 지시의 확인 카드). */
-  proposal?: { draftId: string };
 }
 
 /** 기록에서 배우기의 결과 — 턴에 묶이지 않는다. 채팅의 끝에 구분선으로 남는다. */
@@ -465,6 +448,172 @@ export interface TasteHistoryResult {
   /** 허브가 학습기에 넘긴 짝의 번호 (보낸 pairs 기준) — 이 짝만 '이미 보냄'으로 남긴다. */
   accepted: number[];
   error?: { code: string; message: string };
+}
+
+/* ── 계정의 기억 (Rau-0.1, Rau 요금제) ─────────────────────
+   문서 기억은 문서마다, 기억은 계정 하나에 쌓인다. 규칙은 세기 1–5 를 갖고 보강·감쇄되며,
+   두 문서 이상에서 보이면 기억으로 올라가고(기억 승격), 세기가 0 이 되면 물러난다(되살릴 수 있다).
+   정본은 허브(호스팅 Rau)에 있고 Studio 는 user-memory 스냅숏을 그린다. */
+
+/** style = 문체, term = 용어. */
+export type AccountRuleKind = 'style' | 'term';
+
+export interface AccountRule {
+  /** 'rule_' + 12자 [a-z0-9] */
+  id: string;
+  kind: AccountRuleKind;
+  /** '<분류>.<대상>' 예: '문체.종결' */
+  subject: string;
+  /** 한 줄 한국어, 300자 이하. */
+  text: string;
+  /** 1..5 */
+  strength: number;
+  /** user = Rau 탭에서 사용자가 더하거나 고쳤다. */
+  origin: 'learned' | 'upload' | 'user';
+  /** 배우거나 승격한 문서 수 */
+  documents: number;
+  /** 이 규칙을 보인 올린 파일 수 */
+  uploads: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** dampened 감쇄로 · flipped 뒤집힘 · evicted 자리 부족 · deleted 직접 지움 · undone 되돌림. */
+export type RetireReason = 'dampened' | 'flipped' | 'evicted' | 'deleted' | 'undone';
+
+export interface RetiredRule extends AccountRule {
+  retiredAt: string;
+  reason: RetireReason;
+}
+
+export type MemoryEventKind = 'new' | 'reinforced' | 'dampened' | 'escalated' | 'retired' | 'restored' | 'edited' | 'deleted';
+
+export interface MemoryEvent {
+  /** 'evt_…' */
+  id: string;
+  at: string;
+  kind: MemoryEventKind;
+  ruleId: string;
+  ruleKind: AccountRuleKind;
+  text: string;
+  prevText?: string;
+  /** from 0 = 없던 규칙, to 0 = 물러났거나 지웠다. */
+  strength?: { from: number; to: number };
+  source: 'chat' | 'upload' | 'user';
+  /** 기억 승격: 예 '보고서A 외 1개' */
+  documentName?: string;
+  undoable: boolean;
+}
+
+export interface StyleUploadRecord {
+  id: string;
+  at: string;
+  files: string[];
+  counts: { new: number; reinforced: number; dampened: number; conflicts: number };
+}
+
+/** 허브가 지금 호스팅 Rau 를 쓸 수 있는지. exhausted 는 크레딧을 다 써서 배우지 못한다(보기·고치기는 된다). */
+export type UserMemoryAvailability = 'active' | 'not_eligible' | 'exhausted' | 'unavailable';
+
+export interface UserMemorySnapshot {
+  revision: number;
+  /** 센 것부터 */
+  rules: AccountRule[];
+  /** 최근 것부터, 30개 이하 */
+  retired: RetiredRule[];
+  /** 최근 것부터, 20개 이하 */
+  events: MemoryEvent[];
+  /** 최근 것부터, 10개 이하 */
+  uploads: StyleUploadRecord[];
+  lastLearnedAt: string | null;
+  available: boolean;
+  availability: UserMemoryAvailability;
+  /** 예전 말투 맞추기 원고 — 한 번 기억으로 가져올 수 있다. */
+  legacy: { files: number } | null;
+}
+
+/** Studio → 허브 `user-memory-request` 의 op. */
+export type UserMemoryOp =
+  | { op: 'list' }
+  | { op: 'add'; rule: { kind: AccountRuleKind; text: string } }
+  | { op: 'edit'; id: string; text: string; kind?: AccountRuleKind }
+  | { op: 'delete'; id: string }
+  | { op: 'restore'; id: string }
+  | { op: 'undo'; eventId: string };
+
+export interface UserMemoryResult {
+  ok: boolean;
+  memory?: UserMemorySnapshot;
+  error?: { code: string; message: string };
+}
+
+/** 문체 학습에 올리는 파일 한 개 — content 는 base64. */
+export interface StyleLearnUpload {
+  name: string;
+  type: string;
+  size: number;
+  content: string;
+}
+
+export type StyleLearnStage = 'reading' | 'extracting' | 'merging';
+
+/** 파일에서 찾은 규칙 — 아직 기억에 합치기 전이다. */
+export interface StyleLearnFound {
+  kind: AccountRuleKind;
+  subject: string;
+  text: string;
+}
+
+export interface StyleLearnProgress {
+  requestId: string;
+  jobId: string;
+  stage: StyleLearnStage;
+  completed: number;
+  total: number;
+  file?: { index: number; name: string };
+  found?: StyleLearnFound[];
+}
+
+export interface StyleLearnSummaryItem {
+  ruleId?: string;
+  kind: AccountRuleKind;
+  subject: string;
+  text: string;
+  strength?: { from: number; to: number };
+  note?: string;
+}
+
+export interface StyleLearnSummary {
+  new: StyleLearnSummaryItem[];
+  reinforced: StyleLearnSummaryItem[];
+  dampened: StyleLearnSummaryItem[];
+  retired: StyleLearnSummaryItem[];
+  conflicts: StyleLearnSummaryItem[];
+  skippedFiles: string[];
+}
+
+export interface StyleLearnResult {
+  requestId: string;
+  jobId: string;
+  summary: StyleLearnSummary;
+  memory: UserMemorySnapshot;
+}
+
+export interface StyleLearnError {
+  requestId: string;
+  jobId?: string;
+  code: string;
+  message: string;
+}
+
+export interface StyleLearnJob {
+  jobId: string;
+  stage: StyleLearnStage;
+  completed: number;
+  total: number;
+  startedAt: string;
+  files: string[];
+  found: StyleLearnFound[];
 }
 
 export interface StructuredPlanStep {
@@ -606,75 +755,6 @@ function isPlanExecution(value: unknown): value is PlanExecution {
       && ['pending', 'in-progress', 'completed', 'blocked'].includes(item['status'])
       && (item['note'] === undefined || typeof item['note'] === 'string');
   });
-}
-
-export interface WritingStyleStatus {
-  active: boolean;
-  language: WritingStyleLanguage;
-  updatedAt: string | null;
-  sourceCount: number;
-  pageEstimate: number;
-  summary: string;
-  additionalInstruction: string;
-  /** 최근 캘리브레이션 프로바이더. 구형 허브에서는 빠질 수 있다. */
-  agent?: AgentName;
-  /** 최근 캘리브레이션 모델. 구형 허브에서는 빠질 수 있다. */
-  model?: string;
-  /** 누적 원고 메타데이터. 구형 허브는 개수만 제공한다. */
-  sources?: WritingStyleSource[];
-  sourceDocuments?: WritingStyleSource[];
-  savedSourceCount?: number;
-}
-
-export interface WritingStyleSource {
-  id?: string;
-  name: string;
-  type?: string;
-  size?: number;
-  addedAt?: string;
-}
-
-export interface WritingStyleProgress {
-  state: WritingStyleProgressState;
-  phase?: string;
-  /** 사용자에게 보여도 되는 짧은 작업 이름. 내부 추론문은 포함하지 않는다. */
-  activity?: string;
-  /** 파일명·묶음 수 같은 안전한 작업 세부 정보. */
-  detail?: string;
-  /** 전체량을 서버가 실제로 아는 작업에서만 제공한다. */
-  completed?: number;
-  total?: number;
-  agent?: AgentName;
-  model?: string;
-  startedAt?: string;
-  elapsedMs?: number;
-}
-
-export interface WritingStyleCatalogModel {
-  id: string;
-  name: string;
-  efforts: string[];
-  defaultEffort: string | null;
-}
-
-export interface WritingStyleCatalogProvider {
-  id: AgentName;
-  name: string;
-  available: boolean;
-  error: string | null;
-  models: WritingStyleCatalogModel[];
-}
-
-export interface WritingStyleCatalog {
-  providers: WritingStyleCatalogProvider[];
-  defaultSelection: { agent: AgentName; model: string; effort?: string | null } | null;
-}
-
-export interface WritingStyleUpload {
-  name: string;
-  type: string;
-  size: number;
-  content: string;
 }
 
 /* ── 프로바이더 상태 · 사용량 (프로토콜 v2 추가분) ──────────
@@ -1303,8 +1383,6 @@ export type SidebarEvent =
   | { type: 'reference-status'; messageId: string; attachments: MessageReferenceStatus[] }
   | { type: 'templates-catalog'; catalog: TemplateCatalog; change?: { type: 'added' | 'renamed' | 'replaced' | 'deleted'; template: DocumentTemplate } }
   | { type: 'agent-instructions'; status: AgentInstructionsStatus; changedBy: string }
-  | { type: 'agent-instructions-draft'; draft: AgentInstructionsDraft }
-  | { type: 'agent-instructions-draft-cleared'; draftId: string; outcome: 'confirmed' | 'rejected' | 'expired' | 'replaced' | 'stale' }
   | { type: 'agent-instructions-error'; code: string; message: string; status?: AgentInstructionsStatus }
   /** 이 문서(또는 같은 기억을 나누는 작업 공간 사본)의 문서 기억이 바뀌었다 — 도구·시트·학습·되돌리기 모두. */
   | { type: 'document-memory-changed'; documentId: string; key: string; revision: number }
@@ -1344,11 +1422,14 @@ export type SidebarEvent =
   | { type: 'harness-list-result'; requestId: string; rows: HarnessSkillRow[] }
   | { type: 'skill-commit-result'; requestId: string; outcome: SkillCommitOutcome }
   | { type: 'skills-error'; requestId: string; code: string; message: string }
-  | { type: 'writing-style-status'; requestId: string; status: WritingStyleStatus }
-  | ({ type: 'writing-style-progress'; requestId: string } & WritingStyleProgress)
-  | { type: 'writing-style-result'; requestId: string; status: WritingStyleStatus }
-  | { type: 'writing-style-error'; requestId: string; code: string; message: string }
-  | { type: 'writing-style-catalog'; requestId: string; catalog: WritingStyleCatalog }
+  /** 허브 → Studio `user-memory`. 계정의 기억(Rau-0.1)이 바뀌었다 — 모든 창에 오고, 연결할 때도 온다. */
+  | { type: 'user-memory'; memory: UserMemorySnapshot }
+  /** 문체 학습 진행 — 모든 창에 온다. found 는 이 학습에서 지금까지 찾은 규칙 전부다(누적). */
+  | ({ type: 'style-learn-progress' } & StyleLearnProgress)
+  | ({ type: 'style-learn-result' } & StyleLearnResult)
+  | ({ type: 'style-learn-error' } & StyleLearnError)
+  /** 지금 도는 문체 학습. 연결할 때도 와서 다시 연 창이 이어 붙는다. */
+  | { type: 'style-learn-status'; requestId?: string; job: StyleLearnJob | null }
   | { type: 'provider-status'; providers: ProviderStatusMap }
   | { type: 'model-catalog'; agent: CatalogAgent; requestId: string; models: ModelCatalogEntry[] }
   | { type: 'model-catalog-error'; agent: CatalogAgent; requestId: string; code: string; message: string }

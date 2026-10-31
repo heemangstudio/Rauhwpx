@@ -4,8 +4,8 @@
 import type { AgentName } from '../../agent/types.ts';
 import { AGENT_LABEL, createProviderIcon } from './providers.ts';
 
-/** 설정 화면과, 설정에서 여는 글쓰기 보정 창의 select. */
-const SETTINGS_SCOPE = '.ag-settings-page select, select.ag-settings-select, select.ag-calibration-model-select';
+/** 설정 화면의 select. */
+const SETTINGS_SCOPE = '.ag-settings-page select, select.ag-settings-select';
 const MENU_GAP = 6;
 const VIEWPORT_MARGIN = 8;
 const MENU_MAX_HEIGHT = 360;

@@ -17,7 +17,7 @@ export async function checkProviderUpdates(page, origin, navigate = true) {
     bridge.installAgent = () => { installs++; return new Promise(resolve => { finish = resolve; }); };
     const panel = createSettingsPanel({ bridge, updatesApi: null, editorRuntime: { preview() {}, committed() {} },
       getSelection: () => ({ agent: 'claude', model: '', effort: '', permission: 'safe' }),
-      applyDefaults() {}, openCalibration() {}, reconnectSession() {} });
+      applyDefaults() {}, reconnectSession() {} });
     document.body.append(panel.element);
     const emit = () => panel.handleEvent({ type: 'agent-setup-status', statuses: structuredClone(statuses) });
     const tick = () => new Promise(resolve => setTimeout(resolve, 0));

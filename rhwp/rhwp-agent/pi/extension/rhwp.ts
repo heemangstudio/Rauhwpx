@@ -993,7 +993,7 @@ export default async function rhwpPiExtension(pi: ExtensionAPI): Promise<void> {
     const schema = schemas.get(def.name);
     const documentWrite = def.category === 'document-write';
     if (documentWrite) writeTools.add(def.name);
-    // 문서 revision 만 채운다 — update_agent_instructions 의 expectedRevision 은 AGENTS.md 의 것이다.
+    // 문서 revision 만 채운다 — 다른 저장소의 expectedRevision 은 채우지 않는다.
     const fillsRevision = documentWrite && schemaTakesExpectedRevision(schema);
     pi.registerTool({
       name: def.name,

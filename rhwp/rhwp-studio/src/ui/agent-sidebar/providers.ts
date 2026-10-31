@@ -1,9 +1,9 @@
 /**
  * 프로바이더 표시 규칙 한 곳 — 라벨·순서·아이콘.
  *
- * 사이드바(index.ts), 설정 탭(settings.ts), 글쓰기 보정(writing-style-calibration.ts)
- * 이 같은 표를 각자 베껴 두면 프로바이더가 하나 늘 때 한 화면에서만 조용히 빠진다.
- * 세 화면이 이 모듈만 본다.
+ * 사이드바(index.ts)와 설정 탭(settings.ts)이 같은 표를
+ * 각자 베껴 두면 프로바이더가 하나 늘 때 한 화면에서만 조용히 빠진다.
+ * 두 화면이 이 모듈만 본다.
  */
 import type { AgentName } from '../../agent/types.ts';
 

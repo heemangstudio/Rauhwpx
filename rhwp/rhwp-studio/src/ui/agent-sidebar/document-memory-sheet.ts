@@ -7,11 +7,18 @@
  * 그 항목이 고치기를 시작할 때와 같을 때만 다시 쓴다 — 아니면 초안을 남기고 알린다.
  * 머리의 '기록에서 배우기'는 대화에서 배우기 설정과 상관없이 Rau-0.1 을 한 번 돌린다. 결과 구분선은 사이드바가
  * taste-history-learned 로 그 문서의 채팅 끝에 남기고, 배운 항목은 document-memory-changed 로 이 목록에 들어온다.
+ * 항목마다 강도(1–5)를 Rau 탭과 같은 물그릇(strength-gauge)으로 보인다. 보강·감쇄로 바뀌면 물이 움직인다.
+ *
+ * Rau 요금제(체험 포함)이고 허브가 계정 기억을 쓸 수 있다고 하면, 아래에 '기억에서' 칸을 읽기 전용으로 둔다.
+ * 계정 기억은 창 하나가 함께 보는 RauMemoryStore 에서 읽고, 고치기는 설정의 Rau 탭에서 한다.
+ * 문서 기억의 주제가 계정 기억의 주제와 같으면 이 문서에서는 문서 기억이 앞선다 — 두 줄 모두에 그렇게 적는다.
  */
 import './document-memory-sheet.css';
 import type { SidebarBridge } from '../../agent/bridge.ts';
 import type { TasteHistoryOutcome } from '../../agent/taste-history.ts';
 import type {
+  AccountRule,
+  AccountRuleKind,
   DocumentMemory,
   DocumentMemoryEntry,
   DocumentMemoryKind,
@@ -22,11 +29,15 @@ import { RAU_TASTE_NAME } from '../../agent/taste.ts';
 import { showContextMenu } from '../native-context-menu.ts';
 import { createIcon } from './icons.ts';
 import { createSheetFrame } from './sheet.ts';
+import type { PlanStore } from '../plan/plan-store.ts';
+import { sharedRauMemoryStore, type RauMemoryStore } from './rau-memory-state.ts';
+import { ruleSourceLabel } from './settings-rau.ts';
+import { createStrengthGauge } from './strength-gauge.ts';
 
 export type DocumentMemorySheetBridge = Pick<
   SidebarBridge,
   'listDocumentMemory' | 'applyDocumentMemory' | 'missingDocumentMemoryAnchors' | 'onEvent' | 'learnFromHistory'
->;
+> & Partial<Pick<SidebarBridge, 'requestUserMemory'>>;
 
 export interface DocumentMemorySheetOptions {
   bridge: DocumentMemorySheetBridge;
@@ -35,6 +46,12 @@ export interface DocumentMemorySheetOptions {
   anchor?: Element | null;
   /** 바깥에서 닫는다. */
   signal?: AbortSignal;
+  /** 요금제 상태. tier 가 'rau' 일 때만 '기억에서' 칸을 보인다. 없으면 그 칸이 없다. */
+  plan?: Pick<PlanStore, 'status' | 'subscribe'> | null;
+  /** 계정 기억 상태. 없으면 창의 sharedRauMemoryStore 를 읽는다. */
+  rauMemory?: RauMemoryStore | null;
+  /** 설정의 Rau 탭을 연다. 없으면 '기억에서' 칸에 고치러 가는 단추가 없다. */
+  openRauTab?: (() => void) | null;
 }
 
 export interface DocumentMemorySheetHandle {
@@ -53,6 +70,9 @@ const KIND_LABEL: Record<DocumentMemoryKind, string> = {
   fact: '사실',
 };
 const TEXT_MAX = 300;
+const ACCOUNT_KIND_LABEL: Record<AccountRuleKind, string> = { style: '문체', term: '용어' };
+/** '기억에서' 칸이 처음 보이는 규칙 수 — 나머지는 펼쳐 본다. 이 문서가 대신하는 규칙은 늘 보인다. */
+const ACCOUNT_PREVIEW = 6;
 
 const ERROR_TEXT: Record<string, string> = {
   MEMORY_FULL: '기억이 가득 찼습니다.',
@@ -86,6 +106,11 @@ function sameNote(a: DocumentMemoryEntry, b: DocumentMemoryEntry): boolean {
   return shape(a) === shape(b);
 }
 
+/** 허브의 canonicalSubject 와 같은 주제 비교 키. */
+function subjectKey(subject: string): string {
+  return subject.normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
 /** 한 줄 기억 — 줄바꿈은 띄어쓰기로 편다. */
 function singleLine(value: string): string {
   return value.replace(/\s*[\r\n]+\s*/g, ' ');
@@ -116,6 +141,12 @@ export function openDocumentMemorySheet(options: DocumentMemorySheetOptions): Do
   const pendingIds = new Set<string>();
   let addKind: DocumentMemoryKind = 'style';
   let closed = false;
+  const rauMemory = options.rauMemory ?? sharedRauMemoryStore();
+  /** '기억에서' 칸을 다 폈는가. */
+  let accountExpanded = false;
+  /** 지난 그림의 강도 — 바뀐 줄만 물이 움직인다. 처음 그림은 움직이지 않는다. */
+  const shownStrength = new Map<string, number>();
+  let painted = false;
 
   const frame = createSheetFrame({
     title: '문서 기억',
@@ -221,6 +252,13 @@ export function openDocumentMemorySheet(options: DocumentMemorySheetOptions): Do
     renderDeferred = false;
     delete sheet.dataset.loading;
     const entries = memory?.entries ?? [];
+    const rules = accountRules();
+    const ruleBySubject = new Map<string, AccountRule>();
+    for (const rule of rules ?? []) {
+      const key = subjectKey(rule.subject);
+      if (key && !ruleBySubject.has(key)) ruleBySubject.set(key, rule);
+    }
+    const strengths = new Map<string, number>();
     const groups: HTMLElement[] = [];
     for (const kind of KIND_ORDER) {
       const rows = entries.filter((entry) => entry.kind === kind);
@@ -229,16 +267,107 @@ export function openDocumentMemorySheet(options: DocumentMemorySheetOptions): Do
       group.dataset.kind = kind;
       const heading = el('h3', 'ag-memory-kind', KIND_LABEL[kind]);
       const ul = el('ul', 'ag-memory-rows');
-      for (const entry of rows) ul.append(buildRow(entry));
+      for (const entry of rows) {
+        ul.append(buildRow(entry, ruleBySubject.get(subjectKey(entry.subject)) ?? null));
+        strengths.set(entry.id, entry.strength);
+      }
       group.append(heading, ul);
       groups.push(group);
     }
-    list.replaceChildren(...groups);
-    list.hidden = groups.length === 0;
-    empty.hidden = groups.length > 0 || !memory;
+    const children: HTMLElement[] = [];
+    if (rules && memory) {
+      // 두 층을 함께 보일 때만 '이 문서' 머리를 단다. 문서 기억이 없으면 빈 줄을 그 자리에 둔다.
+      const docTier = el('section', 'ag-memory-tier');
+      docTier.dataset.tier = 'document';
+      docTier.append(el('h3', 'ag-memory-tier-title', '이 문서'));
+      if (groups.length) docTier.append(...groups);
+      else docTier.append(el('p', 'ag-memory-tier-empty', '이 문서의 기억은 아직 없습니다.'));
+      const docSubjects = new Set(entries.map((entry) => subjectKey(entry.subject)).filter(Boolean));
+      children.push(docTier, buildAccountTier(rules, docSubjects, strengths));
+    } else {
+      children.push(...groups);
+    }
+    list.replaceChildren(...children);
+    list.hidden = children.length === 0;
+    empty.hidden = children.length > 0 || !memory;
+    shownStrength.clear();
+    for (const [id, value] of strengths) shownStrength.set(id, value);
+    painted = memory !== null;
   }
 
-  function buildRow(entry: DocumentMemoryEntry): HTMLElement {
+  /** 지금 보일 계정 기억. Rau 요금제가 아니거나 허브가 쓸 수 없다고 하면 null — 칸을 그리지 않는다. */
+  function accountRules(): AccountRule[] | null {
+    if (options.plan?.status()?.tier !== 'rau') return null;
+    const snapshot = rauMemory.state().memory;
+    return snapshot?.available ? snapshot.rules : null;
+  }
+
+  /** 강도 물그릇. 지난 그림과 다르면 그 값에서 움직인다 — 새로 생긴 줄은 빈 그릇에서 차오른다. */
+  function strengthGauge(key: string, value: number): HTMLElement {
+    const from = painted ? shownStrength.get(key) ?? 0 : value;
+    return createStrengthGauge(value, from === value ? {} : { from, animate: true }).root;
+  }
+
+  /** '기억에서' — 계정 기억을 읽기 전용으로 보인다. 센 것부터, 이 문서가 대신하는 규칙은 늘 보인다. */
+  function buildAccountTier(rules: AccountRule[], docSubjects: Set<string>, strengths: Map<string, number>): HTMLElement {
+    const tier = el('section', 'ag-memory-tier');
+    tier.dataset.tier = 'account';
+    const head = el('div', 'ag-memory-tier-head');
+    head.append(el('h3', 'ag-memory-tier-title', '기억에서'));
+    if (rules.length) head.append(el('span', 'ag-memory-tier-count', String(rules.length)));
+    if (options.openRauTab) {
+      const go = el('button', 'ag-memory-tier-link', 'Rau에서 고치기');
+      go.type = 'button';
+      go.addEventListener('click', () => {
+        const open = options.openRauTab;
+        finish(false);
+        open?.();
+      });
+      head.append(go);
+    }
+    tier.append(head, el('p', 'ag-memory-tier-lead', `${RAU_TASTE_NAME} 가 모든 문서에서 따르는 문체와 용어입니다.`));
+    if (!rules.length) {
+      tier.append(el('p', 'ag-memory-tier-empty', '아직 기억이 없습니다.'));
+      return tier;
+    }
+    const overridden = (rule: AccountRule) => docSubjects.has(subjectKey(rule.subject));
+    const visible = accountExpanded ? rules : rules.filter((rule, index) => index < ACCOUNT_PREVIEW || overridden(rule));
+    const ul = el('ul', 'ag-memory-rows');
+    for (const rule of visible) {
+      const key = `account:${rule.id}`;
+      const row = el('li', 'ag-memory-row');
+      row.dataset.ruleId = rule.id;
+      row.dataset.readonly = 'true';
+      const body = el('div', 'ag-memory-row-body');
+      body.append(el('div', 'ag-memory-text', rule.text));
+      const meta = el('div', 'ag-memory-anchor');
+      meta.append(el('span', 'ag-memory-meta', `${ACCOUNT_KIND_LABEL[rule.kind]} · ${ruleSourceLabel(rule)}`));
+      if (overridden(rule)) {
+        row.dataset.overridden = 'true';
+        meta.append(el('span', 'ag-memory-override', '이 문서에서는 문서 기억을 따름'));
+      }
+      body.append(meta);
+      row.append(strengthGauge(key, rule.strength), body);
+      ul.append(row);
+      strengths.set(key, rule.strength);
+    }
+    tier.append(ul);
+    const folded = rules.length - visible.length;
+    if (folded > 0 || (accountExpanded && rules.length > ACCOUNT_PREVIEW)) {
+      const more = el('button', 'ag-memory-more', accountExpanded ? '접기' : `${folded}개 더 보기`);
+      more.type = 'button';
+      more.setAttribute('aria-expanded', String(accountExpanded));
+      more.addEventListener('click', () => {
+        accountExpanded = !accountExpanded;
+        render();
+        list.querySelector<HTMLElement>('.ag-memory-more')?.focus({ preventScroll: true });
+      });
+      tier.append(more);
+    }
+    return tier;
+  }
+
+  function buildRow(entry: DocumentMemoryEntry, overrides: AccountRule | null): HTMLElement {
     const row = el('li', 'ag-memory-row');
     row.dataset.entryId = entry.id;
     if (pendingIds.has(entry.id)) row.dataset.pending = 'true';
@@ -257,9 +386,16 @@ export function openDocumentMemorySheet(options: DocumentMemorySheetOptions): Do
     body.append(text);
     // 자동 학습이 남긴 기억만 이름표를 단다. 사용자 요청·시트에서 고친 기억은 달지 않는다.
     const learned = entry.origin === 'learned';
-    if (entry.anchor || learned) {
+    if (entry.anchor || learned || overrides) {
       const anchor = el('div', 'ag-memory-anchor');
       if (learned) anchor.append(el('span', 'ag-memory-origin', RAU_TASTE_NAME));
+      if (overrides) {
+        // 같은 주제의 계정 기억이 있다 — 이 문서에서는 이 줄이 앞선다.
+        row.dataset.override = 'true';
+        const tag = el('span', 'ag-memory-override', '이 문서에서는 기억 대신');
+        tag.title = `기억: ${overrides.text}`;
+        anchor.append(tag);
+      }
       if (entry.anchor) {
         const quote = el('span', 'ag-memory-quote', `“${entry.anchor.quote}”`);
         quote.title = entry.anchor.quote;
@@ -276,7 +412,7 @@ export function openDocumentMemorySheet(options: DocumentMemorySheetOptions): Do
     remove.setAttribute('aria-label', '삭제');
     remove.append(createIcon('close'));
     remove.addEventListener('click', () => void removeEntry(entry.id));
-    row.append(body, remove);
+    row.append(strengthGauge(entry.id, entry.strength), body, remove);
     return row;
   }
 
@@ -477,15 +613,42 @@ export function openDocumentMemorySheet(options: DocumentMemorySheetOptions): Do
     void reload();
   });
 
+  // 계정 기억과 요금제가 바뀌면 '기억에서' 칸을 다시 그린다. 고치는 중이면 render 가 미룬다.
+  let shownAccount = accountRules();
+  function accountChanged(): void {
+    const next = accountRules();
+    if (next === shownAccount) return;
+    shownAccount = next;
+    if (memory) render();
+  }
+  /** 창에 아직 계정 기억이 없으면 한 번 묻는다. 답은 함께 쓰는 상태로 들어가 구독으로 그려진다. */
+  let accountRequested = false;
+  function requestAccountMemory(): void {
+    if (accountRequested || closed || !bridge.requestUserMemory) return;
+    if (options.plan?.status()?.tier !== 'rau' || rauMemory.state().memory) return;
+    accountRequested = true;
+    void bridge.requestUserMemory({ op: 'list' }).then((result) => {
+      if (result?.memory) rauMemory.accept({ type: 'user-memory', memory: result.memory });
+    }, () => {});
+  }
+  const stopRauMemory = rauMemory.subscribe(() => accountChanged());
+  const stopPlan = options.plan?.subscribe(() => {
+    accountChanged();
+    requestAccountMemory();
+  }) ?? (() => {});
+
   let resolveClosed: () => void = () => {};
   const closedPromise = new Promise<void>((resolve) => { resolveClosed = resolve; });
   const finish = frame.present(() => addInput, () => {
     closed = true;
     if (noteTimer !== null) clearTimeout(noteTimer);
     stopEvents();
+    stopRauMemory();
+    stopPlan();
     resolveClosed();
   });
   close.addEventListener('click', () => finish(false));
+  requestAccountMemory();
   void reload();
 
   return {

@@ -1,0 +1,168 @@
+/* 기억의 강도 — 물이 차오른 작은 그릇과 숫자. 물은 하마의 파랑이다. */
+.ag-strength {
+  --ag-strength-color: #3d9bd1;
+  --ag-strength-tank-w: 9px;
+  --ag-strength-tank-h: 14px;
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  vertical-align: middle;
+  line-height: 1;
+}
+
+:root[data-theme-effective='dark'] .ag-strength {
+  --ag-strength-color: #62b3e2;
+}
+
+.ag-strength[data-size='md'] {
+  --ag-strength-tank-w: 12px;
+  --ag-strength-tank-h: 18px;
+  gap: 5px;
+}
+
+/* 큰 그릇에는 다섯 칸 눈금 — 물 위로 남은 칸이 보여 "몇 칸 중 몇"이 숫자 없이도 읽힌다. */
+.ag-strength[data-size='md'] .ag-strength-tank {
+  background-image: repeating-linear-gradient(
+    to top,
+    transparent 0 calc(20% - 1px),
+    color-mix(in oklab, var(--ag-strength-color) 15%, transparent) calc(20% - 1px) 20%
+  );
+}
+
+.ag-strength-empty[data-size='md'] .ag-strength-tank {
+  background-image: none;
+}
+
+.ag-strength-tank {
+  position: relative;
+  display: block;
+  box-sizing: border-box;
+  width: var(--ag-strength-tank-w);
+  height: var(--ag-strength-tank-h);
+  overflow: hidden;
+  border: 1.25px solid color-mix(in oklab, var(--ag-strength-color) 55%, transparent);
+  border-top-color: color-mix(in oklab, var(--ag-strength-color) 28%, transparent);
+  border-radius: 2px 2px 4px 4px;
+  background: color-mix(in oklab, var(--ag-strength-color) 7%, transparent);
+  transition: box-shadow 420ms var(--ag-ease-out, ease-out), border-color 420ms ease;
+}
+
+/* 물: 높이가 강도다. 셀수록 짙다. 수면에는 밝은 한 줄. */
+.ag-strength-water {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: calc(var(--level, 0) * 100%);
+  background: linear-gradient(
+    to top,
+    color-mix(in oklab, var(--ag-strength-color) calc(62% + var(--level, 0) * 38%), transparent),
+    color-mix(in oklab, var(--ag-strength-color) calc(38% + var(--level, 0) * 40%), transparent)
+  );
+  transition: height 760ms cubic-bezier(0.34, 1.45, 0.5, 1);
+}
+
+.ag-strength-water::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: 1px;
+  background: color-mix(in oklab, #fff 60%, var(--ag-strength-color));
+  opacity: 0.85;
+}
+
+.ag-strength-num {
+  min-width: 0.6em;
+  color: var(--ag-text-secondary, var(--n-ink-secondary));
+  font-size: var(--ag-fs-meta, 11px);
+  font-weight: var(--ag-fw-medium, 500);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.ag-strength[data-strength='5'] .ag-strength-num,
+.ag-strength[data-strength='4'] .ag-strength-num {
+  color: var(--ag-text, var(--n-ink));
+}
+
+/* 처음 강도를 함께 쓸 때("2→3")는 한 줄로. */
+.ag-strength-with-from .ag-strength-num {
+  white-space: nowrap;
+  letter-spacing: -0.01em;
+}
+
+.ag-strength-still .ag-strength-water {
+  transition: none;
+}
+
+.ag-strength-empty .ag-strength-tank {
+  border-style: dashed;
+  border-color: color-mix(in oklab, var(--ag-text-tertiary, #888) 70%, transparent);
+  background: transparent;
+}
+
+.ag-strength-muted {
+  --ag-strength-color: var(--ag-text-tertiary, #8a8f98);
+}
+
+.ag-strength-muted .ag-strength-num {
+  color: var(--ag-text-tertiary, var(--n-ink-tertiary));
+}
+
+/* 보강: 물이 차오르는 동안 그릇이 잠깐 빛난다. 감쇄: 그릇이 잠깐 흐려진다. */
+.ag-strength-rise .ag-strength-tank {
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--ag-strength-color) 22%, transparent);
+}
+
+.ag-strength-fall .ag-strength-tank {
+  border-color: color-mix(in oklab, var(--ag-text-tertiary, #888) 60%, transparent);
+}
+
+.ag-strength-delta {
+  position: absolute;
+  bottom: 100%;
+  left: calc(var(--ag-strength-tank-w) / 2);
+  color: var(--ag-strength-color);
+  font-size: 10px;
+  font-weight: var(--ag-fw-strong, 600);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  white-space: nowrap;
+  pointer-events: none;
+  translate: -50% 0;
+  animation: ag-strength-delta 1.3s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.ag-strength-delta[data-direction='down'] {
+  color: var(--ag-text-tertiary, #8a8f98);
+  animation-name: ag-strength-delta-down;
+}
+
+@keyframes ag-strength-delta {
+  0% { opacity: 0; transform: translateY(6px) scale(0.7); }
+  18% { opacity: 1; transform: translateY(-1px) scale(1.08); }
+  70% { opacity: 1; transform: translateY(-4px) scale(1); }
+  100% { opacity: 0; transform: translateY(-8px); }
+}
+
+@keyframes ag-strength-delta-down {
+  0% { opacity: 0; transform: translateY(-4px); }
+  20% { opacity: 1; transform: translateY(0); }
+  70% { opacity: 1; transform: translateY(2px); }
+  100% { opacity: 0; transform: translateY(5px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ag-strength-water,
+  .ag-strength-tank {
+    transition: none;
+  }
+
+  .ag-strength-delta {
+    display: none;
+  }
+}

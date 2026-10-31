@@ -1,7 +1,7 @@
 /**
  * 첫 실행 마법사 진행 상태.
  *
- * 설정 탭·문체 보정과 별개인 한 칸. 한 번 끝내거나 건너뛰면
+ * 설정 탭과 별개인 한 칸. 예전 기록에 남은 calibrationStep 은 무시하고 읽는다. 한 번 끝내거나 건너뛰면
  * 다음 실행부터는 뜨지 않는다. 미리보기는 `?initial-setup=1`.
  * 첫 실행이 문서를 열면서 시작되면 deferred 로 미뤄 두고 사이드바 칩이 이어받는다.
  * public/boot-screen.js 도 completed·deferred 를 읽어 부트 애니메이션을 정한다.
@@ -19,7 +19,6 @@ export interface InitialSetupRecord {
   themeStep: Exclude<InitialSetupStepState, 'configured'>;
   providerStep: Exclude<InitialSetupStepState, 'done'>;
   fontStep: Exclude<InitialSetupStepState, 'configured'>;
-  calibrationStep: Exclude<InitialSetupStepState, 'configured'>;
 }
 
 export interface InitialSetupStorage {
@@ -45,7 +44,6 @@ export function defaultInitialSetup(): InitialSetupRecord {
     themeStep: 'pending',
     providerStep: 'pending',
     fontStep: 'pending',
-    calibrationStep: 'pending',
   };
 }
 
@@ -68,7 +66,6 @@ export function normalizeInitialSetup(raw: unknown): InitialSetupRecord {
     themeStep: asStep(src['themeStep'], visualStep, 'pending'),
     providerStep: asStep(src['providerStep'], ['pending', 'configured', 'skipped'] as const, 'pending'),
     fontStep: asStep(src['fontStep'], visualStep, 'pending'),
-    calibrationStep: asStep(src['calibrationStep'], visualStep, 'pending'),
   };
 }
 

@@ -1,6 +1,6 @@
 import type * as T from '../agent/types.ts';
 import type { ChatThread, PendingUserQuestionDraftSnapshot } from '../agent/threads.ts';
-import { defaultModelForAgent, labelForModel } from '../agent/models.ts';
+import { defaultModelForAgent } from '../agent/models.ts';
 
 export const agents: T.AgentName[] = [
   'claude',
@@ -178,35 +178,6 @@ export function createFixtures() {
       },
     ],
   };
-  const writing: T.WritingStyleStatus = {
-    active: false,
-    language: 'ko',
-    updatedAt: null,
-    sourceCount: 0,
-    pageEstimate: 0,
-    summary: '',
-    additionalInstruction: '',
-  };
-  const writingCatalog: T.WritingStyleCatalog = {
-    providers: agents.map((id) => ({
-      id,
-      name: id,
-      available: true,
-      error: null,
-      models:
-        id === 'pi'
-          ? pi.models
-          : [
-              {
-                id: defaultModelForAgent(id),
-                name: labelForModel(id, defaultModelForAgent(id)),
-                efforts: ['medium'],
-                defaultEffort: 'medium',
-              },
-            ],
-    })),
-    defaultSelection: { agent: 'codex', model: defaultModelForAgent('codex') },
-  };
   const instructions: T.AgentInstructionsStatus = {
     fileName: 'AGENTS.md',
     // 허브 기본 AGENTS.md(rhwp-agent/agent-instructions.mjs)와 같은 글.
@@ -217,9 +188,8 @@ export function createFixtures() {
 ## 이 파일 관리
 
 - 모든 HamaEditor 채팅에서 이 지시를 읽고 따르세요.
-- 사용자가 이 지시를 바꿔 달라고 요청하면 앱의 지시 도구를 통해 전체 수정본을 제출하세요. HamaEditor는 사용자에게 변경안을 보여 주고, 사용자가 승인한 뒤에만 저장합니다.
-- 사용자가 같은 선호를 반복해서 말하거나 에이전트의 행동을 바로잡은 경우에는 지속해서 적용할 것이 명확한 선호를 선제적으로 제안할 수 있습니다. 변경은 작고 구체적으로 유지하고, 무엇을 제안했는지 사용자에게 알리세요.
-- 일회성 작업 세부 정보, 비밀, 인증 정보 또는 추론한 민감한 사실은 저장하지 마세요. 범위가 넓거나 모호한 변경을 하기 전에는 사용자에게 확인하세요.
+- 이 파일은 사용자만 고칩니다(설정 → AI → 사용자화 → 지시). 에이전트는 읽기만 합니다.
+- 사용자가 앞으로 계속 지킬 것을 말하면 이번 채팅에서 따르고, 이 파일에 직접 적도록 안내하세요.
 `,
     revision: 1,
     updatedAt: timestamp,
@@ -233,8 +203,6 @@ export function createFixtures() {
     pi,
     templates,
     skills,
-    writing,
-    writingCatalog,
     instructions,
   };
 }
@@ -728,18 +696,22 @@ export const SAMPLE_TASTE_CHAT_ID = 'preview-chat-taste';
 export const SAMPLE_TASTE_TURN_ID = 'preview-taste-turn';
 
 /**
- * `taste=sample`: a 사업 제안서 chat whose turn taught four notes (sample data) — two added
- * (one already reverted), one changed that has since been edited again (no longer revertible)
- * and one removed. The run also drafted an AGENTS.md line (`preview-taste-draft`).
+ * `taste=sample`: a 사업 제안서 chat whose turn taught four document notes (sample data) — two new
+ * (one already reverted), one rewritten that has since been edited again (no longer revertible)
+ * and one retired. Rows carry the hub's change, tier and strength. Account-tier rows (기억) come
+ * from the preview's "Rau memory learned" control (`sidebarPreview.emitAccountTasteLearned()`).
  */
 export function sampleTasteChat(now: number): ChatThread {
   const activityAt = now - 20_000;
   const startedAt = activityAt - 48_000;
   const items: T.TasteLearnItem[] = [
-    { op: 'add', entryId: 'mem_taste000001', text: '본문은 한다체 사용', origin: 'learned' },
-    { op: 'add', entryId: 'mem_taste000002', text: '표 제목 칸은 굵게', origin: 'learned' },
-    { op: 'update', entryId: 'mem_taste000003', text: "'고객' 대신 '이용자'로 통일", prevText: "'고객' 대신 '사용자'로 통일", origin: 'learned' },
-    { op: 'remove', entryId: 'mem_taste000004', text: '예산표는 월별로 나눔', origin: 'explicit' },
+    { op: 'add', entryId: 'mem_taste000001', text: '본문은 한다체 사용', origin: 'learned', change: 'new', tier: 'document', kind: 'style', strength: { from: 0, to: 1 } },
+    { op: 'add', entryId: 'mem_taste000002', text: '표 제목 칸은 굵게', origin: 'learned', change: 'new', tier: 'document', kind: 'style', strength: { from: 0, to: 1 } },
+    {
+      op: 'update', entryId: 'mem_taste000003', text: "'고객' 대신 '이용자'로 통일", prevText: "'고객' 대신 '사용자'로 통일", origin: 'learned',
+      change: 'updated', tier: 'document', kind: 'term', strength: { from: 2, to: 2 },
+    },
+    { op: 'remove', entryId: 'mem_taste000004', text: '예산표는 월별로 나눔', origin: 'explicit', change: 'retired', tier: 'document', kind: 'decision', strength: { from: 1, to: 0 } },
   ];
   return {
     id: SAMPLE_TASTE_CHAT_ID,
@@ -775,7 +747,7 @@ export function sampleTasteChat(now: number): ChatThread {
         role: 'system', kind: 'marker', marker: 'taste', learnId: 'learn_preview1', turnId: SAMPLE_TASTE_TURN_ID,
         documentId: 'preview-proposal', key: 'mem-preview-proposal', items,
         changes: items.map((item) => ({ op: item.op, entryId: item.entryId })),
-        undone: ['mem_taste000002'], stale: ['mem_taste000003'], proposalDraftId: 'preview-taste-draft', text: '',
+        undone: ['mem_taste000002'], stale: ['mem_taste000003'], text: '',
       },
     ],
   };
