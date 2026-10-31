@@ -3,11 +3,12 @@ import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { accountError, accountIdForEmail, createAccountsService, emptyAccountsState } from './accounts.mjs';
+import { MAX_AVATAR_BYTES, accountError, accountIdForEmail, createAccountsService, emptyAccountsState } from './accounts.mjs';
 import {
   DEFAULT_PORT,
   resolveAccountConfig,
   resolveAccountsDbPath,
+  resolveAvatarDir,
   resolveFeedbackDir,
   resolveFeedbackMaxBytes,
   resolveFeedbackProofKey,
@@ -411,6 +412,64 @@ export function siteRequestListener({
           case 'POST /v1/account/claim':
             allowAccount('account', 300, TEN_MINUTES);
             send(200, await accounts.claim(bearerToken(req), await readAccountJson(req)));
+            return;
+          case 'POST /v1/account/profile':
+            allowAccount('account', 300, TEN_MINUTES);
+            send(200, await accounts.updateProfile(bearerToken(req), await readAccountJson(req)));
+            return;
+          case 'PUT /v1/account/avatar': {
+            allowAccount('account', 300, TEN_MINUTES);
+            // A body declared past twice the cap is refused unread and the connection closes.
+            if (Number(req.headers['content-length']) > 2 * MAX_AVATAR_BYTES) {
+              discardUpload(req, 2 * MAX_AVATAR_BYTES);
+              send(413, { ok: false, error: 'too_large' }, { Connection: 'close' });
+              return;
+            }
+            const contentType = String(req.headers['content-type'] ?? '').split(';')[0].trim().toLowerCase();
+            let reading = false;
+            try {
+              send(200, await accounts.setAvatar(bearerToken(req), contentType, () => {
+                reading = true;
+                return readUpload(req, MAX_AVATAR_BYTES);
+              }));
+            } catch (error) {
+              // Refused before the body was read: drain it so the client still reads the answer.
+              if (!reading) discardUpload(req, 2 * MAX_AVATAR_BYTES);
+              throw error;
+            }
+            return;
+          }
+          case 'GET /v1/account/avatar': {
+            allowAccount('account', 300, TEN_MINUTES);
+            const avatar = await accounts.getAvatar(bearerToken(req));
+            const etag = `"${avatar.rev}"`;
+            const headers = { ETag: etag, 'Cache-Control': 'private, no-cache', 'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff' };
+            if (req.headers['if-none-match'] === etag) {
+              res.writeHead(304, headers);
+              res.end();
+              return;
+            }
+            res.writeHead(200, {
+              ...headers,
+              'Content-Type': avatar.type,
+              'Content-Length': avatar.bytes.length,
+              'Content-Security-Policy': "default-src 'none'; sandbox",
+            });
+            res.end(avatar.bytes);
+            return;
+          }
+          case 'POST /v1/account/avatar/remove':
+            allowAccount('account', 300, TEN_MINUTES);
+            await readAccountJson(req);
+            send(200, await accounts.removeAvatar(bearerToken(req)));
+            return;
+          case 'POST /v1/account/stats':
+            allowAccount('account', 300, TEN_MINUTES);
+            send(200, await accounts.recordStats(bearerToken(req), await readAccountJson(req)));
+            return;
+          case 'POST /v1/account/delete':
+            allowAccount('account', 300, TEN_MINUTES);
+            send(200, await accounts.deleteAccount(bearerToken(req), await readAccountJson(req)));
             return;
           default:
             throw siteError('NOT_FOUND', 'not found');
@@ -888,6 +947,9 @@ export function createSiteServer(env = process.env, options = {}) {
     }) : null,
     signingKey,
     leaseKid: licenseConfig.signingKeyId,
+    avatarDir: resolveAvatarDir(env),
+    // Bound late like hamaPlanActive: the Hama service is created after this one.
+    hamaUsage: async (keyId) => (hamaService ? hamaService.usageSummary(keyId) : null),
     providers: accountConfig.providers,
     deviceLimit: accountConfig.deviceLimit,
     adminToken: licenseConfig.adminToken,

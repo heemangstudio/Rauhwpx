@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash, randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -591,4 +592,185 @@ test('admin unlink frees a key for good, admin link moves it, and the CLI wraps 
   assert.deepEqual((await s.refresh(other.session)).body.licenses.map((l) => [l.keyId, l.linkedBy]), [[keyId, 'admin']]);
   assert.deepEqual(await s.admin('/v1/admin/accounts/unlink', { keyId: 'lic_none' }), { ok: false, error: 'invalid_key' });
   assert.equal((await fetch(`${s.origin}/v1/admin/accounts/unlink`, { method: 'POST', body: JSON.stringify({ keyId }) })).status, 403);
+});
+
+// ------------------------------------------------------------- profile
+
+const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), randomBytes(64)]);
+const JPEG = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), randomBytes(64)]);
+const WEBP = Buffer.concat([Buffer.from('RIFF'), Buffer.alloc(4), Buffer.from('WEBPVP8 '), randomBytes(32)]);
+
+function putAvatar(s, session, bytes, type) {
+  return fetch(`${s.origin}/v1/account/avatar`, { method: 'PUT', headers: { ...s.bearer(session), 'Content-Type': type }, body: bytes }).then(s.json);
+}
+
+test('profile: a user-set name sticks across sign-ins, and a bad one is name_invalid', async (t) => {
+  const s = await setup(t);
+  const user = { id: 'user_p', email: 'profile@example.com', firstName: 'Provider', lastName: 'Name' };
+  const me = await s.signIn(user, device(1));
+  assert.equal(me.account.name, 'Provider Name');
+  let session = me.session;
+  const profile = (name) => s.post('/v1/account/profile', { name }, s.bearer(session)).then(s.json);
+  const set = await profile('  하마 편집자 ');
+  assert.deepEqual(set, { status: 200, body: { ok: true, account: { ...me.account, name: '하마 편집자' } } });
+  const again = await s.signIn(user, device(1));
+  assert.equal(again.account.name, '하마 편집자', 'a later sign-in keeps the user name');
+  session = again.session;
+  assert.equal((await profile('가'.repeat(30))).status, 200);
+  for (const bad of ['', '   ', '가'.repeat(31), 'tab\there', 42, null]) {
+    assert.deepEqual(await profile(bad), { status: 400, body: { ok: false, error: 'name_invalid' } }, String(bad));
+  }
+});
+
+test('avatar: upload, serve with its rev, replace with another type, remove; types are sniffed and the size capped', async (t) => {
+  const s = await setup(t);
+  const me = await s.signIn({ email: 'avatar@example.com' }, device(1));
+  const dir = path.join(s.directory, 'avatars');
+  const file = (ext) => path.join(dir, `${me.account.id}.${ext}`);
+  const get = (headers = {}) => fetch(`${s.origin}/v1/account/avatar`, { headers: { ...s.bearer(me.session), ...headers } });
+
+  assert.deepEqual(await (await get()).json(), { ok: false, error: 'no_avatar' });
+  assert.deepEqual(await putAvatar(s, me.session, PNG, 'image/png'), { status: 200, body: { ok: true, avatar: { rev: 1, type: 'image/png', bytes: PNG.length } } });
+  assert.equal((await fs.stat(file('png'))).mode & 0o777, 0o600);
+  const served = await get();
+  assert.deepEqual([served.status, served.headers.get('content-type'), served.headers.get('etag'), served.headers.get('cache-control')], [200, 'image/png', '"1"', 'private, no-cache']);
+  assert.ok(Buffer.from(await served.arrayBuffer()).equals(PNG));
+  assert.equal((await get({ 'If-None-Match': '"1"' })).status, 304);
+  assert.deepEqual((await s.refresh(me.session)).body.account.avatar, { rev: 1, type: 'image/png' });
+
+  assert.deepEqual((await putAvatar(s, me.session, JPEG, 'image/jpeg')).body.avatar, { rev: 2, type: 'image/jpeg', bytes: JPEG.length });
+  assert.deepEqual(await fs.readdir(dir), [`${me.account.id}.jpg`], 'the PNG is gone');
+  assert.deepEqual((await putAvatar(s, me.session, WEBP, 'image/webp')).body.avatar.type, 'image/webp');
+
+  const unsupported = { status: 415, body: { ok: false, error: 'unsupported_type' } };
+  assert.deepEqual(await putAvatar(s, me.session, PNG, 'image/jpeg'), unsupported, 'bytes must match the type');
+  assert.deepEqual(await putAvatar(s, me.session, Buffer.from('GIF89a....'), 'image/gif'), unsupported);
+  assert.deepEqual(await putAvatar(s, me.session, Buffer.from('<svg/>'), 'image/png'), unsupported);
+  const big = Buffer.concat([PNG, Buffer.alloc(1024 * 1024)]);
+  assert.deepEqual(await putAvatar(s, me.session, big, 'image/png'), { status: 413, body: { ok: false, error: 'too_large' } });
+  // A body declared past twice the cap is refused before it is read.
+  const declared = await new Promise((resolve, reject) => {
+    const req = http.request(`${s.origin}/v1/account/avatar`, {
+      method: 'PUT',
+      headers: { ...s.bearer(me.session), 'Content-Type': 'image/png', 'Content-Length': 3 * 1024 * 1024 },
+    }, (res) => {
+      let text = '';
+      res.on('data', (chunk) => { text += chunk; });
+      res.on('end', () => { req.destroy(); resolve({ status: res.statusCode, body: JSON.parse(text), connection: res.headers.connection }); });
+    });
+    req.on('error', reject);
+    req.write(PNG);
+  });
+  assert.deepEqual(declared, { status: 413, body: { ok: false, error: 'too_large' }, connection: 'close' });
+  assert.deepEqual(await putAvatar(s, 'hes_nope', PNG, 'image/png'), { status: 401, body: { ok: false, error: 'session_invalid' } });
+  assert.equal((await s.stored()).accounts[me.account.id].avatar.rev, 3, 'refusals change nothing');
+
+  assert.deepEqual(await s.json(await s.post('/v1/account/avatar/remove', {}, s.bearer(me.session))), { status: 200, body: { ok: true } });
+  assert.deepEqual(await fs.readdir(dir), []);
+  assert.equal((await get()).status, 404);
+  assert.equal((await s.refresh(me.session)).body.account.avatar, null);
+  assert.equal((await putAvatar(s, me.session, PNG, 'image/png')).body.avatar.rev, 4, 'the rev never goes back');
+});
+
+test('stats add up per batch, a repeated batch id is a no-op, and bad counts are refused', async (t) => {
+  const s = await setup(t);
+  const me = await s.signIn({ email: 'stats@example.com' }, device(1));
+  const stats = (body) => s.post('/v1/account/stats', body, s.bearer(me.session)).then(s.json);
+  assert.deepEqual(await stats({ batchId: 'batch-0001', agentSessions: 2, documentsEdited: 5 }), {
+    status: 200, body: { ok: true, stats: { agentSessions: 2, documentsEdited: 5, since: T0, hama: null } },
+  });
+  assert.equal((await stats({ batchId: 'batch-0001', agentSessions: 2, documentsEdited: 5 })).body.stats.agentSessions, 2, 'a retried flush counts once');
+  for (let i = 2; i <= 52; i += 1) await stats({ batchId: `batch-${String(i).padStart(4, '0')}`, agentSessions: 1, documentsEdited: 0 });
+  const stored = (await s.stored()).accounts[me.account.id].stats;
+  assert.deepEqual([stored.agentSessions, stored.batches.length, stored.batches[0]], [53, 50, 'batch-0003']);
+  assert.deepEqual((await s.refresh(me.session)).body.stats, { agentSessions: 53, documentsEdited: 5, since: T0, hama: null });
+  for (const [body, field] of [
+    [{ batchId: 'short', agentSessions: 1, documentsEdited: 1 }, 'batchId'],
+    [{ batchId: 'batch-x001', agentSessions: 1001, documentsEdited: 1 }, 'agentSessions'],
+    [{ batchId: 'batch-x001', agentSessions: 1, documentsEdited: -1 }, 'documentsEdited'],
+    [{ batchId: 'batch-x001', agentSessions: 1.5, documentsEdited: 1 }, 'agentSessions'],
+  ]) assert.deepEqual(await stats(body), { status: 400, body: { ok: false, error: 'invalid', field } });
+});
+
+test('stats.hama is the Hama key\'s current billing period, and null without a plan or with HAMA_ENABLED off', async (t) => {
+  const { billingPeriod } = await import('../hama-ledger.mjs');
+  for (const enabled of [true, false]) {
+    const s = await setup(t, enabled ? { HAMA_ENABLED: 'true' } : {});
+    await s.buy(proPaid({ merchantUid: 'pro_h', ref: 'ref-pro-h', email: 'hama@example.com' }));
+    const me = await s.signIn({ email: 'hama@example.com' }, device(1));
+    assert.equal(me.stats.hama, null, 'a Pro key has no Hama plan');
+    await s.buy(proPaid({ merchantUid: 'hama_h', ref: 'ref-hama-h', email: 'hama@example.com', contentId: HAMA_MONTHLY, price: 12900, cycle: 1 }));
+    const hamaFile = path.join(s.directory, 'hama.json');
+    if (!enabled) {
+      assert.equal((await s.refresh(me.session)).body.stats.hama, null);
+      continue;
+    }
+    const state = JSON.parse(await fs.readFile(hamaFile, 'utf8'));
+    const [keyId] = Object.keys(state.plans);
+    const period = billingPeriod(state.plans[keyId].periodAnchor, s.clock.now);
+    state.ledgers[keyId] = { period: { start: new Date(period.start).toISOString(), usedUsd: 1.25, calls: 3 }, minutes: {}, hours: {}, ids: {}, totalUsd: 4, calls: 9 };
+    await fs.writeFile(hamaFile, JSON.stringify(state));
+    assert.deepEqual((await s.refresh(me.session)).body.stats.hama, { usedUsd: 1.25, allowanceUsd: 15, periodEndsAt: period.end, calls: 3 });
+    s.clock.now = period.end + MINUTE;
+    assert.deepEqual((await s.refresh(me.session)).body.stats.hama.usedUsd, 0, 'a new period starts at zero');
+  }
+});
+
+/** A Groble subscription event for the key bought under `ref`. */
+function subscriptionEvent(type, ref, object = {}) {
+  return {
+    id: `evt_${type}_${ref}`,
+    type,
+    occurredAt: '2026-10-31T12:00:00+09:00',
+    data: { object: { merchantUid: `${type}_${ref}`, sellerReference: ref, content: { paymentType: 'SUBSCRIPTION' }, ...object } },
+  };
+}
+
+test('delete: typed email, refused while a subscription renews, then everything goes and the keys link to the next account', async (t) => {
+  const s = await setup(t);
+  await s.admin('/v1/admin/licenses/issue', { email: 'leaving@example.com', note: 'lifetime' });
+  await s.buy(proPaid({ merchantUid: 'pro_a', ref: 'ref-a', email: 'leaving@example.com' }));
+  await s.buy(proPaid({ merchantUid: 'pro_b', ref: 'ref-b', email: 'leaving@example.com' }));
+  const me = await s.signIn({ id: 'user_leaving', email: 'Leaving@example.com' }, device(1));
+  const pc = await s.signIn({ id: 'user_leaving', email: 'Leaving@example.com' }, device(2));
+  assert.equal(me.licenses.length, 3);
+  await putAvatar(s, me.session, PNG, 'image/png');
+  await s.post('/v1/account/stats', { batchId: 'batch-0001', agentSessions: 4, documentsEdited: 4 }, s.bearer(me.session));
+  const remove = (confirm, session = me.session) => s.post('/v1/account/delete', { confirm }, s.bearer(session)).then(s.json);
+
+  assert.deepEqual(await remove('someone@example.com'), { status: 400, body: { ok: false, error: 'confirm_mismatch' } });
+  assert.deepEqual(await remove(''), { status: 400, body: { ok: false, error: 'confirm_mismatch' } });
+  const refused = { status: 409, body: { ok: false, error: 'subscription_active', manageUrl: 'https://groble.im/manage/purchase' } };
+  assert.deepEqual(await remove(' LEAVING@example.com '), refused);
+  assert.equal((await (await signedGroblePost(s.origin, SECRET, subscriptionEvent('subscription.cancel_requested', 'ref-a', { cancelRequest: { requestedAt: '2026-10-31T12:00:00+09:00' } }))).json()).action, 'cancel_recorded');
+  assert.deepEqual(await remove('leaving@example.com'), refused, 'the other key still renews');
+  assert.equal((await (await signedGroblePost(s.origin, SECRET, subscriptionEvent('subscription.terminated', 'ref-b', { termination: { reason: 'BUYER_CANCELLED' } }))).json()).action, 'termination_recorded');
+  assert.equal((await s.refresh(me.session)).body.licenses.length, 3, 'a refusal unlinks nothing');
+
+  assert.deepEqual(await remove('leaving@example.com'), { status: 200, body: { ok: true } });
+  for (const session of [me.session, pc.session]) assert.deepEqual(await s.refresh(session), { status: 401, body: { ok: false, error: 'session_invalid' } });
+  const stored = await s.stored();
+  assert.deepEqual([stored.accounts, stored.sessions, stored.byEmail, stored.byWorkosUser], [{}, {}, {}, {}]);
+  assert.deepEqual(await fs.readdir(path.join(s.directory, 'avatars')), []);
+  const licenses = Object.values((await s.licensesFile()).licenses);
+  assert.ok(licenses.every((l) => l.accountId === undefined && l.unlinkedBy === 'delete' && l.unlinkedAt));
+  const deletion = s.workos.calls.find((c) => c.method === 'DELETE');
+  assert.deepEqual([deletion.path, deletion.auth], ['/user_management/users/user_leaving', `Bearer ${WORKOS_KEY}`]);
+  assert.deepEqual(await s.adminGet('/v1/admin/accounts?email=leaving@example.com'), { ok: true, accounts: [] });
+
+  // Signing up again with the same email is a new account, and the keys come back to it.
+  const again = await s.signIn({ id: 'user_leaving_2', email: 'leaving@example.com' }, device(1));
+  assert.notEqual(again.account.id, me.account.id);
+  assert.deepEqual([again.licenses.length, again.licenses.every((l) => l.linkedBy === 'email'), again.stats.agentSessions, again.account.avatar], [3, true, 0, null]);
+});
+
+test('delete answers 200 when WorkOS fails to delete the user, and never logs the WorkOS id', async (t) => {
+  const s = await setup(t);
+  const me = await s.signIn({ id: 'user_secret_id_77', email: 'gone@example.com' }, device(1));
+  s.workos.failDelete(500);
+  assert.deepEqual(await s.json(await s.post('/v1/account/delete', { confirm: 'gone@example.com' }, s.bearer(me.session))), { status: 200, body: { ok: true } });
+  assert.deepEqual((await s.stored()).accounts, {});
+  const logged = s.lines.join('\n');
+  assert.match(logged, /WorkOS user of deleted acct_[0-9a-f]{18} not deleted: workos_failed \(500\)/);
+  assert.ok(!logged.includes('user_secret_id_77') && !logged.includes('gone@example.com'));
 });

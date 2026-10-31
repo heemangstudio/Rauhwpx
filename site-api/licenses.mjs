@@ -1281,6 +1281,36 @@ export function createLicensesService({
     });
   }
 
+  /** A live subscription Groble will charge again: auto-renewal on and not terminated. */
+  function renewsAutomatically(license) {
+    const end = accessEnd(license);
+    if (license.status !== 'active' || end === null || now() >= end) return false;
+    return license.subscription?.autoRenew !== false && license.subscription?.status !== 'terminated';
+  }
+
+  /**
+   * Frees every license of a deleted account; its email links them to the next account again.
+   * `refuseActiveSubscription` checks first, in the same lock: an auto-renewing live subscription
+   * is 409 subscription_active with Groble's buyer page, and nothing changes.
+   */
+  async function unlinkAccount(accountId, { refuseActiveSubscription = false } = {}) {
+    return mutate((state) => {
+      const linked = Object.values(state.licenses).filter((license) => license.accountId === accountId);
+      if (refuseActiveSubscription && linked.some(renewsAutomatically)) {
+        throw Object.assign(licenseError('subscription_active', 409), { extra: { manageUrl: paymentFixUrl } });
+      }
+      const at = new Date(now()).toISOString();
+      for (const license of linked) {
+        delete license.accountId;
+        delete license.linkedAt;
+        delete license.linkedBy;
+        license.unlinkedAt = at;
+        license.unlinkedBy = 'delete';
+      }
+      return { dirty: linked.length > 0, value: linked.length };
+    });
+  }
+
   /**
    * The principal of an account lease for a hosted service, the same shape as authenticateLease plus
    * `accountId`. The license is chosen now by purpose: `gift` a live beta key, `hama` a key with an
@@ -1812,6 +1842,7 @@ export function createLicensesService({
     linkByEmail,
     redeemForAccount,
     claimForAccount,
+    unlinkAccount,
     authenticateAccount,
     admin,
   };
