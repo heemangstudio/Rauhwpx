@@ -5,6 +5,7 @@ import type { ContextMenuItem } from '@/ui/context-menu';
 import { hyperlinkAtPointer, hoverHyperlink, rememberHyperlinkClick, followHyperlinkClick } from './input-handler-hyperlink';
 import { hoverHitTest, runHoverFrame } from './hover-hit-test';
 import type { CellPathLike, DocumentPosition, ObjectRef } from '@/core/types';
+import type { WasmBridge } from '@/core/wasm-bridge';
 import * as _connector from './input-handler-connector';
 import { MoveLineEndpointCommand } from './command';
 import { computeLineEndpointRecord } from './object-drag-record';
@@ -58,12 +59,9 @@ function readCurrentParagraphText(self: any) {
   }
 
   if (self.cursor.isInFootnote()) {
-    const info = self.wasm.getFootnoteInfo(
-      self.cursor.fnSectionIdx,
-      self.cursor.fnParaIdx,
-      self.cursor.fnControlIdx,
-    );
-    return info.texts[self.cursor.fnInnerParaIdx] ?? '';
+    // 주석 캐럿은 논리 칸(번호·개체 칸 포함)을 센다. 그 칸은 U+FFFC 로 나온다.
+    const info = self.cursor.footnoteContent();
+    return info?.units?.[self.cursor.fnInnerParaIdx] ?? info?.texts[self.cursor.fnInnerParaIdx] ?? '';
   }
 
   const position = self.cursor.getPosition();
@@ -466,6 +464,31 @@ function promoteCellSelectionDragCandidate(this: any, e: MouseEvent): boolean {
   } as MouseEvent, { row: candidate.startRow, col: candidate.startCol });
   this.cellSelectionDragState.anchorPosition = candidate.anchorPosition;
   updateCellSelectionDrag.call(this, e);
+  return true;
+}
+
+/**
+ * 주석 영역을 누른 자리로 들어간다. 편집 중인 주석이면 캐럿만 옮기고, 다른 주석이면 그 주석으로 바꾼다.
+ * 끌면 그 주석 안에서 고른다.
+ */
+function enterClickedNote(this: any, hit: ReturnType<WasmBridge['hitTestInFootnote']>, e: MouseEvent): boolean {
+  if (!hit.hit || hit.sectionIdx === undefined || hit.paraIdx === undefined || hit.controlIdx === undefined
+    || hit.fnParaIndex === undefined || hit.charOffset === undefined) return false;
+  const ref = {
+    sectionIdx: hit.sectionIdx, paraIdx: hit.paraIdx, controlIdx: hit.controlIdx,
+    ...(hit.cellPath?.length ? { cellPath: hit.cellPath } : {}),
+  };
+  if (!this.cursor.isEditingNote(ref)) {
+    this.cursor.enterNoteMode(ref);
+    this.eventBus.emit('footnoteModeChanged', true);
+  }
+  this.cursor.clearSelection();
+  this.cursor.setFnCursorPosition(hit.fnParaIndex, hit.charOffset);
+  this.cursor.setFnAnchor();
+  this.active = true;
+  this.startTextSelectionDrag(e);
+  this.updateCaret();
+  document.addEventListener('mouseup', this.onMouseUpBound, { once: true });
   return true;
 }
 
@@ -1141,38 +1164,22 @@ export function onClick(this: any, e: MouseEvent): void {
     } catch { /* 무시 */ }
   }
 
-  // 각주 편집 모드에서 클릭 처리
+  // 각주 편집 모드에서 클릭 처리: 같은 주석이면 캐럿만 옮기고, 다른 주석 영역이면 그 주석으로 바꾼다.
   if (this.cursor.isInFootnote()) {
     try {
-      const fnHit = this.wasm.pageHasFootnoteFootholds(pageIdx)
-        ? this.wasm.hitTestFootnote(pageIdx, pageX, pageY)
-        : { hit: false };
-      if (!fnHit.hit) {
-        // 본문 영역 클릭 → 각주 편집 모드 탈출
+      const inFnHit = this.wasm.hitTestInFootnote(pageIdx, pageX, pageY);
+      if (!inFnHit.hit) {
+        // 본문 영역 클릭 → 각주 편집 모드 탈출 후 본문 hitTest로 계속 진행
         this.cursor.exitFootnoteMode();
         this.eventBus.emit('footnoteModeChanged', false);
-        // 본문 hitTest로 계속 진행
-      } else {
-        // 각주 영역 클릭 → 내부 텍스트 히트테스트로 커서 이동
-        try {
-          const inFnHit = this.wasm.hitTestInFootnote(pageIdx, pageX, pageY);
-          if (inFnHit.hit && inFnHit.fnParaIndex !== undefined && inFnHit.charOffset !== undefined) {
-            this.cursor.clearSelection();
-            this.cursor.setFnCursorPosition(inFnHit.fnParaIndex, inFnHit.charOffset);
-            this.cursor.setFnAnchor();
-            this.active = true;
-            this.startTextSelectionDrag(e);
-            this.updateCaret();
-            document.addEventListener('mouseup', this.onMouseUpBound, { once: true });
-          }
-        } catch { /* 무시 */ }
+      } else if (enterClickedNote.call(this, inFnHit, e)) {
         this.textarea.focus();
         return;
       }
     } catch { /* 무시 */ }
   }
 
-  // 본문 각주 마커 클릭 → 각주 편집 모드 진입
+  // 본문(표 셀·글상자 포함) 주석 표시 클릭 → 그 주석의 처음(번호 앞)으로 들어간다(한컴 NoteModify, c03f).
   if (!this.cursor.isInFootnote()) {
     try {
       const markerHit = this.wasm.hitTestBodyFootnoteMarker(pageIdx, pageX, pageY);
@@ -1180,18 +1187,15 @@ export function onClick(this: any, e: MouseEvent): void {
         markerHit.hit &&
         markerHit.sectionIndex !== undefined &&
         markerHit.paragraphIndex !== undefined &&
-        markerHit.controlIndex !== undefined &&
-        markerHit.footnoteIndex !== undefined
+        markerHit.controlIndex !== undefined
       ) {
-        this.cursor.enterFootnoteMode(
-          markerHit.sectionIndex,
-          markerHit.paragraphIndex,
-          markerHit.controlIndex,
-          markerHit.footnoteIndex,
-          pageIdx,
-        );
+        this.cursor.enterNoteMode({
+          sectionIdx: markerHit.sectionIndex,
+          paraIdx: markerHit.paragraphIndex,
+          controlIdx: markerHit.controlIndex,
+          ...(markerHit.cellPath?.length ? { cellPath: markerHit.cellPath } : {}),
+        }, { caret: { fnParaIndex: 0, charOffset: 0 } });
         this.eventBus.emit('footnoteModeChanged', true);
-        this.cursor.setFnCursorPosition(0, 0);
         this.active = true;
         this.updateCaret();
         this.textarea.focus();
@@ -1200,36 +1204,13 @@ export function onClick(this: any, e: MouseEvent): void {
     } catch { /* 무시 */ }
   }
 
-  // 각주 영역 클릭 → 각주 편집 모드 진입
+  // 각주 영역 클릭 → 누른 자리로 각주 편집 모드 진입(표 셀·글상자 안 주석도 같다).
   if (!this.cursor.isInFootnote()) {
     try {
-      const fnHit = this.wasm.pageHasFootnoteFootholds(pageIdx)
-        ? this.wasm.hitTestFootnote(pageIdx, pageX, pageY)
-        : { hit: false };
-      if (fnHit.hit) {
-        // hitTestInFootnote로 정확한 footnoteIndex와 커서 위치를 얻기
-        const inFnHit = this.wasm.hitTestInFootnote(pageIdx, pageX, pageY);
-        if (inFnHit.hit && inFnHit.footnoteIndex !== undefined) {
-          const pageInfo = this.wasm.getPageFootnoteInfo(pageIdx, inFnHit.footnoteIndex);
-          if (pageInfo && pageInfo.sourceType === 'body') {
-            this.cursor.enterFootnoteMode(
-              pageInfo.sectionIdx, pageInfo.paraIdx, pageInfo.controlIdx,
-              inFnHit.footnoteIndex, pageIdx,
-            );
-            this.eventBus.emit('footnoteModeChanged', true);
-            if (inFnHit.fnParaIndex !== undefined && inFnHit.charOffset !== undefined) {
-              this.cursor.clearSelection();
-              this.cursor.setFnCursorPosition(inFnHit.fnParaIndex, inFnHit.charOffset);
-              this.cursor.setFnAnchor();
-              this.active = true;
-              this.startTextSelectionDrag(e);
-              document.addEventListener('mouseup', this.onMouseUpBound, { once: true });
-            }
-            this.updateCaret();
-            this.textarea.focus();
-            return;
-          }
-        }
+      const inFnHit = this.wasm.hitTestInFootnote(pageIdx, pageX, pageY);
+      if (inFnHit.hit && enterClickedNote.call(this, inFnHit, e)) {
+        this.textarea.focus();
+        return;
       }
     } catch { /* 무시 */ }
   }

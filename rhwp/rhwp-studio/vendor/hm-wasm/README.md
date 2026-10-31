@@ -1,7 +1,10 @@
 # hm-wasm
 
-Generated browser bindings and WASM from HeemangEngine `rc/combined-20261028` at `1a54900` (2026-10-29). Over the
-`afcacaf` package it adds the rendering lanes through `b3cce93` (tables, text, forms/math, curriculum and objects
+Generated browser bindings and WASM from HeemangEngine `feat/notes-parity` at `845ba85` (2026-10-31): `rc/combined-20261028`
+at `8d80eb0` plus footnote and endnote parity with Hancom Office 2022 (note insertion, numbering, note shapes, clipboard,
+page-local numbers, HWP/HWPX/HML round trips, and note layout and painting). `8d80eb0` changes only tests and documents
+over `1a54900`, which over the
+`afcacaf` package adds the rendering lanes through `b3cce93` (tables, text, forms/math, curriculum and objects
 under the r12 gate fonts), Hancom-captured table editing (`9bbcf60`: merge drops empty cells, split grids and heights,
 `copyRow`/`copyColumn`, saved laid-out table height, `moveTableCellEdge`), caret motion fixes (`054d48b`) and the
 typing performance work with its incremental-versus-fresh layout equivalence test (`1a54900`). Built with
@@ -13,9 +16,9 @@ SHA-256 of the four files:
 
 | File | Bytes | SHA-256 |
 | --- | ---: | --- |
-| `hm_wasm_bg.wasm` | 7,736,148 | `8bbd8eab1034d6ee7b72800b5e59090709605d32839995bf6d6f5a526cc95023` |
+| `hm_wasm_bg.wasm` | 7,774,230 | `fc5393fc4b17e3ead7571b6f54f2014384cb33461a82feac526d79be2fb8958f` |
 | `hm_wasm.js` | 73,254 | `2c860bee0d93549badb95a81433bcb8a42a8afb95e9688da018f91e3776c8110` |
-| `hm_wasm.d.ts` | 54,942 | `4a1a7181fca222c49fc9d51ed67b9ce32c77a32d67f62ccec8753d9066c7b88b` |
+| `hm_wasm.d.ts` | 56,890 | `02a5818885f599191f88d810731085496eff3aee0bb312dbd632e4b03f2391a4` |
 | `hm_wasm_bg.wasm.d.ts` | 9,178 | `4dd860b1e9ac983d76fdad7265f36a420b0f2d07a65bebc0a16c12a6f2c77bd4` |
 
 Integration `e48a461` adds, over the earlier `e2c92f9`, structural version merging and `Doc.verifyHwp`

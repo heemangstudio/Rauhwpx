@@ -1813,23 +1813,30 @@ export type ObjectOp =
       type: 'insertNote';
       noteKind: 'footnote' | 'endnote';
       sectionIdx: number; paraIdx: number; charOffset: number;
-      /** 각주/미주 내용 (단일 문단) */
+      /** 각주/미주 내용 (단일 문단) — 엔진 영수증 캐럿(번호와 공백 뒤)에 넣는다 */
       text: string;
       anchor?: ObjectAnchor;
       /** 적용 시 부여된 번호 (응답용) */
       number?: number;
       /**
-       * 적용 직후 실제 각주 텍스트 — 엔진이 기본 내용(공백 등)을 덧붙일 수 있어
+       * 적용 직후 실제 주석 글(noteText) — 번호 뒤 공백 처리에 따라 요청 텍스트와 다를 수 있어
        * 드리프트 검증은 요청 텍스트가 아니라 이 값과 비교한다.
        */
       appliedText?: string;
     }
   | {
       type: 'setNoteText';
+      /** paraIdx 는 본문 문단이다. 표 셀·글상자 주석이면 cellPath 가 표시가 든 안쪽 문단까지 내려가고 controlIdx 는 그 문단 기준이다. */
       sectionIdx: number; paraIdx: number; controlIdx: number;
+      cellPath?: CellPathEntry[];
+      /** 번호와 공백 뒤의 주석 글 (단일 문단) */
       text: string;
       /** applied-now 역연산용 이전 내용 (적용 시 캡처) */
       prevText?: string;
+      /** 적용 직후 실제 주석 글 — 드리프트 검증 기준 */
+      appliedText?: string;
+      /** 적용 시 읽은 주석 종류 (표시용) */
+      noteKind?: 'footnote' | 'endnote';
     }
   | {
       /**

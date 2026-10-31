@@ -65,6 +65,26 @@ export interface ListSpec { kind: "bullet" | "numbering" | "outline"; id: number
 export interface PageSettingsPatch { width?: number; height?: number; marginLeft?: number; marginRight?: number; marginTop?: number; marginBottom?: number; marginHeader?: number; marginFooter?: number; gutter?: number; landscape?: boolean; binding?: number }
 export interface SectionSettingsPatch { attr?: number; columnGap?: number; tabStop?: number; outlineNumbering?: number; pageNumber?: number; figureNumber?: number; tableNumber?: number; equationNumber?: number; language?: number }
 export interface ColumnSettingsPatch { count?: number; kind?: number; direction?: number; equalWidths?: boolean; gap?: number; columns?: [number, number][]; lineKind?: number; lineWidth?: number; lineColor?: number }
+/**
+ * A section's footnote or endnote shape (HWP 5.0 FOOTNOTE_SHAPE). `attr` bits:
+ * - 0-7 number format: 0 1,2,3; 1 circled digits; 2 I,II,III; 3 i,ii,iii; 4 A,B,C; 5 a,b,c;
+ *   6 circled A,B,C; 7 circled a,b,c; 8 가,나,다; 9 circled 가,나,다; 10 ㄱ,ㄴ,ㄷ; 11 circled ㄱ,ㄴ,ㄷ;
+ *   12 일,이,삼; 13 一,二,三; 14 circled 一,二,三; 15 갑,을,병; 16 甲,乙,丙;
+ *   0x80 (128) four symbols *,†,‡,§ repeated; 0x81 (129) `userChar` repeated.
+ * - 8-9 placement. Footnote: 0 each column, 1 merged under all columns, 2 rightmost column.
+ *   Endnote: 0 end of document, 1 end of section.
+ * - 10-11 numbering: 0 continue from the previous section, 1 restart each section from `start`
+ *   (`start` is stored but unused otherwise), 2 restart every page (footnotes only; an endnote
+ *   shape with 2 keeps counting and saves without a numbering type, as Hancom does).
+ * - 12 note-list numbers as superscript. 13 footnotes right below the text (beneath text).
+ * `userChar`, `prefix` and `suffix` are UTF-16 code units, 0 for none (Hancom's default suffix is
+ * 41, `)`). `separatorLength` is HU: -1 Hancom's 5 cm default, 0 no line, 14692344 the full column.
+ * `spaceAbove`/`spaceBelow`/`spaceBetween` are HU. `lineKind` is the border line kind
+ * (0 none, 1 solid, 2 dot, 3 dash, 8 double…), `lineWidth` the border width index
+ * (0 0.1 mm, 1 0.12 mm, 4 0.25 mm, 8 0.6 mm), `lineColor` a COLORREF (0x00BBGGRR).
+ * `setNoteShape` rewrites every note of that kind in the section (number format, characters,
+ * superscript, numbering) in the same transaction.
+ */
 export interface NoteShapePatch { attr?: number; userChar?: number; prefix?: number; suffix?: number; start?: number; separatorLength?: number; spaceAbove?: number; spaceBelow?: number; spaceBetween?: number; lineKind?: number; lineWidth?: number; lineColor?: number }
 export interface FieldPatch { command?: string; name?: string; editable?: boolean; value?: string }
 export interface DocumentPropertiesPatch { pageStart?: number; footnoteStart?: number; endnoteStart?: number; figureStart?: number; tableStart?: number; equationStart?: number; caretList?: number; caretPara?: number; caretPos?: number }
@@ -79,7 +99,7 @@ export type ControlAddress = TableAddress;
 export interface SectionSettings {section:number;page:PageSettingsPatch|null;settings:SectionSettingsPatch|null;columns:ColumnSettingsPatch|null;noteShapes:{footnote:NoteShapePatch|null;endnote:NoteShapePatch|null};pageBorders:PageBorderPatch[]}
 /** A form object's state. `value` is a check box or radio button's 0 off, 1 on, 2 indeterminate; `text` an edit or combo box's entry. `properties` flattens every property set, first name wins. */
 export interface FormRecord {formType:"PushButton"|"CheckBox"|"RadioButton"|"ComboBox"|"ListBox"|"Edit"|"ScrollBar"|"Unknown";name:string;value:number;text:string;caption:string;enabled:boolean;width:number;height:number;foreColor:number;backColor:number;properties:Record<string,string>;items:string[]}
-export interface ControlRecord {target:ControlAddress;offset:number;kind:string;lists:ListAddress[];side?:Side;number?:number;prefix?:number;suffix?:number;flags?:number;fieldId?:number;fieldKind?:FieldKind;name?:string;command?:string;guide?:string;editable?:boolean;value?:string;end?:Address;form?:FormRecord}
+export interface ControlRecord {target:ControlAddress;offset:number;kind:string;lists:ListAddress[];side?:Side;number?:number;userChar?:number;prefix?:number;suffix?:number;noteFlag?:number;flags?:number;fieldId?:number;fieldKind?:FieldKind;name?:string;command?:string;guide?:string;editable?:boolean;value?:string;end?:Address;form?:FormRecord}
 /** HU throughout, including natural image dimensions. Patches reject unknown fields. */
 export interface ObjectPatch {
     width?:number; height?:number; horzOffset?:number; vertOffset?:number; treatAsChar?:boolean;
@@ -138,8 +158,9 @@ export type EditOp =
 | {op:"setPageBorder";section:number;side:Side;patch:PageBorderPatch}
 | {op:"setPageHide";at:Address;flags:number}
 | {op:"createHeaderFooter";section:number;kind:"header"|"footer";side:Side}
+/** A note at `at` (body, cell or text box; not inside a note): one paragraph holding the note's own number and a space, in the 각주/미주 style's shapes (the shapes at the mark when the document lacks the style). The receipt caret is after the space (offset 9). */
 | {op:"insertNote";at:Address;kind:NoteKind}
-/** Gives every note the number Hancom shows. Runs on its own after edits that add, remove or restart notes. */
+/** Gives every note the number and mirrored note shape Hancom shows. Runs on its own after edits that add, remove, paste or restart notes or change a note shape. */
 | {op:"renumberNotes"}
 | {op:"insertField";at:Address;kind:FieldKind;to?:Address;command?:string;name?:string;editable?:boolean;text?:string}
 | {op:"updateField";target:ControlAddress;patch:FieldPatch}

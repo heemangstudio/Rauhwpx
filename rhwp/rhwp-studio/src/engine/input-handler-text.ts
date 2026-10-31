@@ -27,11 +27,12 @@ import {
   NO_TEXT_MUTATION_EFFECTS,
   TextMutationEffectAccumulator,
   deleteSelectionImmediate,
+  notePathOf,
 } from './command';
 import { CapturedSnapshotCommand } from './captured-snapshot-command';
 import type { TextMutationEffects } from './command';
 import type { DocumentPosition } from '@/core/types';
-import { showConfirm } from '@/ui/confirm-dialog';
+import { confirmNoteDelete, noteMarkDeleteMessage } from '@/ui/note-delete-dialog';
 import { tryConfirmDeleteHyperlink } from './input-handler-hyperlink-delete';
 import {
   detectPlatformKind,
@@ -46,8 +47,6 @@ function charCount(s: string): number {
   return [...s].length;
 }
 
-const FOOTNOTE_DELETE_TITLE = '각주 삭제';
-const FOOTNOTE_DELETE_MESSAGE = '각주를 삭제하시겠습니까?';
 
 function tryConfirmRemoveClickHereAtBoundary(
   this: any,
@@ -170,53 +169,44 @@ function processPendingNav(this: any, nav: NavigationKeyInput): void {
   }
 }
 
+/**
+ * 본문·표 셀·글상자에서 주석 표시 바로 뒤의 Backspace, 바로 앞의 Delete 는 한컴처럼 묻고 지운다
+ * (c04a·c04c·c04h: '[각주] 를 지울까요?' / '[미주] 를 지울까요?'). 선택을 지울 때는 묻지 않는다.
+ */
 function tryDeleteBodyFootnoteAtCursor(
   this: any,
   pos: DocumentPosition,
   direction: 'backward' | 'forward',
 ): boolean {
-  if (pos.parentParaIndex !== undefined || pos.cellPath || pos.isTextBox) return false;
-
+  if (this.noteDeletePending) return true;
+  let hit;
   try {
-    const hit = this.wasm.getFootnoteAtCursor(
-      pos.sectionIndex,
-      pos.paragraphIndex,
-      pos.charOffset,
-      direction,
-    );
-    if (!hit.hit || hit.controlIndex === undefined) return false;
-
-    const sectionIndex = hit.sectionIndex ?? pos.sectionIndex;
-    const paragraphIndex = hit.paragraphIndex ?? pos.paragraphIndex;
-    const controlIndex = hit.controlIndex;
-
-    void showConfirm(FOOTNOTE_DELETE_TITLE, FOOTNOTE_DELETE_MESSAGE)
-      .then((ok) => {
-        if (!ok) {
-          this.textarea?.focus();
-          return;
-        }
-        this.executeOperation({
-          kind: 'snapshot',
-          operationType: 'deleteFootnote',
-          operation: (wasm: any) => {
-            const result = wasm.deleteFootnote(sectionIndex, paragraphIndex, controlIndex);
-            return {
-              sectionIndex: result.sectionIndex,
-              paragraphIndex: result.paragraphIndex,
-              charOffset: result.charOffset,
-            };
-          },
-        });
-        this.textarea?.focus();
-      })
-      .catch(() => {
-        this.textarea?.focus();
-      });
-    return true;
+    hit = this.wasm.getNoteAtPosition(pos, direction);
   } catch {
     return false;
   }
+  if (!hit?.hit) return false;
+  const path = notePathOf(hit);
+  const documentInstance = this.wasm.documentInstance;
+  this.noteDeletePending = true;
+  void confirmNoteDelete(noteMarkDeleteMessage(hit.kind))
+    .then((ok) => {
+      if (!ok || this.wasm.documentInstance !== documentInstance) return;
+      this.executeOperation({
+        kind: 'snapshot',
+        operationType: 'deleteFootnote',
+        operation: (wasm: any) => {
+          const result = wasm.deleteFootnote(hit.sectionIdx, hit.paraIdx, hit.controlIdx, path);
+          return result.position ?? { ...pos, charOffset: hit.charOffset };
+        },
+      });
+    })
+    .catch((error) => console.warn('[InputHandler] 주석 지우기 실패:', error))
+    .finally(() => {
+      this.noteDeletePending = false;
+      this.textarea?.focus();
+    });
+  return true;
 }
 
 /**
@@ -298,6 +288,7 @@ export function handleBackspace(this: any, pos: DocumentPosition, inCell: boolea
   }
 
   if (inCell) {
+    if (tryDeleteBodyFootnoteAtCursor.call(this, pos, 'backward')) return;
     if (charOffset > 0) {
       deleteCaretSlot.call(this, { ...pos, charOffset: charOffset - 1 }, 'backward');
     } else if (cellParaIndexOf(pos) > 0) {
@@ -371,6 +362,7 @@ export function handleDelete(this: any, pos: DocumentPosition, inCell: boolean):
     const cpi = useCellPath ? pos.cellPath![pos.cellPath!.length - 1].cellParaIndex : pos.cellParaIndex!;
     const pathJson = useCellPath ? JSON.stringify(pos.cellPath) : '';
     const paraLen = caretParagraphLength(this.wasm, pos);
+    if (tryDeleteBodyFootnoteAtCursor.call(this, pos, 'forward')) return;
     if (charOffset < paraLen) {
       deleteCaretSlot.call(this, pos, 'forward');
     } else {
@@ -515,6 +507,7 @@ export function onCompositionStart(this: any): void {
   }
   this.resetRawTextMutationEffects();
   this.headerFooterSelectionComposition = false;
+  this.footnoteSelectionComposition = false;
   if (this.readOnly || this.userEditingLocked || this.agentTemplateLocked) {
     this.resetTextareaBuffer();
     return;
@@ -553,9 +546,11 @@ export function onCompositionStart(this: any): void {
       finishSelectionComposition.call(this, false);
       throw error;
     }
-  } else if (this.cursor.isInFootnote() && this.cursor.hasSelection()) {
-    if (!this.canDeleteSelectionInFormMode?.()) return;
-    this.deleteSelection();
+  } else if (this.cursor.isInFootnote() && this.getNonEmptyFootnoteSelection()) {
+    if (!this.beginFootnoteSelectionComposition()) {
+      this.resetTextareaBuffer();
+      return;
+    }
   }
   let basePos = this.cursor.isInHeaderFooter()
     ? { ...this.cursor.getPosition(), charOffset: this.cursor.hfCharOffset }
@@ -595,6 +590,7 @@ export function onCompositionEnd(this: any, event?: CompositionEvent): void {
   const previousLength = this.compositionLength;
   const selectionComposition = !!this.selectionComposition;
   const headerFooterSelectionComposition = this.headerFooterSelectionComposition === true;
+  const footnoteSelectionComposition = this.footnoteSelectionComposition === true;
   const textareaText = this.unconsumedTextareaValue().replace(/[\r\n]+/g, '');
   const commit = this.imeSession.finish(event?.data, textareaText);
   if (!commit) {
@@ -648,16 +644,15 @@ export function onCompositionEnd(this: any, event?: CompositionEvent): void {
         }
         committed = true;
       } else if (this.cursor.isInFootnote()) {
-        const target = {
-          sectionIdx: this.cursor.fnSectionIdx, paraIdx: this.cursor.fnParaIdx, controlIdx: this.cursor.fnControlIdx,
-          footnoteIndex: this.cursor.fnFootnoteIndex, pageNum: this.cursor.fnPageNum,
-        };
-        this.executeOperation({
-          kind: 'record',
-          command: new InsertTextInFootnoteCommand(
-            target, this.cursor.fnInnerParaIdx, anchor.charOffset, composed, this.peekPendingCharFormat?.(),
-          ),
-        });
+        // 선택 위 IME 는 beginFootnoteSelectionComposition 이 만든 snapshot 이 조합 글자까지 담는다.
+        if (!footnoteSelectionComposition) {
+          this.executeOperation({
+            kind: 'record',
+            command: new InsertTextInFootnoteCommand(
+              this.footnoteEditTarget(), this.cursor.fnInnerParaIdx, anchor.charOffset, composed, this.peekPendingCharFormat?.(),
+            ),
+          });
+        }
         committed = true;
       } else if (!this.selectionComposition) {
         const refreshClickHereGuide = this.isClickHereGuidePosition?.(anchor) === true;
@@ -675,6 +670,9 @@ export function onCompositionEnd(this: any, event?: CompositionEvent): void {
 
   if (headerFooterSelectionComposition) {
     this.finishHeaderFooterSelectionComposition();
+  }
+  if (footnoteSelectionComposition) {
+    this.finishFootnoteSelectionComposition();
   }
   finishSelectionComposition.call(this, committed);
 
@@ -695,6 +693,8 @@ export function onCompositionEnd(this: any, event?: CompositionEvent): void {
     processPendingNav.call(this, nav);
   }
   } finally {
+    // 확정 없이 끝난 주석 선택 조합도 선택을 지운 이력의 다시 하기 상태를 지금 문서로 맞춘다.
+    if (this.footnoteSelectionComposition) this.finishFootnoteSelectionComposition();
     const cancelledSelection = !!this.selectionComposition;
     finishSelectionComposition.call(this, false);
     if (cancelledSelection) this.afterEdit();
@@ -856,15 +856,17 @@ export function onInput(this: any, e?: InputEvent): void {
   // 각주 편집 모드
   if (this.cursor.isInFootnote()) {
     try {
-      // 선택 위에 친 글자는 선택을 바꾼다. 지운 뒤 캐럿은 선택 처음에 있다.
-      this.deleteFootnoteSelection();
-      const target = {
-        sectionIdx: this.cursor.fnSectionIdx, paraIdx: this.cursor.fnParaIdx, controlIdx: this.cursor.fnControlIdx,
-        footnoteIndex: this.cursor.fnFootnoteIndex, pageNum: this.cursor.fnPageNum,
-      };
+      // 선택 위에 친 글자는 선택을 바꾼다. 지우기와 넣기, 이어 친 글자가 되돌리기 한 번이다(한컴 c09d).
+      if (this.getNonEmptyFootnoteSelection()) {
+        this.replaceFootnoteSelection(text, {
+          operationType: 'replaceSelectionInFootnote', typing: true, charFormat: this.peekPendingCharFormat?.(),
+        });
+        return;
+      }
+      const target = this.footnoteEditTarget();
       const innerParaIdx = this.cursor.fnInnerParaIdx;
       const charOffset = this.cursor.fnCharOffset;
-      this.wasm.insertTextInFootnote(target.sectionIdx, target.paraIdx, target.controlIdx, innerParaIdx, charOffset, text);
+      this.wasm.insertTextInFootnote(target.sectionIdx, target.paraIdx, target.controlIdx, innerParaIdx, charOffset, text, notePathOf(target));
       this.applyPendingCharFormatToInsertedRange?.({ ...this.cursor.getPosition(), charOffset }, charCount(text));
       this.executeOperation({
         kind: 'record',
@@ -927,7 +929,7 @@ export function insertTextAtRaw(this: any, pos: DocumentPosition, text: string):
   if (this.cursor.isInFootnote()) {
     this.wasm.insertTextInFootnote(
       this.cursor.fnSectionIdx, this.cursor.fnParaIdx, this.cursor.fnControlIdx,
-      this.cursor.fnInnerParaIdx, pos.charOffset, text,
+      this.cursor.fnInnerParaIdx, pos.charOffset, text, this.cursor.fnNotePath,
     );
     return IMMEDIATE_TEXT_MUTATION_EFFECTS;
   }
@@ -943,6 +945,15 @@ export function replaceTextAtRaw(
   if (!this.canInsertTextInFormMode?.(pos)) return NO_TEXT_MUTATION_EFFECTS;
   if (deleteCount > 0 && !this.canDeleteTextInFormMode?.(pos, deleteCount)) {
     return NO_TEXT_MUTATION_EFFECTS;
+  }
+  // 주석 안 IME 조합 갱신은 지우기와 넣기를 한 엔진 트랜잭션으로 한다.
+  if (this.cursor.isInFootnote()) {
+    const para = this.cursor.fnInnerParaIdx;
+    this.wasm.replaceRangeInFootnote(
+      this.cursor.fnSectionIdx, this.cursor.fnParaIdx, this.cursor.fnControlIdx,
+      para, pos.charOffset, para, pos.charOffset + Math.max(0, deleteCount), text, this.cursor.fnNotePath,
+    );
+    return IMMEDIATE_TEXT_MUTATION_EFFECTS;
   }
   if (
     !this.cursor.isInHeaderFooter() &&
@@ -984,7 +995,7 @@ export function deleteTextAt(this: any, pos: DocumentPosition, count: number): T
   if (this.cursor.isInFootnote()) {
     this.wasm.deleteTextInFootnote(
       this.cursor.fnSectionIdx, this.cursor.fnParaIdx, this.cursor.fnControlIdx,
-      this.cursor.fnInnerParaIdx, pos.charOffset, count,
+      this.cursor.fnInnerParaIdx, pos.charOffset, count, this.cursor.fnNotePath,
     );
     return NO_TEXT_MUTATION_EFFECTS;
   }

@@ -88,9 +88,10 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "fnParaIdx",
       "startOffset",
       "endOffset",
-      "propsJson"
+      "propsJson",
+      "notePath"
     ],
-    "signature": "applyCharFormatInFootnote(sec: number, para: number, controlIdx: number, fnParaIdx: number, startOffset: number, endOffset: number, propsJson: string)"
+    "signature": "applyCharFormatInFootnote(sec: number, para: number, controlIdx: number, fnParaIdx: number, startOffset: number, endOffset: number, propsJson: string, notePath?: string)"
   },
   {
     "method": "applyCharFormatInHeaderFooter",
@@ -136,7 +137,16 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "sec",
       "settings"
     ],
-    "signature": "applyEndnoteShape(sec: number, settings: EndnoteShapeSettings)"
+    "signature": "applyEndnoteShape(sec: number, settings: NoteShapeSettings)"
+  },
+  {
+    "method": "applyFootnoteShape",
+    "kind": "document",
+    "parameters": [
+      "sec",
+      "settings"
+    ],
+    "signature": "applyFootnoteShape(sec: number, settings: NoteShapeSettings)"
   },
   {
     "method": "applyHfTemplate",
@@ -148,6 +158,15 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "templateId"
     ],
     "signature": "applyHfTemplate(sec: number, isHeader: boolean, applyTo: number, templateId: number)"
+  },
+  {
+    "method": "applyNoteShapeToDocument",
+    "kind": "document",
+    "parameters": [
+      "kind",
+      "changes"
+    ],
+    "signature": "applyNoteShapeToDocument(kind: 'footnote' | 'endnote', changes: Partial<NoteShapeSettings>)"
   },
   {
     "method": "applyParaFormat",
@@ -203,9 +222,10 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "para",
       "controlIdx",
       "fnParaIdx",
-      "propsJson"
+      "propsJson",
+      "notePath"
     ],
-    "signature": "applyParaFormatInFootnote(sec: number, para: number, controlIdx: number, fnParaIdx: number, propsJson: string)"
+    "signature": "applyParaFormatInFootnote(sec: number, para: number, controlIdx: number, fnParaIdx: number, propsJson: string, notePath?: string)"
   },
   {
     "method": "applyParaFormatInHf",
@@ -488,9 +508,10 @@ export const ENGINE_EDIT_CAPABILITIES = [
     "parameters": [
       "sec",
       "para",
-      "controlIdx"
+      "controlIdx",
+      "notePath"
     ],
-    "signature": "deleteFootnote(sec: number, para: number, controlIdx: number)"
+    "signature": "deleteFootnote(sec: number, para: number, controlIdx: number, notePath?: string)"
   },
   {
     "method": "deleteHeaderFooter",
@@ -718,9 +739,10 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "controlIdx",
       "fnParaIdx",
       "charOffset",
-      "count"
+      "count",
+      "notePath"
     ],
-    "signature": "deleteTextInFootnote(sec: number, para: number, controlIdx: number, fnParaIdx: number, charOffset: number, count: number)"
+    "signature": "deleteTextInFootnote(sec: number, para: number, controlIdx: number, fnParaIdx: number, charOffset: number, count: number, notePath?: string)"
   },
   {
     "method": "deleteTextInHeaderFooter",
@@ -931,6 +953,15 @@ export const ENGINE_EDIT_CAPABILITIES = [
     "signature": "insertNewNumber(sec: number, para: number, charOffset: number, startNum: number)"
   },
   {
+    "method": "insertNoteAt",
+    "kind": "document",
+    "parameters": [
+      "pos",
+      "kind"
+    ],
+    "signature": "insertNoteAt(pos: DocumentPosition, kind: 'footnote' | 'endnote')"
+  },
+  {
     "method": "insertPageBreak",
     "kind": "document",
     "parameters": [
@@ -1086,9 +1117,10 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "controlIdx",
       "fnParaIdx",
       "charOffset",
-      "text"
+      "text",
+      "notePath"
     ],
-    "signature": "insertTextInFootnote(sec: number, para: number, controlIdx: number, fnParaIdx: number, charOffset: number, text: string)"
+    "signature": "insertTextInFootnote(sec: number, para: number, controlIdx: number, fnParaIdx: number, charOffset: number, text: string, notePath?: string)"
   },
   {
     "method": "insertTextInHeaderFooter",
@@ -1152,9 +1184,10 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "sec",
       "para",
       "controlIdx",
-      "fnParaIdx"
+      "fnParaIdx",
+      "notePath"
     ],
-    "signature": "mergeParagraphInFootnote(sec: number, para: number, controlIdx: number, fnParaIdx: number)"
+    "signature": "mergeParagraphInFootnote(sec: number, para: number, controlIdx: number, fnParaIdx: number, notePath?: string)"
   },
   {
     "method": "mergeParagraphInHeaderFooter",
@@ -1334,6 +1367,22 @@ export const ENGINE_EDIT_CAPABILITIES = [
     "signature": "pasteHwpJson(sec: number, para: number, charOffset: number, json: string)"
   },
   {
+    "method": "pasteInFootnote",
+    "kind": "document",
+    "parameters": [
+      "sec",
+      "para",
+      "controlIdx",
+      "startFnPara",
+      "startOffset",
+      "endFnPara",
+      "endOffset",
+      "text",
+      "notePath"
+    ],
+    "signature": "pasteInFootnote(sec: number, para: number, controlIdx: number, startFnPara: number, startOffset: number, endFnPara: number, endOffset: number, text: string | null, notePath?: string)"
+  },
+  {
     "method": "pasteInternal",
     "kind": "document",
     "parameters": [
@@ -1488,6 +1537,22 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "caseSensitive"
     ],
     "signature": "replaceOne(query: string, newText: string, caseSensitive: boolean)"
+  },
+  {
+    "method": "replaceRangeInFootnote",
+    "kind": "document",
+    "parameters": [
+      "sec",
+      "para",
+      "controlIdx",
+      "startFnPara",
+      "startOffset",
+      "endFnPara",
+      "endOffset",
+      "replacementText",
+      "notePath"
+    ],
+    "signature": "replaceRangeInFootnote(sec: number, para: number, controlIdx: number, startFnPara: number, startOffset: number, endFnPara: number, endOffset: number, replacementText: string, notePath?: string)"
   },
   {
     "method": "replaceRangeInHeaderFooter",
@@ -1700,9 +1765,10 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "fnParaIdx",
       "startOffset",
       "endOffset",
-      "charShapeId"
+      "charShapeId",
+      "notePath"
     ],
-    "signature": "setCharShapeIdInFootnote(sec: number, para: number, controlIdx: number, fnParaIdx: number, startOffset: number, endOffset: number, charShapeId: number)"
+    "signature": "setCharShapeIdInFootnote(sec: number, para: number, controlIdx: number, fnParaIdx: number, startOffset: number, endOffset: number, charShapeId: number, notePath?: string)"
   },
   {
     "method": "setCharShapeIdInHf",
@@ -1917,9 +1983,10 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "para",
       "controlIdx",
       "fnParaIdx",
-      "paraShapeId"
+      "paraShapeId",
+      "notePath"
     ],
-    "signature": "setParaShapeIdInFootnote(sec: number, para: number, controlIdx: number, fnParaIdx: number, paraShapeId: number)"
+    "signature": "setParaShapeIdInFootnote(sec: number, para: number, controlIdx: number, fnParaIdx: number, paraShapeId: number, notePath?: string)"
   },
   {
     "method": "setParaShapeIdInHf",
@@ -2076,9 +2143,10 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "controlIdx",
       "fnParaIdx",
       "charOffset",
-      "removedParaMeta"
+      "removedParaMeta",
+      "notePath"
     ],
-    "signature": "splitParagraphInFootnote(sec: number, para: number, controlIdx: number, fnParaIdx: number, charOffset: number, removedParaMeta?: RemovedParaMeta)"
+    "signature": "splitParagraphInFootnote(sec: number, para: number, controlIdx: number, fnParaIdx: number, charOffset: number, removedParaMeta?: RemovedParaMeta, notePath?: string)"
   },
   {
     "method": "splitParagraphInHeaderFooter",
@@ -2278,7 +2346,7 @@ export const ENGINE_EDIT_TYPE_DEFINITIONS = {
   "ShapeProperties": "export interface ShapeProperties { instanceId?: number; width: number; height: number; treatAsChar: boolean; vertRelTo: string; vertAlign: string; horzRelTo: string; horzAlign: string; vertOffset: number; horzOffset: number; textWrap: string; sizeProtect?: boolean; tbMarginLeft?: number; tbMarginRight?: number; tbMarginTop?: number; tbMarginBottom?: number; tbVerticalAlign?: string; borderColor?: number; borderWidth?: number; borderAttr?: number; borderOutlineStyle?: number; lineType?: number; lineEndShape?: number; arrowStart?: number; arrowEnd?: number; arrowStartSize?: number; arrowEndSize?: number; rotationAngle?: number; horzFlip?: boolean; vertFlip?: boolean; fillType?: string; fillBgColor?: number; fillPatColor?: number; fillPatType?: number; fillAlpha?: number; gradientType?: number; gradientAngle?: number; gradientCenterX?: number; gradientCenterY?: number; gradientBlur?: number; roundRate?: number; description: string; }",
   "PictureProperties": "export interface PictureProperties { width: number; height: number; treatAsChar: boolean; vertRelTo: string; vertAlign: string; horzRelTo: string; horzAlign: string; vertOffset: number; horzOffset: number; textWrap: string; restrictInPage?: boolean; allowOverlap?: boolean; sizeProtect?: boolean; brightness: number; contrast: number; effect: string; transparency?: number; description: string; rotationAngle: number; horzFlip: boolean; vertFlip: boolean; originalWidth: number; originalHeight: number; cropLeft: number; cropTop: number; cropRight: number; cropBottom: number; paddingLeft: number; paddingTop: number; paddingRight: number; paddingBottom: number; outerMarginLeft: number; outerMarginTop: number; outerMarginRight: number; outerMarginBottom: number; borderColor: number; borderWidth: number; hasCaption: boolean; captionDirection: string; captionVertAlign: string; captionWidth: number; captionSpacing: number; captionMaxWidth: number; captionIncludeMargin: boolean; externalPath?: string; }",
   "EquationProperties": "export interface EquationProperties { width?: number; height?: number; treatAsChar?: boolean; vertRelTo?: string; vertAlign?: string; horzRelTo?: string; horzAlign?: string; vertOffset?: number; horzOffset?: number; textWrap?: string; sizeProtect?: boolean; zOrder?: number; instanceId?: number; outerMarginLeft?: number; outerMarginTop?: number; outerMarginRight?: number; outerMarginBottom?: number; hasCaption?: boolean; captionDirection?: string; captionWidth?: number; captionSpacing?: number; description?: string; script: string; fontSize: number; color: number; baseline: number; fontName: string; }",
-  "EndnoteShapeSettings": "export interface EndnoteShapeSettings { ok?: boolean; numberFormat: EndnoteNumberFormat | string; userChar: string; prefixChar: string; suffixChar: string; startNumber: number; separatorEnabled: boolean; separatorLength: number; separatorMarginTop: number; separatorMarginBottom: number; noteSpacing: number; separatorLineType: number; separatorLineWidth: number; separatorColor: string; numbering: 'continue' | 'restartSection' | 'restartPage' | string; placement: 'documentEnd' | 'sectionEnd' | string; }",
+  "NoteShapeSettings": "export interface NoteShapeSettings { ok?: boolean; numberFormat: NoteNumberFormat | string; userChar: string; prefixChar: string; suffixChar: string; startNumber: number; superscript?: boolean; separatorEnabled: boolean; separatorLength: number; separatorMarginTop: number; separatorMarginBottom: number; noteSpacing: number; separatorLineType: number; separatorLineWidth: number; separatorColor: string; numbering: 'continue' | 'restartSection' | 'restartPage' | string; placement: 'eachColumn' | 'mergedColumn' | 'rightMostColumn' | 'documentEnd' | 'sectionEnd' | string; beneathText?: boolean; }",
   "CellPathLike": "export type CellPathLike = Array<CellPathEntry | CellPathSegment>;",
   "DocumentPosition": "export interface DocumentPosition { sectionIndex: number; paragraphIndex: number; charOffset: number; parentParaIndex?: number; controlIndex?: number; cellIndex?: number; cellParaIndex?: number; cellPath?: CellPathEntry[]; isTextBox?: boolean; cursorRect?: CursorRect; }",
   "CellProperties": "export interface CellProperties { width: number; height: number; paddingLeft: number; paddingRight: number; paddingTop: number; paddingBottom: number; applyInnerMargin: boolean; verticalAlign: number; textDirection: number; isHeader: boolean; cellProtect?: boolean; fieldName?: string; editableInForm?: boolean; borderFillId?: number; borderLeft?: BorderLineInfo; borderRight?: BorderLineInfo; borderTop?: BorderLineInfo; borderBottom?: BorderLineInfo; fillType?: string; fillColor?: string; patternColor?: string; patternType?: number; diagonalLine?: number; diagonalSlash?: number; diagonalBackSlash?: number; diagonalWidth?: number; diagonalColor?: string; centerLine?: string; }",
@@ -2288,7 +2356,7 @@ export const ENGINE_EDIT_TYPE_DEFINITIONS = {
   "PageDef": "export interface PageDef { width: number; height: number; marginLeft: number; marginRight: number; marginTop: number; marginBottom: number; marginHeader: number; marginFooter: number; marginGutter: number; landscape: boolean; binding: number; }",
   "SectionDef": "export interface SectionDef { pageNum: number; pageNumType: number; pictureNum: number; tableNum: number; equationNum: number; columnSpacing: number; defaultTabSpacing: number; hideHeader: boolean; hideFooter: boolean; hideMasterPage: boolean; hideBorder: boolean; hideFill: boolean; hideEmptyLine: boolean; }",
   "TableProperties": "export interface TableProperties { cellSpacing: number; paddingLeft: number; paddingRight: number; paddingTop: number; paddingBottom: number; pageBreak: number; repeatHeader: boolean; tableWidth?: number; tableHeight?: number; outerLeft?: number; outerRight?: number; outerTop?: number; outerBottom?: number; hasCaption?: boolean; captionDirection?: number; captionVertAlign?: number; captionWidth?: number; captionSpacing?: number; treatAsChar?: boolean; textWrap?: string; vertRelTo?: string; vertAlign?: string; horzRelTo?: string; horzAlign?: string; vertOffset?: number; horzOffset?: number; restrictInPage?: boolean; allowOverlap?: boolean; keepWithAnchor?: boolean; borderFillId?: number; borderLeft?: BorderLineInfo; borderRight?: BorderLineInfo; borderTop?: BorderLineInfo; borderBottom?: BorderLineInfo; fillType?: string; fillColor?: string; patternColor?: string; patternType?: number; }",
-  "EndnoteNumberFormat": "export type EndnoteNumberFormat = | 'digit' | 'circledDigit' | 'upperRoman' | 'lowerRoman' | 'upperAlpha' | 'lowerAlpha' | 'hangulSyllable' | 'hangulJamo' | 'hangulDigit' | 'hanjaDigit';",
+  "NoteNumberFormat": "export type NoteNumberFormat = | 'digit' | 'circledDigit' | 'upperRoman' | 'lowerRoman' | 'upperAlpha' | 'lowerAlpha' | 'circledUpperAlpha' | 'circledLowerAlpha' | 'hangulSyllable' | 'circledHangulSyllable' | 'hangulJamo' | 'circledHangulJamo' | 'hangulDigit' | 'hanjaDigit' | 'circledHanjaDigit' | 'decagonCircle' | 'decagonCircleHanja' | 'symbol' | 'userChar';",
   "CellPathEntry": "export interface CellPathEntry { controlIndex: number; cellIndex: number; cellParaIndex: number; }",
   "CellPathSegment": "export interface CellPathSegment { controlIdx: number; cellIdx: number; cellParaIdx: number; }",
   "CursorRect": "export interface CursorRect { pageIndex: number; x: number; y: number; height: number; cellBounds?: { x: number; y: number; w: number; h: number }; cellOverflowed?: boolean; }",

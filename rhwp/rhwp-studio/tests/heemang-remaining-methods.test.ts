@@ -80,7 +80,8 @@ test('각주·미주와 머리말·꼬리말의 모양 ID를 이모지 범위에
       const controls = JSON.parse(reopened.query('{"kind":"controls"}'));
       for (const c of controls.filter((c: { kind: string }) => ['header', 'footer', 'footnote', 'endnote'].includes(c.kind))) {
         const paragraphs = JSON.parse(reopened.query(JSON.stringify({ kind: 'paragraphs', list: c.lists[0] })));
-        assert.equal(paragraphs[0].text, 'A😀B');
+        // 주석 글은 번호 앞(캐럿 0)에 넣었고, 새 주석의 [번호][공백] 의 공백이 뒤에 남는다(한컴 c01).
+        assert.equal(paragraphs[0].text, ['footnote', 'endnote'].includes(c.kind) ? 'A😀B ' : 'A😀B');
         const context = JSON.parse(reopened.query(JSON.stringify({ kind: 'formatContext', at: { ...c.lists[0], para: 0, offset: paragraphs[0].offsets[1] } })));
         assert.equal(context.characters.bold, false); assert.notEqual(context.paragraphs.align, 'center');
       }

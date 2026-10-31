@@ -108,7 +108,8 @@ test('머리말과 각주에서 이어 누른 Backspace 도 한 묶음으로 되
       host.executeOperation({ kind: 'record', command: new C.DeleteTextInFootnoteCommand(target, 0, off - 1, res.deletedText, off) });
     }
     host.handleUndo();
-    assert.deepEqual(wasm.getFootnoteInfo(0, note.paraIdx, note.controlIdx).texts, ['각주글']);
+    // 글은 번호 앞(캐럿 0)에 넣었으므로 새 주석의 [번호][공백] 의 공백이 뒤에 있다(한컴 c01).
+    assert.deepEqual(wasm.getFootnoteInfo(0, note.paraIdx, note.controlIdx).texts, ['각주글 ']);
   }
 });
 

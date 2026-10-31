@@ -39,6 +39,10 @@ export interface EditorContext {
   canUngroupSelectedObject: boolean;
   /** 커서가 누름틀 필드 내부인가? */
   inField: boolean;
+  /** 각주·미주를 편집 중인가? */
+  inNote?: boolean;
+  /** 머리말·꼬리말을 편집 중인가? */
+  inHeaderFooter?: boolean;
   /** 편집 가능 모드인가? (vs 읽기 전용) */
   isEditable: boolean;
   /** 게시된 템플릿 후보처럼 창 전체가 영구 읽기 전용인가. */

@@ -369,7 +369,7 @@ function startRectHandler(anchor: DocumentPosition, cursorOverrides: Record<stri
       getCursorRect: record('getCursorRect', EXACT_PREV_LINE_END),
       getCursorRectByPath: record('getCursorRectByPath', EXACT_PREV_LINE_END),
       getCursorRectInHeaderFooter: record('getCursorRectInHeaderFooter', EXACT_PREV_LINE_END),
-      getCursorRectInFootnote: record('getCursorRectInFootnote', EXACT_PREV_LINE_END),
+      getCursorRectInNote: record('getCursorRectInNote', EXACT_PREV_LINE_END),
       getLineInfo: record('getLineInfo', { lineIndex: 1, lineCount: 2, charStart: 22, charEnd: 45 }),
       getLineInfoInCell: record('getLineInfoInCell', { lineIndex: 1, lineCount: 2, charStart: 22, charEnd: 45 }),
       getCursorRectOnLine: record('getCursorRectOnLine', NEXT_LINE_START),
@@ -415,7 +415,7 @@ test('줄 affinity 를 물을 수 없는 머리말·각주·2단 중첩 셀은 e
   assert.equal(hfLookup?.[1][5], 2);
 
   const footnote = startRectHandler({ sectionIndex: 0, paragraphIndex: 0, charOffset: 22 }, {
-    fnPageNum: 0, fnFootnoteIndex: 0, fnInnerParaIdx: 0,
+    fnSectionIdx: 0, fnParaIdx: 0, fnControlIdx: 2, fnInnerParaIdx: 0, fnNotePath: undefined,
     isInFootnote: () => true,
   });
   assert.equal(footnote.handler.compositionStartRect().x, EXACT_PREV_LINE_END.x);

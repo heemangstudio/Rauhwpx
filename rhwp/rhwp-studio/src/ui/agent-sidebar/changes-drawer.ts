@@ -173,7 +173,7 @@ function pendingObjectDetail(op: PendingOp): string {
       return `${kind} ${obj.existedBefore ? '변경' : '삽입'}${preview ? `: ${preview}` : ''}`;
     }
     case 'insertNote': return `${obj.noteKind === 'endnote' ? '미주' : '각주'} 삽입: ${obj.text}`;
-    case 'setNoteText': return `각주/미주 변경: ${obj.text}`;
+    case 'setNoteText': return `${obj.noteKind === 'endnote' ? '미주' : '각주'} 변경: ${obj.text}`;
     case 'bookmark': {
       const label = ({ add: '추가', delete: '삭제', rename: '이름 변경' } as const)[obj.op];
       const name = obj.name ?? obj.prev?.name;
