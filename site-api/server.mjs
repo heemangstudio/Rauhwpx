@@ -3,8 +3,11 @@ import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { accountError, accountIdForEmail, createAccountsService, emptyAccountsState } from './accounts.mjs';
 import {
   DEFAULT_PORT,
+  resolveAccountConfig,
+  resolveAccountsDbPath,
   resolveFeedbackDir,
   resolveFeedbackMaxBytes,
   resolveFeedbackProofKey,
@@ -37,7 +40,7 @@ import { createHeldAlerter } from './held-alert.mjs';
 import { createEmailProvider, resendProviderFromEnv } from './license-email.mjs';
 import { parseSigningPrivateKey, publicKeyFromPrivate, rawPublicKeyBase64 } from './license-lease.mjs';
 import { createLicensesService, emptyLicensesState, licenseError } from './licenses.mjs';
-import { renderUniqueInstallsPage } from './pages.mjs';
+import { renderAccountLoginErrorPage, renderUniqueInstallsPage } from './pages.mjs';
 import { MAX_RAU_BODY_BYTES, createRauService, emptyRauState, rauRateLimited } from './rau.mjs';
 import { createRateLimiter } from './rate-limit.mjs';
 import { createFileStore } from './store.mjs';
@@ -51,6 +54,7 @@ import { createWaitlistService, emptyWaitlistState } from './waitlist.mjs';
 import { createDownloadsService, emptyDownloadsState } from './downloads.mjs';
 import { createWebhookAlerter } from './webhook-alert.mjs';
 import { createWebhookLog, emptyWebhookLogState, heldEventDetails, webhookLogEntry } from './webhook-log.mjs';
+import { createWorkOSClient } from './workos.mjs';
 
 const MAX_JSON_BODY_BYTES = 64 * 1024;
 const MAX_WEBHOOK_BODY_BYTES = 256 * 1024;
@@ -200,11 +204,23 @@ function securityHeaders(isHtml) {
   };
 }
 
+/** Account routes answer `{ ok:false, error }` for unreadable bodies too. */
+async function readAccountJson(req) {
+  try {
+    return await readJson(req);
+  } catch (error) {
+    if (error?.code === 'BODY_TOO_LARGE') throw accountError('too_large', 413);
+    if (error?.code === 'JSON_INVALID') throw accountError('invalid', 400, { field: 'body' });
+    throw error;
+  }
+}
+
 export function siteRequestListener({
   uniqueInstalls,
   waitlist,
   downloads,
   licenses,
+  accounts,
   gifts,
   hama,
   rau,
@@ -240,6 +256,11 @@ export function siteRequestListener({
       if (limiter.check(`${bucket}:${ip}`, max, windowMs)) return;
       req.resume?.();
       throw rateLimitedError();
+    };
+    const allowAccount = (bucket, max, windowMs) => {
+      if (limiter.check(`${bucket}:${ip}`, max, windowMs)) return;
+      req.resume?.();
+      throw accountError('rate_limited', 429);
     };
     const rejectWebhook = (reason, { verified = false, rawBody } = {}) => {
       const status = WEBHOOK_REJECT_STATUS[reason] ?? 503;
@@ -339,7 +360,59 @@ export function siteRequestListener({
             throw siteError('NOT_FOUND', 'not found');
         }
       }
+      if (pathname.startsWith('/v1/account/')) {
+        // App routes (no CORS). Every one answers accounts_not_configured until WORKOS_API_KEY is set.
+        if (!accounts?.configured) {
+          req.resume?.();
+          throw accountError('accounts_not_configured', 503);
+        }
+        switch (route) {
+          case 'GET /v1/account/auth/providers':
+            allowAccount('account', 300, TEN_MINUTES);
+            send(200, accounts.providers());
+            return;
+          case 'POST /v1/account/auth/start':
+            allowAccount('account-start', 20, TEN_MINUTES);
+            send(200, await accounts.startLogin(await readAccountJson(req)));
+            return;
+          case 'GET /v1/account/auth/callback': {
+            allowAccount('account-callback', 60, TEN_MINUTES);
+            const result = await accounts.callback(Object.fromEntries(searchParams));
+            if (!result.redirect) {
+              send(400, renderAccountLoginErrorPage());
+              return;
+            }
+            res.writeHead(302, { Location: result.redirect, ...securityHeaders(false) });
+            res.end();
+            return;
+          }
+          case 'POST /v1/account/auth/token':
+            allowAccount('account-token', 30, TEN_MINUTES);
+            send(200, await accounts.token(await readAccountJson(req)));
+            return;
+          case 'POST /v1/account/refresh':
+            allowAccount('account', 300, TEN_MINUTES);
+            send(200, await accounts.refresh(bearerToken(req), await readAccountJson(req)));
+            return;
+          case 'POST /v1/account/signout':
+            allowAccount('account', 300, TEN_MINUTES);
+            await readAccountJson(req);
+            send(200, await accounts.signout(bearerToken(req)));
+            return;
+          case 'POST /v1/account/devices/remove':
+            allowAccount('account', 300, TEN_MINUTES);
+            send(200, await accounts.removeDevice(bearerToken(req), await readAccountJson(req)));
+            return;
+          default:
+            throw siteError('NOT_FOUND', 'not found');
+        }
+      }
       switch (route) {
+        case 'GET /v1/admin/accounts':
+          allow('admin', 120, TEN_MINUTES);
+          if (!accounts) throw siteError('NOT_FOUND', 'not found');
+          send(200, await accounts.admin.lookup(bearerToken(req), Object.fromEntries(searchParams)));
+          return;
         case 'GET /v1/groble/webhook':
           // Deploy check: 404 until this build is live, 503 while the secret is missing.
           if (!licenseConfig.webhookSecret) send(503, { ok: false, error: 'not_configured' });
@@ -745,6 +818,8 @@ export function createSiteServer(env = process.env, options = {}) {
     licenseConfig.publicKeyRawBase64 = rawPublicKeyBase64(publicKey);
   }
   const log = options.log ?? ((line) => process.stderr.write(`${line}\n`));
+  const accountConfig = resolveAccountConfig(env);
+  const accountsStore = createFileStore(resolveAccountsDbPath(env), { emptyState: emptyAccountsState });
   const webhookLog = createWebhookLog({
     store: createFileStore(resolveWebhookLogDbPath(env), { emptyState: emptyWebhookLogState }),
     now: options.now,
@@ -777,13 +852,33 @@ export function createSiteServer(env = process.env, options = {}) {
     downloadUrl: licenseConfig.downloadUrl,
     // Bound late: the Hama service authenticates through this one. With HAMA_ENABLED off no plan is active.
     hamaPlanActive: async (keyId) => hamaService?.planActive(keyId) ?? false,
+    accountForEmail: async (emailLower) => accountIdForEmail(await accountsStore.load(), emailLower),
     webhookLog,
+    now: options.now,
+    log,
+  });
+  if (accountConfig.apiKey && !signingKey) log('[site-api] WORKOS_API_KEY is set but LICENSE_SIGNING_PRIVATE_KEY is not: accounts stay off');
+  const accounts = createAccountsService({
+    store: accountsStore,
+    licenses,
+    workos: accountConfig.apiKey ? createWorkOSClient({
+      apiKey: accountConfig.apiKey,
+      clientId: accountConfig.clientId,
+      apiBase: accountConfig.apiBase,
+      redirectUri: accountConfig.redirectUri,
+      fetchImpl: options.fetchImpl,
+    }) : null,
+    signingKey,
+    leaseKid: licenseConfig.signingKeyId,
+    providers: accountConfig.providers,
+    deviceLimit: accountConfig.deviceLimit,
+    adminToken: licenseConfig.adminToken,
     now: options.now,
     log,
   });
   const gifts = createGiftsService({
     store: createFileStore(resolveGiftsDbPath(env), { emptyState: emptyGiftsState }),
-    authenticate: (lease) => licenses.authenticateLease(lease),
+    authenticate: (lease) => accounts.authenticateLease(lease, { purpose: 'gift' }),
     config: resolveGiftConfig(env),
     adminToken: licenseConfig.adminToken,
     fetchImpl: options.fetchImpl,
@@ -793,7 +888,7 @@ export function createSiteServer(env = process.env, options = {}) {
   const hamaConfig = resolveHamaConfig(env);
   const hamaService = hamaConfig.enabled ? createHamaService({
     store: createFileStore(resolveHamaDbPath(env), { emptyState: emptyHamaState }),
-    authenticate: (lease) => licenses.authenticateLease(lease),
+    authenticate: (lease) => accounts.authenticateLease(lease, { purpose: 'hama' }),
     subscriptions: () => licenses.hamaSubscriptions(),
     config: hamaConfig,
     adminToken: licenseConfig.adminToken,
@@ -808,7 +903,7 @@ export function createSiteServer(env = process.env, options = {}) {
   const rau = createRauService({
     store: createFileStore(resolveRauDbPath(env), { emptyState: emptyRauState }),
     // A revoked or expired key still authenticates here, so it hears rau_requires_pro instead of 401.
-    authenticate: (lease) => licenses.authenticateLease(lease, { allowInactive: true, withRauPlan: true }),
+    authenticate: (lease) => accounts.authenticateLease(lease, { allowInactive: true, withRauPlan: true, purpose: 'rau' }),
     config: resolveRauConfig(env),
     upgradeUrl: licenseConfig.proUpgradeUrl,
     adminToken: licenseConfig.adminToken,
@@ -830,7 +925,7 @@ export function createSiteServer(env = process.env, options = {}) {
       log,
     }),
   });
-  const listener = siteRequestListener({ uniqueInstalls, waitlist, downloads, licenses, gifts, hama, rau, feedback, licenseConfig, webhookLog, webhookAlerts, heldAlerts, log });
+  const listener = siteRequestListener({ uniqueInstalls, waitlist, downloads, licenses, accounts, gifts, hama, rau, feedback, licenseConfig, webhookLog, webhookAlerts, heldAlerts, log });
   setImmediate(() => { void feedback.prune().catch((error) => log(`[site-api] feedback prune failed: ${error?.message ?? error}`)); });
   // Retry any key email that was queued before a restart.
   setImmediate(() => { void licenses.deliverPendingEmails().catch(() => {}); });

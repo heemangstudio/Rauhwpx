@@ -1,0 +1,464 @@
+import assert from 'node:assert/strict';
+import { createHash, randomBytes } from 'node:crypto';
+import { promises as fs } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import test from 'node:test';
+
+import { resolveAccountConfig } from '../config.mjs';
+import {
+  generateLeaseKeyPair,
+  parseSigningPrivateKey,
+  signAccountLease,
+  signLease,
+  verifyAccountLease,
+  verifyLease,
+} from '../license-lease.mjs';
+import { createSiteServer } from '../server.mjs';
+import { DEFAULT_WORKOS_CLIENT_ID } from '../workos.mjs';
+import { createFakeWorkOS } from './fixtures/fake-workos.mjs';
+import { PRO_ENV, proPaid, signedGroblePost } from './fixtures/groble-pro.mjs';
+
+const ADMIN = 'admin-token-for-account-tests';
+const SECRET = 'whsec_test_accounts';
+const WORKOS_KEY = 'sk_test_fake_accounts';
+const PAIR = generateLeaseKeyPair();
+const T0 = Date.parse('2026-10-31T10:00:00+09:00');
+const MINUTE = 60 * 1000;
+const DAY = 24 * 60 * MINUTE;
+const REDIRECT = 'https://site.test/v1/account/auth/callback';
+const HAMA_MONTHLY = 'R3n8zG';
+
+function pkce() {
+  const verifier = randomBytes(32).toString('base64url');
+  return { verifier, challenge: createHash('sha256').update(verifier).digest('base64url') };
+}
+
+const device = (n, fields = {}) => ({ id: `device-${String(n).padStart(4, '0')}`, name: `기기 ${n}`, platform: 'darwin', appVersion: '2.1.0', ...fields });
+
+async function setup(t, env = {}, { clock = { now: T0 } } = {}) {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'site-api-accounts-'));
+  t.after(() => fs.rm(directory, { recursive: true, force: true, maxRetries: 5 }));
+  const workos = createFakeWorkOS({ apiKey: WORKOS_KEY, clientId: DEFAULT_WORKOS_CLIENT_ID });
+  const workosBase = await workos.listen();
+  t.after(() => workos.close());
+  const lines = [];
+  const server = createSiteServer({
+    RAU_SITE_DATA: directory,
+    GROBLE_WEBHOOK_SECRET: SECRET,
+    ADMIN_TOKEN: ADMIN,
+    LICENSE_SIGNING_PRIVATE_KEY: PAIR.privateKeyDerBase64,
+    OPENROUTER_PROVISIONING_KEY: 'pk-test-accounts',
+    GIFT_EVENT_ID: 'special-test',
+    WORKOS_API_KEY: WORKOS_KEY,
+    WORKOS_API_BASE: workosBase,
+    ACCOUNT_AUTH_REDIRECT_URI: REDIRECT,
+    ...PRO_ENV,
+    ...env,
+  }, {
+    log: (line) => lines.push(line),
+    emailProvider: { name: 'test', async send() { return { status: 'sent' }; } },
+    alertProvider: null,
+    now: () => clock.now,
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { server.closeAllConnections?.(); return new Promise((resolve) => server.close(resolve)); });
+  const origin = `http://127.0.0.1:${server.address().port}`;
+
+  const post = (route, body, headers = {}) => fetch(`${origin}${route}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...headers },
+    body: JSON.stringify(body ?? {}),
+  });
+  const bearer = (token) => ({ Authorization: `Bearer ${token}` });
+  const json = async (res) => ({ status: res.status, body: await res.json() });
+  const admin = (route, body) => post(route, body, bearer(ADMIN)).then((r) => r.json());
+  const adminGet = (route) => fetch(`${origin}${route}`, { headers: bearer(ADMIN) }).then((r) => r.json());
+
+  /** POST /auth/start; resolves to the login id (WorkOS `state`) and the PKCE pair. */
+  async function start(fields = {}) {
+    const pair = pkce();
+    const appState = `app-${randomBytes(12).toString('hex')}`;
+    const res = await json(await post('/v1/account/auth/start', { provider: 'google', challenge: pair.challenge, port: 49152, state: appState, ...fields }));
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    return { ...pair, appState, url: new URL(res.body.url), loginId: new URL(res.body.url).searchParams.get('state'), res };
+  }
+  /** The WorkOS redirect onto our callback; resolves to the status and the loopback URL it sends the browser to. */
+  async function callback(query) {
+    const res = await fetch(`${origin}/v1/account/auth/callback?${new URLSearchParams(query)}`, { redirect: 'manual' });
+    const location = res.headers.get('location');
+    return { status: res.status, location: location ? new URL(location) : null, text: await res.text(), headers: res.headers };
+  }
+  /** start → AuthKit → callback; resolves to the grant and what the token call needs. */
+  async function authorize(user = { email: 'buyer@example.com' }) {
+    const login = await start();
+    const back = await callback({ code: workos.signIn(user), state: login.loginId });
+    assert.equal(back.status, 302, back.text);
+    return { ...login, code: back.location.searchParams.get('code'), back };
+  }
+  const token = (body) => post('/v1/account/auth/token', body).then(json);
+  /** A whole sign-in on one device; resolves to the token answer's body. */
+  async function signIn(user, dev = device(1)) {
+    const grant = await authorize(user);
+    const res = await token({ code: grant.code, verifier: grant.verifier, device: dev });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    return res.body;
+  }
+  const refresh = (session, body = {}) => post('/v1/account/refresh', body, bearer(session)).then(json);
+  async function buy(event) {
+    const result = await (await signedGroblePost(origin, SECRET, event)).json();
+    assert.equal(result.action, 'issued', JSON.stringify(result));
+    return result;
+  }
+  return {
+    origin, directory, workos, workosBase, clock, lines, post, bearer, json, admin, adminGet,
+    start, callback, authorize, token, signIn, refresh, buy,
+    stored: async () => JSON.parse(await fs.readFile(path.join(directory, 'accounts.json'), 'utf8')),
+    licensesFile: async () => JSON.parse(await fs.readFile(path.join(directory, 'licenses.json'), 'utf8')),
+    rauStatus: (lease) => fetch(`${origin}/v1/rau/status`, { headers: bearer(lease) }).then(json),
+    hamaStatus: (lease) => fetch(`${origin}/v1/hama/status`, { headers: bearer(lease) }).then(json),
+    giftStatus: (lease) => fetch(`${origin}/v1/gift/status`, { headers: bearer(lease) }).then(json),
+  };
+}
+
+test('config: defaults, provider and device-limit checks fail startup on a typo', () => {
+  const config = resolveAccountConfig({});
+  assert.deepEqual(config, {
+    apiKey: '',
+    clientId: 'client_01M66W83D02NGE62TDVKR8PW8S',
+    apiBase: 'https://api.workos.com',
+    redirectUri: 'https://rau-credits-production.up.railway.app/v1/account/auth/callback',
+    providers: ['email', 'google', 'apple'],
+    deviceLimit: 5,
+  });
+  assert.deepEqual(resolveAccountConfig({ ACCOUNT_AUTH_PROVIDERS: 'google', ACCOUNT_DEVICE_LIMIT: '3' }).providers, ['google']);
+  assert.throws(() => resolveAccountConfig({ ACCOUNT_AUTH_PROVIDERS: 'email,kakao' }), /kakao/);
+  assert.throws(() => resolveAccountConfig({ ACCOUNT_AUTH_PROVIDERS: 'github' }), /github/);
+  assert.throws(() => resolveAccountConfig({ ACCOUNT_DEVICE_LIMIT: '21' }), /ACCOUNT_DEVICE_LIMIT/);
+  assert.throws(() => resolveAccountConfig({ ACCOUNT_AUTH_REDIRECT_URI: 'http://example.com/cb' }), /https/);
+});
+
+test('account leases: v2 signs and verifies with every reason, and neither version accepts the other', () => {
+  const key = parseSigningPrivateKey(PAIR.privateKeyDerBase64);
+  const keys = { 'hama-prod-1': PAIR.publicKeyRawBase64 };
+  const { lease, payload } = signAccountLease({ accountId: 'acct_1', deviceId: 'device-0001', keyId: 'lic_1', tier: 'pro', plan: 'monthly', now: T0, licenseExpiresAt: T0 + 30 * DAY }, key);
+  assert.deepEqual(payload, { v: 2, kid: 'hama-prod-1', accountId: 'acct_1', deviceId: 'device-0001', keyId: 'lic_1', tier: 'pro', plan: 'monthly', issuedAt: T0, expiresAt: T0 + 7 * DAY, licenseExpiresAt: T0 + 30 * DAY });
+  assert.deepEqual(verifyAccountLease(lease, keys, { deviceId: 'device-0001', accountId: 'acct_1', now: T0 + DAY }), { ok: true, payload });
+  const reason = (l, opts = {}) => verifyAccountLease(l, keys, { now: T0 + DAY, ...opts }).reason;
+  assert.equal(reason(lease, { deviceId: 'other-device' }), 'wrong_device');
+  assert.equal(reason(lease, { accountId: 'acct_2' }), 'wrong_account');
+  assert.equal(reason(lease, { now: T0 + 8 * DAY }), 'expired');
+  assert.equal(reason(lease, { now: T0 - DAY }), 'not_yet_valid');
+  assert.equal(verifyAccountLease(lease, { other: PAIR.publicKeyRawBase64 }, { now: T0 }).reason, 'unknown_kid');
+  assert.equal(reason(`${lease.split('.')[0]}.${Buffer.alloc(64).toString('base64url')}`), 'bad_signature');
+  assert.equal(reason('nope'), 'malformed');
+  const free = signAccountLease({ accountId: 'acct_1', deviceId: 'device-0001', now: T0 }, key);
+  assert.deepEqual([free.payload.keyId, free.payload.tier, free.payload.plan], [null, 'free', null]);
+
+  const v1 = signLease({ keyId: 'lic_1', key: 'HAMA-AAAAA-AAAAA-AAAAA-AAAAA-AAAAA', deviceId: 'device-0001', now: T0 }, key).lease;
+  assert.equal(verifyLease(v1, keys, { now: T0 }).ok, true);
+  assert.equal(verifyLease(lease, keys, { now: T0 }).reason, 'malformed');
+  assert.equal(reason(v1), 'malformed');
+});
+
+test('without WORKOS_API_KEY every account route answers accounts_not_configured', async (t) => {
+  const s = await setup(t, { WORKOS_API_KEY: '' });
+  for (const [method, route] of [['GET', '/v1/account/auth/providers'], ['POST', '/v1/account/auth/start'], ['GET', '/v1/account/auth/callback?code=x&state=y'], ['POST', '/v1/account/auth/token'], ['POST', '/v1/account/refresh'], ['POST', '/v1/account/signout'], ['POST', '/v1/account/devices/remove']]) {
+    const res = await fetch(`${s.origin}${route}`, { method, ...(method === 'POST' ? { body: '{}' } : {}) });
+    assert.deepEqual([res.status, await res.json()], [503, { ok: false, error: 'accounts_not_configured' }], route);
+  }
+});
+
+test('start validates its input and builds the AuthKit URL; providers come from env', async (t) => {
+  const s = await setup(t, { ACCOUNT_AUTH_PROVIDERS: 'email,google' });
+  assert.deepEqual(await (await fetch(`${s.origin}/v1/account/auth/providers`)).json(), { ok: true, providers: ['email', 'google'] });
+  const login = await s.start({ provider: 'email', loginHint: 'me@example.com' });
+  assert.equal(login.res.body.expiresAt, T0 + 10 * MINUTE);
+  assert.equal(`${login.url.origin}${login.url.pathname}`, `${s.workosBase}/user_management/authorize`);
+  assert.deepEqual(Object.fromEntries(login.url.searchParams), {
+    response_type: 'code', client_id: DEFAULT_WORKOS_CLIENT_ID, redirect_uri: REDIRECT, provider: 'authkit', state: login.loginId, login_hint: 'me@example.com',
+  });
+  assert.match(login.loginId, /^[A-Za-z0-9_-]{32}$/);
+  assert.equal((await s.start({ provider: 'google' })).url.searchParams.get('provider'), 'GoogleOAuth');
+  const stored = (await s.stored()).logins[login.loginId];
+  assert.deepEqual(stored, { challenge: login.challenge, port: 49152, appState: login.appState, provider: 'email', createdAt: new Date(T0).toISOString(), expiresAt: new Date(T0 + 10 * MINUTE).toISOString() });
+
+  const good = { provider: 'google', challenge: pkce().challenge, port: 49152, state: 'app-state-0123456789' };
+  const refused = async (body) => (await s.json(await s.post('/v1/account/auth/start', body))).body;
+  assert.deepEqual(await refused({ ...good, provider: 'apple' }), { ok: false, error: 'provider_unavailable' });
+  for (const [field, value] of [['provider', ''], ['challenge', 'short'], ['port', 80], ['port', '49152'], ['state', 'short'], ['loginHint', 'not-an-email']]) {
+    assert.deepEqual(await refused({ ...good, [field]: value }), { ok: false, error: 'invalid', field }, `${field}=${value}`);
+  }
+});
+
+test('the callback exchanges the code, stores the account and sends the browser to the loopback with a grant', async (t) => {
+  const s = await setup(t);
+  const login = await s.start();
+  const code = s.workos.signIn({ id: 'user_g1', email: 'Buyer@Example.com', firstName: '희망', lastName: '하' });
+  const back = await s.callback({ code, state: login.loginId });
+  assert.equal(back.status, 302);
+  assert.equal(`${back.location.origin}${back.location.pathname}`, 'http://127.0.0.1:49152/auth/callback');
+  const grant = back.location.searchParams.get('code');
+  assert.match(grant, /^[A-Za-z0-9_-]{43}$/);
+  assert.equal(back.location.searchParams.get('state'), login.appState);
+  assert.equal(back.headers.get('cache-control'), 'no-store');
+
+  const exchange = s.workos.calls.find((c) => c.path === '/user_management/authenticate');
+  assert.deepEqual(exchange.body, { client_id: DEFAULT_WORKOS_CLIENT_ID, client_secret: WORKOS_KEY, grant_type: 'authorization_code', code });
+  const stored = await s.stored();
+  const [account] = Object.values(stored.accounts);
+  assert.match(account.id, /^acct_[0-9a-f]{18}$/);
+  assert.deepEqual(
+    [account.workosUserId, account.email, account.emailLower, account.emailVerified, account.name, account.nameSource, account.provider, account.avatar],
+    ['user_g1', 'Buyer@Example.com', 'buyer@example.com', true, '희망 하', 'provider', 'google', null],
+  );
+  assert.deepEqual([stored.byWorkosUser, stored.byEmail, stored.logins], [{ user_g1: account.id }, { 'buyer@example.com': account.id }, {}]);
+  const grantHash = createHash('sha256').update(grant).digest('hex');
+  assert.deepEqual(stored.grants[grantHash], { accountId: account.id, challenge: login.challenge, createdAt: new Date(T0).toISOString(), expiresAt: new Date(T0 + 10 * MINUTE).toISOString(), attempts: 0 });
+  const logged = s.lines.join('\n');
+  for (const secret of [code, grant, 'Buyer@Example.com', 'buyer@example.com', WORKOS_KEY]) assert.ok(!logged.includes(secret), 'never logged');
+
+  // The login is single use: the same state again is unknown.
+  const again = await s.callback({ code: s.workos.signIn({ email: 'x@example.com' }), state: login.loginId });
+  assert.equal(again.status, 400);
+});
+
+test('WorkOS errors and a cancelled sign-in go back to the app as error codes', async (t) => {
+  const s = await setup(t);
+  const cancelled = await s.start();
+  const denied = await s.callback({ error: 'access_denied', error_description: 'The user denied', state: cancelled.loginId });
+  assert.deepEqual([denied.status, Object.fromEntries(denied.location.searchParams)], [302, { error: 'auth_cancelled', state: cancelled.appState }]);
+  const failed = await s.start();
+  const refused = await s.callback({ code: 'code_unknown', state: failed.loginId });
+  assert.deepEqual(Object.fromEntries(refused.location.searchParams), { error: 'auth_failed', state: failed.appState });
+  const other = await s.start();
+  assert.equal((await s.callback({ error: 'server_error', state: other.loginId })).location.searchParams.get('error'), 'auth_failed');
+  assert.deepEqual((await s.stored()).accounts, {});
+});
+
+test('an unknown or expired login answers a small Korean page and no redirect', async (t) => {
+  const s = await setup(t);
+  const unknown = await s.callback({ code: 'x', state: 'no-such-login' });
+  assert.equal(unknown.status, 400);
+  assert.equal(unknown.location, null);
+  assert.match(unknown.headers.get('content-type'), /^text\/html/);
+  assert.match(unknown.text, /로그인 시간이 지났어요/);
+  assert.match(unknown.text, /앱에서 다시 시도해 주세요/);
+  assert.doesNotMatch(unknown.text, /<(script|img|link)\b/);
+
+  const login = await s.start();
+  s.clock.now += 11 * MINUTE;
+  const expired = await s.callback({ code: s.workos.signIn({ email: 'late@example.com' }), state: login.loginId });
+  assert.equal(expired.status, 400);
+  assert.equal(s.workos.calls.filter((c) => c.path === '/user_management/authenticate').length, 0, 'an expired login never exchanges its code');
+});
+
+test('token: the grant is PKCE-bound, single use, capped at 10 attempts and expires', async (t) => {
+  const s = await setup(t);
+  const a = await s.authorize();
+  assert.deepEqual(await s.token({ code: a.code, verifier: pkce().verifier, device: device(1) }), { status: 400, body: { ok: false, error: 'grant_invalid' } });
+  const ok = await s.token({ code: a.code, verifier: a.verifier, device: device(1) });
+  assert.equal(ok.status, 200);
+  assert.match(ok.body.session, /^hes_[A-Za-z0-9_-]{43}$/);
+  assert.deepEqual(await s.token({ code: a.code, verifier: a.verifier, device: device(1) }), { status: 400, body: { ok: false, error: 'grant_invalid' } });
+  const stored = await s.stored();
+  assert.deepEqual(stored.grants, {});
+  assert.deepEqual(Object.keys(stored.sessions), [createHash('sha256').update(ok.body.session).digest('hex')]);
+
+  const b = await s.authorize();
+  for (let i = 0; i < 10; i += 1) assert.equal((await s.token({ code: b.code, verifier: pkce().verifier, device: device(2) })).body.error, 'grant_invalid');
+  assert.equal((await s.token({ code: b.code, verifier: b.verifier, device: device(2) })).body.error, 'grant_invalid', 'the 11th attempt finds no grant');
+
+  const c = await s.authorize();
+  s.clock.now += 11 * MINUTE;
+  assert.equal((await s.token({ code: c.code, verifier: c.verifier, device: device(3) })).body.error, 'grant_invalid');
+  assert.deepEqual((await s.token({ code: 'x', verifier: c.verifier, device: { id: 'bad id' } })).body, { ok: false, error: 'invalid', field: 'device' });
+});
+
+test('the token answer is the whole account payload with a v2 lease', async (t) => {
+  const s = await setup(t);
+  const body = await s.signIn({ email: 'new@example.com', firstName: '', lastName: '' }, device(1, { name: ' 맥북\u0007 에어 ', appVersion: '2.1.0' }));
+  const keys = { 'hama-prod-1': PAIR.publicKeyRawBase64 };
+  const verified = verifyAccountLease(body.lease, keys, { deviceId: 'device-0001', accountId: body.account.id, now: T0 });
+  assert.equal(verified.ok, true);
+  assert.deepEqual(body, {
+    ok: true,
+    session: body.session,
+    account: { id: body.account.id, email: 'new@example.com', name: 'new', avatar: null, provider: 'google', createdAt: new Date(T0).toISOString() },
+    plan: { tier: 'free', keyId: null, edition: null, plan: null, expiresAt: null, autoRenew: null, paymentFailed: false, paymentGraceEndsAt: null, manageUrl: null, rau: { eligible: false } },
+    licenses: [],
+    devices: [{ id: 'device-0001', name: '맥북 에어', platform: 'darwin', appVersion: '2.1.0', addedAt: T0, lastSeenAt: T0, current: true }],
+    deviceLimit: 5,
+    stats: { agentSessions: 0, documentsEdited: 0, since: T0, hama: null },
+    lease: body.lease,
+    leaseExpiresAt: T0 + 7 * DAY,
+  });
+  assert.deepEqual([verified.payload.keyId, verified.payload.tier, verified.payload.plan], [null, 'free', null]);
+});
+
+test('devices: limit 409 with the list, replace with replaceDeviceId, unknown replace id 404, same device keeps one slot', async (t) => {
+  const s = await setup(t, { ACCOUNT_DEVICE_LIMIT: '2' });
+  const user = { id: 'user_d', email: 'devices@example.com' };
+  const first = await s.signIn(user, device(1));
+  s.clock.now += MINUTE;
+  const second = await s.signIn(user, device(2));
+  assert.deepEqual(second.devices.map((d) => [d.id, d.current]), [['device-0002', true], ['device-0001', false]]);
+
+  // The same device again replaces its session and keeps one slot.
+  const again = await s.signIn(user, device(1, { appVersion: '2.2.0' }));
+  assert.deepEqual(again.devices.map((d) => d.id).sort(), ['device-0001', 'device-0002']);
+  assert.equal(again.devices.find((d) => d.id === 'device-0001').addedAt, T0);
+  assert.deepEqual(await s.refresh(first.session), { status: 401, body: { ok: false, error: 'session_invalid' } });
+  assert.equal((await s.refresh(again.session)).status, 200);
+
+  const third = await s.authorize(user);
+  const limited = await s.token({ code: third.code, verifier: third.verifier, device: device(3) });
+  assert.equal(limited.status, 409);
+  assert.deepEqual([limited.body.error, limited.body.limit, limited.body.devices.map((d) => d.id).sort()], ['device_limit', 2, ['device-0001', 'device-0002']]);
+  assert.ok(limited.body.devices.every((d) => d.current === false && typeof d.lastSeenAt === 'number'));
+  assert.deepEqual(await s.token({ code: third.code, verifier: third.verifier, device: device(3), replaceDeviceId: 'device-9999' }), { status: 404, body: { ok: false, error: 'device_not_found' } });
+  const replaced = await s.token({ code: third.code, verifier: third.verifier, device: device(3), replaceDeviceId: 'device-0002' });
+  assert.equal(replaced.status, 200, 'the grant survived both refusals');
+  assert.deepEqual(replaced.body.devices.map((d) => d.id).sort(), ['device-0001', 'device-0003']);
+  assert.deepEqual(await s.refresh(second.session), { status: 401, body: { ok: false, error: 'session_invalid' } });
+  assert.equal(Object.keys((await s.stored()).sessions).length, 2);
+});
+
+test('removing a device revokes its session; removing your own signs you out; signout is idempotent', async (t) => {
+  const s = await setup(t);
+  const user = { id: 'user_r', email: 'remove@example.com' };
+  const mac = await s.signIn(user, device(1));
+  const pc = await s.signIn(user, device(2, { platform: 'win32' }));
+  const removed = await s.json(await s.post('/v1/account/devices/remove', { deviceId: 'device-0002' }, s.bearer(mac.session)));
+  assert.deepEqual([removed.status, removed.body.ok, removed.body.signedOut, removed.body.devices.map((d) => d.id)], [200, true, false, ['device-0001']]);
+  assert.deepEqual(await s.refresh(pc.session), { status: 401, body: { ok: false, error: 'session_invalid' } });
+  assert.deepEqual((await s.json(await s.post('/v1/account/devices/remove', { deviceId: 'device-0002' }, s.bearer(mac.session)))).body, { ok: false, error: 'device_not_found' });
+
+  const self = await s.json(await s.post('/v1/account/devices/remove', { deviceId: 'device-0001' }, s.bearer(mac.session)));
+  assert.deepEqual(self, { status: 200, body: { ok: true, signedOut: true } });
+  assert.equal((await s.refresh(mac.session)).status, 401);
+
+  const again = await s.signIn(user, device(3));
+  for (let i = 0; i < 2; i += 1) {
+    assert.deepEqual(await s.json(await s.post('/v1/account/signout', {}, s.bearer(again.session))), { status: 200, body: { ok: true } });
+  }
+  assert.deepEqual(await s.json(await s.post('/v1/account/signout', {}, s.bearer('nonsense'))), { status: 200, body: { ok: true } });
+  assert.equal((await s.refresh(again.session)).status, 401);
+  const stored = await s.stored();
+  assert.deepEqual([stored.sessions, Object.values(stored.accounts)[0].devices], [{}, {}]);
+});
+
+test('refresh writes lastSeenAt at most hourly, updates the app version, and a session idle for 180 days is invalid', async (t) => {
+  const s = await setup(t);
+  const body = await s.signIn({ email: 'idle@example.com' });
+  const deviceOf = async () => Object.values((await s.stored()).accounts)[0].devices['device-0001'];
+  s.clock.now += 30 * MINUTE;
+  assert.equal((await s.refresh(body.session)).status, 200);
+  assert.equal((await deviceOf()).lastSeenAt, new Date(T0).toISOString(), 'no write within the hour');
+  const updated = await s.refresh(body.session, { appVersion: '2.3.0' });
+  assert.equal(updated.body.devices[0].appVersion, '2.3.0');
+  s.clock.now += 2 * 60 * MINUTE;
+  await s.refresh(body.session);
+  assert.equal((await deviceOf()).lastSeenAt, new Date(s.clock.now).toISOString());
+  s.clock.now += 181 * DAY;
+  assert.deepEqual(await s.refresh(body.session), { status: 401, body: { ok: false, error: 'session_invalid' } });
+  // Its slot is free for the next sign-in.
+  const next = await s.signIn({ email: 'idle@example.com' }, device(2));
+  assert.deepEqual(next.devices.map((d) => d.id), ['device-0002']);
+});
+
+test('licenses link by verified email only, and a webhook purchase attaches to the verified account', async (t) => {
+  const s = await setup(t);
+  const manual = await s.admin('/v1/admin/licenses/issue', { email: 'Owner@Example.com', note: 'old key' });
+  await s.admin('/v1/admin/licenses/issue', { email: 'stranger@example.com' });
+  const revoked = await s.admin('/v1/admin/licenses/issue', { email: 'owner@example.com' });
+  await s.admin('/v1/admin/licenses/revoke', { keyId: revoked.license.keyId });
+
+  const unverified = await s.signIn({ id: 'user_u', email: 'owner@example.com', verified: false }, device(1));
+  assert.deepEqual([unverified.licenses, unverified.plan.tier], [[], 'free']);
+  assert.deepEqual((await s.stored()).byEmail, {});
+  // A purchase with an unverified account's email is not attached either.
+  await s.buy(proPaid({ merchantUid: 'pro_u', ref: 'ref-u', email: 'owner@example.com' }));
+  assert.equal(Object.values((await s.licensesFile()).licenses).filter((l) => l.accountId).length, 0);
+
+  // The same WorkOS user verifies the email: the next sign-in links the manual key and the Pro key.
+  const verified = await s.signIn({ id: 'user_u', email: 'owner@example.com', verified: true }, device(1));
+  assert.equal(verified.account.id, unverified.account.id);
+  assert.deepEqual(verified.licenses.map((l) => [l.linkedBy, l.edition, l.primary]), [['email', 'pro', true], ['email', null, false]]);
+  assert.deepEqual([verified.plan.tier, verified.plan.edition, verified.plan.plan, verified.plan.rau, verified.plan.manageUrl], ['pro', 'pro', 'monthly', { eligible: true }, 'https://groble.im/manage/purchase']);
+  assert.match(verified.licenses[1].maskedKey, /^HAMA-[0-9A-Z]{5}-•••••-•••••-•••••-[0-9A-Z]{5}$/);
+  assert.equal(verified.licenses[1].keyId, manual.license.keyId);
+  const file = await s.licensesFile();
+  assert.equal(file.licenses[revoked.license.keyId].accountId, undefined, 'revoked keys stay out');
+
+  // A later purchase with the verified email attaches at once.
+  await s.buy(proPaid({ merchantUid: 'pro_2', ref: 'ref-2', email: 'OWNER@example.com' }));
+  const after = await s.refresh(verified.session);
+  assert.deepEqual(after.body.licenses.map((l) => l.linkedBy).sort(), ['email', 'email', 'purchase']);
+  const purchased = Object.values((await s.licensesFile()).licenses).find((l) => l.merchantUid === 'pro_2');
+  assert.deepEqual([purchased.accountId, purchased.linkedBy], [verified.account.id, 'purchase']);
+
+  // Another verified email signing in through the same email address finds the same account.
+  const sameEmail = await s.signIn({ id: 'user_other', email: 'owner@example.com' }, device(2));
+  assert.equal(sameEmail.account.id, verified.account.id);
+  assert.equal((await s.stored()).byWorkosUser.user_other, verified.account.id);
+});
+
+test('a v2 lease reaches gift, Hama and Rau with the license each purpose needs, and stops after its device is removed', async (t) => {
+  const s = await setup(t, { HAMA_ENABLED: 'true' });
+  await s.admin('/v1/admin/licenses/issue-beta', { name: '테스터', email: 'mixed@example.com' });
+  await s.buy(proPaid({ merchantUid: 'pro_mix', ref: 'ref-mix', email: 'mixed@example.com' }));
+  const mixed = await s.signIn({ email: 'mixed@example.com' }, device(1));
+  assert.equal(mixed.plan.tier, 'pro', 'Pro outranks the beta key');
+  const gift = await s.giftStatus(mixed.lease);
+  assert.deepEqual([gift.status, gift.body.eligible], [200, true], 'the gift picks the beta key');
+  const rau = await s.rauStatus(mixed.lease);
+  assert.deepEqual([rau.body.eligible, rau.body.capUsd], [true, 2]);
+  assert.deepEqual(await s.hamaStatus(mixed.lease), { status: 403, body: { ok: false, error: 'hama_not_enrolled' } });
+
+  const hamaUser = await s.signIn({ email: 'hama@example.com' }, device(2));
+  await s.buy(proPaid({ merchantUid: 'hama_1', ref: 'ref-hama', email: 'hama@example.com', contentId: HAMA_MONTHLY, price: 12900, cycle: 1 }));
+  const refreshed = (await s.refresh(hamaUser.session)).body;
+  assert.deepEqual([refreshed.plan.tier, refreshed.plan.edition], ['hama', 'hama']);
+  const hama = await s.hamaStatus(refreshed.lease);
+  assert.deepEqual([hama.status, hama.body.plan.status], [200, 'active']);
+  assert.deepEqual([(await s.rauStatus(refreshed.lease)).body.capUsd, (await s.giftStatus(refreshed.lease)).body.eligible], [5, false]);
+
+  // A free account: Rau hears rau_requires_pro, the others refuse the lease.
+  const free = await s.signIn({ email: 'free@example.com' }, device(3));
+  assert.deepEqual([(await s.rauStatus(free.lease)).body.eligible, (await s.rauStatus(free.lease)).body.reason], [false, 'rau_requires_pro']);
+  assert.equal((await s.giftStatus(free.lease)).status, 401);
+  assert.equal((await s.hamaStatus(free.lease)).status, 401);
+
+  await s.post('/v1/account/devices/remove', { deviceId: 'device-0001' }, s.bearer(mixed.session));
+  for (const check of [s.giftStatus, s.rauStatus, s.hamaStatus]) assert.equal((await check(mixed.lease)).status, 401);
+  s.clock.now += 8 * DAY;
+  assert.equal((await s.rauStatus(refreshed.lease)).status, 401, 'an expired v2 lease');
+});
+
+test('v1 license leases keep working unchanged', async (t) => {
+  const s = await setup(t);
+  await s.buy(proPaid({ merchantUid: 'pro_v1', ref: 'ref-v1', email: 'v1@example.com' }));
+  const { key } = await (await fetch(`${s.origin}/v1/license/by-ref?ref=ref-v1`)).json();
+  const activated = await (await s.post('/v1/license/activate', { key, deviceId: 'mac-v1-0001', platform: 'darwin' })).json();
+  assert.equal(JSON.parse(Buffer.from(activated.lease.split('.')[0], 'base64url')).v, 1);
+  const rau = await s.rauStatus(activated.lease);
+  assert.deepEqual([rau.status, rau.body.eligible, rau.body.capUsd], [200, true, 2]);
+  assert.equal((await s.giftStatus(activated.lease)).body.eligible, false);
+});
+
+test('admin lookup by email, id and key shows the account without sessions or grants', async (t) => {
+  const s = await setup(t);
+  await s.buy(proPaid({ merchantUid: 'pro_adm', ref: 'ref-adm', email: 'admin-view@example.com' }));
+  const body = await s.signIn({ id: 'user_adm', email: 'admin-view@example.com' }, device(1));
+  const byEmail = await s.adminGet('/v1/admin/accounts?email=ADMIN-VIEW@example.com');
+  const keyId = body.licenses[0].keyId;
+  assert.deepEqual(await s.adminGet(`/v1/admin/accounts?keyId=${keyId}`), byEmail);
+  assert.deepEqual(await s.adminGet(`/v1/admin/accounts?id=${body.account.id}`), byEmail);
+  const [view] = byEmail.accounts;
+  assert.deepEqual([view.id, view.workosUserId, view.emailVerified, view.devices.map((d) => d.id), view.licenses.map((l) => l.keyId)], [body.account.id, 'user_adm', true, ['device-0001'], [keyId]]);
+  const text = JSON.stringify(byEmail);
+  assert.ok(!text.includes('sessionHash') && !text.includes(body.session) && !text.includes(createHash('sha256').update(body.session).digest('hex')));
+  assert.equal((await fetch(`${s.origin}/v1/admin/accounts?email=x`)).status, 403);
+  assert.deepEqual(await s.adminGet('/v1/admin/licenses?keyId=' + keyId).then((r) => [r.licenses[0].accountId, r.licenses[0].linkedBy]), [body.account.id, 'email']);
+});

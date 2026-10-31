@@ -179,6 +179,17 @@ export function rauPlanOf(license, nowMs, graceMaxMs, hamaActive = false) {
   return license.edition === 'pro' && end !== null ? 'pro' : null;
 }
 
+/** `HAMA-ABCDE-•••••-•••••-•••••-VWXYZ`: the first and last groups only. */
+export function maskLicenseKey(key) {
+  const groups = String(key ?? '').split('-');
+  if (groups.length !== 6) return 'HAMA-•••••';
+  return [groups[0], groups[1], '•••••', '•••••', '•••••', groups[5]].join('-');
+}
+
+/** Account tier by the primary license's rank (see accountEntitlements). */
+const RANK_TIERS = { 1: 'legacy', 2: 'pro', 3: 'hama' };
+const ACCOUNT_EDITIONS = new Set(['pro', 'hama', 'signature']);
+
 function normalizeState(state) {
   const base = emptyLicensesState();
   const next = state && typeof state === 'object' && !Array.isArray(state) ? state : {};
@@ -246,6 +257,10 @@ function licenseView(license, { includeKey = true } = {}) {
     note: license.note,
     devices: Object.entries(license.devices ?? {}).map(([deviceId, d]) => ({ deviceId, ...d })),
     emailDelivery: license.emailDelivery,
+    accountId: license.accountId ?? null,
+    linkedBy: license.linkedBy,
+    linkedAt: license.linkedAt,
+    unlinkedAt: license.unlinkedAt,
   };
 }
 
@@ -319,6 +334,8 @@ export function createLicensesService({
   adminToken = '',
   downloadUrl = 'https://heemangstudios.com/',
   hamaPlanActive = async () => false,
+  // A plain read of accounts.json (no lock): the account a verified buyer email belongs to, or null.
+  accountForEmail = async () => null,
   webhookLog = createWebhookLog({ now }),
   log = (line) => process.stderr.write(`${line}\n`),
 } = {}) {
@@ -390,6 +407,15 @@ export function createLicensesService({
     license.revokedAt = new Date(now()).toISOString();
     license.revokeReason = reason;
     return true;
+  }
+
+  /** The license ↔ account link lives on the license record. */
+  function linkLicense(license, accountId, linkedBy) {
+    license.accountId = accountId;
+    license.linkedAt = new Date(now()).toISOString();
+    license.linkedBy = linkedBy;
+    delete license.unlinkedAt;
+    delete license.unlinkedBy;
   }
 
   function findLicense(state, { key, keyId, merchantUid, ref } = {}) {
@@ -541,23 +567,27 @@ export function createLicensesService({
     return matches.length === 1 ? matches[0] : undefined;
   }
 
-  function attachToIssued(state, order, email, event) {
+  function attachToIssued(state, order, email, event, buyerAccountId) {
     const license = state.licenses[order.keyId];
     if (license) {
       license.ref = license.ref ?? order.ref;
       license.email = license.email ?? email;
       license.amount = license.amount ?? order.amount;
       license.occurredAt = license.occurredAt ?? event.occurredAt;
+      if (buyerAccountId && !license.accountId && license.status !== 'revoked') linkLicense(license, buyerAccountId, 'purchase');
     }
     return { action: 'already_issued', keyId: order.keyId };
   }
 
-  /** One-time `payment.completed` or the INITIAL round of a subscription: one key per merchantUid. */
-  function onCompleted(state, event, object, { subscription = false } = {}) {
+  /**
+   * One-time `payment.completed` or the INITIAL round of a subscription: one key per merchantUid.
+   * `buyerAccountId` is the verified account of the buyer's email; the new key is linked to it.
+   */
+  function onCompleted(state, event, object, { subscription = false, buyerAccountId = null } = {}) {
     const order = recordOrder(state, event, object, subscription ? 'subscription' : undefined);
     const email = str(object?.buyer?.email, 254);
     // Already issued (webhook retry with a new delivery key, or a manual backfill). Attach data only.
-    if (order.keyId) return attachToIssued(state, order, email, event);
+    if (order.keyId) return attachToIssued(state, order, email, event, buyerAccountId);
     // Refund arrived before the completion (Groble does not guarantee order). Never issue.
     if (order.status === 'refunded') return { action: 'refunded_before_completed' };
     const problem = checkPurchase(object, { subscription });
@@ -574,6 +604,7 @@ export function createLicensesService({
       ...(subscription ? planEntitlement(product, order.billingCycleMonths) : {}),
       ...(product?.kind === 'signature' ? signatureEntitlement(product.id, paidAtOf(order)) : {}),
     });
+    if (buyerAccountId) linkLicense(license, buyerAccountId, 'purchase');
     queueEmail(license);
     order.status = 'issued';
     order.keyId = license.keyId;
@@ -758,17 +789,33 @@ export function createLicensesService({
   }
 
   const GROBLE_HANDLERS = {
-    'payment.completed': (state, event, object) => onCompleted(state, event, object),
+    'payment.completed': (state, event, object, context) => onCompleted(state, event, object, context),
     'payment.cancel_requested': onCancelRequested,
     'payment.refunded': onRefunded,
-    'subscription_payment.completed': (state, event, object) => (object?.subscription?.billingReason === 'RENEWAL'
+    'subscription_payment.completed': (state, event, object, context) => (object?.subscription?.billingReason === 'RENEWAL'
       ? onRenewal(state, event, object)
-      : onCompleted(state, event, object, { subscription: true })),
+      : onCompleted(state, event, object, { ...context, subscription: true })),
     'subscription_payment.refunded': onRefunded,
     'subscription_payment.failed': onPaymentFailed,
     'subscription.cancel_requested': onSubscriptionCancelRequested,
     'subscription.terminated': onSubscriptionTerminated,
   };
+
+  function issuesKey(type, object) {
+    return type === 'payment.completed'
+      || (type === 'subscription_payment.completed' && object?.subscription?.billingReason !== 'RENEWAL');
+  }
+
+  /** The verified account of the buyer's email, or null. Never fails the webhook. */
+  async function buyerAccount(object) {
+    const email = str(object?.buyer?.email, 254)?.toLowerCase();
+    if (!email) return null;
+    const accountId = await Promise.resolve().then(() => accountForEmail(email)).catch((error) => {
+      log(`[site-api] account lookup for a purchase failed: ${error?.message ?? error}`);
+      return null;
+    });
+    return accountId ?? null;
+  }
 
   /**
    * Process one verified Groble event. Returns a small summary (never buyer data). An event we
@@ -781,6 +828,8 @@ export function createLicensesService({
     }
     const type = str(event.type, 64);
     const object = event?.data?.object;
+    // Read before the lock: accounts.json is another service's store.
+    const buyerAccountId = issuesKey(type, object) ? await buyerAccount(object) : null;
     return mutate(async (state) => {
       pruneWebhookEvents(state);
       const dedupeKey = idempotencyKey || (event.id ? `event:${event.id}` : '');
@@ -797,7 +846,7 @@ export function createLicensesService({
       } else {
         object.merchantUid = str(object.merchantUid, 128);
         const occurredMs = parseTime(event.occurredAt) ?? now();
-        result = handler(state, event, object);
+        result = handler(state, event, object, { buyerAccountId });
         const order = state.orders[object.merchantUid];
         const last = parseTime(order?.lastEventAt);
         if (order && (last === undefined || occurredMs > last)) order.lastEventAt = new Date(occurredMs).toISOString();
@@ -931,12 +980,15 @@ export function createLicensesService({
   }
 
   /** A Hama store that cannot be read leaves the key's other entitlements in place. */
-  async function rauPlanFor(license) {
-    const hamaActive = await Promise.resolve(hamaPlanActive(license.keyId)).catch((error) => {
+  async function hamaActiveOf(license) {
+    return Promise.resolve(hamaPlanActive(license.keyId)).catch((error) => {
       log(`[site-api] hama plan of ${license.keyId} unreadable: ${error?.message ?? error}`);
       return false;
     });
-    return rauPlanOf(license, now(), paymentGraceMaxMs, hamaActive);
+  }
+
+  async function rauPlanFor(license) {
+    return rauPlanOf(license, now(), paymentGraceMaxMs, await hamaActiveOf(license));
   }
 
   /** `submittedKey` is what the app sent; the lease's keyHash is over the app's normalization of it. */
@@ -1058,6 +1110,166 @@ export function createLicensesService({
       edition: license.edition ?? null,
       active,
       ...(withRauPlan ? { rauPlan: await rauPlanFor(license) } : {}),
+    };
+  }
+
+  // ------------------------------------------------------------ accounts
+
+  /**
+   * Licenses linked to an account, each with what ranks it: live = active and before its access end
+   * (lifetime keys always), rank 3 for a Hama key or a key with an active Hama plan, 2 for Pro, 1 for
+   * every other key (GLJFC9, lifetime, Signature, beta, grandfathered, manual).
+   */
+  async function linkedOf(state, accountId) {
+    const nowMs = now();
+    const linked = Object.values(state.licenses).filter((license) => license.accountId === accountId);
+    return Promise.all(linked.map(async (license) => {
+      const end = accessEnd(license);
+      const live = license.status === 'active' && (end === null || nowMs < end);
+      const hamaActive = live && await hamaActiveOf(license);
+      return {
+        license,
+        live,
+        end,
+        hamaActive,
+        rank: hamaActive || license.edition === 'hama' ? 3 : license.edition === 'pro' ? 2 : 1,
+        rauPlan: live ? rauPlanOf(license, nowMs, paymentGraceMaxMs, hamaActive) : null,
+      };
+    }));
+  }
+
+  /** Primary first: highest rank, then latest access end (lifetime last forever), then oldest. */
+  function byPrimary(a, b) {
+    if (a.rank !== b.rank) return b.rank - a.rank;
+    const endA = a.end ?? Infinity;
+    const endB = b.end ?? Infinity;
+    if (endA !== endB) return endB > endA ? 1 : -1;
+    return String(a.license.createdAt).localeCompare(String(b.license.createdAt));
+  }
+
+  async function liveLinked(accountId) {
+    return (await linkedOf(await read(), accountId)).filter((entry) => entry.live).sort(byPrimary);
+  }
+
+  function editionOf(license) {
+    return ACCOUNT_EDITIONS.has(license.edition) ? license.edition : null;
+  }
+
+  function accountLicenseView({ license, live }, primaryKeyId) {
+    const expiry = expiryOf(license);
+    let status = 'active';
+    if (license.status === 'revoked') status = 'revoked';
+    else if (!live) status = 'expired';
+    else if (graceEndOf(license) !== null) status = 'past_due';
+    return {
+      keyId: license.keyId,
+      maskedKey: maskLicenseKey(license.key),
+      tier: tierOf(license),
+      edition: editionOf(license),
+      plan: planOf(license),
+      status,
+      expiresAt: expiry,
+      autoRenew: expiry === null ? null : license.subscription?.autoRenew !== false,
+      primary: license.keyId === primaryKeyId,
+      linkedBy: license.linkedBy ?? null,
+      linkedAt: parseTime(license.linkedAt) ?? null,
+    };
+  }
+
+  function licensesListOf(entries, primaryKeyId) {
+    return [...entries]
+      .sort((a, b) => (b.license.keyId === primaryKeyId) - (a.license.keyId === primaryKeyId)
+        || String(b.license.createdAt).localeCompare(String(a.license.createdAt)))
+      .map((entry) => accountLicenseView(entry, primaryKeyId));
+  }
+
+  /**
+   * What an account is entitled to now. `plan` and `licenses` go to the app as they are; `primary`
+   * carries the fields the account lease signs.
+   */
+  async function accountEntitlements(accountId) {
+    const entries = await linkedOf(await read(), accountId);
+    const live = entries.filter((entry) => entry.live).sort(byPrimary);
+    const top = live[0];
+    const license = top?.license;
+    const expiry = license ? expiryOf(license) : null;
+    const graceEnd = license ? graceEndOf(license) : null;
+    const tier = top ? RANK_TIERS[top.rank] : 'free';
+    return {
+      tier,
+      primary: license ? {
+        keyId: license.keyId,
+        beta: tierOf(license) === 'beta',
+        plan: planOf(license),
+        licenseExpiresAt: expiry,
+        paymentGraceEndsAt: graceEnd,
+      } : null,
+      plan: {
+        tier,
+        keyId: license?.keyId ?? null,
+        edition: license ? editionOf(license) : null,
+        plan: license ? planOf(license) : null,
+        expiresAt: expiry,
+        autoRenew: expiry === null ? null : license.subscription?.autoRenew !== false,
+        paymentFailed: graceEnd !== null,
+        paymentGraceEndsAt: graceEnd,
+        manageUrl: expiry === null ? null : paymentFixUrl,
+        rau: { eligible: live.some((entry) => entry.rauPlan !== null) },
+      },
+      licenses: licensesListOf(entries, license?.keyId ?? null),
+    };
+  }
+
+  /** Every license linked to the account, primary first, then newest. */
+  async function accountLicensesView(accountId) {
+    return (await accountEntitlements(accountId)).licenses;
+  }
+
+  /**
+   * Links every license bought with this (verified) email that has no account yet. Revoked keys and
+   * keys an admin unlinked stay out. Returns how many were linked.
+   */
+  async function linkByEmail(emailLower, accountId) {
+    const email = typeof emailLower === 'string' ? emailLower.trim().toLowerCase() : '';
+    if (!email || !accountId) return 0;
+    return mutate((state) => {
+      let count = 0;
+      for (const license of Object.values(state.licenses)) {
+        if (license.accountId || license.status === 'revoked' || license.unlinkedBy === 'admin') continue;
+        if (license.email?.toLowerCase() !== email) continue;
+        linkLicense(license, accountId, 'email');
+        count += 1;
+      }
+      return { dirty: count > 0, value: count };
+    });
+  }
+
+  /**
+   * The principal of an account lease for a hosted service, the same shape as authenticateLease plus
+   * `accountId`. The license is chosen now by purpose: `gift` a live beta key, `hama` a key with an
+   * active Hama plan or the Hama edition, `rau` the best Rau plan (hama over pro); else the primary.
+   * Without a live license, `allowInactive` answers `{ keyId: null, active: false }`; otherwise 401.
+   */
+  async function authenticateAccount(accountId, { deviceId, platform, purpose, allowInactive = false, withRauPlan = false } = {}) {
+    const live = await liveLinked(accountId);
+    const choices = {
+      gift: () => live.find((entry) => tierOf(entry.license) === 'beta'),
+      hama: () => live.find((entry) => entry.hamaActive || entry.license.edition === 'hama'),
+      rau: () => live.find((entry) => entry.rauPlan === 'hama') ?? live.find((entry) => entry.rauPlan === 'pro'),
+    };
+    const chosen = (Object.hasOwn(choices, purpose) ? choices[purpose]() : undefined) ?? live[0];
+    if (!chosen && !allowInactive) throw licenseError('unauthorized', 401);
+    const license = chosen?.license;
+    return {
+      keyId: license?.keyId ?? null,
+      deviceId,
+      platform,
+      source: license?.source ?? null,
+      tier: license ? tierOf(license) : 'paid',
+      edition: license?.edition ?? null,
+      active: Boolean(chosen),
+      accountId,
+      ...(withRauPlan ? { rauPlan: chosen?.rauPlan ?? null } : {}),
     };
   }
 
@@ -1528,6 +1740,10 @@ export function createLicensesService({
     grandfather,
     authenticateLease,
     hamaSubscriptions,
+    accountEntitlements,
+    accountLicensesView,
+    linkByEmail,
+    authenticateAccount,
     admin,
   };
 }
