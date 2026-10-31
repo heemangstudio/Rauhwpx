@@ -81,8 +81,6 @@ export interface DocumentHomeDeps {
   mountTopbarTrailing?(slot: HTMLElement): void;
   /** 오른쪽 아래 가장자리를 채운다(업데이트 하마). slot 은 홈 전체이고, 붙는 쪽이 자리를 잡는다. */
   mountCorner?(slot: HTMLElement): void;
-  /** 새로 만들기 위 자리를 채운다(업데이트 뒤 릴리스 노트 카드). 비어 있으면 자리를 차지하지 않는다. */
-  mountNotice?(slot: HTMLElement): void;
   /** 저장하지 않은 새 문서(다른 창 포함). 최근 문서 맨 앞에 점선 종이로 놓인다. */
   unsaved?: {
     list(): readonly UnsavedDocument[];
@@ -283,11 +281,7 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
   status.setAttribute('role', 'status');
   recentInner.append(recentBar, grid, status);
   recent.append(recentInner);
-  const notice = el('div', 'dh-notice');
-  const noticeInner = el('div', 'dh-inner');
-  notice.append(noticeInner);
-  scroller.append(notice, start, recent);
-  deps.mountNotice?.(noticeInner);
+  scroller.append(start, recent);
 
   const templateInput = el('input');
   templateInput.type = 'file';
@@ -1327,7 +1321,6 @@ export function createDocumentHome(deps: DocumentHomeDeps): DocumentHome {
   });
   fitObserver.observe(scroller);
   fitObserver.observe(start);
-  fitObserver.observe(notice);
   // 오른쪽 아래 하마가 팻말을 들면 목록 아래 여백(padding)이 늘어난다. 그것도 잰다.
   fitObserver.observe(recentInner, { box: 'border-box' });
 

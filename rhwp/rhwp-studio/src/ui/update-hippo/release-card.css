@@ -1,42 +1,75 @@
-/* 문서 홈 맨 위의 릴리스 노트 카드 (release-card.ts). 테두리는 업데이트 하마 팻말처럼 한 칸(3px)씩
-   깎은 모서리와 아래로 떨어진 그림자로 그린다. 색은 문서 홈 토큰(--dh-*)을 읽는다. */
-.rn-card {
-  --rn-px: 3px;
-  --rn-edge: var(--dh-hairline-strong, #c4cad3);
-  --rn-shade: var(--dh-hairline, #d9dde3);
+/* 업데이트 뒤 앱 위에 뜨는 릴리스 노트 창 (release-card.ts). 처음 설정 창(initial-setup.css)과
+   같은 덮개·시트·전환을 쓰고, 위의 장면과 글머리표만 하마 그림의 픽셀로 그린다. */
+.rn-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  display: grid;
+  place-items: center;
+  overflow: auto;
+  padding: 24px;
+  scrollbar-width: none;
+  background: var(--overlay-bg);
+  color: var(--n-ink);
+  font-family: var(--ag-font);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--ag-dur-slow) var(--ag-ease-out);
+}
+
+.rn-overlay::-webkit-scrollbar { display: none; }
+
+.rn-overlay.rn-open {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.rn-dialog {
   --rn-scene: #e6f5ff;
   --rn-added: #62b3e2; /* 하마 몸 색 */
-  --rn-fixed: var(--dh-text-muted, #626b77);
+  --rn-fixed: var(--n-ink-tertiary);
 
   position: relative;
+  box-sizing: border-box;
+  width: min(440px, 100%);
+  max-height: 100%;
   display: flex;
-  gap: 24px;
-  margin: 0 var(--rn-px);
-  padding: 15px 48px 18px 15px;
-  background: var(--dh-raised, #ffffff);
-  color: var(--dh-text, #171b22);
-  box-shadow:
-    0 calc(-1 * var(--rn-px)) 0 0 var(--rn-edge),
-    0 var(--rn-px) 0 0 var(--rn-edge),
-    calc(-1 * var(--rn-px)) 0 0 0 var(--rn-edge),
-    var(--rn-px) 0 0 0 var(--rn-edge),
-    0 calc(2 * var(--rn-px)) 0 0 var(--rn-shade);
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px 24px 24px;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scrollbar-width: none;
+  border: 1px solid var(--n-ink-hairline);
+  border-radius: var(--ag-r-sheet);
+  background: var(--n-surface);
+  box-shadow: var(--ag-elev-sheet);
+  outline: none;
+  opacity: 0;
+  transform: translateY(12px) scale(0.98);
+  transition:
+    opacity var(--ag-dur-base) var(--ag-ease-out),
+    transform var(--ag-dur-slow) var(--ag-spring);
 }
 
-:root[data-theme-effective='dark'] .rn-card {
-  --rn-shade: #000000;
-  --rn-scene: #15232d;
+.rn-dialog::-webkit-scrollbar { display: none; }
+
+.rn-open .rn-dialog {
+  opacity: 1;
+  transform: none;
 }
+
+:root[data-theme-effective='dark'] .rn-dialog { --rn-scene: #15232d; }
 
 .rn-scene {
   display: flex;
   flex: none;
   align-items: flex-end;
-  align-self: flex-start;
   justify-content: center;
-  width: 216px;
-  height: 120px;
-  padding-bottom: 15px;
+  box-sizing: border-box;
+  height: 128px;
+  padding-bottom: 16px;
+  border-radius: var(--ag-r-inner);
   background: var(--rn-scene);
 }
 
@@ -52,50 +85,71 @@
 :root[data-theme-effective='dark'] .rn-hama-light { display: none; }
 :root[data-theme-effective='dark'] .rn-hama-dark { display: block; }
 
-.rn-body {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  gap: 12px;
-  min-width: 0;
-  padding-top: 3px;
+/* 장면의 오른쪽 위 구석에 얹는다. */
+.rn-close {
+  position: absolute;
+  top: 22px;
+  right: 30px;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--ag-r-row);
+  background: transparent;
+  color: var(--n-ink-secondary);
+  cursor: default;
+  transition: var(--ag-transition-color);
+}
+
+.rn-close:hover {
+  background: var(--n-ink-fill-hover);
+  color: var(--n-ink);
+}
+
+.rn-close:focus-visible,
+.rn-confirm:focus-visible {
+  outline: var(--ag-focus-ring);
+  outline-offset: var(--ag-focus-offset);
 }
 
 .rn-title {
   margin: 0;
-  font-size: 16px;
-  font-weight: 700;
-  letter-spacing: -0.015em;
+  font-size: var(--ag-fs-title);
+  font-weight: var(--ag-fw-strong);
+  letter-spacing: var(--ag-track-tight);
 }
 
 .rn-groups {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 16px;
+  margin-top: -4px;
 }
 
 .rn-label {
   margin: 0 0 6px;
-  color: var(--dh-text-muted, #626b77);
-  font-size: 12px;
-  font-weight: 600;
+  color: var(--n-ink-secondary);
+  font-size: var(--ag-fs-meta);
+  font-weight: var(--ag-fw-medium);
 }
 
 .rn-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
   margin: 0;
   padding: 0;
   list-style: none;
-  column-width: 220px;
-  column-gap: 32px;
 }
 
 .rn-item {
   position: relative;
   padding-left: 15px;
-  break-inside: avoid;
-  font-size: 13px;
-  line-height: 1.6;
-  letter-spacing: -0.01em;
+  font-size: var(--ag-fs-body);
+  line-height: 1.55;
+  letter-spacing: var(--ag-track-tight);
   word-break: keep-all;
 }
 
@@ -104,7 +158,7 @@
   content: '';
   position: absolute;
   left: 0;
-  top: calc(0.8em - 3px);
+  top: calc(0.775em - 3px);
   width: 6px;
   height: 6px;
   background: var(--rn-added);
@@ -112,26 +166,31 @@
 
 .rn-fixed .rn-item::before { background: var(--rn-fixed); }
 
-.rn-close {
-  position: absolute;
-  top: 9px;
-  right: 9px;
-  display: grid;
-  place-items: center;
-  width: 30px;
-  height: 30px;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: var(--dh-text-muted, #626b77);
-  cursor: pointer;
+.rn-footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 4px;
 }
 
-.rn-close svg { fill: currentColor; }
-.rn-close:hover { background: var(--dh-hover, rgba(23, 27, 34, 0.06)); color: var(--dh-text, #171b22); }
-.rn-close:active { background: var(--dh-pressed, rgba(23, 27, 34, 0.1)); }
-.rn-close:focus-visible { outline: 2px solid var(--dh-focus, #4b5563); outline-offset: 0; }
+.rn-confirm {
+  min-width: 96px;
+  height: 36px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: var(--ag-r-row);
+  background: var(--ag-primary-bg);
+  color: var(--ag-primary-fg);
+  font: inherit;
+  font-size: var(--ag-fs-body);
+  font-weight: var(--ag-fw-medium);
+  letter-spacing: var(--ag-track-tight);
+  cursor: default;
+  transition: var(--ag-transition-color);
+}
 
-@media (max-width: 640px) {
-  .rn-scene { display: none; }
+.rn-confirm:hover { background: var(--ag-primary-bg-hover); }
+
+.rn-confirm:active {
+  background: var(--ag-primary-bg-pressed);
+  transition: none;
 }
