@@ -1,6 +1,6 @@
-/* 기억의 강도 — 물이 차오른 작은 그릇과 숫자. 물은 하마의 파랑이다. */
+/* 기억의 강도 — 물이 차오른 작은 그릇과 숫자. 강조색은 Rau 빨강이다. */
 .ag-strength {
-  --ag-strength-color: #3d9bd1;
+  --ag-strength-color: var(--rau-accent, #a81e2a);
   --ag-strength-tank-w: 9px;
   --ag-strength-tank-h: 14px;
   position: relative;
@@ -10,10 +10,6 @@
   gap: 4px;
   vertical-align: middle;
   line-height: 1;
-}
-
-:root[data-theme-effective='dark'] .ag-strength {
-  --ag-strength-color: #62b3e2;
 }
 
 .ag-strength[data-size='md'] {

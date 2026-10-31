@@ -1,6 +1,6 @@
 /**
- * 입력창 위의 문체 학습 알약 — 설정 → Rau 가 보이지 않는 동안 학습이 돌면 "문체 학습 중 · 3/7",
- * 끝나면 잠깐 "문체 학습 끝 · 새 기억 N". 누르면 Rau 탭을 연다. 칩 무리(composerStackNodes)에 들어가
+ * 입력창 위의 문체 학습 알약 — 설정 → Rau 가 보이지 않는 동안 학습이 돌면 "문체 학습 중 3/7",
+ * 끝나면 잠깐 "문체 학습 끝 새 장기기억 N". 누르면 Rau 탭을 연다. 칩 무리(composerStackNodes)에 들어가
  * 입력창 하마의 자리를 함께 올린다.
  */
 import type { RauMemoryState, RauMemoryStore, StyleLearnOutcome } from './rau-memory-state.ts';
@@ -46,8 +46,8 @@ function doneLabel(outcome: StyleLearnOutcome): string {
   if (outcome.kind === 'error') return outcome.code === 'CANCELLED' ? '문체 학습 멈춤' : '문체 학습을 마치지 못함';
   const fresh = outcome.summary.new.length;
   const reinforced = outcome.summary.reinforced.length;
-  if (fresh) return `문체 학습 끝 · 새 기억 ${fresh}`;
-  if (reinforced) return `문체 학습 끝 · 보강 ${reinforced}`;
+  if (fresh) return `문체 학습 끝 새 장기기억 ${fresh}`;
+  if (reinforced) return `문체 학습 끝 보강 ${reinforced}`;
   return '문체 학습 끝';
 }
 
@@ -80,7 +80,7 @@ export function createStyleLearnPill(deps: StyleLearnPillDeps): StyleLearnPill {
       root.hidden = false;
       root.dataset.state = 'running';
       const count = styleLearnCountLabel(run);
-      text.textContent = count ? `문체 학습 중 · ${count}` : '문체 학습 중';
+      text.textContent = count ? `문체 학습 중 ${count}` : '문체 학습 중';
       fill.style.transform = `scaleX(${styleLearnFraction(run)})`;
       return;
     }

@@ -58,13 +58,13 @@ export function tasteItemChange(item: Pick<TasteLearnItem, 'op' | 'change'>): Ta
   return item.op === 'add' ? 'new' : item.op === 'remove' ? 'retired' : 'updated';
 }
 
-/** 줄 머리의 낱말 — 새로·보강·감쇄·기억 승격·물러남·고침. */
+/** 줄 머리의 낱말 — NEW·보강·감쇄·장기기억 승격·EXIT·고침. */
 export const TASTE_CHANGE_LABELS: Readonly<Record<TasteLearnChange, string>> = {
-  new: '새로',
+  new: 'NEW',
   reinforced: '보강',
   dampened: '감쇄',
-  escalated: '기억 승격',
-  retired: '물러남',
+  escalated: '장기기억 승격',
+  retired: 'EXIT',
   updated: '고침',
 };
 

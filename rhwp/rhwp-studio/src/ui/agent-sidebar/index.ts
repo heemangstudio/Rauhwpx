@@ -2309,14 +2309,13 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     const documentId = forDocumentId ?? getDocumentContext?.()?.documentId ?? currentThread.documentId;
     if (!documentId) return;
     documentMemorySheet?.close();
-    // 기억에서 덮어쓴 규칙('기억에서' 칸)은 Rau 요금제에서만 보인다. rauMemory 는 아래에서 만드는 창 하나의 상태와 같다.
+    // 기억에서 덮어쓴 규칙('장기기억' 칸)은 Rau 요금제에서만 보인다. rauMemory 는 아래에서 만드는 창 하나의 상태와 같다.
     const sheet = openDocumentMemorySheet({
       bridge,
       documentId,
       anchor: root,
       plan: planStore,
       rauMemory: sharedRauMemoryStore(),
-      openRauTab: () => openRauTab(),
     });
     documentMemorySheet = sheet;
     void sheet.closed.then(() => {
@@ -4013,7 +4012,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     styleInviteChip.hidden = !invite || !reconnectChip.hidden;
     const legacyFiles = memory?.legacy?.files ?? 0;
     if (!legacyFiles) styleLegacyAnswered = false;
-    styleLegacyText.textContent = `이전 원고 ${legacyFiles}개로 기억을 만들까요?`;
+    styleLegacyText.textContent = `이전 원고 ${legacyFiles}개로 장기기억을 만들까요?`;
     // 받아들인 학습이 실패하면(멈춤·크레딧·Rau 닿지 않음) 허브는 옛 원고를 그대로 두므로 칩이 다시 뜬다.
     styleLegacyChip.hidden = !legacyFiles || memory?.availability !== 'active' || Boolean(run) || styleLegacyAnswered
       || !reconnectChip.hidden;

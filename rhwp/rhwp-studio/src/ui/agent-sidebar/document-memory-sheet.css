@@ -10,9 +10,9 @@
 }
 
 .ag-sheet-layer[data-placement='center'] .ag-memory-sheet {
-  max-width: 440px;
+  max-width: 720px;
   max-height: min(640px, calc(100vh - 48px));
-  padding: 20px 20px 16px;
+  padding: 12px 20px 16px;
 }
 
 .ag-memory-header {
@@ -71,17 +71,11 @@
   }
 }
 
-/* 줄의 지우기 단추와 오른쪽 끝을 맞춘다. */
-.ag-memory-close {
-  margin-right: -6px;
-}
-
 .ag-memory-header .ag-sheet-title {
   flex: 1;
   min-width: 0;
 }
 
-.ag-memory-close,
 .ag-memory-remove {
   display: inline-grid;
   place-items: center;
@@ -97,25 +91,21 @@
   transition: var(--ag-transition-color);
 }
 
-.ag-memory-close svg,
 .ag-memory-remove svg {
   width: 12px;
   height: 12px;
 }
 
-.ag-memory-close:hover,
 .ag-memory-remove:hover {
   background: var(--n-ink-fill-hover);
   color: var(--n-ink);
 }
 
-.ag-memory-close:active,
 .ag-memory-remove:active {
   background: var(--n-ink-fill-pressed);
   transition: none;
 }
 
-.ag-memory-close:focus-visible,
 .ag-memory-remove:focus-visible,
 .ag-memory-text:focus-visible,
 .ag-memory-kind-btn:focus-visible {
@@ -126,7 +116,7 @@
 .ag-memory-list {
   flex: 1 1 auto;
   min-height: 0;
-  margin: 12px -8px 0;
+  margin: 6px -8px 0;
   padding: 0 8px;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -354,7 +344,7 @@
   margin: 7px 4px 0 0;
 }
 
-/* ─── 두 층: 이 문서 · 기억에서 ───────────────────────────
+/* ─── 두 층: 이 문서 · 장기기억 ───────────────────────────
    Rau 요금제에서만 보인다. 머리는 Rau 탭의 칸 머리처럼 굵은 본문 크기, 종류는 그 아래 작은 회색. */
 .ag-memory-tier + .ag-memory-tier {
   margin-top: 16px;
@@ -378,7 +368,7 @@
 }
 
 .ag-memory-tier[data-tier='document'] > .ag-memory-tier-title {
-  margin-bottom: 8px;
+  margin-bottom: 4px;
 }
 
 .ag-memory-tier-count {
@@ -387,8 +377,7 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* Rau 탭으로 — 머리 오른쪽 끝의 조용한 글자 단추(기록에서 배우기와 같은 결). */
-.ag-memory-tier-link,
+/* 더 보기 — 조용한 글자 단추(기록에서 배우기와 같은 결). */
 .ag-memory-more {
   flex: none;
   height: 24px;
@@ -404,34 +393,25 @@
   transition: var(--ag-transition-color);
 }
 
-.ag-memory-tier-link {
-  margin: 0 -8px 0 auto;
-  align-self: center;
-}
-
 .ag-memory-more {
   margin: 4px 0 0 -8px;
 }
 
-.ag-memory-tier-link:hover,
 .ag-memory-more:hover {
   background: var(--n-ink-fill-hover);
   color: var(--n-ink);
 }
 
-.ag-memory-tier-link:active,
 .ag-memory-more:active {
   background: var(--n-ink-fill-pressed);
   transition: none;
 }
 
-.ag-memory-tier-link:focus-visible,
 .ag-memory-more:focus-visible {
   outline: var(--ag-focus-ring);
   outline-offset: var(--ag-focus-offset);
 }
 
-.ag-memory-tier-lead,
 .ag-memory-tier-empty {
   margin: 4px 0 8px;
   font-size: var(--ag-fs-secondary);

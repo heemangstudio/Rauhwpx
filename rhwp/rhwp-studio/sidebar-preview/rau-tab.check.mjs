@@ -115,14 +115,14 @@ async function checkOpen({ page, open, screenshot }) {
   await page.waitForSelector('.ag-rau-rule', { visible: true });
   assert.equal(await page.$eval('#ag-settings-tab-rau', (tab) => tab.classList.contains('ag-settings-rau-locked')), false);
   assert.equal(await shown(page, '.ag-rau-notice'), false, 'no notice on the Rau plan');
-  assert.match(await text(page, '.ag-rau-hero-status'), /기억 9개/);
+  assert.match(await text(page, '.ag-rau-hero-status'), /장기기억 9개/);
   assert.equal(await page.$eval('.ag-taste-learning-row input', (input) => input.checked), true, '대화에서 배우기 is on by default');
   await page.waitForFunction(() => !document.querySelector('.ag-taste-learning-row input').disabled);
   await screenshot('rau-tab-open');
 
   // 문체·용어로 묶이고, 강한 규칙이 먼저다. 강도는 점이 아니라 그릇(aria-label)으로 읽힌다.
   const grouped = await groups(page);
-  assert.deepEqual(grouped.map((group) => [group.kind, group.title]), [['style', '문체'], ['term', '용어']]);
+  assert.deepEqual(grouped.map((group) => [group.kind, group.title]), [['style', 'Style'], ['term', 'Wording']]);
   assert.deepEqual(grouped[0].rules.map((rule) => rule.strength), [5, 4, 3, 3, 2, 2]);
   assert.deepEqual(grouped[1].rules.map((rule) => rule.strength), [3, 1, 1]);
   assert(grouped.flatMap((group) => group.rules).every((rule) => rule.gauge?.startsWith(`강도 ${rule.strength}/5`)), 'a strength gauge per rule');
@@ -135,7 +135,7 @@ async function checkOpen({ page, open, screenshot }) {
     id: row.dataset.eventId, kind: row.dataset.kind, tag: row.querySelector('.ag-rau-tag').textContent, undo: Boolean(row.querySelector('.ag-rau-event-undo')),
   })));
   assert.equal(events.length, 10);
-  assert.deepEqual(events.slice(0, 3).map((event) => event.tag), ['보강', '기억 승격', '물러남']);
+  assert.deepEqual(events.slice(0, 3).map((event) => event.tag), ['보강', '장기기억 승격', 'EXIT']);
   assert.equal(events.find((event) => event.id === 'evt_sample000001').undo, true);
   assert.equal(events.find((event) => event.id === 'evt_sample000003').undo, false, 'another rule now holds this one\'s subject');
   assert.equal(await page.$eval('.ag-rau-retired', (details) => details.open), false, 'the retired list starts folded');
@@ -291,7 +291,7 @@ async function checkRunning({ page, open, screenshot }) {
   // 결과 카드: 새로 2(하나는 뒤집힌 규칙의 새 모습), 보강 1, 감쇄 1, 물러남 1, 어긋남 2, 건너뛴 파일 2.
   const stats = await page.$$eval('.ag-rau-stat', (nodes) => Object.fromEntries(nodes.map((node) => [
     node.querySelector('.ag-rau-stat-label').textContent, Number(node.querySelector('.ag-rau-stat-value').textContent)])));
-  assert.deepEqual(stats, { 새로: 2, 보강: 1, 감쇄: 1, 물러남: 1 });
+  assert.deepEqual(stats, { NEW: 2, 보강: 1, 감쇄: 1, EXIT: 1 });
   assert.equal(await page.$$eval('.ag-rau-result-group[data-kind="conflicts"] .ag-rau-result-item', (nodes) => nodes.length), 2);
   const skipped = await text(page, '.ag-rau-result-skipped');
   assert(skipped.includes('스캔본 회의록.pdf') && skipped.includes('칼럼 초고.md'), `skipped files are named: ${skipped}`);
@@ -307,7 +307,7 @@ async function checkRunning({ page, open, screenshot }) {
   assert.equal((await memory(page)).uploads[0].files.length, 4);
   assert.equal(await page.$$eval('.ag-rau-upload', (nodes) => nodes.length), 3);
   assert.equal(await page.$eval('.ag-rau-retired-summary', (node) => node.textContent.includes('개')), true);
-  assert.equal(await page.$$eval('.ag-rau-event', (nodes) => nodes.some((node) => node.querySelector('.ag-rau-tag').textContent === '새로')), true);
+  assert.equal(await page.$$eval('.ag-rau-event', (nodes) => nodes.some((node) => node.querySelector('.ag-rau-tag').textContent === 'NEW')), true);
 
   // 확인하면 올리는 자리로 돌아온다.
   await page.click('.ag-rau-result-actions .ag-settings-primary');
@@ -358,7 +358,7 @@ async function checkUpload({ page, open, workdir }) {
   await page.waitForSelector('.ag-rau-result', { visible: true });
   const stats = await page.$$eval('.ag-rau-stat', (nodes) => Object.fromEntries(nodes.map((node) => [
     node.querySelector('.ag-rau-stat-label').textContent, Number(node.querySelector('.ag-rau-stat-value').textContent)])));
-  assert.deepEqual(stats, { 새로: 3, 보강: 0, 감쇄: 0, 물러남: 0 });
+  assert.deepEqual(stats, { NEW: 3, 보강: 0, 감쇄: 0, EXIT: 0 });
   assert.equal(await page.$eval('.ag-rau-memory .ag-rau-empty', (node) => node.hidden), true);
   const grouped = await groups(page);
   assert.deepEqual(grouped.map((group) => [group.kind, group.rules.length]), [['style', 2], ['term', 1]]);
@@ -372,7 +372,7 @@ async function checkPill({ page, open }) {
   assert.equal(await shown(page, '.ag-style-pill'), false, 'the tab already shows the run, so no pill');
   await page.$eval('.ag-settings-close', (close) => close.click());
   await page.waitForSelector('.ag-style-pill', { visible: true, timeout: 5000 });
-  assert.match(await text(page, '.ag-style-pill-text'), /^문체 학습 중 · \d+\/\d+$/);
+  assert.match(await text(page, '.ag-style-pill-text'), /^문체 학습 중 \d+\/\d+$/);
   await page.click('.ag-style-pill-open');
   await page.waitForSelector(PANE, { visible: true });
   await page.waitForFunction(() => document.querySelector('.ag-style-pill')?.hidden !== false);
@@ -425,7 +425,7 @@ async function checkLegacyChip({ page, open, screenshot }) {
   const chip = '.ag-style-legacy-chip';
   await open('reset=1&plan=rau&userMemory=legacy');
   await page.waitForSelector(chip, { visible: true });
-  assert.equal(await text(page, '.ag-style-legacy-text'), '이전 원고 3개로 기억을 만들까요?');
+  assert.equal(await text(page, '.ag-style-legacy-text'), '이전 원고 3개로 장기기억을 만들까요?');
   assert.equal((await memory(page)).legacy.files, 3);
 
   // 만들기: 허브가 이전 원고로 학습을 돌린다 — 칩이 걷히고 알약이 돈다. 끝나면 기억이 생기고 이전 원고 제안은 없어진다.
@@ -514,11 +514,11 @@ async function checkMarker({ page, open, screenshot }) {
     tier: row.dataset.tier ?? null,
   })));
   assert.deepEqual(rows, [
-    { tag: '새로', gauge: '새 기억, 강도 1/5', tier: null },
+    { tag: 'NEW', gauge: '새 기억, 강도 1/5', tier: null },
     { tag: '보강', gauge: '강도 1/5에서 2/5로', tier: null },
     { tag: '감쇄', gauge: '강도 3/5에서 2/5로', tier: null },
-    { tag: '기억 승격', gauge: '새 기억, 강도 2/5', tier: 'account' },
-    { tag: '물러남', gauge: '강도 1/5에서 물러남', tier: null },
+    { tag: '장기기억 승격', gauge: '새 기억, 강도 2/5', tier: 'account' },
+    { tag: 'EXIT', gauge: '강도 1/5에서 물러남', tier: null },
     { tag: '고침', gauge: null, tier: null },
   ]);
 
@@ -542,9 +542,9 @@ async function checkMarker({ page, open, screenshot }) {
   await page.waitForSelector('.ag-taste[data-learn-id="learn_old"]');
   await page.click('.ag-taste[data-learn-id="learn_old"] .ag-marker-taste');
   assert.deepEqual(await page.$$eval('.ag-taste[data-learn-id="learn_old"] .ag-taste-tag', (nodes) => nodes.map((node) => node.textContent)),
-    ['새로', '고침', '물러남']);
+    ['NEW', '고침', 'EXIT']);
 
-  // 한 턴의 학습이 실제로 계정 기억을 바꾼 구분선: 기억 승격 · 보강 · 물러남이 허브의 사건과 함께 온다.
+  // 한 턴의 학습이 실제로 계정 기억을 바꾼 구분선: 장기기억 승격 · 보강 · 물러남이 허브의 사건과 함께 온다.
   const ids = await page.evaluate(() => {
     const learned = window.sidebarPreview.emitAccountTasteLearned();
     return learned.items.map((item) => ({ id: item.entryId, change: item.change, events: item.eventIds ?? [] }));
@@ -555,7 +555,7 @@ async function checkMarker({ page, open, screenshot }) {
   const changes = await last.$$eval('.ag-taste-row', (nodes) => nodes.map((row) => [row.dataset.change, row.dataset.tier ?? 'document', row.querySelector('.ag-taste-tag').textContent]));
   assert.deepEqual(changes.map(([change]) => change), ['new', 'escalated', 'reinforced', 'retired']);
   assert.deepEqual(changes.map(([, tier]) => tier), ['document', 'account', 'account', 'account']);
-  assert.deepEqual(changes.map(([, , tag]) => tag), ['새로', '기억 승격', '보강', '물러남']);
+  assert.deepEqual(changes.map(([, , tag]) => tag), ['NEW', '장기기억 승격', '보강', 'EXIT']);
   const escalated = ids.find((item) => item.change === 'escalated');
   assert.match(escalated.id, /^rule_/);
   assert.equal(await last.$eval('.ag-taste-row[data-change="escalated"] .ag-strength', (node) => node.getAttribute('aria-label')), '새 기억, 강도 2/5');
@@ -614,10 +614,40 @@ async function checkLearningToggle({ page, open }) {
   assert.equal((await settings()).enabled, true);
 }
 
+export async function checkMemoryOverrides({ page, open }) {
+  await open('reset=1&plan=rau&memory=sample&userMemory=sample');
+  await page.waitForSelector('.ag-memory-tier[data-tier="account"]');
+  const account = await page.evaluate(() => window.sidebarPreview.userMemory.snapshot().rules);
+  const style = account.find((rule) => rule.subject === '문체.종결');
+  const term = account.find((rule) => rule.subject === '용어.고객');
+  const styleRow = `.ag-memory-row[data-rule-id="${style.id}"]`;
+  const termRow = `.ag-memory-row[data-rule-id="${term.id}"]`;
+  assert.equal(await page.$(`${styleRow} .ag-memory-override`), null, 'agreeing instructions are not overrides');
+  assert.equal(await page.$(`${termRow} .ag-memory-override`), null, 'agreeing terminology is not an override');
+  const replaceRule = async (subject, text) => {
+    await page.evaluate(async ({ subject, text }) => {
+      const bridge = window.sidebarPreview.bridge;
+      const { memory } = await bridge.listDocumentMemory();
+      const entry = memory.entries.find((entry) => entry.subject === subject);
+      const result = await bridge.applyDocumentMemory([{ op: 'update', id: entry.id, text }], { expectedRevision: memory.revision });
+      if (!result?.ok) throw new Error('could not update sample document rule');
+    }, { subject, text });
+  };
+  await replaceRule('문체.종결', '본문 종결은 합니다체로 쓴다');
+  await page.waitForSelector(`${styleRow}[data-overridden="true"]`);
+  await replaceRule('용어.고객', "'고객' 대신 '수요자'로 쓴다");
+  await page.waitForSelector(`${termRow}[data-overridden="true"]`);
+  await replaceRule('문체.종결', `  ${style.text}。  `);
+  await page.waitForFunction((selector) => !document.querySelector(selector)?.hasAttribute('data-overridden'), {}, styleRow);
+  assert.equal(await page.$(`${styleRow} .ag-memory-override`), null, 'formatting differences do not override an agreeing rule');
+  assert.ok(await page.$(`${termRow} .ag-memory-override`), 'unrelated overrides remain visible');
+}
+
 export async function checkRauTab(harness) {
   const workdir = await mkdtemp(join(tmpdir(), 'rau-tab-check-'));
   const h = { ...harness, workdir };
   try {
+    await checkMemoryOverrides(h);
     await checkLocked(h);
     await checkNoPlanApi(h);
     await checkExhausted(h);

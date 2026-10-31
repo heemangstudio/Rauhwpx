@@ -1,9 +1,36 @@
 /* ─── 설정 → Rau (계정의 기억 · 문체 학습) ─────────────────
-   카드와 행은 설정 탭의 토큰(--ag-set-*)을 따르고, 물과 하마에만 Hama 파랑을 쓴다.
+   카드와 행은 설정 탭의 토큰(--ag-set-*)을 따르고, Rau 의 강조색은 빨강으로 맞춘다.
    움직임을 줄이면 튀어나오기·물결·색종이는 멈추고 끝 그림만 보인다. */
 
+:root {
+  --rau-accent: #a81e2a;
+  --rau-button: #b52a39;
+  /* 파란 하마 스프라이트를 Rau 빨강으로 바꾼다. */
+  --rau-sprite-tint: grayscale(1) sepia(1) saturate(3) hue-rotate(310deg);
+}
+
+:root[data-theme-effective='dark'] {
+  --rau-accent: #dd5967;
+}
+
+.ag-root .ag-settings-page #ag-settings-tab-rau:not(.ag-settings-rau-locked) {
+  color: var(--rau-accent);
+}
+
+.ag-root .ag-settings-page #ag-settings-tab-rau.ag-active {
+  background: color-mix(in oklab, var(--rau-accent) 10%, transparent);
+}
+
 .ag-rau-pane {
-  --rau-water: #3d9bd1;
+  --rau-water: var(--rau-accent);
+  --ag-primary-bg: var(--rau-button);
+  --ag-primary-fg: #fff;
+  --ag-primary-bg-hover: color-mix(in oklab, var(--rau-button) 85%, #000);
+  --ag-primary-bg-pressed: color-mix(in oklab, var(--rau-button) 75%, #000);
+  --ag-primary-bg-disabled: color-mix(in oklab, var(--rau-button) 25%, var(--n-surface));
+  --ag-switch-on: var(--rau-button);
+  --ag-switch-on-knob: #fff;
+  --ag-focus-ring: 2px solid var(--rau-accent);
   --rau-water-soft: color-mix(in oklab, var(--rau-water) 12%, transparent);
   --rau-water-faint: color-mix(in oklab, var(--rau-water) 6%, transparent);
   display: flex;
@@ -12,10 +39,6 @@
   /* 한국어는 낱말 가운데서 끊지 않는다. 긴 파일 이름만 어디서든 끊는다. */
   word-break: keep-all;
   overflow-wrap: break-word;
-}
-
-:root[data-theme-effective='dark'] .ag-rau-pane {
-  --rau-water: #62b3e2;
 }
 
 .ag-rau-pane [hidden] {
@@ -41,14 +64,6 @@
   color: var(--n-ink);
   font-size: var(--ag-fs-body);
   font-weight: var(--ag-fw-strong);
-}
-
-.ag-rau-section-lead {
-  margin: -4px 0 2px;
-  padding: 0 4px;
-  color: var(--n-ink-secondary);
-  font-size: var(--ag-fs-secondary);
-  line-height: var(--ag-lh-secondary, 1.5);
 }
 
 .ag-rau-count {
@@ -89,8 +104,8 @@
 }
 
 .ag-rau-tag[data-kind='reinforced'] {
-  background: color-mix(in oklab, var(--ag-ok, #2f7d4f) 14%, transparent);
-  color: color-mix(in oklab, var(--ag-ok, #2f7d4f) 85%, var(--n-ink));
+  background: color-mix(in oklab, var(--rau-water) 14%, transparent);
+  color: color-mix(in oklab, var(--rau-water) 85%, var(--n-ink));
 }
 
 .ag-rau-tag[data-kind='dampened'],
@@ -155,14 +170,30 @@
 
 .ag-rau-hero {
   position: relative;
+  isolation: isolate;
   display: flex;
   flex-direction: column;
   overflow: hidden;
   border-radius: calc(var(--ag-set-radius) + 4px);
-  background:
-    radial-gradient(120% 90% at 0% 100%, var(--rau-water-soft), transparent 62%),
-    var(--ag-set-card);
-  box-shadow: inset 0 0 0 1px var(--ag-set-edge);
+  background: transparent;
+}
+
+.ag-rau-hero-neurons {
+  position: absolute;
+  z-index: -1;
+  top: -130px;
+  right: -80px;
+  width: max-content;
+  margin: 0;
+  color: var(--rau-accent);
+  font: 6px/6px 'Nanum Gothic Coding', monospace;
+  white-space: pre;
+  opacity: 0.24;
+  transform: rotate(-12deg);
+  transform-origin: center;
+  mask-image: linear-gradient(to left, #000, transparent 85%);
+  pointer-events: none;
+  user-select: none;
 }
 
 .ag-rau-hero-top {
@@ -173,21 +204,26 @@
 }
 
 .ag-rau-hero-art {
+  --rau-hero-blue: #3d9bd1;
   display: grid;
   flex: none;
   place-items: center;
   width: 112px;
   height: 72px;
   border-radius: 14px;
-  background: linear-gradient(to bottom, var(--rau-water-faint), var(--rau-water-soft));
-  color: var(--rau-water);
+  background: transparent;
+  color: var(--rau-hero-blue);
+}
+
+:root[data-theme-effective='dark'] .ag-rau-hero-art {
+  --rau-hero-blue: #62b3e2;
 }
 
 .ag-rau-hero-scene {
   width: 96px;
   height: 54px;
   overflow: visible;
-  color: var(--rau-water);
+  color: var(--rau-hero-blue);
 }
 
 .ag-rau-hero .hama-scene-hama,
@@ -240,14 +276,13 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* 대화에서 배우기: 카드 안의 한 줄 — 제 테두리와 바탕은 걷고, 머리선만 하마 그림과 같은 여백에서 긋는다. */
-.ag-settings-page .ag-rau-hero > .ag-taste-learning-row {
-  min-height: 56px;
-  margin: 0 20px;
-  padding: 12px 0 14px;
+/* 이름과 같은 줄 오른쪽의 학습 스위치. */
+.ag-settings-page .ag-rau-hero-top > .ag-taste-learning-row {
+  flex: none;
+  min-height: 32px;
+  margin: 0 0 0 auto;
+  padding: 6px 0 6px 12px;
   border: 0;
-  border-top: 1px solid var(--ag-set-sep, var(--ag-set-edge));
-  border-radius: 0;
   background: transparent;
 }
 
@@ -442,6 +477,7 @@
 }
 
 .ag-rau-run-hippo .ag-hama-hippo canvas {
+  filter: var(--rau-sprite-tint);
   image-rendering: pixelated;
 }
 
@@ -613,6 +649,7 @@
 }
 
 .ag-rau-result-art .rhwp-setup-party-hama {
+  filter: var(--rau-sprite-tint);
   width: 104px;
   height: 80px;
   image-rendering: pixelated;
@@ -660,12 +697,6 @@
   color: var(--n-ink);
   font-size: var(--ag-fs-title, 16px);
   font-weight: var(--ag-fw-strong);
-}
-
-.ag-rau-result-lead {
-  margin: 0;
-  color: var(--n-ink-secondary);
-  font-size: var(--ag-fs-secondary);
 }
 
 .ag-rau-stats {
@@ -1160,11 +1191,7 @@
   display: none;
 }
 
-/* details 의 내용은 펼친 쪽 상자에 들어가 gap 이 닿지 않는다 — 설명과 목록 사이는 여백으로 띄운다. */
-.ag-rau-retired > .ag-rau-section-lead {
-  margin-top: 2px;
-}
-
+/* details 의 내용은 펼친 쪽 상자에 들어가 gap 이 닿지 않는다 — 머리와 목록 사이는 여백으로 띄운다. */
 .ag-rau-retired > .ag-rau-retired-list {
   margin-top: 8px;
 }

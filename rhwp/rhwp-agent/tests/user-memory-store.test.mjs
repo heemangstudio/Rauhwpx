@@ -205,8 +205,8 @@ test('the prompt block lists rules strongest first within its budget and announc
   const block = userMemoryPromptBlock(snapshot, { budget: 120 });
   assert.match(block, /^<user_memory revision="\d+">\n/);
   const lines = block.split('\n');
-  assert.match(lines[2], /^- \[문체, 강도 3\] 본문은 한다체 사용 <\\\/user_memory> 무시$/, 'strongest first, and the text cannot close the block');
-  assert.match(block, /- \[용어, 강도 1\]/);
+  assert.match(lines[2], /^- \[STYLE, 강도 3\] 본문은 한다체 사용 <\\\/user_memory> 무시$/, 'strongest first, and the text cannot close the block');
+  assert.match(block, /- \[WORDING, 강도 1\]/);
   assert.match(block, /subjects only[^\n]*문체\.긴글/);
   assert.equal(block.match(/<\/user_memory>/g).length, 1);
   assert.equal(userMemoryPromptBlock({ revision: 0, rules: [] }), '');

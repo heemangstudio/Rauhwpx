@@ -1,5 +1,5 @@
 /**
- * 창 하나가 함께 보는 계정의 기억(Rau-0.1)과 문체 학습 진행.
+ * 창 하나가 함께 보는 계정의 장기기억(Rau-0.1)과 문체 학습 진행.
  *
  * 사이드바는 채팅마다 따로 있고 허브는 user-memory·style-learn-* 를 모든 창(소켓)에 보낸다. 그래서 같은
  * 프레임이 사이드바 수만큼 온다 — 이 상태는 창에 하나만 두고, 같은 리비전·같은 학습은 한 번만 받는다.
@@ -224,7 +224,7 @@ export function createRauMemoryStore(now: () => number = () => Date.now()): RauM
 
 let windowStore: RauMemoryStore | null = null;
 
-/** 창 하나의 기억 상태. 사이드바들이 함께 쓴다. */
+/** 창 하나의 장기기억 상태. 사이드바들이 함께 쓴다. */
 export function sharedRauMemoryStore(): RauMemoryStore {
   windowStore ??= createRauMemoryStore();
   return windowStore;
@@ -258,15 +258,15 @@ export function styleLearnErrorMessage(code: string, options: { legacy?: boolean
   }
   switch (code) {
     case 'RAU_PLAN_REQUIRED': return '문체 학습은 Rau 요금제에서 쓸 수 있어요.';
-    case 'RAU_CREDITS_EXHAUSTED': return '이번 달 Rau 크레딧을 다 써서 지금은 배울 수 없어요. 기억은 그대로 보고 고칠 수 있어요.';
+    case 'RAU_CREDITS_EXHAUSTED': return '이번 달 Rau 크레딧을 다 써서 지금은 배울 수 없어요. 장기기억은 그대로 보고 고칠 수 있어요.';
     case 'RAU_UNAVAILABLE': return '지금 Rau 에 닿지 않아요. 잠시 뒤에 다시 올려 주세요.';
     case 'LEARN_BUSY': return '다른 창에서 문체 학습이 돌고 있어요. 끝난 뒤에 올려 주세요.';
     case 'NO_TEXT': return '올린 파일에서 읽을 수 있는 글을 찾지 못했어요.';
-    case 'CANCELLED': return '문체 학습을 멈췄어요. 기억은 바뀌지 않았어요.';
+    case 'CANCELLED': return '문체 학습을 멈췄어요. 장기기억은 바뀌지 않았어요.';
     case 'INVALID_FILES': return '올릴 파일을 읽지 못했어요. 파일을 다시 골라 주세요.';
     case 'FILE_TOO_LARGE': return '파일 하나는 20MB 까지 올릴 수 있어요.';
     case 'FILES_TOO_LARGE': return '한 번에 50MB, 20개까지 올릴 수 있어요.';
-    case 'UNSUPPORTED_FILE': return 'txt·md·pdf·docx·rtf·html·csv·hwp·hwpx 파일만 배울 수 있어요.';
+    case 'UNSUPPORTED_FILE': return 'txt, md, pdf, docx, rtf, html, csv, hwp, hwpx 파일만 배울 수 있어요.';
     case 'OFFLINE': return '허브에 연결되지 않아 올리지 못했어요.';
     default: return '문체 학습을 마치지 못했어요. 잠시 뒤에 다시 올려 주세요.';
   }
@@ -276,10 +276,10 @@ export function styleLearnErrorMessage(code: string, options: { legacy?: boolean
 export function userMemoryErrorMessage(code: string): string {
   switch (code) {
     case 'USER_MEMORY_UNDO_STALE': return '그새 다시 바뀌어 되돌릴 수 없어요.';
-    case 'USER_MEMORY_NOT_FOUND': return '그 기억은 이미 없어요.';
-    case 'USER_MEMORY_SUBJECT_TAKEN': return '같은 내용의 기억이 이미 있어요.';
+    case 'USER_MEMORY_NOT_FOUND': return '그 장기기억은 이미 없어요.';
+    case 'USER_MEMORY_SUBJECT_TAKEN': return '같은 내용의 장기기억이 이미 있어요.';
     case 'USER_MEMORY_INVALID': return '한 줄로, 300자 안에서 적어 주세요.';
     case 'OFFLINE': return '허브에 연결되지 않아 저장하지 못했어요.';
-    default: return '기억을 저장하지 못했어요. 잠시 뒤에 다시 해 주세요.';
+    default: return '장기기억을 저장하지 못했어요. 잠시 뒤에 다시 해 주세요.';
   }
 }

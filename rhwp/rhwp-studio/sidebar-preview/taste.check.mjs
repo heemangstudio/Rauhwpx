@@ -40,7 +40,7 @@ export async function checkTaste({ page, open, screenshot }) {
   ]);
   // 줄 표는 item.change 에서 온다. 사라진 항목은 물러남, 바뀐 항목은 고침, 강도는 처음 → 나중.
   assert.deepEqual(await page.$$eval('.ag-taste-row', (nodes) => nodes.map((row) => row.querySelector('.ag-taste-tag')?.textContent)),
-    ['새로', '새로', '고침', '물러남']);
+    ['NEW', 'NEW', '고침', 'EXIT']);
   assert.deepEqual(await page.$$eval('.ag-taste-row', (nodes) => nodes.map((row) => row.querySelector('.ag-strength')?.getAttribute('aria-label') ?? null)),
     ['새 기억, 강도 1/5', null, '강도 2/5', '강도 1/5에서 물러남'], 'strength from → to (none on the undone row)');
   // 이 구분선에는 계정 줄이 없으니 모두 보기 하나뿐이다(지시에 추가 제안은 없다).
@@ -84,7 +84,7 @@ export async function checkTaste({ page, open, screenshot }) {
   const badges = await page.$$eval('.ag-memory-row', (nodes) => nodes.map((row) => [
     row.querySelector('.ag-memory-text')?.textContent, row.querySelector('.ag-memory-origin')?.textContent ?? null,
   ]));
-  assert.deepEqual(badges.filter(([, badge]) => badge).map(([text]) => text), ['본문은 한다체 사용']);
+  assert.deepEqual(badges.filter(([, badge]) => badge).map(([text]) => text), ['본문 종결은 한다체로 쓴다']);
   assert(badges.every(([, badge]) => badge === null || badge === 'Rau-0.1'));
   if (screenshot) await screenshot('taste-memory-sheet');
   await page.keyboard.press('Escape');
@@ -103,7 +103,7 @@ export async function checkTaste({ page, open, screenshot }) {
   assert.equal(await page.$$eval('.ag-taste', (nodes) => nodes.length), 1);
   await page.waitForSelector('.ag-taste-row[data-entry-id="mem_leg1"]');
   assert.deepEqual(await page.$$eval('.ag-taste-row[data-entry-id^="mem_leg"]', (nodes) => nodes.map((row) => row.querySelector('.ag-taste-tag')?.textContent)),
-    ['고침', '물러남']);
+    ['고침', 'EXIT']);
 }
 
 const historyLearned = (documentId, learnId, text) => ({

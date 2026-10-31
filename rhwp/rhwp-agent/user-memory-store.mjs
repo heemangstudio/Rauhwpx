@@ -47,7 +47,9 @@ const RETIRE_REASONS = new Set(['dampened', 'flipped', 'evicted', 'deleted', 'un
 const BLOCKING_REASONS = new Set(['deleted', 'undone']);
 const EVENT_KINDS = new Set(['new', 'reinforced', 'dampened', 'escalated', 'retired', 'restored', 'edited', 'deleted']);
 const EVENT_SOURCES = new Set(['chat', 'upload', 'user']);
-const KIND_LABELS = Object.freeze({ style: '문체', term: '용어' });
+const KIND_LABELS = Object.freeze({ style: 'STYLE', term: 'WORDING' });
+// 저장된 주제 키는 표시 이름을 바꿔도 유지한다.
+const KIND_SUBJECT = Object.freeze({ style: '문체', term: '용어' });
 
 export class UserMemoryError extends Error {
   constructor(code, message) {
@@ -94,7 +96,7 @@ function normalizeKind(value) {
 }
 
 function deriveSubject(kind, text) {
-  return `${KIND_LABELS[kind] ?? kind}.${text}`.slice(0, MAX_RULE_SUBJECT_CHARS).trim();
+  return `${KIND_SUBJECT[kind] ?? kind}.${text}`.slice(0, MAX_RULE_SUBJECT_CHARS).trim();
 }
 
 function isoOr(value, fallback) {

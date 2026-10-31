@@ -848,7 +848,7 @@ document.querySelector('#rau-upgrade')!.addEventListener('click', () => mock.emi
 // 한 턴의 학습이 문서 기억과 계정 기억을 함께 바꾼 구분선 — 보이는 채팅에 붙는다.
 const rauMemoryLearned = document.createElement('button');
 rauMemoryLearned.id = 'rau-memory-learned';
-rauMemoryLearned.title = 'Rau-0.1 taught a document note and changed the account memory (기억 승격, 보강, 감쇄)';
+rauMemoryLearned.title = 'Rau-0.1 taught a document note and changed the long-term memory (장기기억 승격, 보강, 감쇄)';
 rauMemoryLearned.textContent = 'Rau memory learned';
 document.querySelector('#rau-upgrade')!.after(rauMemoryLearned);
 rauMemoryLearned.addEventListener('click', () => {

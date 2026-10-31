@@ -44,7 +44,7 @@ test('<user_memory> rides once per provider session, again after a change, a for
   await hub.prepare();
   const session = { agent: 'claude', userMemory: newSessionUserMemory() };
   const first = hub.takeBlock(session);
-  assert.match(first, /<user_memory revision="1">[\s\S]*\[문체, 강도 1\] 본문은 한다체 사용/);
+  assert.match(first, /<user_memory revision="1">[\s\S]*\[STYLE, 강도 1\] 본문은 한다체 사용/);
   hub.settleDelivery(session, true);
   assert.equal(hub.takeBlock(session), '', 'delivered already');
   hub.settleDelivery(session, true);

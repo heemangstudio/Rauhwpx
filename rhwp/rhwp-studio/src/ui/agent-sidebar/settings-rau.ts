@@ -1,12 +1,13 @@
 /**
- * 설정 → Rau. 계정의 기억(Rau-0.1)과 문체 학습 — Rau 요금제(체험 포함)에서만 열린다.
+ * 설정 → Rau. 계정의 장기기억(Rau-0.1)과 문체 학습 — Rau 요금제(체험 포함)에서만 열린다.
  *
- * 위에서부터: 하마가 선 물가와 상태 줄·대화에서 배우기, 문체 학습(올리기 → 도는 카드 → 결과 카드),
- * 기억(문체·용어, 강도, 고치기·지우기·더하기), 최근 변화(되돌리기), 물러난 기억(되살리기).
+ * 위에서부터: 하마가 선 물가와 상태 줄·학습 스위치, 문체 학습(올리기 → 도는 카드 → 결과 카드),
+ * 장기기억(문체·용어, 강도, 고치기·지우기·더하기), 최근 변화(되돌리기), 물러난 장기기억(되살리기).
  * 정본은 허브에 있다. 이 화면은 창 하나가 함께 보는 sharedRauMemoryStore 를 그리고, 바꾸는 요청만 보낸다.
  * 학습은 팝업 없이 이 탭 안의 카드에서 돈다 — 다른 창에서 올린 학습도 같은 카드로 보인다.
  */
 import './settings-rau.css';
+import neuronArt from '../account/login-neurons.txt?raw';
 import type { SidebarBridge } from '../../agent/bridge.ts';
 import { RAU_TASTE_NAME } from '../../agent/taste.ts';
 import type {
@@ -70,13 +71,13 @@ function iconButton(className: string, icon: Parameters<typeof createIcon>[0], l
   return node;
 }
 
-const KIND_LABEL: Record<AccountRuleKind, string> = { style: '문체', term: '용어' };
+const KIND_LABEL: Record<AccountRuleKind, string> = { style: 'STYLE', term: 'WORDING' };
 const EVENT_LABEL: Record<MemoryEventKind, string> = {
-  new: '새로',
+  new: 'NEW',
   reinforced: '보강',
   dampened: '감쇄',
-  escalated: '기억 승격',
-  retired: '물러남',
+  escalated: '장기기억 승격',
+  retired: 'EXIT',
   restored: '되살림',
   edited: '고침',
   deleted: '지움',
@@ -93,7 +94,7 @@ const STAGE_TITLE: Record<StyleLearnRun['stage'], string> = {
   starting: '원고를 보내는 중',
   reading: '원고 읽는 중',
   extracting: '문체 찾는 중',
-  merging: '기억에 합치는 중',
+  merging: '장기기억에 합치는 중',
 };
 const STAGE_MODE: Record<StyleLearnRun['stage'], ChatHamaMode> = {
   starting: 'read',
@@ -131,7 +132,7 @@ export function ruleSourceLabel(rule: Pick<AccountRule, 'origin' | 'documents' |
   if (rule.documents > 0) parts.push(`문서 ${rule.documents}개`);
   if (rule.uploads > 0) parts.push(`업로드 ${rule.uploads}개`);
   if (rule.origin === 'user' || parts.length === 0) parts.unshift('직접');
-  return parts.join(' · ');
+  return parts.join(' ');
 }
 
 function foundKey(item: Pick<StyleLearnFound, 'kind' | 'subject' | 'text'>): string {
@@ -193,7 +194,7 @@ let paneSeq = 0;
 
 export interface RauSettingsPane {
   root: HTMLElement;
-  /** 탭이 보인다 — 기억·진행·설정을 새로 묻고 하마를 깨운다. */
+  /** 탭이 보인다 — 장기기억·진행·설정을 새로 묻고 하마를 깨운다. */
   open(): void;
   /** 탭이 가려졌다 — 하마를 재운다. */
   close(): void;
@@ -232,8 +233,10 @@ export function createRauSettingsPane(deps: RauSettingsPaneDeps): RauSettingsPan
 
   const root = el('div', 'ag-settings-destination-content ag-rau-pane');
 
-  // ── 머리: 물가의 하마, 이름, 상태 줄, 대화에서 배우기 ─────────
+  // ── 머리: 물가의 하마, 이름, 상태 줄, 학습 스위치 ─────────
   const hero = el('section', 'ag-rau-hero');
+  const heroNeurons = el('pre', 'ag-rau-hero-neurons', neuronArt);
+  heroNeurons.setAttribute('aria-hidden', 'true');
   const heroArt = el('div', 'ag-rau-hero-art');
   heroArt.append(createHamaScene('ag-rau-hero-scene'));
   const heroCopy = el('div', 'ag-rau-hero-copy');
@@ -244,6 +247,7 @@ export function createRauSettingsPane(deps: RauSettingsPaneDeps): RauSettingsPan
   const heroTop = el('div', 'ag-rau-hero-top');
   heroTop.append(heroArt, heroCopy);
   const tasteToggle = createTasteLearningToggle({ bridge, isDisposed: () => disposed || deps.isDisposed() });
+  heroTop.append(tasteToggle.root);
   const notice = el('div', 'ag-rau-notice');
   notice.hidden = true;
   const noticeText = el('p', 'ag-rau-notice-text');
@@ -251,13 +255,12 @@ export function createRauSettingsPane(deps: RauSettingsPaneDeps): RauSettingsPan
   noticeAction.hidden = true;
   noticeAction.addEventListener('click', () => deps.openPlans?.());
   notice.append(createIcon('warning'), noticeText, noticeAction);
-  hero.append(heroTop, tasteToggle.root, notice);
+  hero.append(heroNeurons, heroTop, notice);
 
   // ── 문체 학습 ────────────────────────────────────────
   const learn = el('section', 'ag-rau-section ag-rau-learn');
   const learnHead = el('div', 'ag-rau-section-head');
   learnHead.append(el('h3', 'ag-settings-section-title', '문체 학습'));
-  const learnLead = el('p', 'ag-rau-section-lead', '내 글을 올리면 Rau-0.1이 문체와 용어를 배워 기억에 더해요.');
   const legacyCard = el('div', 'ag-rau-legacy');
   legacyCard.hidden = true;
   const legacyText = el('p', 'ag-rau-legacy-text');
@@ -268,7 +271,7 @@ export function createRauSettingsPane(deps: RauSettingsPaneDeps): RauSettingsPan
   legacyCard.append(createIcon('sparkles'), legacyText, legacyActions);
   const stage = el('div', 'ag-rau-learn-stage');
   const uploadsBox = el('div', 'ag-rau-uploads');
-  learn.append(learnHead, learnLead, legacyCard, stage, uploadsBox);
+  learn.append(learnHead, legacyCard, stage, uploadsBox);
 
   const fileInput = el('input', 'ag-rau-file-input');
   fileInput.type = 'file';
@@ -282,12 +285,12 @@ export function createRauSettingsPane(deps: RauSettingsPaneDeps): RauSettingsPan
   dropzone.setAttribute('aria-describedby', dropMetaId);
   const dropIcon = el('span', 'ag-rau-drop-icon');
   dropIcon.append(createIcon('documentAdd'));
-  const dropTitle = el('span', 'ag-rau-drop-title', '원고를 끌어다 놓거나 골라 주세요');
-  // 형식과 한도를 두 줄로 — 한 줄에 이으면 좁은 폭에서 가운뎃점만 줄 끝에 남는다.
+  const dropTitle = el('span', 'ag-rau-drop-title', '원고를 끌어다 놓거나 파일을 고르세요');
+  // 형식과 한도를 두 줄로 나누어 좁은 폭에서도 읽기 쉽게 둔다.
   const dropMeta = el('span', 'ag-rau-drop-meta');
   dropMeta.append(
-    el('span', 'ag-rau-drop-meta-line', STYLE_LEARN_EXTENSIONS.filter((ext) => ext !== 'htm').join(' · ')),
-    el('span', 'ag-rau-drop-meta-line', `${STYLE_LEARN_MAX_FILES}개까지 · 파일당 20MB · 모두 50MB`),
+    el('span', 'ag-rau-drop-meta-line', STYLE_LEARN_EXTENSIONS.filter((ext) => ext !== 'htm').join(', ')),
+    el('span', 'ag-rau-drop-meta-line', `${STYLE_LEARN_MAX_FILES}개까지 파일당 20MB 모두 50MB`),
   );
   dropMeta.id = dropMetaId;
   dropzone.append(dropIcon, dropTitle, dropMeta);
@@ -351,13 +354,12 @@ export function createRauSettingsPane(deps: RauSettingsPaneDeps): RauSettingsPan
   });
   const foundShown = new Map<string, HTMLLIElement>();
 
-  // ── 기억 ────────────────────────────────────────────
+  // ── 장기기억 ────────────────────────────────────────────
   const memorySection = el('section', 'ag-rau-section ag-rau-memory');
   const memoryHead = el('div', 'ag-rau-section-head');
   const memoryCount = el('span', 'ag-rau-count');
-  memoryHead.append(el('h3', 'ag-settings-section-title', '기억'), memoryCount);
-  const memoryLead = el('p', 'ag-rau-section-lead', '모든 문서에서 Rau-0.1이 따르는 규칙이에요. 여러 문서에서 거듭 보이면 강해지고, 어긋나면 약해져요.');
-  const memoryEmpty = el('p', 'ag-rau-empty', '아직 기억이 없어요. 원고를 올리거나, 채팅에서 고쳐 주면 쌓여요.');
+  memoryHead.append(el('h3', 'ag-settings-section-title', '장기기억'), memoryCount);
+  const memoryEmpty = el('p', 'ag-rau-empty', '아직 장기기억이 없어요. 앱을 사용하다 보면 쌓일지도?');
   const groups = new Map<AccountRuleKind, { root: HTMLElement; list: HTMLUListElement; count: HTMLElement; rows: Map<string, RuleRow> }>();
   const groupsBox = el('div', 'ag-rau-groups');
   for (const kind of ['style', 'term'] as const) {
@@ -365,7 +367,7 @@ export function createRauSettingsPane(deps: RauSettingsPaneDeps): RauSettingsPan
     group.dataset.kind = kind;
     const head = el('div', 'ag-rau-group-head');
     const count = el('span', 'ag-rau-group-count');
-    head.append(el('h4', 'ag-settings-group-title ag-rau-group-title', KIND_LABEL[kind]), count);
+    head.append(el('h4', 'ag-settings-group-title ag-rau-group-title', KIND_LABEL[kind][0] + KIND_LABEL[kind].slice(1).toLowerCase()), count);
     const list = el('ul', 'ag-rau-rules');
     group.append(head, list);
     groupsBox.append(group);
@@ -382,7 +384,7 @@ export function createRauSettingsPane(deps: RauSettingsPaneDeps): RauSettingsPan
   addInput.type = 'text';
   addInput.maxLength = ACCOUNT_RULE_TEXT_MAX;
   addInput.placeholder = '예: 문장 끝은 "~합니다"로 맺는다';
-  addInput.setAttribute('aria-label', '새 기억');
+  addInput.setAttribute('aria-label', '새 장기기억');
   const addSubmit = el('button', 'ag-settings-btn ag-rau-add-submit', '더하기');
   addSubmit.type = 'submit';
   addForm.append(addKindSwitch.root, addInput, addSubmit);
@@ -397,7 +399,7 @@ export function createRauSettingsPane(deps: RauSettingsPaneDeps): RauSettingsPan
       addSubmit.disabled = true;
     });
   });
-  memorySection.append(memoryHead, memoryLead, memoryEmpty, groupsBox, addForm, memoryMessage);
+  memorySection.append(memoryHead, memoryEmpty, groupsBox, addForm, memoryMessage);
 
   // ── 최근 변화 ────────────────────────────────────────
   const eventsSection = el('section', 'ag-rau-section ag-rau-events');
@@ -407,15 +409,14 @@ export function createRauSettingsPane(deps: RauSettingsPaneDeps): RauSettingsPan
   const eventsEmpty = el('p', 'ag-rau-empty', '바뀐 것이 생기면 여기에 남아요.');
   eventsSection.append(eventsHead, eventsList, eventsEmpty);
 
-  // ── 물러난 기억 ──────────────────────────────────────
+  // ── 물러난 장기기억 ──────────────────────────────────────
   const retiredSection = el('details', 'ag-rau-section ag-rau-retired');
   const retiredSummary = el('summary', 'ag-rau-retired-summary');
-  const retiredTitle = el('span', 'ag-settings-section-title', '물러난 기억');
+  const retiredTitle = el('span', 'ag-settings-section-title', '물러난 장기기억');
   const retiredCount = el('span', 'ag-rau-count');
   retiredSummary.append(retiredTitle, retiredCount);
-  const retiredLead = el('p', 'ag-rau-section-lead', '약해졌거나 지운 기억이에요. 되살리면 마지막 강도로 돌아와요.');
   const retiredList = el('ul', 'ag-rau-retired-list');
-  retiredSection.append(retiredSummary, retiredLead, retiredList);
+  retiredSection.append(retiredSummary, retiredList);
 
   root.append(hero, learn, memorySection, eventsSection, retiredSection, fileInput);
 
@@ -430,7 +431,7 @@ export function createRauSettingsPane(deps: RauSettingsPaneDeps): RauSettingsPan
     if (text) messageTimer = window.setTimeout(() => flash('', target), 5000);
   }
 
-  /** 기억을 바꾸는 요청. 허브가 user-memory 로도 알리지만 답의 스냅숏을 곧바로 그린다. */
+  /** 장기기억을 바꾸는 요청. 허브가 user-memory 로도 알리지만 답의 스냅숏을 곧바로 그린다. */
   async function send(op: UserMemoryOp): Promise<boolean> {
     if (!connected) {
       flash(userMemoryErrorMessage('OFFLINE'));
@@ -569,7 +570,7 @@ export function createRauSettingsPane(deps: RauSettingsPaneDeps): RauSettingsPan
       input.rows = 2;
       input.maxLength = ACCOUNT_RULE_TEXT_MAX;
       input.value = editing?.text ?? current.text;
-      input.setAttribute('aria-label', '기억 고치기');
+      input.setAttribute('aria-label', '장기기억 고치기');
       const save = el('button', 'ag-settings-primary', '저장');
       save.type = 'submit';
       const cancel = button('ag-settings-btn', '취소');
@@ -621,7 +622,7 @@ export function createRauSettingsPane(deps: RauSettingsPaneDeps): RauSettingsPan
       row.classList.add('ag-rau-rule-leaving');
       void send({ op: 'delete', id: current.id }).then((ok) => {
         if (!ok) row.classList.remove('ag-rau-rule-leaving');
-        else flash('지웠어요. 물러난 기억에서 되살릴 수 있어요.');
+        else flash('지웠어요. 물러난 장기기억에서 되살릴 수 있어요.');
       });
     });
 
@@ -698,7 +699,7 @@ export function createRauSettingsPane(deps: RauSettingsPaneDeps): RauSettingsPan
         text.textContent = event.text;
       }
       const meta = [KIND_LABEL[event.ruleKind], SOURCE_LABEL[event.source], event.documentName ?? '', relative(event.at)]
-        .filter(Boolean).join(' · ');
+        .filter(Boolean).join(' ');
       body.append(text, el('p', 'ag-rau-event-meta', meta));
       row.append(tag, body);
       const change = strengthChange(event.strength);
@@ -732,7 +733,7 @@ export function createRauSettingsPane(deps: RauSettingsPaneDeps): RauSettingsPan
       const body = el('div', 'ag-rau-rule-body');
       body.append(
         el('p', 'ag-rau-rule-text', rule.text),
-        el('p', 'ag-rau-rule-meta', [KIND_LABEL[rule.kind], RETIRE_LABEL[rule.reason], relative(rule.retiredAt)].filter(Boolean).join(' · ')),
+        el('p', 'ag-rau-rule-meta', [KIND_LABEL[rule.kind], RETIRE_LABEL[rule.reason], relative(rule.retiredAt)].filter(Boolean).join(' ')),
       );
       const restore = button('ag-settings-btn ag-rau-restore', '되살리기');
       restore.disabled = busyOps > 0;
@@ -763,11 +764,11 @@ export function createRauSettingsPane(deps: RauSettingsPaneDeps): RauSettingsPan
       const name = el('span', 'ag-rau-upload-name', filesLabel(record.files));
       name.title = record.files.join('\n');
       const counts = [
-        record.counts.new ? `새로 ${record.counts.new}` : '',
+        record.counts.new ? `NEW ${record.counts.new}` : '',
         record.counts.reinforced ? `보강 ${record.counts.reinforced}` : '',
         record.counts.dampened ? `감쇄 ${record.counts.dampened}` : '',
-      ].filter(Boolean).join(' · ') || '바뀐 것 없음';
-      row.append(createIcon('document'), name, el('span', 'ag-rau-upload-meta', `${shortDate(record.at)} · ${counts}`));
+      ].filter(Boolean).join(' ') || '바뀐 것 없음';
+      row.append(createIcon('document'), name, el('span', 'ag-rau-upload-meta', `${shortDate(record.at)} ${counts}`));
       return row;
     }));
     uploadsBox.replaceChildren(head, list);
@@ -792,7 +793,7 @@ export function createRauSettingsPane(deps: RauSettingsPaneDeps): RauSettingsPan
     // 보내는 중(브라우저가 파일을 읽어 싸는 동안)에는 허브가 아직 어느 파일도 읽지 않았다.
     if (!done && run.stage !== 'merging' && run.stage !== 'starting' && fileCount > 0) parts.push(`파일 ${Math.max(run.stage === 'reading' ? 1 : 0, fileIndex)}/${fileCount}`);
     parts.push(`규칙 ${run.found.length}개`);
-    runMeta.textContent = parts.join(' · ');
+    runMeta.textContent = parts.join(' ');
     runFile.textContent = done ? '' : run.file?.name ?? (run.legacy ? '이전 말투 맞추기 원고' : filesLabel(run.files));
     runCancel.hidden = done || !run.jobId;
     // 멈춘 뒤 다른 학습(다른 창·다시 연 창)이 jobId 를 가진 채로 바로 오면 단추를 다시 살린다.
@@ -831,7 +832,7 @@ export function createRauSettingsPane(deps: RauSettingsPaneDeps): RauSettingsPan
       const body = el('div', 'ag-rau-result-body');
       body.append(el('p', 'ag-rau-result-text', item.text));
       if (item.note && kind === 'conflicts') {
-        body.append(el('p', 'ag-rau-result-note', item.note === 'deleted' ? '직접 지운 기억과 같아서 더하지 않았어요.' : `기억: ${item.note}`));
+        body.append(el('p', 'ag-rau-result-note', item.note === 'deleted' ? '직접 지운 장기기억과 같아서 더하지 않았어요.' : `장기기억: ${item.note}`));
       }
       row.append(tag, body);
       // 강도는 오른쪽 끝 한 칸에 — 종류 표와 글이 모든 줄에서 같은 자리에 선다(최근 변화와 같은 배치).
@@ -868,17 +869,14 @@ export function createRauSettingsPane(deps: RauSettingsPaneDeps): RauSettingsPan
     const copy = el('div', 'ag-rau-result-copy');
     const learned = summary.new.length + summary.reinforced.length;
     const title = el('p', 'ag-rau-result-title', learned ? '문체 학습 끝' : '이미 아는 문체예요');
-    const lead = el('p', 'ag-rau-result-lead', learned
-      ? `${outcome.legacy ? '이전 원고' : filesLabel(outcome.files)}에서 배운 것을 기억에 더했어요.`
-      : '새로 더할 규칙은 없었어요. 기억은 그대로예요.');
-    copy.append(title, lead);
+    copy.append(title);
     head.append(art, copy);
     const stats = el('div', 'ag-rau-stats');
     for (const [label, value, kind] of [
-      ['새로', summary.new.length, 'new'],
+      ['NEW', summary.new.length, 'new'],
       ['보강', summary.reinforced.length, 'reinforced'],
       ['감쇄', summary.dampened.length, 'dampened'],
-      ['물러남', summary.retired.length, 'retired'],
+      ['EXIT', summary.retired.length, 'retired'],
     ] as const) {
       const stat = el('div', 'ag-rau-stat');
       stat.dataset.kind = kind;
@@ -889,15 +887,15 @@ export function createRauSettingsPane(deps: RauSettingsPaneDeps): RauSettingsPan
     const delay = { value: 220 };
     const groupsNode = el('div', 'ag-rau-result-groups');
     for (const node of [
-      summaryGroup('새로 배운 기억', 'new', summary.new, delay),
+      summaryGroup('새로 배운 장기기억', 'new', summary.new, delay),
       summaryGroup('보강', 'reinforced', summary.reinforced, delay),
       summaryGroup('감쇄', 'dampened', summary.dampened, delay),
-      summaryGroup('물러남', 'retired', summary.retired, delay),
-      summaryGroup('기억과 어긋남', 'conflicts', summary.conflicts, delay),
+      summaryGroup('EXIT', 'retired', summary.retired, delay),
+      summaryGroup('장기기억과 어긋남', 'conflicts', summary.conflicts, delay),
     ]) if (node) groupsNode.append(node);
     if (summary.skippedFiles.length) {
       const skipped = el('p', 'ag-rau-result-skipped');
-      skipped.append(createIcon('warning'), `읽지 못한 파일 · ${summary.skippedFiles.join(', ')}`);
+      skipped.append(createIcon('warning'), `읽지 못한 파일 ${summary.skippedFiles.join(', ')}`);
       groupsNode.append(skipped);
     }
     const actions = el('div', 'ag-rau-result-actions');
@@ -957,23 +955,23 @@ export function createRauSettingsPane(deps: RauSettingsPaneDeps): RauSettingsPan
   function renderHero(memory: UserMemorySnapshot | null): void {
     const parts: string[] = [];
     if (memory) {
-      parts.push(memory.rules.length ? `기억 ${memory.rules.length}개` : '아직 기억 없음');
+      parts.push(memory.rules.length ? `장기기억 ${memory.rules.length}개` : '아직 장기기억 없음');
       if (memory.lastLearnedAt) parts.push(`마지막 학습 ${relative(memory.lastLearnedAt)}`);
     } else {
-      parts.push(connected ? '기억을 불러오는 중' : '허브에 연결되면 기억을 불러와요');
+      parts.push(connected ? '장기기억을 불러오는 중' : '허브에 연결되면 장기기억을 불러와요');
     }
     if (state.run) parts.push('문체 학습 중');
-    heroStatus.textContent = parts.join(' · ');
+    heroStatus.textContent = parts.join(' ');
     let text = '';
     let action = false;
     let tone = 'info';
     const availability = memory?.availability ?? null;
     // 요금제 API 가 있으면 탭이 열린 것이 곧 Rau 요금제다 — unavailable 은 Rau 에 닿지 않는다는 뜻이다.
     const unreachable = availability === 'unavailable' && deps.hasPlanApi === true;
-    if (unreachable) text = '지금 Rau 에 닿지 않아요. 기억은 그대로 보고 고칠 수 있어요.';
-    else if (memory && memory.availability === 'unavailable') text = '데스크톱 앱의 Rau 요금제에서 배워요. 지금은 기억을 보고 고칠 수만 있어요.';
-    else if (memory && memory.availability === 'not_eligible') { text = 'Rau 요금제에서 배우고 기억을 써요.'; action = Boolean(deps.openPlans); }
-    else if (memory && memory.availability === 'exhausted') { text = '이번 달 Rau 크레딧을 다 썼어요. 기억은 그대로 쓰고, 문체 학습은 크레딧이 채워지면 다시 돼요.'; tone = 'warn'; }
+    if (unreachable) text = '지금 Rau 에 닿지 않아요. 장기기억은 그대로 보고 고칠 수 있어요.';
+    else if (memory && memory.availability === 'unavailable') text = '데스크톱 앱의 Rau 요금제에서 배워요. 지금은 장기기억을 보고 고칠 수만 있어요.';
+    else if (memory && memory.availability === 'not_eligible') { text = 'Rau 요금제에서 배우고 장기기억을 써요.'; action = Boolean(deps.openPlans); }
+    else if (memory && memory.availability === 'exhausted') { text = '이번 달 Rau 크레딧을 다 썼어요. 장기기억은 그대로 쓰고, 문체 학습은 크레딧이 채워지면 다시 돼요.'; tone = 'warn'; }
     notice.hidden = !text;
     notice.dataset.tone = tone;
     noticeText.textContent = text;
@@ -983,7 +981,7 @@ export function createRauSettingsPane(deps: RauSettingsPaneDeps): RauSettingsPan
     const learnable = !memory || availability === 'active';
     dropzone.disabled = !connected || !learnable;
     dropTitle.textContent = learnable
-      ? '원고를 끌어다 놓거나 골라 주세요'
+      ? '원고를 끌어다 놓거나 파일을 고르세요'
       : availability === 'exhausted'
         ? '크레딧이 채워지면 다시 올릴 수 있어요'
         : unreachable
@@ -996,7 +994,7 @@ export function createRauSettingsPane(deps: RauSettingsPaneDeps): RauSettingsPan
     const files = memory?.legacy?.files ?? 0;
     if (!files) legacyBusy = false;
     legacyCard.hidden = !files || Boolean(state.run) || legacyBusy;
-    legacyText.textContent = `이전 말투 맞추기 원고 ${files}개가 남아 있어요. 이 원고로 기억을 만들까요?`;
+    legacyText.textContent = `이전 말투 맞추기 원고 ${files}개가 남아 있어요. 이 원고로 장기기억을 만들까요?`;
     // 지금 배울 수 없으면(크레딧 소진 등) 허브가 곧바로 거절한다. 아니요는 언제든 고를 수 있다.
     legacyAccept.disabled = !connected || legacyBusy || memory?.availability !== 'active';
     legacyDecline.disabled = !connected || legacyBusy;

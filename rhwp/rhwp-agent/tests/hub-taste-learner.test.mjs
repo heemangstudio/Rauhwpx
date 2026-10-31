@@ -277,7 +277,7 @@ test('Rau-0.1 learns at turn end, undoes, escalates a two-document habit into �
   const withMemory = fake.prompts().at(-1);
   const order = ['<app_agents_md', '<user_memory revision=', '<document_memory revision='].map((tag) => withMemory.indexOf(tag));
   assert.ok(order.every((index) => index >= 0) && order[0] < order[1] && order[1] < order[2], `memory blocks in order: ${order}`);
-  assert.match(withMemory, /<user_memory[^>]*>[\s\S]*\[문체, 강도 2\] 본문은 한다체 사용[\s\S]*<\/user_memory>/);
+  assert.match(withMemory, /<user_memory[^>]*>[\s\S]*\[STYLE, 강도 2\] 본문은 한다체 사용[\s\S]*<\/user_memory>/);
   await say('한 줄 더');
   assert.doesNotMatch(fake.prompts().at(-1), /<user_memory/, 'the same memory is not sent twice to one provider session');
 

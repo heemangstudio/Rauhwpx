@@ -36,7 +36,7 @@ const VISIBLE_EVENTS = 20;
 const MAX_EVENTS = 200;
 const MAX_UPLOADS = 10;
 const MAX_SUBJECT = 60;
-const KIND_LABEL: Record<T.AccountRuleKind, string> = { style: '문체', term: '용어' };
+const KIND_SUBJECT: Record<T.AccountRuleKind, string> = { style: '문체', term: '용어' };
 
 const READ_MS = 260;
 const EXTRACT_MS = 650;
@@ -338,7 +338,7 @@ function raise(rule: Rule, step: number, source: T.MemoryEvent['source'], kind: 
 }
 
 function deriveSubject(kind: T.AccountRuleKind, text: string): string {
-  return `${KIND_LABEL[kind]}.${text}`.slice(0, MAX_SUBJECT).trim();
+  return `${KIND_SUBJECT[kind]}.${text}`.slice(0, MAX_SUBJECT).trim();
 }
 
 /** user-memory-request — 허브 studioRequest 의 답 몸통. */

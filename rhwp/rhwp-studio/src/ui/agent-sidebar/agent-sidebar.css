@@ -3310,9 +3310,9 @@ button.ag-skill-copy {
   margin-right: 2px;
 }
 
-/* 기억 승격이 있는 묶음은 표 칸을 넓혀 글이 한 세로줄에서 시작한다. */
+/* 장기기억 승격이 있는 묶음은 표 칸을 넓혀 글이 한 세로줄에서 시작한다. */
 .ag-taste-rows:has(.ag-taste-row[data-change='escalated']) .ag-taste-tag {
-  min-width: 4.8em;
+  min-width: 6.8em;
 }
 
 .ag-taste-text {
@@ -6131,6 +6131,7 @@ button.ag-skill-copy {
   height: 20px;
   margin-left: -4px;
   background: url('/images/boot/hama-sprites.png') 0 0 / 156px 20px no-repeat;
+  filter: var(--rau-sprite-tint);
   image-rendering: pixelated;
   animation: ag-style-pill-swim 900ms steps(6) infinite;
 }
@@ -6171,14 +6172,14 @@ button.ag-skill-copy {
   height: 2px;
   overflow: hidden;
   border-radius: 1px;
-  background: color-mix(in oklab, #3d9bd1 14%, transparent);
+  background: color-mix(in oklab, var(--rau-accent, #a81e2a) 14%, transparent);
   pointer-events: none;
 }
 
 .ag-style-pill-fill {
   position: absolute;
   inset: 0;
-  background: #3d9bd1;
+  background: var(--rau-accent, #a81e2a);
   transform-origin: 0 50%;
   transition: transform 700ms var(--ag-ease-out);
 }

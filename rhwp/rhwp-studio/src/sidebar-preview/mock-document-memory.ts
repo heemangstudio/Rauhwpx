@@ -48,8 +48,8 @@ function sampleEntries(): T.DocumentMemoryEntry[] {
     createdAt: at, updatedAt: at, confirmedAt: at, ...extra,
   });
   return [
-    entry('style', '문체.종결', '본문은 한다체 사용', { origin: 'learned', strength: 4 }),
-    entry('term', '용어.고객', "'고객' 대신 '이용자'로 통일"),
+    entry('style', '문체.종결', '본문 종결은 한다체로 쓴다', { origin: 'learned', strength: 4 }),
+    entry('term', '용어.고객', "'고객' 대신 '이용자'로 쓴다"),
     entry('decision', '결정.예산표', '예산표는 분기별로 나눔'),
     entry('protect', '보호.결론', '결론 문단 수정 금지', { anchor: { quote: MISSING_QUOTE, paraIdx: 42 } }),
   ];
