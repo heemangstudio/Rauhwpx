@@ -9,6 +9,8 @@ import http from 'node:http';
  *   { network: true }      drop the connection without an answer
  *   { cutAfter: n }        stream n events, pause, then drop the connection
  *   { hold: true }         stream message_start and a few deltas, then wait for release()
+ *   { holdHeaders: true }  wait for release() (or the caller leaving) before answering at all
+ *   { holdFirst: true }    answer 200 stream headers, then wait for release() before the first event
  *   { errorEvent: type }   answer 200 and stream an `error` event first
  *   { id, cost, text }     override the happy answer's id, OpenRouter cost or text
  */
@@ -55,6 +57,7 @@ function createFake(path, idPrefix, defaultCost) {
   const queue = [];
   let waiters = [];
   const release = () => { const w = waiters; waiters = []; w.forEach((fn) => fn()); };
+  const held = (res) => new Promise((resolve) => { waiters.push(resolve); res.on('close', resolve); });
   const server = http.createServer(async (req, res) => {
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
@@ -65,6 +68,10 @@ function createFake(path, idPrefix, defaultCost) {
     if (`${req.method} ${call.path}` !== `POST ${path}`) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end('{}'); return; }
     const script = queue.shift() ?? {};
     if (script.network) { req.socket.destroy(); return; }
+    if (script.holdHeaders) {
+      await held(res);
+      if (res.destroyed) return;
+    }
     if (script.status) {
       res.writeHead(script.status, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(script.json ?? {}));
@@ -79,6 +86,11 @@ function createFake(path, idPrefix, defaultCost) {
       return;
     }
     res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    if (script.holdFirst) {
+      res.flushHeaders();
+      await held(res);
+      if (res.destroyed) return;
+    }
     if (script.errorEvent) {
       res.end(sse('error', { error: { type: script.errorEvent, message: 'Overloaded' } }));
       call.finished = true;

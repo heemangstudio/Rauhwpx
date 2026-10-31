@@ -181,6 +181,33 @@ test('a credits failure on stderr still carries the tag', async (t) => {
   await session.dispose();
 });
 
+test('a mid-session 403 rau_plan_required becomes the Rau-not-active failure that offers the upgrade', async (t) => {
+  const { harness } = await setUp(t);
+  await harness.refresh();
+  const rejected = [];
+  const { session, events, spawns } = rauSession(harness, { onAccessRejected: (info) => rejected.push(info) });
+  session.sendUserMessage('hi');
+  spawns[0].proc.emitJson(
+    {
+      type: 'message_end',
+      message: {
+        role: 'assistant', content: [], stopReason: 'error',
+        errorMessage: '403 {"type":"error","error":{"type":"rau_plan_required","message":"Rau is not part of this plan."}}',
+      },
+    },
+    { type: 'agent_settled' },
+  );
+  spawns[0].proc.exit(0);
+  await settle();
+  const failed = events.find((event) => event.type === 'error');
+  assert.equal(failed.failure.code, 'RAU_AGENT_NOT_ACTIVE');
+  assert.ok(failed.message.startsWith(RAU_AGENT_UNAVAILABLE_MESSAGE));
+  const { failure } = normalizeProviderFailureEvent(failed, { agent: 'rau' });
+  assert.deepEqual([failure.class, failure.code], ['auth_required', 'RAU_AGENT_NOT_ACTIVE']);
+  assert.deepEqual(rejected, [{ mode: 'rau', status: 403 }], 'the hub asks for its standing again');
+  await session.dispose();
+});
+
 test('the credits tag parser reads the reset time and ignores look-alikes', () => {
   assert.deepEqual(parseRauCredits(`x [rau-credits:${RESETS_AT}] y`), { resetsAt: Date.parse(RESETS_AT) });
   assert.equal(parseRauCredits('[rau-credits:2026-11-01T00:00:00Z]').resetsAt, Date.parse('2026-11-01T00:00:00Z'));

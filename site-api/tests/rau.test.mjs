@@ -315,12 +315,19 @@ test('Haiku fails over to Anthropic before any byte is sent, and the session sta
   await (await s.agent(rau.lease, ask('fresh'))).text();
   assert.equal(s.openrouter.calls.length, before + 1);
 
-  // A plain 400 is the client's own mistake: passed through, no backup, nothing billed.
-  const invalid = { type: 'error', error: { type: 'invalid_request_error', message: 'messages.0: field required' } };
+  // A plain 400 is the client's own mistake: its status in our words, no backup, nothing billed. The
+  // upstream's words (which may name the model) stay in the log, without keys.
+  const invalid = { type: 'error', error: { type: 'invalid_request_error', message: `${HAIKU_API}: messages.0: field required (${OPENROUTER_KEY})` } };
   s.openrouter.next({ status: 400, json: invalid });
   const mistake = await s.agent(rau.lease, ask('bad request'));
-  assert.deepEqual([mistake.status, await mistake.json()], [400, invalid]);
+  assert.deepEqual([mistake.status, await mistake.json()], [400, { type: 'error', error: { type: 'invalid_request_error', message: 'The request was not accepted.' } }]);
   assert.equal(s.anthropic.calls.length, failures.length + 1);
+  const logged = s.logs.find((line) => line.includes('messages.0: field required'));
+  assert.ok(logged && !logged.includes(OPENROUTER_KEY), logged);
+  // A context overflow keeps the wording Pi compacts on, nothing more.
+  s.openrouter.next({ status: 400, json: { type: 'error', error: { type: 'invalid_request_error', message: `prompt is too long: 210000 tokens > 200000 maximum for ${HAIKU_API}` } } });
+  const long = await s.agent(rau.lease, ask('too long'));
+  assert.deepEqual([long.status, (await long.json()).error.message], [400, 'prompt is too long: 210000 tokens > 200000 maximum']);
   // Both routes refusing the owner's credentials is ours to fix: 502, not the upstream's 401.
   s.openrouter.next({ status: 401, json: {} });
   s.anthropic.next({ status: 401, json: {} });
@@ -328,8 +335,64 @@ test('Haiku fails over to Anthropic before any byte is sent, and the session sta
   assert.deepEqual([down.status, (await down.json()).error.type], [502, 'upstream_unavailable']);
   // The last route's overload passes through so Pi retries it.
   s.openrouter.next({ status: 529, json: {} });
-  s.anthropic.next({ status: 529, json: { type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } } });
-  assert.equal((await s.agent(rau.lease, ask('both busy'))).status, 529);
+  s.anthropic.next({ status: 529, json: { type: 'error', error: { type: 'overloaded_error', message: 'Anthropic is overloaded' } } });
+  const busy = await s.agent(rau.lease, ask('both busy'));
+  assert.deepEqual([busy.status, await busy.json()], [529, { type: 'error', error: { type: 'overloaded_error', message: 'Overloaded. Retry shortly.' } }]);
+});
+
+test('a pinned session whose backup fails goes back to the primary, and a backup that keeps serving keeps its pin', async (t) => {
+  const clock = { now: T0 };
+  const s = await setup(t, {}, { clock });
+  const rau = await s.buy('rauMonthly');
+  const turn = (n) => ask('pinned', { messages: [{ role: 'user', content: 'pinned' }, ...Array.from({ length: n }, (_, i) => [{ role: 'assistant', content: 'ok' }, { role: 'user', content: `more ${i}` }]).flat()] });
+  const routes = () => [s.openrouter.calls.length, s.anthropic.calls.length];
+
+  s.openrouter.next({ status: 500, json: {} });
+  await (await s.agent(rau.lease, turn(0))).text();
+  assert.deepEqual(routes(), [1, 1], 'failed over to the backup and pinned there');
+  // Every call the backup serves refreshes the pin: 20 + 20 minutes is past the 30-minute pin.
+  clock.now += 20 * 60 * 1000;
+  await (await s.agent(rau.lease, turn(1))).text();
+  clock.now += 20 * 60 * 1000;
+  await (await s.agent(rau.lease, turn(2))).text();
+  assert.deepEqual(routes(), [1, 3], 'still on the backup');
+
+  // The pinned backup fails: the primary is still in the chain, and serving unpins the session.
+  s.anthropic.next({ status: 500, json: {} });
+  const res = await s.agent(rau.lease, turn(3));
+  assert.equal(res.status, 200);
+  await res.text();
+  assert.deepEqual(routes(), [2, 4]);
+  await (await s.agent(rau.lease, turn(4))).text();
+  assert.deepEqual(routes(), [3, 4], 'back on the primary');
+  await s.billed(rau.keyId, 5);
+});
+
+test('a client that leaves after the request went upstream is billed the estimate, before headers or during the first-event peek', async (t) => {
+  const s = await setup(t);
+  const rau = await s.buy('rauMonthly');
+  // The estimate with nothing back: ~3 request bytes a token of Haiku input.
+  const estimate = (bytes) => Math.round(Math.ceil(bytes / 3) * 1 * 1e3) / 1e9;
+  const leave = async (script, text) => {
+    const body = ask(text);
+    const before = s.openrouter.calls.length;
+    s.openrouter.next(script);
+    const abort = new AbortController();
+    const pending = s.agent(rau.lease, body, {}, { signal: abort.signal }).catch((error) => error);
+    for (let i = 0; i < 200 && s.openrouter.calls.length === before; i += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    abort.abort();
+    await pending;
+    const call = s.openrouter.calls[before];
+    for (let i = 0; i < 200 && !call.closed; i += 1) await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(call.closed, true, `${text}: the upstream call was aborted`);
+    return Buffer.byteLength(JSON.stringify(body));
+  };
+  const first = await leave({ holdHeaders: true }, 'leave before headers');
+  assert.equal((await s.billed(rau.keyId, 1)).usedUsd, estimate(first));
+  const second = await leave({ holdFirst: true }, 'leave during peek');
+  assert.equal((await s.billed(rau.keyId, 2)).usedUsd, Math.round((estimate(first) + estimate(second)) * 1e9) / 1e9);
+  assert.equal(s.anthropic.calls.length, 0, 'no backup is asked for a client that left');
 });
 
 test('no failover once bytes reached the client; a cut stream and a client that leaves are still billed', async (t) => {

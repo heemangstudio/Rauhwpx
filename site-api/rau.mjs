@@ -127,16 +127,16 @@ export function createRauService({
 
   /**
    * Where a principal stands now: its period, allowance and spend. Null when it has no Rau now: no
-   * principal, a trial outside its 7 days, or (unless `keepSpentTrial`) a trial whose credits are spent.
+   * principal or a trial outside its 7 days. A spent trial still stands (remaining 0) until its end, so
+   * it is refused for credits, not for its plan.
    */
-  function standing(principal, state, at = now(), { keepSpentTrial = false } = {}) {
+  function standing(principal, state, at = now()) {
     if (!principal?.ledgerId || (principal.source !== 'plan' && principal.source !== 'trial')) return null;
     let period;
     try { period = periodOf(principal, at); } catch { return null; }
     if (!(at >= period.start && at < period.end)) return null;
     const allowance = allowanceOf(principal.source);
     const used = periodUsed(own(state.ledgers, principal.ledgerId), period);
-    if (principal.source === 'trial' && used >= allowance && !keepSpentTrial) return null;
     return {
       source: principal.source,
       ledgerId: principal.ledgerId,
@@ -154,10 +154,10 @@ export function createRauService({
 
   /**
    * The current period of a principal for the account page: `{ allowanceUsd, usedUsd, remainingUsd,
-   * resetsAt (epoch ms) }`, or null outside it. A spent trial still answers (remaining 0). Read-only.
+   * resetsAt (epoch ms) }`, or null outside it. Read-only.
    */
   async function usage(principal) {
-    const s = standing(principal, await read(), now(), { keepSpentTrial: true });
+    const s = standing(principal, await read());
     return s ? { allowanceUsd: s.allowanceUsd, usedUsd: s.usedUsd, remainingUsd: s.remainingUsd, resetsAt: s.period.end } : null;
   }
 
@@ -181,7 +181,8 @@ export function createRauService({
   /**
    * Checks a lease before a hosted call. Resolves to `{ principal, refusal }`: the principal's standing
    * (it is billed against `principal.period`), and `{ resetsAt (ISO), allowanceUsd, usedUsd }` when its
-   * credits are spent. Throws 401 unauthorized, 503 rau_not_configured or 403 rau_plan_required.
+   * credits are spent (a spent trial too, while its 7 days run: it resets at the trial's end). Throws
+   * 401 unauthorized, 503 rau_not_configured or 403 rau_plan_required.
    */
   async function admit(lease) {
     const principal = await who(lease);

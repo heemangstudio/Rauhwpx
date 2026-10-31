@@ -18,7 +18,10 @@ import { createRateLimiter } from './rate-limit.mjs';
  * `createRauAgentProxy` serves `POST /v1/rau/agent/v1/messages` (Anthropic Messages, model `rau`) for
  * Pi's `anthropic-messages` provider. It streams through as bytes arrive, reads usage on the way and
  * bills the call once by its provider id against the principal's period (rau.record). A cut stream is
- * still billed: what upstream reported, or a conservative estimate when no final usage arrived.
+ * still billed: what upstream reported, or a conservative estimate when no final usage arrived. A client
+ * that leaves after the request went upstream is billed the estimate too, even before any answer.
+ * Upstream error answers are never passed through: the client gets an Anthropic-shaped error of ours
+ * with the same status and a message that names no model or vendor; the detail goes to the log.
  */
 
 export const RAU_AGENT_PREFIX = '/v1/rau/agent';
@@ -112,6 +115,9 @@ function createSessionCache({ now, ttl = SESSION_TTL_MS, max = MAX_SESSIONS }) {
       map.delete(key);
       map.set(key, { value, expires: now() + life });
       while (map.size > max) map.delete(map.keys().next().value);
+    },
+    delete(key) {
+      map.delete(key);
     },
   };
 }
@@ -285,15 +291,25 @@ export function createRauUpstream({
   }
   const pins = createSessionCache({ now });
 
-  /** The routes a session tries, in order: from the one it is pinned to after a failover, else all. */
+  /** The routes a session tries, in order: the one it is pinned to after a failover first, then the rest in order. */
   function routesFor(session) {
     const pinned = session ? pins.get(session) : undefined;
     const index = pinned ? routes.findIndex((route) => route.id === pinned) : -1;
-    return index > 0 ? routes.slice(index) : [...routes];
+    return index > 0 ? [routes[index], ...routes.filter((_, i) => i !== index)] : [...routes];
   }
 
+  /** After `route` served the session: a backup route (re)pins it for FAILOVER_PIN_MS, the primary unpins it. */
   function pin(session, route) {
-    if (session) pins.set(session, route.id, FAILOVER_PIN_MS);
+    if (!session) return;
+    if (route.id === routes[0]?.id) pins.delete(session);
+    else pins.set(session, route.id, FAILOVER_PIN_MS);
+  }
+
+  /** Text for the log: the upstream keys and anything key-shaped masked. */
+  function redact(text) {
+    let out = String(text ?? '');
+    for (const secret of [openrouterKey, anthropicKey]) if (secret) out = out.split(secret).join('[key]');
+    return out.replace(/\b(?:sk|pk|rk)-[A-Za-z0-9_-]{8,}/g, '[key]').replace(/Bearer\s+\S+/gi, 'Bearer [key]');
   }
 
   /** URL and fetch init of one route for a prepared Messages body. */
@@ -437,6 +453,7 @@ export function createRauUpstream({
     routes: routes.map((route) => ({ id: route.id, model: route.model, via: route.via })),
     routesFor,
     pin,
+    redact,
     request,
     attempt,
     failover,
@@ -479,6 +496,36 @@ export function createRauAgentProxy({
       headers: { 'Retry-After': String(seconds), 'X-Rau-Resets-At': refusal.resetsAt },
       extra: { resetsAt: refusal.resetsAt },
     });
+  }
+
+  /**
+   * Our own answer for an upstream error the client gets: same status, an Anthropic error type for it, and
+   * a message that names no model or vendor. A context overflow keeps Pi's `prompt is too long` wording
+   * (and the token counts) so Pi still compacts.
+   */
+  function upstreamErrorBody(status, upstreamBody) {
+    const said = String(upstreamBody?.error?.message ?? '');
+    if ((status === 400 || status === 413) && /prompt is too long|context (?:window|length)|too many tokens/i.test(said)) {
+      const counts = /(\d+)\s*tokens?\s*>\s*(\d+)/.exec(said);
+      const message = counts ? `prompt is too long: ${counts[1]} tokens > ${counts[2]} maximum` : 'prompt is too long for the context window.';
+      return { type: 'error', error: { type: 'invalid_request_error', message } };
+    }
+    const [type, message] = status === 400 ? ['invalid_request_error', 'The request was not accepted.']
+      : status === 404 ? ['not_found_error', 'Not found.']
+        : status === 413 ? ['request_too_large', 'Request too large.']
+          : status === 429 ? ['rate_limit_error', 'Rate limited. Retry shortly.']
+            : status === 529 ? ['overloaded_error', 'Overloaded. Retry shortly.']
+              : status >= 500 ? ['api_error', 'Service error. Retry shortly.']
+                : ['api_error', `Request failed (${status}).`];
+    return { type: 'error', error: { type, message } };
+  }
+
+  /** Bills a call the client left after it went upstream: the estimate from whatever arrived (else the request size). */
+  async function billAbandoned(principal, route, requestBytes, chunks = []) {
+    const { meter, sse } = createMeter();
+    for (const chunk of chunks) sse(chunk);
+    const call = upstream.bill(route, meter, requestBytes);
+    await rau.record(principal, call).catch((error) => log(`[site-api] rau usage for ${principal.ledgerId} not recorded: ${error?.message ?? error}`));
   }
 
   const ADMIT_MESSAGES = {
@@ -542,9 +589,10 @@ export function createRauAgentProxy({
     try {
       for (const [index, route] of chain.entries()) {
         const hasNext = index < chain.length - 1;
+        if (abort.signal.aborted) return; // left before this route was asked: nothing went upstream
         const { url, init } = upstream.request(route, body, { stream, session, version, beta });
         const result = await upstream.attempt(url, init, abort, stream ? STREAM_HEADERS_TIMEOUT_MS : JSON_HEADERS_TIMEOUT_MS);
-        if (result.aborted) return;
+        if (result.aborted) return billAbandoned(principal, route, requestBytes);
         const moveOn = (reason) => log(`[site-api] rau ${route.id} failed (${reason})${hasNext ? ', trying the next route' : ''}`);
         if (result.network) {
           moveOn('network');
@@ -554,12 +602,16 @@ export function createRauAgentProxy({
         const answer = result.response;
         if (!answer.ok) {
           const errorBody = jsonOrNull(answer.body ? await readBounded(answer.body, MAX_ERROR_BYTES).catch(() => null) : null);
-          if (upstream.failover(answer.status, errorBody)) {
-            moveOn(String(answer.status));
+          // The upstream's own words stay in our log only.
+          const said = errorBody?.error ? `${errorBody.error.type ?? errorBody.error.code ?? '?'}: ${errorBody.error.message ?? ''}` : 'no error body';
+          const detail = `${answer.status} ${upstream.redact(said).slice(0, 300)}`;
+          if (!upstream.failover(answer.status, errorBody)) log(`[site-api] rau ${route.id} answered ${detail}`);
+          else {
+            moveOn(detail);
             if (hasNext) continue;
             if (upstream.ownFailure(answer.status, errorBody)) return fail(502, 'upstream_unavailable', 'Upstream unavailable.');
           }
-          // The client's own mistake (or the last route's overload or rate limit) passes through.
+          // The client's own mistake (or the last route's overload or rate limit): its status, our words.
           const retryAfter = answer.headers.get('retry-after');
           res.writeHead(answer.status, {
             'Content-Type': 'application/json; charset=utf-8',
@@ -567,7 +619,7 @@ export function createRauAgentProxy({
             'X-Content-Type-Options': 'nosniff',
             ...(retryAfter ? { 'Retry-After': retryAfter } : {}),
           });
-          res.end(JSON.stringify(errorBody?.type === 'error' ? errorBody : { type: 'error', error: { type: 'api_error', message: `Upstream answered ${answer.status}.` } }));
+          res.end(JSON.stringify(upstreamErrorBody(answer.status, errorBody)));
           return;
         }
         const reader = answer.body?.getReader();
@@ -575,7 +627,10 @@ export function createRauAgentProxy({
         let first = [];
         if (stream && hasNext) {
           const peek = await upstream.peekFirstEvent(reader).catch(() => ({ chunks: [], errorType: 'network' }));
-          if (abort.signal.aborted) { reader.cancel().catch(() => {}); return; }
+          if (abort.signal.aborted) {
+            reader.cancel().catch(() => {});
+            return billAbandoned(principal, route, requestBytes, peek.chunks);
+          }
           if (peek.errorType && (peek.errorType === 'network' || STREAM_FAILOVER.has(peek.errorType))) {
             reader.cancel().catch(() => {});
             moveOn(`stream ${peek.errorType}`);
@@ -583,8 +638,8 @@ export function createRauAgentProxy({
           }
           first = peek.chunks;
         }
-        // Served after a failover: the session stays on this route for a while.
-        if (index > 0) upstream.pin(session, route);
+        // Served by a backup: the session stays on it for a while (refreshed on every call it serves).
+        upstream.pin(session, route);
         const { meter, sse, json } = createMeter();
         const jsonChunks = [];
         let jsonBytes = 0;

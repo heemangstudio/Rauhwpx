@@ -570,6 +570,15 @@ export function createPiSession(opts, {
     };
   }
 
+  /**
+   * Rau 프록시가 요금제가 없다고 거절했다(403 rau_plan_required): 쓰는 중에 체험이 끝났거나 플랜이 끊겼다.
+   * 잘못된 요청이 아니라 RAU_AGENT_NOT_ACTIVE 로 보내 업그레이드 안내가 뜨게 한다.
+   */
+  function rauPlanFailure(text) {
+    if (turnAccess?.mode !== 'rau' || !/\brau_plan_required\b/.test(String(text ?? ''))) return null;
+    return { message: RAU_AGENT_UNAVAILABLE_MESSAGE, failure: { source: 'pi', code: 'RAU_AGENT_NOT_ACTIVE', httpStatus: 403 } };
+  }
+
   /** 크레딧 실패 코드. 선물이면 다 쓴 것(gift_credits)과 잠깐 거절된 것(gift_retry)을 가른다. */
   function creditFailureCode(text) {
     if (turnAccess?.mode === 'own' && turnAccess.fallback === 'gift') return 'own_credits';
@@ -974,11 +983,11 @@ export function createPiSession(opts, {
           } else if (turnFailureMessage) {
             // 재시도로도 회복하지 못한 마지막 시도의 오류 — 한 번만 보낸다.
             const detail = turnFailureMessage;
-            const capped = rauCreditsFailure(detail);
+            const capped = rauCreditsFailure(detail) ?? rauPlanFailure(detail);
             const credit = capped ? null : creditFailureMessage(detail);
             const status = detail.match(/^\s*(\d{3})\b/);
             const hosted = turnAccess?.mode === 'gift' || turnAccess?.mode === 'rau';
-            if (!capped && !credit && status && hosted && (status[1] === '401' || status[1] === '403')) {
+            if (!credit && status && hosted && (status[1] === '401' || status[1] === '403')) {
               // 선물·Rau 프록시가 리스를 거절했다 (해지·미수령·다른 기기·요금제 끝). 자격을 다시 받게 한다.
               try { opts.onAccessRejected?.({ mode: turnAccess.mode, status: Number(status[1]) }); } catch {}
             }
@@ -992,7 +1001,7 @@ export function createPiSession(opts, {
             onEvent({ type: 'error', agent, message, failure });
             endTurn({ type: 'turn-end', agent, stopReason: 'failed', errorMessage: message, failure });
           } else if (!completedAtDrain && code !== 0) {
-            const capped = rauCreditsFailure(stderrTail);
+            const capped = rauCreditsFailure(stderrTail) ?? rauPlanFailure(stderrTail);
             const credit = capped ? null : creditFailureMessage(stderrTail);
             const failure = capped?.failure ?? {
               source: 'pi',
@@ -1001,7 +1010,7 @@ export function createPiSession(opts, {
             onEvent({
               type: 'error',
               agent,
-              message: capped ? `${capped.message}\n${capped.tag}` : credit ?? formatPiExitError(stderrTail, code, signal, opts.token, turnAccess),
+              message: capped ? (capped.tag ? `${capped.message}\n${capped.tag}` : capped.message) : credit ?? formatPiExitError(stderrTail, code, signal, opts.token, turnAccess),
               failure,
             });
             endTurn({ type: 'turn-end', agent, stopReason: 'exited', failure });

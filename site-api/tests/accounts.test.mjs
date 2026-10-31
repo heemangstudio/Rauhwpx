@@ -751,7 +751,7 @@ test('a trial gives a signed-in account Rau for 7 days with $2, once, and a Hama
   assert.deepEqual(await s.startTrial(me.session), { status: 409, body: { ok: false, error: 'trial_used' } });
 });
 
-test('a trial ends once its $2 is spent: just under it Rau still runs, at it the account needs a plan', async (t) => {
+test('a trial ends once its $2 is spent: just under it Rau still runs, at it Rau refuses for credits until the trial end, then for the plan', async (t) => {
   const s = await setup(t);
   const me = await s.signIn({ email: 'spender@example.com' }, device(1));
   const { body } = await s.startTrial(me.session);
@@ -765,9 +765,22 @@ test('a trial ends once its $2 is spent: just under it Rau still runs, at it the
   const spent = (await s.refresh(me.session)).body;
   assert.deepEqual([spent.trial.state, spent.plan.tier, spent.plan.rau], ['ended', 'free', NO_RAU]);
   const status = (await s.rauStatus(spent.lease)).body;
-  assert.deepEqual([status.eligible, status.reason], [false, 'rau_plan_required']);
-  const agent = await s.post('/v1/rau/agent/v1/messages', { model: 'rau', max_tokens: 10, messages: [{ role: 'user', content: 'x' }] }, { 'x-api-key': spent.lease });
-  assert.deepEqual([agent.status, (await agent.json()).error.type], [403, 'rau_plan_required']);
+  assert.deepEqual([status.eligible, status.source, status.remainingUsd, status.resetsAt], [true, 'trial', 0, new Date(TRIAL_END).toISOString()]);
+  const ask = { model: 'rau', max_tokens: 10, messages: [{ role: 'user', content: 'x' }] };
+  const agent = await s.post('/v1/rau/agent/v1/messages', ask, { 'x-api-key': spent.lease });
+  const refused = await agent.json();
+  assert.deepEqual([agent.status, refused.error.type, agent.headers.get('x-rau-resets-at')], [429, 'rau_credits_exhausted', new Date(TRIAL_END).toISOString()]);
+  assert.ok(refused.error.message.includes(`[rau-credits:${new Date(TRIAL_END).toISOString()}]`));
+  const learn = await s.post('/v1/rau/learn', { prompt: 'x' }, { authorization: `Bearer ${spent.lease}` });
+  assert.deepEqual([learn.status, (await learn.json()).error], [402, 'rau_credits_exhausted']);
+
+  s.clock.now = TRIAL_END;
+  const over = (await s.refresh(me.session)).body;
+  assert.deepEqual([(await s.rauStatus(over.lease)).body.eligible, (await s.rauStatus(over.lease)).body.reason], [false, 'rau_plan_required']);
+  const late = await s.post('/v1/rau/agent/v1/messages', ask, { 'x-api-key': over.lease });
+  assert.deepEqual([late.status, (await late.json()).error.type], [403, 'rau_plan_required']);
+  const lateLearn = await s.post('/v1/rau/learn', { prompt: 'x' }, { authorization: `Bearer ${over.lease}` });
+  assert.deepEqual([lateLearn.status, (await lateLearn.json()).error], [403, 'rau_plan_required']);
 });
 
 test('an email gets one trial, also after its account is deleted', async (t) => {
