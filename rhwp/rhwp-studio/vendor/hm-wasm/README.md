@@ -1,8 +1,10 @@
 # hm-wasm
 
-Generated browser bindings and WASM from HeemangEngine `feat/notes-parity` at `845ba85` (2026-10-31): `rc/combined-20261028`
-at `8d80eb0` plus footnote and endnote parity with Hancom Office 2022 (note insertion, numbering, note shapes, clipboard,
-page-local numbers, HWP/HWPX/HML round trips, and note layout and painting). `8d80eb0` changes only tests and documents
+Generated browser bindings and WASM from HeemangEngine `fix/table-split-parity` at `21bc492` (2026-10-31): `rc/combined-20261028`
+at `6d33534` plus table pagination parity with Hancom Office 2022 (rows and cells split across pages, merged-cell cuts, rows
+taller than a page, nested-table margins at a cut, continuation spacing). `6d33534` adds the save-corruption fixes of engine PR #2 over `f7c5b55`, which merges `feat/notes-parity` at `845ba85`:
+`rc/combined-20261028` at `8d80eb0` plus footnote and endnote parity with Hancom Office 2022 (note insertion, numbering,
+note shapes, clipboard, page-local numbers, HWP/HWPX/HML round trips, and note layout and painting). `8d80eb0` changes only tests and documents
 over `1a54900`, which over the
 `afcacaf` package adds the rendering lanes through `b3cce93` (tables, text, forms/math, curriculum and objects
 under the r12 gate fonts), Hancom-captured table editing (`9bbcf60`: merge drops empty cells, split grids and heights,
@@ -16,7 +18,7 @@ SHA-256 of the four files:
 
 | File | Bytes | SHA-256 |
 | --- | ---: | --- |
-| `hm_wasm_bg.wasm` | 7,774,230 | `fc5393fc4b17e3ead7571b6f54f2014384cb33461a82feac526d79be2fb8958f` |
+| `hm_wasm_bg.wasm` | 7,859,014 | `056f7029c08bd40a549848be8a25ec41192cd34b518375b3a1a70616ebef0e00` |
 | `hm_wasm.js` | 73,254 | `2c860bee0d93549badb95a81433bcb8a42a8afb95e9688da018f91e3776c8110` |
 | `hm_wasm.d.ts` | 56,890 | `02a5818885f599191f88d810731085496eff3aee0bb312dbd632e4b03f2391a4` |
 | `hm_wasm_bg.wasm.d.ts` | 9,178 | `4dd860b1e9ac983d76fdad7265f36a420b0f2d07a65bebc0a16c12a6f2c77bd4` |
