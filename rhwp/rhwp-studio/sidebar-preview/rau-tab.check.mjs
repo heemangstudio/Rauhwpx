@@ -212,6 +212,8 @@ async function checkAddDeleteRestore({ page }) {
   await page.click('.ag-rau-retired-summary');
   const row = await page.waitForSelector(`.ag-rau-retired-row[data-rule-id="${target}"]`, { visible: true });
   assert.equal(await row.evaluate((node) => node.dataset.reason), 'deleted');
+  // 지우기의 user-memory 알림이 답보다 먼저 이 줄을 그린다 — 단추가 풀린 뒤에 누른다.
+  await page.waitForFunction((id) => document.querySelector(`.ag-rau-retired-row[data-rule-id="${id}"] .ag-rau-restore`)?.disabled === false, {}, target);
   await row.$eval('.ag-rau-restore', (button) => button.click());
   await page.waitForFunction((id) => document.querySelector(`.ag-rau-rule[data-rule-id="${id}"]`), {}, target);
   assert.equal(await page.$(`.ag-rau-retired-row[data-rule-id="${target}"]`), null, 'restored rules leave the retired list');
@@ -220,6 +222,8 @@ async function checkAddDeleteRestore({ page }) {
   const blocked = 'rule_sample000010';
   const stuck = await page.waitForSelector(`.ag-rau-retired-row[data-rule-id="${blocked}"]`, { visible: true });
   assert.equal(await stuck.evaluate((node) => node.dataset.reason), 'flipped');
+  // 허브의 user-memory 알림이 답보다 먼저 목록을 그린다 — 앞 요청이 끝나 단추가 풀릴 때까지 기다린다.
+  await page.waitForFunction((id) => document.querySelector(`.ag-rau-retired-row[data-rule-id="${id}"] .ag-rau-restore`)?.disabled === false, {}, blocked);
   await stuck.$eval('.ag-rau-restore', (button) => button.click());
   // 앞의 '되살렸어요.' 가 아직 보일 수 있다 — 거절 문구로 바뀔 때까지 기다린다.
   await page.waitForFunction(() => /이미 있어요/.test(document.querySelector('.ag-rau-message:not([hidden])')?.textContent ?? ''), { timeout: 5000 })
@@ -233,6 +237,7 @@ async function checkUndo({ page }) {
   // 최근 변화에서 되돌리기: 강도가 그 앞으로 돌아간다.
   const rule = 'rule_sample000001';
   assert.equal(Number(await page.$eval(`.ag-rau-rule[data-rule-id="${rule}"]`, (row) => row.dataset.strength)), 4);
+  await page.waitForFunction(() => document.querySelector('.ag-rau-event[data-event-id="evt_sample000001"] .ag-rau-event-undo')?.disabled === false);
   await page.$eval('.ag-rau-event[data-event-id="evt_sample000001"] .ag-rau-event-undo', (button) => button.click());
   await page.waitForFunction((id) => document.querySelector(`.ag-rau-rule[data-rule-id="${id}"]`)?.dataset.strength === '3', {}, rule);
   assert.equal((await memory(page)).rules.find((candidate) => candidate.id === rule).strength, 3);

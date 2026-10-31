@@ -33,7 +33,7 @@ import {
   STYLE_LEARN_MAX_FILES,
 } from '../../agent/user-memory.ts';
 import { ByteLimitError, readBlobBytesWithLimit } from '../../core/document-input-limits.ts';
-import { createHamaScene } from '../plan/hama-scene.ts';
+import { createHamaScene } from './rau-hero-scene.ts';
 import { createPartyHama, Hama, type ChatHamaMode } from './chat-hama.ts';
 import { createIcon } from './icons.ts';
 import {
