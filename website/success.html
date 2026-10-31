@@ -162,7 +162,7 @@
         </li>
         <li class="step">
           <h3 class="h3">키를 붙여 넣어요</h3>
-          <p class="text">체험 중이면 설정 → 라이선스에서, 체험이 끝났다면 바로 뜨는 활성화 화면에서 넣어요.</p>
+          <p class="text">설정 → 라이선스에서 넣어요.</p>
         </li>
         <li class="step">
           <h3 class="h3">기기 두 대까지 쓸 수 있어요</h3>
@@ -193,7 +193,6 @@
         <ul>
           <li><a href="pricing.html">가격</a></li>
           <li><a href="download.html">내려받기</a></li>
-          <li><a href="trial.html">체험판</a></li>
         </ul>
       </nav>
       <nav class="footer__col" aria-labelledby="foot-help">
@@ -254,7 +253,7 @@
         }else if(u.state==='issued'){
           keyEl.textContent=u.key;issued.hidden=false;
           // Annual subscription keys show the renewal date. Keys without a term hide this line.
-          term.textContent=P.renewalText(u.licenseExpiresAt);term.hidden=!term.textContent;
+          term.textContent=P.renewalText(u.licenseExpiresAt,u.plan);term.hidden=!term.textContent;
           say('라이선스 키가 나왔어요.',false,false);
         }else if(u.state==='revoked'){
           say('환불 등으로 사용이 중지된 라이선스 키예요.',true,false);
