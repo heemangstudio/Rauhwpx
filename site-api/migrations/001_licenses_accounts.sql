@@ -60,6 +60,7 @@ CREATE TABLE licenses (
   revoke_reason text,
   restored_at timestamptz,
   note text,
+  gift_batch_id text,
   email_delivery json,
   support json,
   extensions json,
@@ -165,6 +166,38 @@ CREATE TABLE grandfathered_installs (
   key_id text NOT NULL
 );
 CREATE INDEX grandfathered_installs_key_id ON grandfathered_installs (key_id);
+
+-- Gift code batches, one row per issue call. Plan and term come from the owner on every batch.
+CREATE TABLE gift_code_batches (
+  batch_id text PRIMARY KEY,
+  seq bigint GENERATED ALWAYS AS IDENTITY,
+  plan text,
+  duration_months integer,
+  duration_days integer,
+  count integer,
+  note text,
+  redeem_by timestamptz,
+  created_at timestamptz,
+  extra json
+);
+
+-- One row per gift code, stored only as the SHA-256 of the code plus its display prefix.
+CREATE TABLE gift_codes (
+  code_hash text PRIMARY KEY,
+  seq bigint GENERATED ALWAYS AS IDENTITY,
+  batch_id text,
+  prefix text,
+  status text,
+  created_at timestamptz,
+  redeemed_at timestamptz,
+  account_id text,
+  key_id text,
+  revoked_at timestamptz,
+  revoke_reason text,
+  extra json
+);
+CREATE INDEX gift_codes_batch_id ON gift_codes (batch_id);
+CREATE INDEX gift_codes_account_id ON gift_codes (account_id);
 
 -- webhook-log.json ------------------------------------------------------------------------------
 -- The newest rejected or held Groble webhooks, oldest first by seq.

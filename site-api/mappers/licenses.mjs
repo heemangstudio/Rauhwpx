@@ -2,13 +2,13 @@ import { checkRoot, defineTable, isPlainObject, mapEntries, setOwn, storeMisfit 
 
 /**
  * licenses.json ↔ licenses, license_subscriptions, license_devices, groble_orders, groble_refs,
- * groble_webhook_deliveries, grandfathered_installs (migrations/001). `keyIndex` is derived from
+ * groble_webhook_deliveries, grandfathered_installs, gift_code_batches, gift_codes (migrations/001). `keyIndex` is derived from
  * the license keys: createLicense is its only writer, licenses are never deleted and a key never
  * changes, so toRows refuses a state where it is anything else.
  */
 
 const DOMAIN = 'licenses';
-const ROOT = ['licenses', 'keyIndex', 'orders', 'refs', 'webhookEvents', 'grandfathered'];
+const ROOT = ['licenses', 'keyIndex', 'orders', 'refs', 'webhookEvents', 'grandfathered', 'giftCodeBatches', 'giftCodes'];
 
 const LICENSES = defineTable('licenses', {
   key: ['key_id'],
@@ -41,6 +41,7 @@ const LICENSES = defineTable('licenses', {
     revoke_reason: ['text', 'revokeReason'],
     restored_at: ['time', 'restoredAt'],
     note: ['text', 'note'],
+    gift_batch_id: ['text', 'giftBatchId'],
     email_delivery: ['object', 'emailDelivery'],
     support: ['object', 'support'],
     extensions: ['array', 'extensions'],
@@ -136,6 +137,37 @@ const GRANDFATHERED = defineTable('grandfathered_installs', {
   extra: false,
 });
 
+const GIFT_BATCHES = defineTable('gift_code_batches', {
+  key: ['batch_id'],
+  fields: {
+    batch_id: ['text', 'batchId', { required: true }],
+    plan: ['text', 'plan'],
+    duration_months: ['int', 'durationMonths'],
+    duration_days: ['int', 'durationDays'],
+    count: ['int', 'count'],
+    note: ['text', 'note'],
+    redeem_by: ['time', 'redeemBy'],
+    created_at: ['time', 'createdAt'],
+  },
+});
+
+const GIFT_CODES = defineTable('gift_codes', {
+  key: ['code_hash'],
+  secretKey: true,
+  fields: {
+    code_hash: ['text', 'codeHash', { required: true }],
+    batch_id: ['text', 'batchId'],
+    prefix: ['text', 'prefix'],
+    status: ['text', 'status'],
+    created_at: ['time', 'createdAt'],
+    redeemed_at: ['time', 'redeemedAt'],
+    account_id: ['text', 'accountId'],
+    key_id: ['text', 'keyId'],
+    revoked_at: ['time', 'revokedAt'],
+    revoke_reason: ['text', 'revokeReason'],
+  },
+});
+
 function toRows(state) {
   checkRoot(DOMAIN, state, ROOT);
   const rows = {
@@ -146,6 +178,8 @@ function toRows(state) {
     groble_refs: [],
     groble_webhook_deliveries: [],
     grandfathered_installs: [],
+    gift_code_batches: [],
+    gift_codes: [],
   };
   const derivedIndex = new Map();
   for (const [keyId, license] of mapEntries(DOMAIN, 'licenses', state.licenses)) {
@@ -183,11 +217,19 @@ function toRows(state) {
   for (const [digest, keyId] of mapEntries(DOMAIN, 'grandfathered', state.grandfathered)) {
     rows.grandfathered_installs.push(GRANDFATHERED.pack(null, { install_digest: digest, key_id: keyId }));
   }
+  for (const [batchId, batch] of mapEntries(DOMAIN, 'giftCodeBatches', state.giftCodeBatches)) {
+    if (!isPlainObject(batch) || batch.batchId !== batchId) throw storeMisfit(`gift_code_batches (${batchId}): not a batch with this batchId`);
+    rows.gift_code_batches.push(GIFT_BATCHES.pack(batch));
+  }
+  for (const [codeHash, code] of mapEntries(DOMAIN, 'giftCodes', state.giftCodes)) {
+    if (!isPlainObject(code) || code.codeHash !== codeHash) throw storeMisfit('gift_codes (…): not a code with this codeHash');
+    rows.gift_codes.push(GIFT_CODES.pack(code));
+  }
   return rows;
 }
 
 function fromRows(rows) {
-  const state = { licenses: {}, keyIndex: {}, orders: {}, refs: {}, webhookEvents: {}, grandfathered: {} };
+  const state = { licenses: {}, keyIndex: {}, orders: {}, refs: {}, webhookEvents: {}, grandfathered: {}, giftCodeBatches: {}, giftCodes: {} };
   for (const row of rows.licenses) {
     const license = LICENSES.unpack(row);
     if (!Object.hasOwn(license, 'devices')) license.devices = {};
@@ -204,12 +246,14 @@ function fromRows(rows) {
   for (const row of rows.groble_refs) setOwn(state.refs, row.ref, row.merchant_uid);
   for (const row of rows.groble_webhook_deliveries) setOwn(state.webhookEvents, row.idempotency_key, DELIVERIES.unpack(row));
   for (const row of rows.grandfathered_installs) setOwn(state.grandfathered, row.install_digest, row.key_id);
+  for (const row of rows.gift_code_batches) setOwn(state.giftCodeBatches, row.batch_id, GIFT_BATCHES.unpack(row));
+  for (const row of rows.gift_codes) setOwn(state.giftCodes, row.code_hash, GIFT_CODES.unpack(row));
   return state;
 }
 
 export const licensesMapper = Object.freeze({
   domain: DOMAIN,
-  tables: [LICENSES, SUBSCRIPTIONS, DEVICES, ORDERS, REFS, DELIVERIES, GRANDFATHERED],
+  tables: [LICENSES, SUBSCRIPTIONS, DEVICES, ORDERS, REFS, DELIVERIES, GRANDFATHERED, GIFT_BATCHES, GIFT_CODES],
   toRows,
   fromRows,
 });

@@ -16,7 +16,7 @@ import { createPostgresStore } from '../pg-store.mjs';
 import { createMemoryStore } from '../store.mjs';
 import { DEFAULT_WORKOS_CLIENT_ID, createWorkOSClient } from '../workos.mjs';
 import { createFakeWorkOS } from './fixtures/fake-workos.mjs';
-import { PRO_ENV, proPaid } from './fixtures/groble-pro.mjs';
+import { BASIC_ENV, basicPaid } from './fixtures/groble-basic.mjs';
 import { differential, seededRandom } from './helpers/differential.mjs';
 import { postgresSuite } from './helpers/postgres.mjs';
 
@@ -35,7 +35,7 @@ const challenge = createHash('sha256').update(verifier, 'ascii').digest('base64u
 const device = (n) => ({ id: `device-${String(n).padStart(4, '0')}`, name: `기기 ${n}`, platform: 'darwin', appVersion: n === 3 ? '' : '2.1.0' });
 
 function world({ stores, avatars, workosBase, clock }) {
-  const config = resolveLicenseConfig({ ...PRO_ENV, ADMIN_TOKEN: ADMIN });
+  const config = resolveLicenseConfig({ ...BASIC_ENV, ADMIN_TOKEN: ADMIN });
   const signingKey = parseSigningPrivateKey(PAIR.privateKeyPem);
   const licenses = createLicensesService({
     store: stores.licenses,
@@ -119,10 +119,10 @@ test('accounts on Postgres answer and store exactly what the memory store does, 
   await step('lease', (w) => w.accounts.authenticateLease(first.lease, { purpose: 'rau', allowInactive: true, withRauPlan: true }));
 
   // Licenses: a purchase with the verified email links at once; redeem a manual key; claim an order bought with another email.
-  await step('purchase', (w) => w.licenses.handleGrobleEvent(proPaid({ merchantUid: 'pro_m1', email: 'buyer@example.com' }), { idempotencyKey: 'idem-1' }));
+  await step('purchase', (w) => w.licenses.handleGrobleEvent(basicPaid({ merchantUid: 'pro_m1', email: 'buyer@example.com' }), { idempotencyKey: 'idem-1' }));
   const { value: issued } = await step('issue', (w) => w.licenses.admin.issue(ADMIN, { email: 'other@example.com' }));
   await step('redeem', (w) => w.accounts.redeem(session, { key: issued.license.key.toLowerCase() }));
-  await step('other purchase', (w) => w.licenses.handleGrobleEvent(proPaid({ merchantUid: 'pro_m2', ref: 'hama-pro-2', email: 'gift@example.com' }), { idempotencyKey: 'idem-2' }));
+  await step('other purchase', (w) => w.licenses.handleGrobleEvent(basicPaid({ merchantUid: 'pro_m2', ref: 'hama-pro-2', email: 'gift@example.com' }), { idempotencyKey: 'idem-2' }));
   await step('claim', (w) => w.accounts.claim(session, { orderId: 'pro_m2', email: 'GIFT@example.com' }));
   await step('claim unknown', (w) => w.accounts.claim(session, { orderId: 'nope', email: 'gift@example.com' }));
 

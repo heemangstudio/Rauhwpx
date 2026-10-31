@@ -6,7 +6,7 @@ import test from 'node:test';
 
 import { generateLeaseKeyPair } from '../license-lease.mjs';
 import { checkImported, createSiteServer } from '../server.mjs';
-import { PRO_ENV, proPaid, signedGroblePost } from './fixtures/groble-pro.mjs';
+import { BASIC_ENV, basicPaid, signedGroblePost } from './fixtures/groble-basic.mjs';
 import { postgresSuite } from './helpers/postgres.mjs';
 
 const pgSuite = postgresSuite();
@@ -21,7 +21,7 @@ async function listen(t, db, directory) {
     ADMIN_TOKEN: ADMIN,
     RAU_WAITLIST_ADMIN_TOKEN: ADMIN,
     LICENSE_SIGNING_PRIVATE_KEY: PAIR.privateKeyDerBase64,
-    ...PRO_ENV,
+    ...BASIC_ENV,
   }, { db, log: () => {}, alertProvider: null, emailProvider: { name: 'test', async send() { return { status: 'sent' }; } } });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   t.after(() => { server.closeAllConnections?.(); return new Promise((resolve) => server.close(resolve)); });
@@ -42,7 +42,7 @@ test('server with a database: licenses and the webhook log live in Postgres, the
   const origin = await listen(t, db, directory);
   assert.deepEqual(await (await fetch(`${origin}/healthz`)).json(), { ok: true, storage: 'postgres' });
 
-  const bought = await (await signedGroblePost(origin, SECRET, proPaid())).json();
+  const bought = await (await signedGroblePost(origin, SECRET, basicPaid())).json();
   assert.equal(bought.action, 'issued');
   const { key } = await (await fetch(`${origin}/v1/license/by-ref?ref=hama-pro-1`)).json();
   const activated = await fetch(`${origin}/v1/license/activate`, {

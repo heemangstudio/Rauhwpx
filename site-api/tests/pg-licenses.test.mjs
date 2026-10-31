@@ -10,7 +10,7 @@ import { createPostgresStore } from '../pg-store.mjs';
 import { createMemoryStore } from '../store.mjs';
 import { uniqueInstallDigest } from '../unique-installs.mjs';
 import { createWebhookLog, emptyWebhookLogState, webhookLogEntry } from '../webhook-log.mjs';
-import { PRO_ENV, proPaid } from './fixtures/groble-pro.mjs';
+import { BASIC_ENV, basicPaid } from './fixtures/groble-basic.mjs';
 import { differential, seededRandom } from './helpers/differential.mjs';
 import { postgresSuite } from './helpers/postgres.mjs';
 
@@ -79,7 +79,7 @@ function subscriptionEvent(type, fields) {
 }
 
 function world(stores, clock) {
-  const config = resolveLicenseConfig({ ...PRO_ENV, ADMIN_TOKEN: ADMIN });
+  const config = resolveLicenseConfig({ ...BASIC_ENV, ADMIN_TOKEN: ADMIN });
   const sent = [];
   const ids = seededRandom('webhook-log');
   const webhookLog = createWebhookLog({ store: stores.webhookLog, now: () => clock.now, newId: () => `wh_${ids(4).toString('hex')}` });
@@ -109,6 +109,8 @@ function orderOf(name, state) {
       orders: Object.keys(state.orders),
       refs: Object.keys(state.refs),
       webhookEvents: Object.keys(state.webhookEvents),
+      giftCodeBatches: Object.keys(state.giftCodeBatches),
+      giftCodes: Object.keys(state.giftCodes),
     };
   }
   return state.entries.map((e) => e.id);
@@ -133,7 +135,7 @@ test('licenses on Postgres answer and store exactly what the memory store does, 
   // Purchases: an annual subscription (and a retried delivery), a Pro monthly key linked to the buyer's account.
   assert.equal((await step('annual purchase', event(annual({ merchantUid: 'sub_m1' }), 'idem-1'))).value.action, 'issued');
   assert.equal((await step('retried delivery', event(annual({ merchantUid: 'sub_m1' }), 'idem-1'))).value.duplicate, true);
-  await step('pro purchase', event(proPaid({ merchantUid: 'pro_m1' }), 'idem-2'));
+  await step('pro purchase', event(basicPaid({ merchantUid: 'pro_m1' }), 'idem-2'));
   const { value: { key } } = await step('success page', (w) => w.licenses.statusByRef('hama-sub-1'));
   const { value: { key: proKey } } = await step('pro success page', (w) => w.licenses.statusByRef('hama-pro-1'));
 
@@ -204,6 +206,17 @@ test('licenses on Postgres answer and store exactly what the memory store does, 
   await step('unlink account', (w) => w.licenses.unlinkAccount(BUYER_ACCOUNT, { refuseActiveSubscription: true }));
   await step('grandfather', (w) => w.licenses.grandfather({ installId: INSTALL_ID }));
   await step('grandfather again', (w) => w.licenses.grandfather({ installId: INSTALL_ID }));
+
+  // Gift codes: two batches, a redeem and its repeat, another account, then revokes.
+  const { value: { codes: basicCodes, batch: basicBatch } } = await step('issue gift codes', admin('issueGiftCodes', { plan: 'basic', durationMonths: 3, count: 3, note: '선물' }));
+  const { value: { codes: hamaCodes } } = await step('issue gift codes in days', admin('issueGiftCodes', { plan: 'hama', durationDays: 14, count: 2, redeemBy: '2028-12-31' }));
+  await step('redeem gift code', (w) => w.licenses.redeemGiftCode('acct_00000000000000000e', basicCodes[0]));
+  assert.equal((await step('redeem gift code again', (w) => w.licenses.redeemGiftCode('acct_00000000000000000e', basicCodes[0]))).value.alreadyRedeemed, true);
+  assert.equal((await step('redeem gift code elsewhere', (w) => w.licenses.redeemGiftCode('acct_00000000000000000f', basicCodes[0]))).error.code, 'code_redeemed');
+  await step('redeem hama gift code', (w) => w.licenses.redeemGiftCode('acct_00000000000000000f', hamaCodes[0]));
+  await step('revoke gift code', admin('revokeGiftCodes', { code: basicCodes[1] }));
+  await step('revoke gift batch', admin('revokeGiftCodes', { batchId: basicBatch.batchId }));
+  await step('list gift codes', (w) => w.licenses.admin.giftCodes(ADMIN, {}));
 
   // The webhook log beside it.
   const entry = webhookLogEntry({ kind: 'rejected', reason: 'bad_signature', status: 503, verified: false, headers: { 'x-groble-timestamp': '1790000000', 'user-agent': 'forger' }, rawBody: Buffer.from('{"type":"x\\u0000"}') });
