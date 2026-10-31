@@ -1,4 +1,4 @@
-import { readFile, stat } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,7 +10,6 @@ import {
   resolveAccountConfig,
   resolveAccountsDbPath,
   resolveAvatarDir,
-  resolveDataDir,
   resolveDatabaseUrl,
   resolveFeedbackDir,
   resolveFeedbackMaxBytes,
@@ -30,6 +29,7 @@ import {
   retiredEnvNames,
 } from './config.mjs';
 import { createDatabase } from './db.mjs';
+import { checkImported, importJsonToPostgres, importMarkers } from './json-import.mjs';
 import {
   DEFAULT_FEEDBACK_PROOF_KEY,
   MAX_FEEDBACK_BODY_BYTES,
@@ -43,7 +43,7 @@ import { createLegacyRauPlans } from './hama-legacy.mjs';
 import { createHeldAlerter } from './held-alert.mjs';
 import { createEmailProvider, resendProviderFromEnv } from './license-email.mjs';
 import { parseSigningPrivateKey, publicKeyFromPrivate, rawPublicKeyBase64 } from './license-lease.mjs';
-import { createLicensesService, emptyLicensesState, licenseError } from './licenses.mjs';
+import { createLicensesService, emptyLicensesState, licenseError, tokenEquals } from './licenses.mjs';
 import { accountsMapper } from './mappers/accounts.mjs';
 import { downloadsMapper } from './mappers/downloads.mjs';
 import { feedbackMapper } from './mappers/feedback.mjs';
@@ -245,6 +245,7 @@ export function siteRequestListener({
   webhookAlerts = createWebhookAlerter({ log: () => {} }),
   heldAlerts = createHeldAlerter({ log: () => {} }),
   storage = 'files',
+  jsonImports = async () => ({}),
   log = () => {},
 }) {
   const limiter = createRateLimiter();
@@ -799,6 +800,11 @@ export function siteRequestListener({
         case 'GET /healthz':
           send(200, { ok: true, storage });
           return;
+        case 'GET /v1/admin/storage':
+          allow('admin', 120, TEN_MINUTES);
+          if (!tokenEquals(bearerToken(req), licenseConfig.adminToken)) throw licenseError('forbidden', 403);
+          send(200, { ok: true, storage, imports: await jsonImports() });
+          return;
         case 'GET /unique-installs':
           allow('unique-install-page', 120, MINUTE);
           send(200, renderUniqueInstallsPage(await uniqueInstalls.summary()));
@@ -1009,6 +1015,7 @@ export function createSiteServer(env = process.env, options = {}) {
   const listener = siteRequestListener({
     uniqueInstalls, waitlist, downloads, licenses, accounts, gifts, rau, feedback, licenseConfig, webhookLog, webhookAlerts, heldAlerts,
     storage: db ? 'postgres' : 'files',
+    jsonImports: db ? () => importMarkers(db) : undefined,
     log,
   });
   setImmediate(() => { void feedback.prune().catch((error) => log(`[site-api] feedback prune failed: ${error?.message ?? error}`)); });
@@ -1041,56 +1048,13 @@ function databaseFromEnv(env, log) {
   return url ? createDatabase(url, { log }) : null;
 }
 
-/**
- * Domains with a Postgres mapping and the JSON files each one replaces. Avatars go with accounts;
- * feedback attachments stay files. hama.json is frozen but still a source of Rau grants, so it must be
- * imported too; the old plan's usage logs (`hama-usage/`) are read by nothing and stay behind.
- */
-function mappedFiles(env) {
-  return [
-    [licensesMapper.domain, resolveLicensesDbPath(env)],
-    [accountsMapper.domain, resolveAccountsDbPath(env)],
-    [webhookLogMapper.domain, resolveWebhookLogDbPath(env)],
-    [hamaMapper.domain, resolveHamaDbPath(env)],
-    [rauMapper.domain, resolveRauDbPath(env)],
-    [giftsMapper.domain, resolveGiftsDbPath(env)],
-    [waitlistMapper.domain, resolveWaitlistDbPath(env)],
-    [uniqueInstallsMapper.domain, resolveUniqueInstallsDbPath(env)],
-    [downloadsMapper.domain, resolveDownloadsDbPath(env)],
-    [feedbackMapper.domain, path.join(resolveFeedbackDir(env), 'index.json')],
-  ];
-}
-
-/** Whether `file` is a non-empty file. */
-async function holdsData(file) {
-  const info = await stat(file).catch(() => null);
-  return Boolean(info?.isFile() && info.size > 0);
-}
-
-/**
- * Refuses Postgres mode while a mapped JSON file holds data its domain never got: a DATABASE_URL set
- * before the import would otherwise start every customer from an empty database.
- */
-export async function checkImported(db, env = process.env) {
-  const { rows } = await db.query('SELECT domain FROM site_store_versions');
-  const written = new Set(rows.map((row) => row.domain));
-  const missing = [];
-  for (const [domain, file] of mappedFiles(env)) {
-    if (written.has(domain)) continue;
-    if (await holdsData(file)) missing.push(path.relative(resolveDataDir(env), file));
-  }
-  if (missing.length) {
-    throw new Error(`DATABASE_URL is set but ${missing.join(', ')} was never imported into Postgres. Import it first, or unset DATABASE_URL to keep the JSON files.`);
-  }
-}
-
 async function main() {
   const log = (line) => process.stderr.write(`${line}\n`);
   const port = Number(process.env.PORT ?? DEFAULT_PORT);
   const db = databaseFromEnv(process.env, log);
   if (db) {
     try {
-      await db.ready();
+      await importJsonToPostgres(db, process.env, { log });
       await checkImported(db);
     } catch (error) {
       log(`[site-api] Postgres is not usable: ${error?.message ?? error}`);

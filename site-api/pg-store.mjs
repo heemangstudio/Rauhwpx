@@ -10,6 +10,8 @@ import { advisoryLockKey } from './db.mjs';
  *                update's transaction (for data kept beside the state, like avatar bytes). On a throw
  *                or a failed save nothing is persisted and the next call starts from the last
  *                durable state.
+ *   update(fn, { afterSave }) also runs `afterSave(result, tx)` after the save, on the same
+ *                transaction: a throw there rolls the save back (the JSON import verifies with it).
  *
  * Exclusion is an in-process promise chain (one process never queues several pool connections on
  * the same lock) plus `pg_advisory_xact_lock` per domain across processes. `site_store_versions`
@@ -380,7 +382,7 @@ export function createPostgresStore({ db, mapper }) {
     return snapshot(rows[0].version, next);
   }
 
-  async function runUpdate(fn) {
+  async function runUpdate(fn, afterSave) {
     await db.ready();
     let committed = null;
     const result = await db.transaction(async (client) => {
@@ -388,9 +390,11 @@ export function createPostgresStore({ db, mapper }) {
       const version = await readVersion(client);
       const base = cache && cache.version === version ? cache : await load(client);
       const state = structuredClone(base.state);
-      const value = await fn(state, { query: (text, values) => client.query(text, values) });
+      const tx = { query: (text, values) => client.query(text, values) };
+      const value = await fn(state, tx);
       committed = base;
       if (value?.dirty !== false) committed = (await save(client, base, state)) ?? base;
+      if (afterSave) await afterSave(value, tx);
       return value;
     });
     cache = committed;
@@ -399,8 +403,8 @@ export function createPostgresStore({ db, mapper }) {
 
   return {
     domain,
-    update(fn) {
-      const run = chain.then(() => runUpdate(fn));
+    update(fn, { afterSave } = {}) {
+      const run = chain.then(() => runUpdate(fn, afterSave));
       chain = run.then(() => undefined, () => undefined);
       return run;
     },

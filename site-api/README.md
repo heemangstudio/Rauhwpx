@@ -246,7 +246,7 @@ Only `feedback/<id>/` stays on the volume in Postgres mode, and the 8 MiB limit 
 | Name | Purpose |
 | --- | --- |
 | `RAU_SITE_DATA` | Data directory (`/data` on Railway) |
-| `DATABASE_URL` | Optional `postgres://` URL. Set, every store runs on Postgres and only issue-report attachments stay files (Data above); unset, everything stays on files. `sslmode` follows libpq (`require` encrypts without checking the certificate, `verify-full` checks it). On startup the server migrates the database, and refuses to start while a moved JSON file still holds data that was never imported |
+| `DATABASE_URL` | Optional `postgres://` URL. Set, every store runs on Postgres and only issue-report attachments stay files (Data above); unset, everything stays on files. `sslmode` follows libpq (`require` encrypts without checking the certificate, `verify-full` checks it). On startup the server migrates the database and imports the JSON files once (Postgres cutover below) |
 | `RAU_WAITLIST_ADMIN_TOKEN` | Bearer token for reading the waitlist |
 | `RAU_WAITLIST_TELEGRAM_BOT_TOKEN`, `RAU_WAITLIST_TELEGRAM_CHAT_ID` | Optional Telegram message for each new signup and issue report |
 | `RAU_UNIQUE_INSTALL_PING_KEY` | Optional override of the desktop ping key |
@@ -309,8 +309,6 @@ npm start          # http://127.0.0.1:5180
 
 `npm test` (`scripts/test.mjs`) runs every `tests/*.test.mjs`. The Postgres tests use `SITE_API_TEST_DATABASE_URL`, one throwaway schema per test file. Without it the script starts a temporary cluster with `initdb` and `pg_ctl` from `PATH`, Homebrew's `postgresql@*` or `/usr/lib/postgresql/*` on a free port, and removes it afterwards. With no Postgres binaries those tests skip; `SITE_API_REQUIRE_POSTGRES=1` (set in CI, with a `postgres:17` service) makes them fail instead.
 
-Production stays on the JSON files until `DATABASE_URL` is set on `rau-credits`. Do not set it before the files are imported into Postgres: the server would refuse to start. With `DATABASE_URL` the server finishes its requests and closes the pool on SIGTERM, and `GET /healthz` answers `{ok: true, storage: 'postgres'}` (`'files'` without it).
-
 Production is the Railway project `rau-credits`, service `rau-credits` (`https://rau-credits-production.up.railway.app`), with a volume mounted at `/data`. Deploys go through the GitHub Actions workflow below. Keep the service's GitHub source disconnected (Railway → rau-credits → Settings → Source) so a merge deploys once. For a manual deploy, link this directory once with `railway link` and run `railway up` from `site-api/`. `railway.toml` sets the start command and the `/healthz` health check.
 
 Before a Signature test buy, set these Railway variables on `rau-credits` (the code defaults match, and the Groble product `8Xy27f` stays a draft until Finance starts the sale):
@@ -324,3 +322,19 @@ GROBLE_SIGNATURE_MIN_AMOUNT=29000
 Leave `GROBLE_SUBSCRIPTION_PRODUCT_IDS=GLJFC9` and `GROBLE_EXPECTED_PRICE=9900`. Leave `GROBLE_ONETIME_PRODUCT_IDS=uRshdR` so old refunds still resolve. Do not start the Groble sale from this repo.
 
 On main, `.github/workflows/site-api-deploy.yml` does this automatically for any change under `site-api/`: it runs the tests (with a throwaway `postgres:17` service for the Postgres tests), runs `railway up site-api --path-as-root --service rau-credits --environment production --ci` with the `RAILWAY_TOKEN` repository secret (a Railway **project** token for the production environment), then waits up to 10 minutes for `GET /v1/groble/webhook` to answer 200 (404 = the old deployment is still live, 503 = webhook secret missing) and checks that `/v1/license/public-key` answers 200 (503 = signing key missing). Roll back with Railway → service → Deployments → previous deployment → Redeploy; `licenses.json` on the volume is untouched by a rollback. Once `DATABASE_URL` is set, roll back only to a build that reads it: an older one would serve the stale JSON files. A build that finds a migration newer than its own logs it and starts.
+
+### Postgres cutover
+
+Production stays on the JSON files until `DATABASE_URL` is set on `rau-credits`. On every start with it, the server imports each domain whose JSON file holds data and that Postgres never had, in one transaction per domain through its mapper, under the domain's advisory lock (two processes import it once). The picture each account record names goes to `account_avatars` with `accounts`; `hama-usage/` stays behind (see Data). A file written before a top-level map existed is imported with that map empty, as the service reads it, unless the mapper keeps the map missing (accounts, rau). In the same transaction the rows are counted and read back; any difference from the JSON rolls that domain back and the server refuses to start with `JSON import of <domain> rolled back: ...`. Domains imported before it stay imported, and the next start continues. A finished domain gets a `json_import:<domain>` row in `site_meta` with its row counts, and a domain Postgres already holds is never imported again. The JSON files are only read. The log names each domain with its counts, never record contents.
+
+1. Railway → `rau-credits` → Variables: add `DATABASE_URL=${{Postgres.DATABASE_URL}}`, then redeploy.
+2. The deploy log shows one `JSON import <domain>: wrote ...` line per domain, then `listening ... with Postgres`.
+3. `GET /healthz` answers `{ok: true, storage: 'postgres'}`, and `GET /v1/admin/storage` (`ADMIN_TOKEN`) answers `{ok, storage, imports: {<domain>: {importedAt, tables: {<table>: rows}, skippedAvatars?}}}`:
+
+```
+curl -s -H "Authorization: Bearer $ADMIN_TOKEN" https://rau-credits-production.up.railway.app/v1/admin/storage
+```
+
+Roll back by removing `DATABASE_URL`: the server goes back to the untouched JSON files, and anything written in Postgres since stays there only. Setting it again later does not re-import a domain Postgres already holds.
+
+To check a copy of the data locally, `DATABASE_URL=postgres://... RAU_SITE_DATA=<dir> node scripts/import-json-to-postgres.mjs --dry-run` runs the same import, checks included, and rolls every transaction back (it migrates the database first); without `--dry-run` it imports. With `DATABASE_URL` the server finishes its requests and closes the pool on SIGTERM, and `GET /healthz` answers `'files'` as `storage` without it.
