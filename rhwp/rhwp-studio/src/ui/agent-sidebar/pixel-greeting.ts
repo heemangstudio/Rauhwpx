@@ -1,94 +1,69 @@
 /** 전체 화면 빈 채팅 위의 픽셀 무대.
  *
- *  인사 문장 대신 128×40 칸 캔버스에 짧은 장면을 그린다. 물 위에 떠 있는 하마가
- *  주인공이고, 빈 채팅이 열리면 장면 하나를 한 번 보여 준 뒤 쉬는 하마로 돌아간다.
- *  가리키면 같은 장면을 다시, 누르면 다음 장면을 보여 준다. 장면 사이와 끝은 4×4
- *  디더 순서로 칸을 바꿔 넘어간다.
+ *  인사 문장 대신 120×40 칸 캔버스에 짧은 장면을 그린다. 주인공은 입력기 위의 하마
+ *  (hama-art.ts)와 같은 실루엣·팔레트·1px 격자다. 빈 채팅이 열리면 장면 하나를 한 번
+ *  보여 준 뒤 물에 떠 있는 하마로 돌아간다. 가리키면 같은 장면을 다시, 누르면 다음
+ *  장면을 보여 준다. 장면 사이와 끝은 4×4 디더 순서로 칸을 바꿔 넘어간다.
  *
- *  모든 움직임은 15fps 로 끊는다. 캔버스는 CSS 에서 4배로 키우고 pixelated 로
- *  그린다. 동작 줄이기 설정이면 장면의 마지막 모습만 멈춰 그린다. */
+ *  모든 움직임은 15fps 로 끊는다. 캔버스는 CSS 에서 입력기 하마와 같은 3배로 키우고
+ *  pixelated 로 그린다. 동작 줄이기 설정이면 장면의 마지막 모습만 멈춰 그린다. */
 
-const W = 128;
+import {
+  COLORS, LIGHT_COLORS, POSES, PROPS, sparkle, dot, fade, lerp, arc, droplets, ripples,
+  type Layer, type PoseName,
+} from './hama-art.ts';
+
+const W = 120;
 const H = 40;
-const WATER = 34;
+/** 땅(물) 윗면의 행. 하마의 7행이 바로 위에 선다. */
+const FLOOR = 34;
 const STEP = 1000 / 15;
 const SCENE_TAIL_MS = 700;
 const SWAP_MS = 320;
 const SETTLE_MS = 420;
+const HIDDEN_POLL_MS = 500;
+/** 물에 떠 있는 하마의 자리(0열). 물보라 장면도 여기로 내려앉는다. */
+const FLOAT_X = 53;
+const POND = [26, 94] as const;
+/** 물에 뜬 하마가 잠기는 깊이(행). 귀·머리·등만 물 위에 남는다. */
+const FLOAT_Y = 2;
 
 type Hex = string;
 
-// 하마 색은 부팅 로고(scripts/generate-boot-logo.py)의 HIPPO 팔레트다.
-const HIPPO_PAL: Record<string, Hex> = {
-  o: '#62B3E2', s: '#2F73A0', h: '#B2E2FB', d: '#1D4766', k: '#0C2536', w: '#E6F5FF',
-};
-
 interface Tone {
-  ink: Hex; rim: Hex; dim: Hex; star: Hex; paper: Hex; line: Hex; edge: Hex; far: Hex;
-  slateL: Hex; slateR: Hex; snow: Hex; mug: Hex; mugShade: Hex; coffee: Hex; steam: Hex;
+  /** 땅 선과 먼 물결. */
+  dim: Hex;
+  star: Hex;
+  /** 산의 밝은 면과 그늘. */
+  hillL: Hex;
+  hillR: Hex;
+  /** 생각 구름 속. */
+  cloud: Hex;
 }
 
 const TONES: Record<'dark' | 'light', Tone> = {
-  dark: {
-    ink: '#F5F5F7', rim: '#B2E2FB', dim: '#2A2E35', star: '#5A6270', paper: '#F5F5F7', line: '#9AA3B0',
-    edge: '#0F0F0F', far: '#1C222C', slateL: '#4A5D78', slateR: '#2C3A50', snow: '#D8DDE6',
-    mug: '#EDE6DA', mugShade: '#C9BFAE', coffee: '#6B4A32', steam: '#6E7682',
-  },
-  light: {
-    ink: '#1D1D1F', rim: '#62B3E2', dim: '#D9DCE1', star: '#B8BEC8', paper: '#FFFFFF', line: '#9AA3B0',
-    edge: '#C4C9D1', far: '#E3E7EC', slateL: '#8FA3BD', slateR: '#6A7F9C', snow: '#FFFFFF',
-    mug: '#EDE6DA', mugShade: '#C9BFAE', coffee: '#6B4A32', steam: '#B8BEC8',
-  },
+  dark: { dim: '#2A2E35', star: '#3A404A', hillL: '#2C3A50', hillR: '#222D3E', cloud: '#1C222C' },
+  light: { dim: '#D9DCE1', star: '#CDD2D9', hillL: '#D3DDE9', hillR: '#BFCCDC', cloud: '#F1F4F8' },
 };
+// 무대는 입력기보다 어두운 화면 바탕 위에 서므로, 밝은 테마의 종이·잔과 옅은 하늘색을 한 단계 진하게 쓴다.
+const LIGHT_PAL: Record<string, Hex> = { ...COLORS, ...LIGHT_COLORS, P: '#ccd3dc', h: '#62b3e2' };
 
-// 앱 아이콘 하마를 옆에서 본 모습으로 단순하게 다듬었다. 왼쪽을 본다. 눈은 위에 따로
-// 그려서 두리번거리고 깜빡이고 웃게 한다.
-const HEAD = [
-  '..........ooo...................',
-  '..oo.....ooooo..oo..............',
-  '.odoooooooooooooooooo...........',
-  'ooooooooooooooooooooooo.........',
-  'ooooooooooooooooooooooooo.......',
-  'ooooooooooooooooooooooooooo.....',
-  'ooooooooooooooooooooooooooooo...',
-  '.oooooooooooooooooooooooooooooo.',
-  '..........oooooooooooooooooooooo',
-  '..........oooooooooooooooooooooo',
-  '..........oooooooooooooooooooooo',
-];
-const EAR_DOWN = [HEAD[0], '..oo.....ooooo..................', ...HEAD.slice(2)];
-/** 눈은 이 열의 1×2 막대다. */
-const EYE = 11;
-/** 산을 오르는 작은 하마. 오른쪽을 본다. */
-const MINI_A = [
-  '......o..oo...',
-  '..ooooooooko..',
-  '.ooooooooooooo',
-  '.oooooooookkko',
-  '.oooooooooooo.',
-  '.oo.oo...oo.o.',
-];
-const MINI_B = [...MINI_A.slice(0, 5), '..oo.oo...oo..'];
-const MUG = [
-  'mmmmmmmmm...',
-  'mcccccccm...',
-  'mmmmmmmmmmm.',
-  'mmmmmmmmn..m',
-  'mmmmmmmmn..m',
-  'mmmmmmmmmmm.',
-  'mmmmmmmmn...',
-  '.mmmmmmn....',
-];
-const HX = 48;
-/** 물결이 깔리는 열 범위. 양 끝 8칸은 옅게 그린다. */
-const POND = [20, 108] as const;
 const STARS: ReadonlyArray<readonly [number, number]> = [
-  [10, 6], [27, 14], [40, 4], [88, 8], [104, 16], [118, 5], [72, 3],
+  [8, 6], [22, 15], [37, 3], [84, 9], [101, 17], [113, 5], [66, 2],
 ];
 /** 4×4 Bayer 순서. 장면을 바꿀 때 이 순서대로 칸이 넘어간다. */
 const BAYER = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
 
-type Eyes = 'open' | 'blink' | 'happy';
+/** 잔. 하마 팔레트의 종이색 몸, 갈색 커피, 회색 손잡이. */
+const MUG = [
+  'PmmmPp.',
+  'PPPPP.p',
+  'PPPPPp.',
+  '.PPP...',
+];
+const PAGE_W = 9;
+const PAGE_H = 11;
+
 type Draw = (t: number) => void;
 
 export interface PixelScene {
@@ -99,11 +74,11 @@ export interface PixelScene {
 }
 
 export const PIXEL_SCENES: readonly PixelScene[] = [
-  { id: 'lines', label: '한 줄씩 차근차근', duration: 3800 },
-  { id: 'mountain', label: '오늘도 한 걸음 더', duration: 4600 },
-  { id: 'coffee', label: '커피 한 잔', duration: 3800 },
-  { id: 'thought', label: '생각을 문서로', duration: 4000 },
-  { id: 'jump', label: '오늘도 화이팅', duration: 3000 },
+  { id: 'lines', label: '한 줄씩 차근차근', duration: 4400 },
+  { id: 'mountain', label: '오늘도 한 걸음 더', duration: 5000 },
+  { id: 'coffee', label: '커피 한 잔', duration: 4000 },
+  { id: 'thought', label: '생각을 문서로', duration: 4200 },
+  { id: 'splash', label: '오늘도 화이팅', duration: 3400 },
 ];
 
 /** 직전 장면과 겹치지 않게 하나를 고른다. */
@@ -135,6 +110,7 @@ export function createPixelGreeting(opts: { reducedMotion: () => boolean }): Pix
   const bufB = new Uint32Array(W * H);
   let buf = bufA;
   let tone = TONES.light;
+  let pal = LIGHT_PAL;
   const colors = new Map<Hex, number>();
 
   function rgba(hex: Hex): number {
@@ -147,238 +123,282 @@ export function createPixelGreeting(opts: { reducedMotion: () => boolean }): Pix
     return v;
   }
   function px(x: number, y: number, hex: Hex): void {
-    x |= 0;
-    y |= 0;
+    x = Math.round(x);
+    y = Math.round(y);
     if (x < 0 || y < 0 || x >= W || y >= H) return;
     buf[y * W + x] = rgba(hex);
   }
   function rect(x: number, y: number, w: number, h: number, hex: Hex): void {
     for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) px(x + i, y + j, hex);
   }
-  function sprite(rows: readonly string[], x: number, y: number, pal: Record<string, Hex>, clipY = H): void {
-    for (let r = 0; r < rows.length && y + r < clipY; r++) {
-      const row = rows[r];
-      for (let c = 0; c < row.length; c++) {
-        const hex = pal[row[c]];
-        if (hex) px(x + c, y + r, hex);
-      }
-    }
-  }
   const q = (t: number): number => Math.floor(t / STEP) * STEP;
   const clamp01 = (v: number): number => Math.max(0, Math.min(1, v));
+
+  /** 하마 좌표(hama-art 의 층, 7행이 땅 바로 위)를 무대에 그린다. x 는 하마 0열이 놓일
+      열, ground 는 발밑 땅의 행, y 는 위아래 이동(위가 음수)이다. flip 이면 14열 폭을
+      기준으로 뒤집어 왼쪽을 본다. clip 이면 땅(물) 아래 행을 그리지 않는다. */
+  function layers(list: readonly Layer[], x: number, o: { y?: number; ground?: number; flip?: boolean; clip?: boolean } = {}): void {
+    const ground = o.ground ?? FLOOR;
+    const base = ground - 8 + (o.y ?? 0);
+    for (const { art, x: lx = 0, y: ly = 0, map } of list) {
+      art.forEach((row, r) => {
+        const sy = base + ly + r;
+        if (o.clip && sy >= FLOOR) return;
+        for (let c = 0; c < row.length; c++) {
+          const ch = row[c]!;
+          if (ch === '.') continue;
+          const hex = map?.[ch] ?? pal[ch];
+          if (!hex) continue;
+          const cx = lx + c;
+          px(o.flip ? x + 13 - cx : x + cx, sy, hex);
+        }
+      });
+    }
+  }
+  const pet = (pose: PoseName, x: number, o: { y?: number; ground?: number; flip?: boolean; clip?: boolean } = {}): void => {
+    layers([{ art: POSES[pose] }], x, o);
+  };
+  const walk = (t: number): PoseName => (Math.floor(t / 120) % 2 ? 'step' : 'stand');
 
   function sky(t: number): void {
     STARS.forEach(([x, y], i) => {
       if (Math.sin(t / 700 + i * 1.7) > -0.3) px(x, y, tone.star);
     });
   }
-  function water(t: number): void {
+  /** 땅 선. 양 끝은 비워 무대 가장자리가 보이지 않게 한다. */
+  function floor(from = 14, to = W - 14): void {
+    for (let x = from; x < to; x++) px(x, FLOOR, tone.dim);
+  }
+  function water(t: number, from: number = POND[0], to: number = POND[1]): void {
     const shift = Math.floor(t / 260);
-    for (let x = POND[0]; x < POND[1]; x++) {
-      const edge = Math.min(x - POND[0], POND[1] - 1 - x) < 8;
-      if ((x + shift) % 9 < 4) px(x, WATER, edge ? tone.dim : HIPPO_PAL.s);
-      if (!edge && (x - shift + 4) % 13 < 3) px(x, WATER + 2, tone.dim);
+    for (let x = from; x < to; x++) {
+      const edge = Math.min(x - from, to - 1 - x) < 6;
+      if ((x + shift) % 9 < 4) px(x, FLOOR, edge ? tone.dim : pal.s!);
+      if (!edge && (x - shift + 4) % 13 < 3) px(x, FLOOR + 2, tone.dim);
     }
   }
-  function hippo(t: number, o: { lift?: number; eyes?: Eyes; look?: readonly [number, number] } = {}): void {
-    const { lift = 0, look = [0, 0] } = o;
-    const y = WATER - 8 + (Math.floor(t / 900) % 2) - lift;
-    sprite(t % 5300 > 5150 ? EAR_DOWN : HEAD, HX, y, HIPPO_PAL, WATER);
-    const eyes = o.eyes ?? (t % 3400 < 140 ? 'blink' : 'open');
-    const x = HX + EYE + look[0];
-    const top = y + 1 + look[1];
-    const eye = (dx: number, dy: number): void => {
-      if (top + dy < WATER) px(x + dx, top + dy, HIPPO_PAL.k);
-    };
-    if (eyes === 'blink') { eye(-1, 1); eye(0, 1); }
-    else if (eyes === 'happy') { eye(-1, 1); eye(0, 0); eye(1, 1); }
-    else { eye(0, 0); eye(0, 1); }
-    // 까딱일 때마다 물결이 양옆으로 번진다.
+  /** 땅에 선 종이. 줄은 왼쪽부터 n 칸까지 채운다. */
+  function page(x: number, lines: readonly number[]): void {
+    const top = FLOOR - PAGE_H;
+    rect(x, top, PAGE_W, PAGE_H, pal.P!);
+    lines.forEach((n, i) => {
+      if (n > 0) rect(x + 2, top + 3 + i * 2, n, 1, pal.p!);
+    });
+  }
+  /** 일정한 속도로 줄을 하나씩 채운다. */
+  function typed(widths: readonly number[], elapsed: number, msPerCell: number, gap = 0): number[] {
+    let left = elapsed;
+    return widths.map((len) => {
+      const n = Math.max(0, Math.min(len, Math.floor(left / msPerCell)));
+      left -= len * msPerCell + gap;
+      return n;
+    });
+  }
+
+  /** 물에 뜬 하마 — 머리와 등만 내놓는다. 까딱일 때마다 물결이 양옆으로 번진다. */
+  function float(t: number, x: number, sink = 0): void {
+    const bob = Math.floor(t / 900) % 2;
+    pet(t % 5300 > 5100 ? 'ear' : 'stand', x, { y: FLOAT_Y + bob + sink, clip: true });
     const k = Math.floor((t % 900) / 180);
-    if (k < 4) {
-      px(HX - 2 - k, WATER - 1, HIPPO_PAL.h);
-      px(HX + 32 + k, WATER - 1, HIPPO_PAL.h);
+    if (!sink && k < 3) {
+      px(x - 1 - k, FLOOR - 1, pal[fade(k + 1)]!);
+      px(x + 13 + k, FLOOR - 1, pal[fade(k + 1)]!);
     }
   }
 
-  const idle: Draw = (t) => { t = q(t); sky(t); hippo(t); water(t); };
+  // 쉬는 모습: 물에 떠서 까딱이며, 가끔 귀를 턴다.
+  const idle: Draw = (t) => {
+    t = q(t); sky(t);
+    float(t, FLOAT_X);
+    water(t);
+  };
   const empty: Draw = () => {};
 
   const scenes: Record<string, Draw> = {
-    // 물 위로 종이가 떠오르고 줄이 하나씩 써진다.
+    // 걸어 들어와 노트북을 두드리면 옆에 선 종이에 줄이 하나씩 써진다.
     lines(t) {
-      t = q(t); sky(t);
-      const x = 18, w = 24, h = 27;
-      const top = Math.round(WATER - h * clamp01(t / 450));
-      for (let j = 0; j < h && top + j < WATER; j++) {
-        for (let i = 0; i < w; i++) {
-          if (i >= w - 4 && j < 4 && i - (w - 4) > j - 1) continue;
-          const edge = i === 0 || j === 0 || i === w - 1 || (i >= w - 4 && i - (w - 4) === j);
-          px(x + i, top + j, edge ? tone.edge : tone.paper);
-        }
-      }
-      let left = t - 550;
-      let caret: [number, number] | null = null;
-      const widths = [17, 15, 18, 12, 16, 8];
-      widths.forEach((len, i) => {
-        if (left <= 0) return;
-        const n = Math.min(len, Math.floor(left / 38));
-        const ly = top + 5 + i * 3;
-        if (ly < WATER) rect(x + 3, ly, n, 1, tone.line);
-        if (!caret && (n < len || i === widths.length - 1)) caret = [x + 3 + n, ly];
-        left -= len * 38 + 160;
-      });
-      const at = caret as [number, number] | null;
-      if (at && Math.floor(t / 300) % 2 === 0) rect(at[0], at[1] - 1, 1, 3, HIPPO_PAL.o);
-      hippo(t, { look: [-1, Math.min(1, Math.floor(Math.max(0, t - 550) / 900) % 2)] });
-      water(t);
+      t = q(t); sky(t); floor();
+      const home = 44;
+      const arrive = 1100;
+      const x = Math.round(lerp(20, home, t / arrive));
+      const typing = t >= arrive && t < 3500;
+      const beat = Math.floor(t / 90);
+      const down = typing && beat % 2 === 1 && beat % 10 < 7;
+      const glow = typing ? [pal.h!, pal.g!, pal.o!, pal.W!][beat % 4]! : pal.B!;
+      layers([{ ...prop('laptop'), map: { G: glow, g: glow } }], home);
+      page(home + 20, typed([5, 4, 5, 3], t - arrive - 200, 80, 160));
+      if (t < arrive) pet(walk(t), x);
+      else if (typing) pet(down ? 'pawDown' : 'pawUp', home);
+      else layers([{ art: POSES.cheer }, ...sparkle(t < 3700 ? 1 : 2)], home);
     },
-    // 작은 하마가 산을 올라 꼭대기에 깃발을 꽂는다.
+    // 산을 걸어 올라 꼭대기에 깃발을 꽂는다.
     mountain(t) {
       t = q(t); sky(t);
-      const peak = 7, cx = 64;
-      const mount = (pcx: number, py: number, slope: number, left: Hex, right: Hex): void => {
-        for (let y = py; y < H; y++) {
-          const hw = Math.floor((y - py) * slope);
-          for (let x = pcx - hw; x <= pcx + hw; x++) px(x, y, x <= pcx ? left : right);
-        }
+      const [left, peakX, right, peakY] = [28, 66, 100, 13];
+      const ridge = (x: number): number => {
+        if (x <= left || x >= right) return FLOOR;
+        if (x <= peakX) return Math.round(FLOOR - ((x - left) / (peakX - left)) * (FLOOR - peakY));
+        return Math.round(FLOOR - ((right - x) / (right - peakX)) * (FLOOR - peakY));
       };
-      mount(20, 22, 1.4, tone.far, tone.far);
-      mount(108, 20, 1.4, tone.far, tone.far);
-      mount(cx, peak, 1.6, tone.slateL, tone.slateR);
-      for (let y = peak; y < peak + 8; y++) {
-        const hw = Math.floor((y - peak) * 1.6);
-        for (let x = cx - hw; x <= cx + hw; x++) {
-          const jag = (x * 7 + 3) % 4;
-          if (y < peak + 5 + jag - (x > cx ? 1 : 0)) px(x, y, x > cx + 1 ? tone.slateL : tone.snow);
+      floor(10, left);
+      floor(right, W - 10);
+      for (let x = left; x < right; x++) {
+        for (let y = ridge(x); y < FLOOR + 1; y++) px(x, y, x <= peakX ? tone.hillL : tone.hillR);
+      }
+      // 네 발 가운데 땅을 디딘다.
+      const feet = (x: number): number => ridge(x + 4);
+      const climb = 3000;
+      const top = peakX - 6;
+      const x = Math.round(lerp(8, top, t / climb));
+      const ground = feet(x);
+      const flagX = top + 13;
+      const plant = t - climb - 250;
+      if (plant > 0) {
+        const pole = Math.min(9, Math.floor(plant / 45));
+        const base = ridge(flagX);
+        for (let y = 1; y <= pole; y++) px(flagX, base - y, pal.L!);
+        if (pole === 9) {
+          const wave = Math.floor(t / 220) % 2;
+          rect(flagX + 1, base - 9, 4, 3, pal.r!);
+          px(flagX + 5, base - 9 + wave + 1, pal.r!);
         }
       }
-      const p = clamp01((t - 300) / 3000);
-      const feet = Math.round(24 + p * 31);
-      const walking = p > 0 && p < 1;
-      sprite(walking && Math.floor(t / 130) % 2 ? MINI_B : MINI_A, feet - 8,
-        Math.round(peak + (cx - feet + 5) / 1.6) - 6, HIPPO_PAL);
-      const f = t - 3400;
-      if (f > 0) {
-        const pole = Math.min(6, Math.floor(f / 50));
-        for (let y = 0; y < pole; y++) px(cx, peak - 1 - y, tone.ink);
-        if (pole === 6) {
-          rect(cx + 1, peak - 7, 6, 3, HIPPO_PAL.o);
-          px(cx + 3 + (Math.floor(t / 200) % 2) * 2, peak - 6, HIPPO_PAL.s);
-        }
-      }
+      if (t < climb) pet(walk(t), x, { ground });
+      else if (plant < 500) pet(plant > 0 ? 'pawUp' : 'stand', top, { ground });
+      else layers([{ art: POSES.cheer }, ...sparkle(Math.floor(plant / 140) % 3)], top, { ground });
     },
-    // 김이 오르는 잔이 떠오르고 하마가 웃는다.
+    // 잔이 떨어져 놓이고, 김이 오르면 주둥이를 담가 마신 뒤 숨을 내쉰다.
     coffee(t) {
-      t = q(t); sky(t);
-      const mugY = Math.round(WATER - 6 * clamp01(t / 500));
-      sprite(MUG, 26, mugY, { m: tone.mug, n: tone.mugShade, c: tone.coffee }, WATER + 1);
-      if (t > 600) {
+      t = q(t); sky(t); floor();
+      const x = 44;
+      const mugX = x + 13;
+      const fall = clamp01((t - 200) / 260);
+      const mugY = FLOOR - MUG.length - Math.round((1 - fall * fall) * 18) - (t > 460 && t < 540 ? 1 : 0);
+      if (t > 200) for (let r = 0; r < MUG.length; r++) {
+        const row = MUG[r]!;
+        for (let c = 0; c < row.length; c++) if (row[c] !== '.') px(mugX + c, mugY + r, pal[row[c]!]!);
+      }
+      // 김: 세 가닥이 번갈아 오르며 옅어진다.
+      if (t > 700) {
         for (let i = 0; i < 3; i++) {
-          const life = ((t - 600) / 90 + i * 5) % 14;
-          for (let k = 0; k < 3; k++) {
-            const yy = mugY - 2 - Math.floor(life) + k;
-            const wob = Math.round(Math.sin((yy + i * 3) / 2));
-            if (yy < mugY - 1 && yy > mugY - 15) px(28 + i * 2 + wob, yy, tone.steam);
-          }
+          const age = (t - 700 + i * 380) % 1140;
+          const k = Math.floor(age / 285);
+          const sway = Math.round(Math.sin((age / 1140) * Math.PI * 2 + i));
+          px(mugX + 1 + i + sway, FLOOR - MUG.length - 2 - k * 2, pal[fade(k)]!);
         }
       }
-      hippo(t, { eyes: t > 1200 && t < 2600 ? 'happy' : undefined, look: [t < 1200 ? -1 : 0, 0] });
-      water(t);
+      const sip = t > 1300 && t < 2700 && Math.floor((t - 1300) / 350) % 2 === 0;
+      // 마실 때는 몸을 숙여 앞으로 내밀어 주둥이를 잔에 담근다.
+      if (t < 1300) pet(t % 900 < 120 ? 'ear' : 'stand', x);
+      else if (t < 2700) pet(sip ? 'crouch' : 'stand', sip ? x + 2 : x);
+      else pet(t < 3400 ? 'open' : t < 3550 ? 'ear' : 'stand', x);
     },
-    // 머리 위로 생각 방울이 오르고, 구름 속에 종이가 들어가 저절로 써진다.
+    // 머리 위로 생각 점이 차오르고, 구름 속 종이가 저절로 써진다.
     thought(t) {
-      t = q(t); sky(t);
-      for (const [x, y, n, at] of [[HX + 8, 23, 1, 0], [HX + 4, 20, 2, 220], [HX - 2, 17, 3, 440]]) {
-        if (t >= at) rect(x, y, n, n, tone.rim);
+      t = q(t); sky(t); floor();
+      const x = 34;
+      if (t < 900) {
+        const k = Math.floor(t / 220) % 4;
+        layers([0, 1, 2].map((i) => dot(6 + i * 2, 0, i < k ? 'W' : 's')), x);
       }
-      const c = t - 680;
+      const head = FLOOR - 8;
+      for (const [dx, dy, n, at] of [[13, -2, 1, 900], [16, -5, 2, 1050]] as const) {
+        if (t >= at) rect(x + dx, head + dy, n, n, pal.h!);
+      }
+      const c = t - 1200;
       if (c >= 0) {
-        // 조금 크게 튀어나왔다가 제자리에 앉는다.
         const grow = c < 70 ? 0.45 : c < 140 ? 0.8 : c < 210 ? 1.08 : 1;
-        const lobes = [[19, 11, 5], [26, 7, 5], [33, 7, 5], [38, 11, 4], [27, 12, 6]];
-        const inside = (x: number, y: number): boolean => lobes.some(([lx, ly, r]) => {
-          const rr = r * grow, dx = x - (28 + (lx - 28) * grow), dy = y - (9 + (ly - 9) * grow);
+        const [cx, cy] = [x + 30, 11];
+        const lobes = [[-9, 2, 5], [-4, -3, 5], [3, -3, 5], [8, 1, 4], [0, 3, 6]] as const;
+        const inside = (px_: number, py: number): boolean => lobes.some(([lx, ly, r]) => {
+          const dx = px_ - (cx + lx * grow), dy = py - (cy + ly * grow), rr = r * grow;
           return dx * dx + dy * dy <= rr * rr;
         });
-        for (let y = 0; y < 21; y++) for (let x = 8; x < 48; x++) {
-          if (!inside(x, y)) continue;
-          const rim = !inside(x - 1, y) || !inside(x + 1, y) || !inside(x, y - 1) || !inside(x, y + 1);
-          px(x, y, rim ? tone.rim : tone.far);
+        for (let y = 0; y < 22; y++) for (let xx = cx - 16; xx < cx + 16; xx++) {
+          if (!inside(xx, y)) continue;
+          const rim = !inside(xx - 1, y) || !inside(xx + 1, y) || !inside(xx, y - 1) || !inside(xx, y + 1);
+          px(xx, y, rim ? pal.h! : tone.cloud);
+        }
+        if (c > 300) {
+          const [pxl, pyl] = [cx - 4, cy - 4];
+          const shown = Math.min(9, Math.floor((c - 300) / 30) + 1);
+          rect(pxl, pyl, 8, shown, pal.P!);
+          typed([5, 4, 5], c - 650, 60, 140).forEach((n, i) => {
+            if (n && 2 + i * 2 < shown) rect(pxl + 2, pyl + 2 + i * 2, n, 1, pal.p!);
+          });
         }
       }
-      const d = t - 1050;
-      if (d >= 0) {
-        const x = 23, y = 5, w = 10, h = 11;
-        const shown = Math.min(h, Math.floor(d / 30) + 1);
-        for (let j = 0; j < shown; j++) for (let i = 0; i < w; i++) {
-          if (i >= w - 3 && j < 3 && i - (w - 3) > j) continue;
-          const edge = i === 0 || i === w - 1 || j === 0 || j === h - 1 || (i >= w - 3 && i - (w - 3) === j);
-          px(x + i, y + j, edge ? tone.edge : tone.paper);
-        }
-        [6, 5, 6, 3].forEach((len, i) => {
-          const n = Math.min(len, Math.max(0, Math.floor((d - 450 - i * 260) / 40)));
-          if (n) rect(x + 2, y + 3 + i * 2, n, 1, tone.line);
+      const done = t > 2700;
+      if (!done) pet(t > 1200 && t % 1400 < 120 ? 'ear' : 'stand', x);
+      else {
+        const hop = t - 2900;
+        pet(hop > 0 && hop < 360 ? 'step' : t > 2700 && t < 2900 ? 'crouch' : 'stand', x, {
+          y: hop > 0 && hop < 360 ? arc(hop / 360, 3) : 0,
         });
       }
-      const looking = t > 740 && t <= 2200;
-      hippo(t, {
-        eyes: t > 600 && t < 740 ? 'blink' : t > 2200 ? 'happy' : undefined,
-        look: looking ? [-1, -1] : [0, 0],
-      });
-      water(t);
     },
-    // 웅크렸다 뛰어오르고 반짝이다가 물보라를 튀기며 내려앉는다.
-    jump(t) {
+    // 둑에서 웅크렸다 공처럼 말아 연못으로 뛰어들고, 떠올라 물에 뜬다.
+    splash(t) {
       t = q(t); sky(t);
-      let lift = 0;
-      let eyes: Eyes | undefined = t < 2200 ? 'happy' : undefined;
-      if (t < 260) { lift = -1; eyes = 'blink'; }
-      else if (t < 1300) lift = Math.round(Math.sin(((t - 260) / 1040) * Math.PI) * 3);
-      hippo(t, { lift, eyes });
-      if (t > 500 && t < 1200) {
-        [[HX - 4, WATER - 10], [HX + 33, WATER - 9], [HX + 14, WATER - 15]].forEach(([x, y], i) => {
-          if ((Math.floor(t / 120) + i) % 3 === 0) return;
-          px(x, y, HIPPO_PAL.w);
-          px(x - 1, y, HIPPO_PAL.o); px(x + 1, y, HIPPO_PAL.o);
-          px(x, y - 1, HIPPO_PAL.o); px(x, y + 1, HIPPO_PAL.o);
-        });
+      const bank = 34;
+      floor(10, bank);
+      water(t, bank, POND[1]);
+      const from = 14;
+      const leap = 600, land = 1350;
+      if (t < 400) { pet(t > 250 && t < 330 ? 'ear' : 'stand', from); return; }
+      if (t < leap) { pet('crouch', from); return; }
+      if (t < land) {
+        const p = (t - leap) / (land - leap);
+        const x = Math.round(lerp(from, FLOAT_X, p));
+        const y = arc(p, 14);
+        pet(p < 0.25 ? 'step' : 'ball', x, { y: p < 0.25 ? y : y - 1, clip: p > 0.8 });
+        return;
       }
-      const s = t - 1300;
-      if (s > 0 && s < 600) {
-        const p = s / 600;
-        for (let i = 0; i < 4; i++) {
-          const dx = Math.round((3 + i * 2) * p), dy = Math.round((6 - i) * Math.sin(p * Math.PI));
-          px(HX - 2 - dx, WATER - 1 - dy, HIPPO_PAL.h);
-          px(HX + 31 + dx, WATER - 1 - dy, HIPPO_PAL.h);
-        }
+      const under = t - land;
+      const splashes = [...droplets(6, under, 1.2), ...ripples(6, under)];
+      if (under < 700) {
+        const sink = Math.round(lerp(0, 9, under / 150));
+        pet('ball', FLOAT_X, { y: sink - 1, clip: true });
+        layers(splashes, FLOAT_X);
+        return;
       }
-      water(t);
+      // 솟아올라 쉬는 모습과 같은 자리에 뜬다.
+      const up = under - 700;
+      if (up < 260) {
+        pet('ear', FLOAT_X, { y: Math.round(lerp(9, FLOAT_Y, up / 260)), clip: true });
+        layers(ripples(6, up), FLOAT_X);
+      } else float(t, FLOAT_X);
     },
   };
 
-  interface Layer { draw: Draw; start: number }
-  let current: Layer = { draw: empty, start: 0 };
-  let swap: { from: Layer; to: Layer; start: number; duration: number; then?: () => void } | null = null;
+  /** PROPS 의 소품을 하마 좌표 층으로. */
+  function prop(name: string): Layer {
+    const [art, x, y] = PROPS[name]!;
+    return { art, x, y };
+  }
+
+  interface Shown { draw: Draw; start: number }
+  let current: Shown = { draw: empty, start: 0 };
+  let swap: { from: Shown; to: Shown; start: number; duration: number } | null = null;
   let sceneIndex: number | null = null;
   let sceneUntil: number | null = null;
   let timer: number | null = null;
 
   function paint(now: number): void {
     if (!ctx || !image || !out32) return;
-    tone = document.documentElement.dataset.themeEffective === 'dark' ? TONES.dark : TONES.light;
+    const dark = document.documentElement.dataset.themeEffective === 'dark';
+    tone = dark ? TONES.dark : TONES.light;
+    pal = dark ? COLORS : LIGHT_PAL;
     if (swap && now - swap.start >= swap.duration) {
-      const done = swap.then;
       current = swap.to;
       swap = null;
-      done?.();
     }
     if (swap) {
       buf = bufA; bufA.fill(0); swap.from.draw(now - swap.from.start);
       buf = bufB; bufB.fill(0); swap.to.draw(now - swap.to.start);
       const level = Math.floor(((now - swap.start) / swap.duration) * 17);
       for (let i = 0; i < W * H; i++) {
-        out32[i] = BAYER[((i / W) & 3) * 4 + ((i % W) & 3)] < level ? bufB[i] : bufA[i];
+        out32[i] = BAYER[((i / W) & 3) * 4 + ((i % W) & 3)]! < level ? bufB[i]! : bufA[i]!;
       }
     } else {
       buf = bufA; bufA.fill(0); current.draw(now - current.start);
@@ -394,30 +414,32 @@ export function createPixelGreeting(opts: { reducedMotion: () => boolean }): Pix
       sceneUntil = null;
       show(idle, SETTLE_MS);
     }
-    paint(now);
-    if (current.draw !== empty || swap) timer = window.setTimeout(tick, STEP);
+    // 창이 숨었거나 설정 같은 다른 면 뒤에 있으면 그리지 않고 드문드문 살피기만 한다.
+    const hidden = document.visibilityState === 'hidden'
+      || (typeof canvas.checkVisibility === 'function' && !canvas.checkVisibility({ visibilityProperty: true }));
+    if (!hidden) paint(now);
+    if (current.draw !== empty || swap) timer = window.setTimeout(tick, hidden ? HIDDEN_POLL_MS : STEP);
   }
 
   function run(): void {
     if (timer === null) tick();
   }
 
-  function show(draw: Draw, duration: number, then?: () => void): void {
+  function show(draw: Draw, duration: number): void {
     const now = performance.now();
     const to = { draw, start: now };
     if (duration <= 0) {
       current = to;
       swap = null;
-      then?.();
       return;
     }
-    swap = { from: swap ? swap.to : current, to, start: now, duration, then };
+    swap = { from: swap ? swap.to : current, to, start: now, duration };
   }
 
   function play(index: number): void {
     sceneIndex = index;
-    const scene = PIXEL_SCENES[index];
-    const draw = scenes[scene.id];
+    const scene = PIXEL_SCENES[index]!;
+    const draw = scenes[scene.id]!;
     canvas.setAttribute('aria-label', scene.label);
     if (opts.reducedMotion()) {
       sceneUntil = null;

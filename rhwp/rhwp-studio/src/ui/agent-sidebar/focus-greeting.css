@@ -1,14 +1,20 @@
-/* 128×40 칸 장면을 4배로 키운다. 좁은 화면에서는 폭에 맞춰 줄어든다. */
+/* 120×40 칸 장면을 입력기 하마와 같은 3배로 키운다. 좁은 화면에서는 폭에 맞춰 줄어든다. */
 .ag-focus-greeting-art {
   display: block;
-  width: 512px;
+  width: 360px;
   max-width: 100%;
   height: auto;
-  aspect-ratio: 128 / 40;
+  aspect-ratio: 120 / 40;
   image-rendering: pixelated;
   cursor: pointer;
   pointer-events: auto;
 }
 .ag-focus-greeting.ag-leaving .ag-focus-greeting-art {
   pointer-events: none;
+}
+
+/* 무대에 하마가 있는 동안 입력기 위의 하마는 숨는다. 첫 메시지를 보내면 무대가 사라지며
+   입력기 하마가 제자리로 돌아온다. */
+.ag-fullscreen .ag-chat-page.ag-chat-empty .ag-hama-perch {
+  visibility: hidden;
 }
