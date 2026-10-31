@@ -4,7 +4,7 @@
  * entry = {
  *   minutes: { [minuteIndex]: usd },  spend per UTC minute, kept for the 5-hour window
  *   hours:   { [hourIndex]: usd },    spend per UTC hour, kept for the 7-day window
- *   period:  { start: ISO, usedUsd }, running total of the current billing period
+ *   period:  { start: ISO, usedUsd, calls }, running totals of the current billing period
  *   ids:     { [callId]: ms },        recent call ids, so a call is never billed twice
  *   totalUsd, calls, lastCallAt
  * }
@@ -135,8 +135,9 @@ export function record(entry, { id, costUsd, at }, { periodAnchor } = {}) {
   entry.hours[hour] = usd((finite(entry.hours[hour]) ?? 0) + cost);
   const period = billingPeriod(periodAnchor ?? at, at);
   const start = new Date(period.start).toISOString();
-  if (entry.period?.start !== start) entry.period = { start, usedUsd: 0 };
+  if (entry.period?.start !== start) entry.period = { start, usedUsd: 0, calls: 0 };
   entry.period.usedUsd = usd((finite(entry.period.usedUsd) ?? 0) + cost);
+  entry.period.calls = count(entry.period.calls) + 1;
 
   if (key) {
     entry.ids[key] = at;

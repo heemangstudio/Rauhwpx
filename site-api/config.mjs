@@ -438,6 +438,11 @@ export function resolveAccountsDbPath(env = process.env) {
   return path.join(resolveDataDir(env), 'accounts.json');
 }
 
+/** Profile pictures, one file per account. */
+export function resolveAvatarDir(env = process.env) {
+  return path.join(resolveDataDir(env), 'avatars');
+}
+
 export const DEFAULT_ACCOUNT_AUTH_REDIRECT_URI = 'https://rau-credits-production.up.railway.app/v1/account/auth/callback';
 export const DEFAULT_ACCOUNT_AUTH_PROVIDERS = 'email,google';
 export const DEFAULT_ACCOUNT_DEVICE_LIMIT = 5;
