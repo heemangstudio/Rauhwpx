@@ -160,16 +160,22 @@ export function planOf(license) {
   return keyCycleMonths(license) === 1 ? 'monthly' : 'annual';
 }
 
+/** Editions sold as a subscription on their own billing cycle. */
+function isPlanEdition(edition) {
+  return edition === 'pro' || edition === 'hama';
+}
+
 /**
- * The plan hosted Rau-0.1 serves a license on, or null: 'hama' for any live key with an active Hama
- * plan, 'pro' for a Pro subscription key. Live means not revoked, before its expiry or inside its
- * payment grace. Without a Hama plan, lifetime, Signature, GLJFC9, beta, grandfathered and manual keys never qualify.
+ * The plan hosted Rau-0.1 serves a license on, or null: 'hama' for a Hama subscription key or any live
+ * key with an active Hama plan, 'pro' for a Pro subscription key. Live means not revoked, before its
+ * expiry or inside its payment grace. A Hama key qualifies on its edition, so a paid key keeps Rau with
+ * HAMA_ENABLED off. Without a Hama plan, lifetime, Signature, GLJFC9, beta, grandfathered and manual keys never qualify.
  */
 export function rauPlanOf(license, nowMs, graceMaxMs, hamaActive = false) {
   if (!license || license.status !== 'active') return null;
   const end = accessEndOf(license, graceMaxMs);
   if (end !== null && nowMs >= end) return null;
-  if (hamaActive) return 'hama';
+  if (hamaActive || license.edition === 'hama') return 'hama';
   return license.edition === 'pro' && end !== null ? 'pro' : null;
 }
 
@@ -196,7 +202,7 @@ function signatureView(license) {
   return {
     prioritySupport,
     ...(license.edition ? { edition: license.edition } : {}),
-    ...(license.productId && (license.edition === 'signature' || license.edition === 'pro') ? { productId: license.productId } : {}),
+    ...(license.productId && (license.edition === 'signature' || isPlanEdition(license.edition)) ? { productId: license.productId } : {}),
     ...(license.updatesUntil ? { updatesUntil: license.updatesUntil } : {}),
     ...(license.support ? { support: license.support } : {}),
     ...(prioritySupport ? { supportSlaLabel: '1영업일 내 첫 답변' } : {}),
@@ -233,7 +239,7 @@ function licenseView(license, { includeKey = true } = {}) {
     revokeReason: license.revokeReason,
     plan: planOf(license),
     ...signatureView(license),
-    ...(license.edition === 'pro' ? { billingCycleMonths: keyCycleMonths(license) } : {}),
+    ...(isPlanEdition(license.edition) ? { billingCycleMonths: keyCycleMonths(license) } : {}),
     expiresAt: license.expiresAt ?? null,
     subscription: license.subscription,
     extensions: license.extensions,
@@ -306,6 +312,7 @@ export function createLicensesService({
   signatureExpectedPrice = 29000,
   signatureMinAmount = signatureExpectedPrice,
   proProducts = [],
+  hamaProducts = [],
   products,
   grandfatherCutoff = undefined,
   grandfatherPlatforms = ['darwin'],
@@ -324,6 +331,7 @@ export function createLicensesService({
     signatureExpectedPrice,
     signatureMinAmount,
     proProducts,
+    hamaProducts,
   })).map((product) => [product.id, product]));
   const graceEndOf = (license) => paymentGraceEndOf(license, paymentGraceMaxMs);
   const accessEnd = (license) => accessEndOf(license, paymentGraceMaxMs);
@@ -433,22 +441,22 @@ export function createLicensesService({
     if (subscription !== (product.kind === 'subscription')) return `wrong_product:${contentId}`;
     const expectedType = product.kind === 'subscription' ? 'SUBSCRIPTION' : 'ONE_TIME';
     if (paymentType && paymentType !== expectedType) return `wrong_payment_type:${paymentType}`;
-    // A Pro product bills on its own cycle. An event that names another one is held instead of
+    // A Pro or Hama product bills on its own cycle. An event that names another one is held instead of
     // trusted, so a monthly buyer can never get a year; a missing or unreadable field uses the product's.
     const eventMonths = eventCycleMonths(object);
     if (product.cycleMonths && eventMonths !== undefined && eventMonths !== product.cycleMonths) return `cycle_mismatch:${eventMonths}`;
     return priceProblem(object, product, { renewal });
   }
 
-  /** Months the round buys: a Pro product's own cycle, else the event's, else 12 (GLJFC9). */
+  /** Months the round buys: a Pro or Hama product's own cycle, else the event's, else 12 (GLJFC9). */
   function orderCycleMonths(object) {
     const product = catalog.get(str(object?.content?.id, 128) ?? '');
     return product?.cycleMonths ?? eventCycleMonths(object) ?? SUBSCRIPTION_CYCLE_MONTHS;
   }
 
-  /** Pro keys carry the edition, product and cycle on the record itself. */
-  function proEntitlement(product, months) {
-    return product?.edition === 'pro' ? { edition: 'pro', productId: product.id, billingCycleMonths: months } : {};
+  /** Pro and Hama keys carry the edition, product and cycle on the record itself. */
+  function planEntitlement(product, months) {
+    return isPlanEdition(product?.edition) ? { edition: product.edition, productId: product.id, billingCycleMonths: months } : {};
   }
 
   /** Create or update the order record of one paid round. */
@@ -563,7 +571,7 @@ export function createLicensesService({
       amount: order.amount,
       occurredAt: event.occurredAt,
       ...(subscription ? subscriptionStart(order, object) : {}),
-      ...(subscription ? proEntitlement(product, order.billingCycleMonths) : {}),
+      ...(subscription ? planEntitlement(product, order.billingCycleMonths) : {}),
       ...(product?.kind === 'signature' ? signatureEntitlement(product.id, paidAtOf(order)) : {}),
     });
     queueEmail(license);
@@ -886,7 +894,7 @@ export function createLicensesService({
         status: 'issued',
         key: license.key,
         licenseExpiresAt: expiryOf(license),
-        ...(license.edition === 'pro' ? { edition: 'pro', plan: planOf(license) } : {}),
+        ...(isPlanEdition(license.edition) ? { edition: license.edition, plan: planOf(license) } : {}),
         ...(license.edition === 'signature' ? {
           edition: 'signature',
           prioritySupport: true,
@@ -966,9 +974,9 @@ export function createLicensesService({
         prioritySupport: license.status === 'active',
         updatesUntil: parseTime(license.updatesUntil) ?? null,
       } : {}),
-      ...(license.edition === 'pro' ? { edition: 'pro' } : {}),
+      ...(isPlanEdition(license.edition) ? { edition: license.edition } : {}),
       plan: planOf(license),
-      // Hosted Rau-0.1 (POST /v1/rau/learn) answers only active Pro keys and active Hama plans.
+      // Hosted Rau-0.1 (POST /v1/rau/learn) answers only active Pro and Hama keys and active Hama plans.
       rau: { eligible: rauPlan !== null },
     };
   }
@@ -1051,6 +1059,22 @@ export function createLicensesService({
       active,
       ...(withRauPlan ? { rauPlan: await rauPlanFor(license) } : {}),
     };
+  }
+
+  /**
+   * Every paid Hama key and whether it is live now, for hama.mjs to keep hama.json in line with.
+   * `periodAnchor` is the subscription's first payment, so billing months do not depend on when the plan was written.
+   */
+  async function hamaSubscriptions() {
+    const state = await read();
+    return Object.values(state.licenses).filter((license) => license.edition === 'hama').map((license) => {
+      const end = accessEnd(license);
+      return {
+        keyId: license.keyId,
+        live: license.status === 'active' && (end === null || now() < end),
+        periodAnchor: iso(parseTime(license.subscription?.activatedAt) ?? parseTime(license.createdAt) ?? now()),
+      };
+    });
   }
 
   // -------------------------------------------------------- grandfather
@@ -1297,7 +1321,7 @@ export function createLicensesService({
           occurredAt: order.completedAt,
           note: `released from hold: ${order.holdReason ?? ''}`.trim(),
           ...(order.kind === 'subscription' ? subscriptionStart(order) : {}),
-          ...(order.kind === 'subscription' ? proEntitlement(catalog.get(order.contentId), order.billingCycleMonths ?? SUBSCRIPTION_CYCLE_MONTHS) : {}),
+          ...(order.kind === 'subscription' ? planEntitlement(catalog.get(order.contentId), order.billingCycleMonths ?? SUBSCRIPTION_CYCLE_MONTHS) : {}),
           ...(catalog.get(order.contentId)?.kind === 'signature'
             ? signatureEntitlement(order.contentId, paidAtOf(order))
             : {}),
@@ -1503,6 +1527,7 @@ export function createLicensesService({
     deactivate,
     grandfather,
     authenticateLease,
+    hamaSubscriptions,
     admin,
   };
 }

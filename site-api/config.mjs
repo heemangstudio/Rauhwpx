@@ -72,8 +72,12 @@ export const DEFAULT_SIGNATURE_PRICE = 29000;
 export const DEFAULT_PAYMENT_GRACE_DAYS = 10;
 /** A failed renewal never keeps a key usable longer than this past its expiry, so a monthly key's grace stays under a month. */
 export const DEFAULT_PAYMENT_GRACE_MAX_DAYS = 14;
+export const DEFAULT_PRO_PRODUCT_IDS = 'SfYBy5:1,vdw3HN:12';
 export const DEFAULT_PRO_MONTHLY_PRICE = 3900;
 export const DEFAULT_PRO_YEARLY_PRICE = 39000;
+export const DEFAULT_HAMA_PRODUCT_IDS = 'R3n8zG:1,atqjpJ:12';
+export const DEFAULT_HAMA_MONTHLY_PRICE = 12900;
+export const DEFAULT_HAMA_YEARLY_PRICE = 139000;
 export const DEFAULT_PRO_UPGRADE_URL = 'https://heemangstudios.com/pricing.html#pro';
 /** Groble's buyer 주문조회 page, where a buyer sees the subscription and pays again. */
 export const DEFAULT_PAYMENT_FIX_URL = 'https://groble.im/manage/purchase';
@@ -109,8 +113,8 @@ function productPriceOverrides(text) {
   return overrides;
 }
 
-/** `GROBLE_PRO_PRODUCT_IDS`: `id:months` entries, months 1 (monthly) or 12 (yearly). */
-export function parseProProducts(text) {
+/** `GROBLE_PRO_PRODUCT_IDS` or `GROBLE_HAMA_PRODUCT_IDS`: `id:months` entries, months 1 (monthly) or 12 (yearly). */
+export function parsePlanProducts(name, text) {
   const products = [];
   if (!text) return products;
   for (const part of text.split(',')) {
@@ -119,7 +123,7 @@ export function parseProProducts(text) {
     const [id, monthsText, extra] = entry.split(':').map((s) => s.trim());
     const months = Number(monthsText);
     if (!id || extra !== undefined || (months !== 1 && months !== 12)) {
-      throw new Error(`GROBLE_PRO_PRODUCT_IDS entry is not id:1 or id:12: ${entry}`);
+      throw new Error(`${name} entry is not id:1 or id:12: ${entry}`);
     }
     products.push({ id, months });
   }
@@ -139,6 +143,11 @@ export function buildProductCatalog({
   proMonthlyMinAmount = proMonthlyPrice,
   proYearlyPrice = DEFAULT_PRO_YEARLY_PRICE,
   proYearlyMinAmount = proYearlyPrice,
+  hamaProducts = [],
+  hamaMonthlyPrice = DEFAULT_HAMA_MONTHLY_PRICE,
+  hamaMonthlyMinAmount = hamaMonthlyPrice,
+  hamaYearlyPrice = DEFAULT_HAMA_YEARLY_PRICE,
+  hamaYearlyMinAmount = hamaYearlyPrice,
   priceOverrides = new Map(),
 }) {
   const groups = [
@@ -162,16 +171,22 @@ export function buildProductCatalog({
   for (const [label, kind, ids, price, min] of groups) {
     for (const id of ids) add(label, { id, kind, expectedPrice: price, minAmount: min });
   }
-  // Pro products are subscriptions with their own billing cycle; it wins over the event's.
-  for (const { id, months } of proProducts) {
-    add('pro', {
-      id,
-      kind: 'subscription',
-      edition: 'pro',
-      cycleMonths: months,
-      expectedPrice: months === 12 ? proYearlyPrice : proMonthlyPrice,
-      minAmount: months === 12 ? proYearlyMinAmount : proMonthlyMinAmount,
-    });
+  // Pro and Hama products are subscriptions with their own billing cycle; it wins over the event's.
+  const plans = [
+    ['pro', proProducts, proMonthlyPrice, proMonthlyMinAmount, proYearlyPrice, proYearlyMinAmount],
+    ['hama', hamaProducts, hamaMonthlyPrice, hamaMonthlyMinAmount, hamaYearlyPrice, hamaYearlyMinAmount],
+  ];
+  for (const [edition, list, monthlyPrice, monthlyMin, yearlyPrice, yearlyMin] of plans) {
+    for (const { id, months } of list) {
+      add(edition, {
+        id,
+        kind: 'subscription',
+        edition,
+        cycleMonths: months,
+        expectedPrice: months === 12 ? yearlyPrice : monthlyPrice,
+        minAmount: months === 12 ? yearlyMin : monthlyMin,
+      });
+    }
   }
   for (const id of priceOverrides.keys()) {
     if (!seen.has(id)) throw new Error(`GROBLE_PRODUCT_PRICES names ${id}, which is not a configured Groble product`);
@@ -198,9 +213,12 @@ export function resolveLicenseConfig(env = process.env) {
   const onetimeProductIds = commaList(trimmed(env.GROBLE_ONETIME_PRODUCT_IDS) || trimmed(env.GROBLE_CONTENT_ID), DEFAULT_ONETIME_PRODUCT_IDS);
   const subscriptionProductIds = commaList(trimmed(env.GROBLE_SUBSCRIPTION_PRODUCT_IDS), DEFAULT_SUBSCRIPTION_PRODUCT_IDS);
   const signatureProductIds = commaList(trimmed(env.GROBLE_SIGNATURE_PRODUCT_IDS), DEFAULT_SIGNATURE_PRODUCT_IDS);
-  const proProducts = parseProProducts(trimmed(env.GROBLE_PRO_PRODUCT_IDS));
+  const proProducts = parsePlanProducts('GROBLE_PRO_PRODUCT_IDS', trimmed(env.GROBLE_PRO_PRODUCT_IDS) || DEFAULT_PRO_PRODUCT_IDS);
+  const hamaProducts = parsePlanProducts('GROBLE_HAMA_PRODUCT_IDS', trimmed(env.GROBLE_HAMA_PRODUCT_IDS) || DEFAULT_HAMA_PRODUCT_IDS);
   const proMonthlyPrice = integerKrw('GROBLE_PRO_MONTHLY_PRICE', trimmed(env.GROBLE_PRO_MONTHLY_PRICE), DEFAULT_PRO_MONTHLY_PRICE);
   const proYearlyPrice = integerKrw('GROBLE_PRO_YEARLY_PRICE', trimmed(env.GROBLE_PRO_YEARLY_PRICE), DEFAULT_PRO_YEARLY_PRICE);
+  const hamaMonthlyPrice = integerKrw('GROBLE_HAMA_MONTHLY_PRICE', trimmed(env.GROBLE_HAMA_MONTHLY_PRICE), DEFAULT_HAMA_MONTHLY_PRICE);
+  const hamaYearlyPrice = integerKrw('GROBLE_HAMA_YEARLY_PRICE', trimmed(env.GROBLE_HAMA_YEARLY_PRICE), DEFAULT_HAMA_YEARLY_PRICE);
   const products = buildProductCatalog({
     onetimeProductIds,
     subscriptionProductIds,
@@ -214,6 +232,11 @@ export function resolveLicenseConfig(env = process.env) {
     proMonthlyMinAmount: integerKrw('GROBLE_PRO_MONTHLY_MIN_AMOUNT', trimmed(env.GROBLE_PRO_MONTHLY_MIN_AMOUNT), proMonthlyPrice),
     proYearlyPrice,
     proYearlyMinAmount: integerKrw('GROBLE_PRO_YEARLY_MIN_AMOUNT', trimmed(env.GROBLE_PRO_YEARLY_MIN_AMOUNT), proYearlyPrice),
+    hamaProducts,
+    hamaMonthlyPrice,
+    hamaMonthlyMinAmount: integerKrw('GROBLE_HAMA_MONTHLY_MIN_AMOUNT', trimmed(env.GROBLE_HAMA_MONTHLY_MIN_AMOUNT), hamaMonthlyPrice),
+    hamaYearlyPrice,
+    hamaYearlyMinAmount: integerKrw('GROBLE_HAMA_YEARLY_MIN_AMOUNT', trimmed(env.GROBLE_HAMA_YEARLY_MIN_AMOUNT), hamaYearlyPrice),
     priceOverrides: productPriceOverrides(trimmed(env.GROBLE_PRODUCT_PRICES)),
   });
   const paymentGraceDays = positiveNumber('GROBLE_PAYMENT_GRACE_DAYS', trimmed(env.GROBLE_PAYMENT_GRACE_DAYS), DEFAULT_PAYMENT_GRACE_DAYS);
@@ -233,6 +256,7 @@ export function resolveLicenseConfig(env = process.env) {
     signatureMinAmount,
     products,
     proProducts,
+    hamaProducts,
     paymentGraceMs: paymentGraceDays * 24 * 60 * 60 * 1000,
     paymentGraceMaxMs: paymentGraceMaxDays * 24 * 60 * 60 * 1000,
     paymentFixUrl,
