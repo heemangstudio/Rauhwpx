@@ -3,6 +3,7 @@ import http from 'node:http';
 import test from 'node:test';
 
 import { createAdminUiServer, createKeychain } from '../admin-ui/server.mjs';
+import { ignorePortProbe } from './fixtures/port-probe.mjs';
 
 async function listen(t, server) {
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -14,6 +15,7 @@ async function listen(t, server) {
 async function fakeUpstream(t) {
   const calls = [];
   const server = http.createServer((req, res) => {
+    if (ignorePortProbe(req, res)) return;
     let raw = '';
     req.on('data', (c) => { raw += c; });
     req.on('end', () => {

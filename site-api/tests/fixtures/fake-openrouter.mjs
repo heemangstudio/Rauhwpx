@@ -1,6 +1,8 @@
 import { randomBytes } from 'node:crypto';
 import http from 'node:http';
 
+import { ignorePortProbe } from './port-probe.mjs';
+
 /**
  * In-process stand-in for the parts of OpenRouter the gift service uses:
  * provisioning (/keys), key info (/key), /models and /chat/completions with SSE.
@@ -40,6 +42,7 @@ export function createFakeOpenRouter({ provisioningKey = 'pk-test', autoRelease 
   const byKey = (auth) => [...keys.entries()].find(([, k]) => `Bearer ${k.key}` === auth);
 
   const server = http.createServer(async (req, res) => {
+    if (ignorePortProbe(req, res)) return;
     const url = new URL(req.url, 'http://fake');
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
