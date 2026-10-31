@@ -1,5 +1,7 @@
 import path from 'node:path';
 
+import { DEFAULT_WORKOS_API_BASE, DEFAULT_WORKOS_CLIENT_ID, WORKOS_PROVIDERS } from './workos.mjs';
+
 export const DEFAULT_PORT = 5180;
 export const RAILWAY_DATA_DIR = '/data';
 
@@ -429,5 +431,46 @@ export function resolveRauConfig(env = process.env) {
       hama: positiveNumber('RAU_MONTHLY_CAP_USD_HAMA', trimmed(env.RAU_MONTHLY_CAP_USD_HAMA), 5),
     },
     apiBase: (trimmed(env.OPENROUTER_API_BASE) || DEFAULT_OPENROUTER_API_BASE).replace(/\/+$/, ''),
+  };
+}
+
+export function resolveAccountsDbPath(env = process.env) {
+  return path.join(resolveDataDir(env), 'accounts.json');
+}
+
+export const DEFAULT_ACCOUNT_AUTH_REDIRECT_URI = 'https://rau-credits-production.up.railway.app/v1/account/auth/callback';
+export const DEFAULT_ACCOUNT_AUTH_PROVIDERS = 'email,google,apple';
+export const DEFAULT_ACCOUNT_DEVICE_LIMIT = 5;
+
+/**
+ * Account system from env. The routes answer accounts_not_configured until WORKOS_API_KEY is set; every
+ * other value has a default and fails startup when it is unusable, so a typo never ships silently.
+ */
+export function resolveAccountConfig(env = process.env) {
+  const redirectUri = trimmed(env.ACCOUNT_AUTH_REDIRECT_URI) || DEFAULT_ACCOUNT_AUTH_REDIRECT_URI;
+  let redirect;
+  try { redirect = new URL(redirectUri); } catch { redirect = null; }
+  const loopback = redirect?.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]'].includes(redirect.hostname);
+  if (!redirect || (redirect.protocol !== 'https:' && !loopback)) {
+    throw new Error(`ACCOUNT_AUTH_REDIRECT_URI must be an https URL: ${redirectUri}`);
+  }
+  const providers = commaList(trimmed(env.ACCOUNT_AUTH_PROVIDERS), DEFAULT_ACCOUNT_AUTH_PROVIDERS);
+  for (const id of providers) {
+    if (!Object.hasOwn(WORKOS_PROVIDERS, id) || !WORKOS_PROVIDERS[id]) {
+      throw new Error(`ACCOUNT_AUTH_PROVIDERS names a provider without a WorkOS connection: ${id}`);
+    }
+  }
+  const limitText = trimmed(env.ACCOUNT_DEVICE_LIMIT);
+  const deviceLimit = limitText ? Number(limitText) : DEFAULT_ACCOUNT_DEVICE_LIMIT;
+  if (!Number.isInteger(deviceLimit) || deviceLimit < 1 || deviceLimit > 20) {
+    throw new Error(`ACCOUNT_DEVICE_LIMIT must be an integer from 1 to 20: ${limitText}`);
+  }
+  return {
+    apiKey: trimmed(env.WORKOS_API_KEY),
+    clientId: trimmed(env.WORKOS_CLIENT_ID) || DEFAULT_WORKOS_CLIENT_ID,
+    apiBase: apiBase('WORKOS_API_BASE', trimmed(env.WORKOS_API_BASE), DEFAULT_WORKOS_API_BASE),
+    redirectUri,
+    providers: [...new Set(providers)],
+    deviceLimit,
   };
 }
