@@ -12,121 +12,11 @@
 import type { TurnOutcome } from '../../agent/turn-outcome.ts';
 import { baseToolName, presentToolCall } from './tool-presentation.ts';
 import './chat-hama.css';
+import {
+  COLORS, LIGHT_COLORS, POSES, PROPS, Z_FADE, OX, BELOW, SCENE_W, SCENE_H, PIVOT, GROUND, SCALE, drawLayers, dot, sparkle, prop, fade, lerp, arc, droplets, ripples,
+  type PoseName, type Layer,
+} from './hama-art.ts';
 
-const COLORS: Record<string, string> = {
-  o: '#62b3e2', s: '#2f73a0', h: '#b2e2fb',
-  L: '#7a828d', B: '#5b636e', G: '#b2e2fb', g: '#e6f5ff',
-  P: '#f2f4f7', p: '#9aa3ae', r: '#ff6b6b', W: '#ffffff', m: '#c98b5b',
-};
-/** 밝은 테마에서는 흰 반짝임과 z 가 배경에 묻히므로 진한 파랑으로 바꾼다. */
-const LIGHT_COLORS: Record<string, string> = { W: '#2f73a0', g: '#62b3e2', P: '#e1e6ec' };
-
-// ---------------------------------------------------------------- 하마
-// 앱 아이콘의 하품하는 자세를 반 해상도로: 머리를 들고 턱을 벌렸다.
-const LOGO = [
-  '.......ooo....',
-  '.....s.oo.....',
-  '.....oooo.....',
-  '.....oooooos..',
-  '...oooooooo...',
-  '.oooooooo.....',
-  '.ooooooo......',
-];
-// 머리를 숙이고 입을 다문 모습 — 일하고, 읽고, 잘 때.
-const FORWARD = [
-  '..............',
-  '..............',
-  '.....s........',
-  '.....oooooooo.',
-  '...ooooooooos.',
-  '.oooooooo.....',
-  '.ooooooo......',
-];
-const LEGS = '.os..os.......';
-const LEGS_STEP = '..os..os......';
-const BLANK = '.'.repeat(14);
-
-function paint(row: string, col: number, str: string): string {
-  return row.slice(0, col) + str + row.slice(col + str.length);
-}
-
-// 쉴 때는 입을 다물고, 하품·말하기·환호할 때 아이콘 자세로 입을 연다.
-const STAND = [...FORWARD, LEGS];
-const STEP = [...FORWARD, LEGS_STEP];
-const EAR = [FORWARD[0]!, paint(FORWARD[1]!, 5, 's'), ...FORWARD.slice(2), LEGS];
-const OPEN = [...LOGO, LEGS];
-const OPEN_EAR = [paint(LOGO[0]!, 5, 's'), ...LOGO.slice(1), LEGS];
-// 몸이 한 줄 내려앉고 다리를 접는다.
-const CROUCH = [BLANK, ...FORWARD];
-const SLEEP = [BLANK, ...FORWARD.slice(0, 6), '.ssssssss.....'];
-// 앞발을 내밀었다가 자판을 두드린다.
-const PAW_UP = [...FORWARD.slice(0, 5), paint(FORWARD[5]!, 9, 'oo'), FORWARD[6]!, LEGS];
-const PAW_DOWN = [...FORWARD.slice(0, 6), paint(FORWARD[6]!, 8, 'ooo'), LEGS];
-
-// 공처럼 몸을 만 모습 — 공중제비와 튀기. 귀와 주둥이 돌기를 남겨 도는 방향이 보인다.
-const BALL = [
-  '....s.........',
-  '...ooooo......',
-  '..ooooooo.....',
-  '.oooooooos....',
-  '.oooooooo.....',
-  '.oooooooo.....',
-  '..oooooos.....',
-  '...ssss.......',
-  BLANK,
-];
-const SQUASH = [
-  BLANK, BLANK, BLANK,
-  '....s.........',
-  '..ooooooo.....',
-  '.ooooooooos...',
-  'oooooooooo....',
-  '.ssssssss.....',
-  BLANK,
-];
-
-const POSES = {
-  ball: BALL, squash: SQUASH,
-  stand: STAND, step: STEP, ear: EAR, open: OPEN, cheer: OPEN_EAR, crouch: CROUCH, sleep: SLEEP, pawUp: PAW_UP, pawDown: PAW_DOWN,
-};
-type PoseName = keyof typeof POSES;
-
-interface Layer {
-  art: readonly string[];
-  x?: number;
-  y?: number;
-  map?: Record<string, string>;
-  /** 이 행부터 아래는 그리지 않는다(물속으로 들어갈 때). */
-  clip?: number;
-}
-
-// 소품: [그림, x, y] — 하마 좌표(7행이 땅).
-const PROPS: Record<string, [readonly string[], number, number]> = {
-  laptop: [[
-    '.....g',
-    '....Gg',
-    '....G.',
-    '...GL.',
-    'BBBBL.',
-  ], 11, 3],
-  paper: [['PPP', 'ppP', 'PPP', 'ppP'], 12, 3],
-  magnifier: [['.L.', 'LhL', '.L.', 'L..'], 12, 1],
-  bang: [['r', 'r', '.', 'r'], 10, -5],
-  drop: [['h'], 4, 0],
-};
-
-const Z_FADE = ['W', 'h', 'o', 's'];
-
-// 장면 캔버스: 하마의 c 열, r 행은 (c - OX, r + OY) 에 놓인다.
-const OX = -4;
-const OY = 5;
-/** 땅 아래로 그리는 행(스케이트보드, 물보라). */
-const BELOW = 3;
-const SCENE_W = 26;
-const SCENE_H = OY + 8 + BELOW;
-const PIVOT = { x: 6 - OX, y: 4 + OY };
-const GROUND = 7;
-const SCALE = 3;
 /** 오래 손대지 않으면 잠든다. */
 const AUTO_SLEEP_MS = 45_000;
 /** 입력이 멈춘 뒤 오른쪽 구석으로 돌아가기까지. */
@@ -135,69 +25,6 @@ const HOME_DELAY_MS = 3000;
 const EDGE_PX = 12;
 /** 입력기 위로 함께 받는 빈자리 높이(CSS 픽셀). */
 const ABOVE_PX = 16;
-
-// ---------------------------------------------------------------- 그리기
-function drawLayers(ctx: CanvasRenderingContext2D, layers: readonly Layer[], palette: Record<string, string>): void {
-  ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
-  for (const { art, x = 0, y = 0, map = {}, clip } of layers) {
-    art.forEach((row, r) => {
-      // 잘린 층은 땅 아래로 사라진다(잠수, 헤엄).
-      if (clip != null && y + r >= clip) return;
-      for (let c = 0; c < row.length; c++) {
-        const ch = row[c]!;
-        if (ch === '.') continue;
-        ctx.fillStyle = map[ch] ?? palette[ch] ?? COLORS[ch]!;
-        ctx.fillRect(x + c - OX, y + r + OY, 1, 1);
-      }
-    });
-  }
-}
-
-/** 로그인 카드에서 노트북을 두드리는 하마. */
-export function createTypingHama(): HTMLCanvasElement {
-  const canvas = document.createElement('canvas');
-  canvas.className = 'acct-signin-mark';
-  canvas.width = SCENE_W;
-  canvas.height = SCENE_H;
-  canvas.setAttribute('aria-hidden', 'true');
-  const [art, x, y] = PROPS.laptop!;
-  drawLayers(canvas.getContext('2d')!, [
-    { art, x, y },
-    { art: PAW_DOWN },
-  ], COLORS);
-  return canvas;
-}
-
-/** 설정을 마친 카드의 파티 하마. 사이드바와 같은 픽셀·팔레트로 그린다. */
-export function createPartyHama(): HTMLCanvasElement {
-  const canvas = document.createElement('canvas');
-  canvas.className = 'rhwp-setup-party-hama';
-  canvas.width = SCENE_W;
-  canvas.height = 20;
-  canvas.setAttribute('aria-hidden', 'true');
-  const hat = ['...W...', '...r...', '..rPr..', '..rrr..', '.rPrrr.', '.rrrrr.', 'PPPPPPP'];
-  drawLayers(canvas.getContext('2d')!, [
-    { art: STAND, y: 3 },
-    { art: hat, x: 3, y: -1 },
-    { art: ['h'], x: 1, y: -1 },
-    { art: ['r'], x: 17, y: 2 },
-    { art: ['P'], x: 19, y: -2 },
-  ], COLORS);
-  return canvas;
-}
-
-const dot = (x: number, y: number, ch: string): Layer => ({ art: [ch], x, y });
-function sparkle(size: number): Layer[] {
-  const [x, y] = [9, -2];
-  if (size <= 0) return [];
-  const out = [dot(x, y, 'W')];
-  if (size > 1) for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) out.push(dot(x + dx, y + dy, 'h'));
-  return out;
-}
-const prop = (name: string, dx = 0, dy = 0, map?: Record<string, string>): Layer => {
-  const [art, x, y] = PROPS[name]!;
-  return { art, x: x + dx, y: y + dy, map };
-};
 
 // ---------------------------------------------------------------- 동작
 type Facing = 1 | -1;
@@ -293,26 +120,6 @@ const JUMP: TimedFrame[] = [
   { ms: 60, pose: 'stand' },
 ];
 
-const fade = (k: number): string => Z_FADE[Math.min(3, k)]!;
-const lerp = (a: number, b: number, p: number): number => a + (b - a) * Math.max(0, Math.min(1, p));
-const arc = (p: number, h: number): number => -Math.round(Math.sin(Math.PI * Math.max(0, Math.min(1, p))) * h);
-
-/** (cx, 땅)에서 위로 튀어 오르는 물방울. age 는 ms. */
-function droplets(cx: number, age: number, spread = 1): Layer[] {
-  const out: Layer[] = [];
-  for (const [vx, vy] of [[-1.6, 4.5], [-0.8, 6], [0.8, 6.2], [1.7, 4.6], [-2.4, 3], [2.5, 3.2]] as const) {
-    const s = age / 120;
-    const y = Math.round(GROUND - (vy * s - 1.1 * s * s));
-    if (y > GROUND) continue;
-    out.push(dot(Math.round(cx + vx * s * spread), y, fade(Math.floor(age / 180))));
-  }
-  return out;
-}
-function ripples(cx: number, age: number): Layer[] {
-  const k = Math.floor(age / 110);
-  if (k > 3) return [];
-  return [dot(cx - 2 - k * 2, GROUND, fade(k)), dot(cx + 2 + k * 2, GROUND, fade(k))];
-}
 
 /** 뛰어올라 입력기 속으로 코부터 잠수했다가 다시 솟는다. */
 const SPLASH: ActionFn = (t) => {
