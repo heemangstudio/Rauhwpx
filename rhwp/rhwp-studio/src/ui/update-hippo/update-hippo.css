@@ -1,5 +1,5 @@
-/* 문서 홈 오른쪽 아래의 업데이트 하마 (update-hippo.ts). 한 칸은 그림과 같은 3px 이고,
-   팻말 테두리·그림자·단추 모서리·아이콘·막대도 그 칸으로 끊는다. 색은 문서 홈 토큰(--dh-*)을 읽는다. */
+/* 문서 홈 오른쪽 아래의 업데이트 하마 (update-hippo.ts). 하마 그림은 6px 칸이고(update-hippo-art.ts),
+   팻말 테두리·그림자·단추 모서리·아이콘·막대는 그 절반인 3px 칸으로 끊는다. 색은 문서 홈 토큰(--dh-*)을 읽는다. */
 .uh {
   --uh-px: 3px;
   --uh-board: var(--dh-raised, #ffffff);
@@ -28,34 +28,19 @@
   --uh-shade: #000000; /* 어두운 면 위의 그림자 */
 }
 
+/* 크기와 오른쪽 틈은 그림 칸에서 정한다(update-hippo.ts). 몸은 창 아래 끝으로 이어진다. */
 .uh-rig {
   position: absolute;
-  right: 0;
   bottom: 0;
-  width: 108px;
-  height: 78px;
 }
 
-/* 36×26 칸 다섯 개(가만히·깜빡임·귀 털기·내려감·귀만)를 3배로 키운다. 몸은 창 오른쪽·아래 끝으로 이어진다. */
 .uh-sprite {
   position: absolute;
   inset: 0;
-  background: url('./update-hippo-sprites.png') 0 0 / 540px 78px no-repeat;
-  image-rendering: pixelated;
-}
-
-/* 릴리스 노트 클립보드를 들 때는 채팅 하마를 같은 칸에 그린다. */
-.uh-chat-art {
-  position: absolute;
-  inset: 0;
-  display: none;
   width: 100%;
   height: 100%;
   image-rendering: pixelated;
 }
-
-.uh[data-art='chat'] .uh-sprite { display: none; }
-.uh[data-art='chat'] .uh-chat-art { display: block; }
 
 .uh-hippo,
 .uh-ears {
@@ -67,26 +52,15 @@
   pointer-events: auto;
 }
 
-/* 막대 뒤 머리와 몸: 귀 끝부터 아래까지. */
+/* 위 끝(update-hippo.ts)부터 아래까지 머리와 몸. */
 .uh-hippo {
-  left: 12px;
+  left: 0;
   right: 0;
-  top: 36px;
   bottom: 0;
 }
 
-/* 숨었을 때 귀와 눈 둘레. 보이는 세 줄보다 넉넉히 누른다. */
-.uh-ears {
-  right: 18px;
-  bottom: 0;
-  width: 60px;
-  height: 27px;
-}
-
-.uh[data-art='chat'] .uh-ears {
-  right: 45px;
-  width: 63px;
-}
+/* 숨었을 때 귀 둘레. 크기는 update-hippo.ts 가 정한다. */
+.uh-ears { bottom: 0; }
 
 .uh-hippo[hidden],
 .uh-ears[hidden],
@@ -101,8 +75,7 @@
 /* ── 팻말 ── 막대 위 끝을 덮고 선다. 테두리는 네 방향 3px 그림자라 모서리 칸이 빠진다. */
 .uh-board {
   position: absolute;
-  /* 막대 위 네 칸을 덮는다. */
-  bottom: calc(78px - 4 * var(--uh-px));
+  /* bottom 은 막대 위 끝을 덮도록 update-hippo.ts 가 정한다. */
   box-sizing: border-box;
   display: flex;
   align-items: center;

@@ -1,6 +1,6 @@
 // 홈에서 로그인한 뒤의 안내. 프로필·기기·결제 관리는 계정 화면에 남긴다.
 import { createSheetFrame } from '../agent-sidebar/sheet.ts';
-import { createTypingHama } from '../agent-sidebar/chat-hama.ts';
+import { createTypingHama } from '../agent-sidebar/hama-art.ts';
 import type { PlanStore } from '../plan/plan-store.ts';
 import type { AccountStore } from './account-store.ts';
 import type { AccountStatus } from './account-types.ts';

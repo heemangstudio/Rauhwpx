@@ -2,7 +2,7 @@
 // 달은 월간, 해는 연간. 해지하면 잿빛 노을에 귀와 등만 남기고 잠기고, 결제가 실패하면 물이 빠진 진흙에 웅크린다.
 // 문자열은 이 파일의 상수로만 만든다.
 import './hama-card.css';
-import { CROUCH, EAR, OPEN_EAR, STAND, STEP, Z_FADE } from '../agent-sidebar/chat-hama.ts';
+import { CROUCH, EAR, OPEN_EAR, STAND, STEP, Z_FADE } from '../agent-sidebar/hama-art.ts';
 import type { PlanCardKind } from './account-format.ts';
 
 const CELL = 6;
