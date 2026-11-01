@@ -20,9 +20,9 @@ after(async () => {
   await vite?.close();
 });
 
-function cellBlockHandler() {
+function cellBlockHandler(inBlock = true) {
   const dispatched: string[] = [];
-  let inCellBlock = true;
+  let inCellBlock = inBlock;
   const quiet: any = new Proxy({}, { get: () => () => false });
   const handler: any = Object.create(inputHandlerProto);
   Object.assign(handler, {
@@ -105,4 +105,35 @@ test('Alt+S and Cmd+S in an F5 cell block do not split cells', () => {
     handler.onKeyDown(key('s', mods).event);
     assert.ok(!dispatched.includes('table:cell-split'), JSON.stringify({ mods, dispatched }));
   }
+});
+
+test('Ctrl+N then M opens the equation editor, in body text and in a cell block', () => {
+  for (const inBlock of [false, true]) {
+    const { handler, dispatched } = cellBlockHandler(inBlock);
+    const first = key('n', { ctrl: true });
+    handler.onKeyDown(first.event);
+    assert.equal(first.prevented(), true);
+    assert.deepEqual(dispatched, []);
+    handler.onKeyDown(key('m').event);
+    assert.deepEqual(dispatched, ['insert:equation'], String(inBlock));
+  }
+});
+
+test('Ctrl+N then M opens the equation editor with the Korean IME on', () => {
+  const ime = (code: string, mods: { ctrl?: boolean } = {}) => ({
+    ...key(code.slice(3).toLowerCase(), mods).event, key: 'Process', code, keyCode: 229,
+  });
+  for (const second of [key('ㅡ').event, ime('KeyM')]) {
+    const { handler, dispatched } = cellBlockHandler(false);
+    handler.onKeyDown(ime('KeyN', { ctrl: true }));
+    handler.onKeyDown(second);
+    assert.deepEqual(dispatched, ['insert:equation'], second.key);
+  }
+});
+
+test('Ctrl+M then M no longer opens the equation editor', () => {
+  const { handler, dispatched } = cellBlockHandler(false);
+  handler.onKeyDown(key('m', { ctrl: true }).event);
+  handler.onKeyDown(key('m').event);
+  assert.ok(!dispatched.includes('insert:equation'), JSON.stringify(dispatched));
 });
