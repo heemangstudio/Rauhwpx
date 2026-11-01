@@ -108,6 +108,7 @@ export function initialSetupTakesEscape(
 }
 
 export interface InitialSetupDeps {
+  openDocumentFile?: () => void;
   openAgentSetup: (agent: AgentName) => void;
   beginAgentConnect?: (agent: AgentName) => void;
   storage?: InitialSetupStorage | null;
@@ -223,7 +224,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   introPanel.dataset.step = 'intro';
   introPanel.append(
     el('h2', 'rhwp-setup-upgrade-title', '처음 설정을 시작할게요'),
-    el('p', 'rhwp-setup-upgrade-copy', '앱을 사용하기 위해서는 몇 가지를 설정해야 해요. 1분 정도 걸려요'),
+    el('p', 'rhwp-setup-upgrade-copy', '앱을 사용하기 위해서는 몇 가지를 설정해야 해요.'),
   );
 
   // ── 테마 ──
@@ -386,14 +387,14 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   const welcomePanel = el('div', 'rhwp-setup-panel rhwp-setup-paths');
   const freePath = button('rhwp-setup-path');
   freePath.dataset.path = 'free';
-  freePath.append(createIcon('document'), el('strong', '', '문서부터 시작'), el('span', '', 'AI 편집 기능 없이 무료로 문서만 편집하세요'));
-  freePath.addEventListener('click', finish);
+  freePath.append(createIcon('document'), el('strong', '', '무료로 편집'), el('span', '', 'AI 편집 기능 없이 무료로 문서만 편집하세요'));
+  freePath.addEventListener('click', () => { ai = false; void next(); });
   const aiPath = button('rhwp-setup-path');
   aiPath.dataset.path = 'ai';
   const routeNotice = el('p', 'rhwp-setup-notice');
   routeNotice.setAttribute('role', 'status');
   routeNotice.hidden = true;
-  aiPath.append(createIcon('botAntenna'), el('strong', '', 'AI와 함께 시작'), el('span', '', '남들보다 빠르고 정확하게 문서를 편집하세요'));
+  aiPath.append(createIcon('botAntenna'), el('strong', '', 'AI와 함께 시작'), el('span', '', '누구보다 빠르고 정확하게 문서를 편집하세요'));
   aiPath.addEventListener('click', () => {
     if (!accountApi && !deps.plan?.status()?.signedIn) {
       routeNotice.textContent = 'AI 설정은 데스크톱 앱에서 시작할 수 있어요.';
@@ -406,6 +407,13 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     void next();
   });
   welcomePanel.append(freePath, aiPath, routeNotice);
+
+  const freePanel = el('div', 'rhwp-setup-panel rhwp-setup-upgrade');
+  freePanel.append(
+    createPartyHama(),
+    el('h2', 'rhwp-setup-upgrade-title', '무료 편집 시작'),
+    el('p', 'rhwp-setup-upgrade-copy', 'AI 기능은 홈 화면에서 로그인하면 사용할 수 있습니다.'),
+  );
 
   const plansPanel = el('div', 'rhwp-setup-panel rhwp-setup-plans');
   const planNotice = el('p', 'rhwp-setup-notice', '요금제는 데스크톱 앱에서 선택할 수 있어요.');
@@ -435,9 +443,9 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     })
     : null;
   const assistantsPanel = assistantStep?.element ?? el('div', 'rhwp-setup-panel');
-  body.append(introPanel, themePanel, fontsPanel, welcomePanel, accountElement, plansPanel, modelsPanel, assistantsPanel, rauPanel);
+  body.append(introPanel, themePanel, fontsPanel, welcomePanel, freePanel, accountElement, plansPanel, modelsPanel, assistantsPanel, rauPanel);
   const panels: Record<SetupStep, HTMLElement> = {
-    intro: introPanel, theme: themePanel, fonts: fontsPanel, welcome: welcomePanel,
+    intro: introPanel, theme: themePanel, fonts: fontsPanel, welcome: welcomePanel, free: freePanel,
     account: accountElement, plans: plansPanel, models: modelsPanel, assistants: assistantsPanel, rau: rauPanel,
   };
 
@@ -542,6 +550,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
       return (assistantStep?.verified().length ?? 0) > 0 ? HIPPO_LINES.assistantVerified : HIPPO_LINES.assistants;
     }
     if (step === 'welcome') return HIPPO_LINES.welcome;
+    if (step === 'free') return '문서를 편집할 준비가 되었습니다.';
     if (step === 'plans') return HIPPO_LINES.plans;
     if (step === 'rau') return HIPPO_LINES.rau;
     if (step === 'account') return accountPanel?.signedIn() ? HIPPO_LINES.signedIn : HIPPO_LINES.account;
@@ -551,8 +560,11 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   }
 
   let spokenStep: SetupStep | null = null;
+  const reachedSteps = new Set<SetupStep>();
   function renderStep(): void {
     const step = currentStep();
+    const newlyReached = !reachedSteps.has(step);
+    reachedSteps.add(step);
     if (step === 'plans') mountPlanChooser();
     if (step === 'rau') {
       const current = account?.status();
@@ -565,10 +577,12 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     dialog.dataset.step = step;
     const labels: Record<SetupStep, string> = {
       intro: '안내', theme: '화면 테마', models: 'AI 연결', assistants: '웹 AI 연결', fonts: '글꼴', account: '계정',
-      welcome: '시작 방법', plans: '요금제', rau: 'Rau 소개',
+      welcome: '시작 방법', free: '무료 편집 안내', plans: '요금제', rau: 'Rau 소개',
     };
-    dots.replaceChildren(...steps.map((name, index) => {
+    dots.replaceChildren(...steps.flatMap((name, index) => {
+      if (!reachedSteps.has(name)) return [];
       const dot = button('rhwp-setup-dot');
+      if (name === step && newlyReached) dot.dataset.entering = 'true';
       dot.setAttribute('aria-label', labels[name]);
       dot.title = labels[name];
       if (index === stepIndex) dot.setAttribute('aria-current', 'step');
@@ -577,7 +591,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
         renderStep();
         focusStep();
       });
-      return dot;
+      return [dot];
     }));
     const last = stepIndex >= steps.length - 1;
     // 로그인하지 않고 넘어가면 무료로 쓴다.
@@ -587,6 +601,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     if (step === 'models' && configuredAgents().length > 0) primary.textContent = last ? '홈으로' : '다음';
     const assistantsVerified = (assistantStep?.verified().length ?? 0) > 0;
     if (step === 'assistants') primary.textContent = assistantsVerified ? (last ? '홈으로' : '다음') : '연결 건너뛰기';
+    if (step === 'free') primary.textContent = '문서 열기';
     primary.setAttribute('aria-label', primary.textContent);
     primary.dataset.quiet = leave || step === 'models' || (step === 'assistants' && !assistantsVerified) ? 'true' : 'false';
     primary.dataset.leave = leave ? 'true' : 'false';
@@ -594,7 +609,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
       spokenStep = step;
       hippo.say(lineFor(step));
     }
-    back.hidden = step !== 'plans';
+    back.hidden = step !== 'plans' && step !== 'free';
   }
 
   function focusStep(): void {
@@ -633,9 +648,14 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   }
 
   async function next(): Promise<void> {
+    if (currentStep() === 'free') {
+      finish();
+      deps.openDocumentFile?.();
+      return;
+    }
     // 글꼴·계정 장을 넣을지 알기 전에는 마지막 장을 정하지 않는다.
     await Promise.all([fontStepReady, accountStepReady, assistantsReady]);
-    if (currentStep() === 'plans' || (currentStep() === 'welcome' && !ai)
+    if (currentStep() === 'plans'
       || (currentStep() === 'account' && !accountPanel?.signedIn())) {
       finish();
       return;
@@ -670,6 +690,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     steps = planSteps(fontStep);
     stepIndex = 0;
     spokenStep = null;
+    reachedSteps.clear();
     saved = false;
     dots.hidden = false;
     renderTheme();

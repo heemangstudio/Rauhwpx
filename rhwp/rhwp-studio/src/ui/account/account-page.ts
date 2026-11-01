@@ -1,4 +1,4 @@
-// 계정 화면. 홈에서는 별도로 열고, 설정에서는 계정 탭 안에 붙인다.
+// 계정 화면. 홈에서는 프로필 카드로 열고, 설정에서는 계정 탭 안에 붙인다.
 // 로그아웃이면 로그인 판만, 로그인했으면 한 단의 프로필 화면(사진·이름·이메일, 요금제와 Rau 크레딧, 사용량, 기기, 라이선스,
 // 로그아웃·계정 삭제)을 보인다. 동작마다 그 단추에 진행을 보이고 오류는 그 옆에 한 줄로 둔다.
 // 어디서든 window 의 'rhwp:open-account' 이벤트로 연다(detail.section 으로 갈 곳을 짚는다).
@@ -7,6 +7,8 @@ import './account-page.css';
 import loginNeurons from './login-neurons.txt?raw';
 import { createIcon } from '../agent-sidebar/icons.ts';
 import { createSheetFrame } from '../agent-sidebar/sheet.ts';
+import { hamaCardLook } from './hama-card.ts';
+import { mountRauCardArt, rauCardLook } from './rau-card.ts';
 import { createHamaMark } from '../plan/hama-mark.ts';
 import { upgradeFamilies, type PlanFamily } from '../plan/plan-offers.ts';
 import { sharedPlanStore, type PlanStore } from '../plan/plan-store.ts';
@@ -21,14 +23,16 @@ import {
   planCycleLabel,
   planTermLine,
   platformLabel,
-  rauCreditRatio,
   rauCredits,
+  planCancelled,
+  planCardKind,
+  promoEndingLine,
+  formatAccountDate,
   rauCreditsLine,
   rauResetLine,
   trialAvailable,
   trialButtonLabel,
   trialLine,
-  usd,
   validateAccountName,
   NAME_MAX,
 } from './account-format.ts';
@@ -56,12 +60,19 @@ export interface AccountPageOptions {
   onSignedIn?: () => void;
   /** 설정의 계정 탭 안에 붙인다. 별도 창·대화상자를 열지 않는다. */
   container?: HTMLElement;
+  /** 홈 프로필 카드가 붙는 단추. 생략하면 현재 보이는 계정 단추를 쓴다. */
+  anchor?: HTMLElement;
+  openSettings?: () => void;
 }
 
 export interface AccountPageHandle {
   close(): void;
   closed: Promise<void>;
 }
+
+/** 해지하러 Groble 을 연 뒤 이때까지는 창에 돌아올 때마다 상태를 다시 받는다. 해지는 웹훅으로 서버에 온다. */
+let cancelRefreshUntil = 0;
+const CANCEL_REFRESH_MS = 60 * 60 * 1000;
 
 let openPage: { handle: AccountPageHandle; reveal(options: AccountPageOptions): void } | null = null;
 
@@ -148,13 +159,26 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
   if (embedded) {
     layer.classList.add('acct-embedded-layer');
     page.classList.add('acct-embedded');
+  } else {
+    page.classList.add('acct-profile-card');
+  }
+  let anchor = options.anchor ?? [...document.querySelectorAll<HTMLElement>('.acct-button')]
+    .find((node) => node.getBoundingClientRect().width > 0);
+  function positionCard(): void {
+    if (embedded) return;
+    const rect = anchor?.isConnected ? anchor.getBoundingClientRect() : null;
+    const width = Math.min(360, window.innerWidth - 24);
+    const top = Math.max(50, Math.min(rect ? rect.bottom + 8 : 64, window.innerHeight - 240));
+    const left = Math.max(12, Math.min(rect ? rect.right - width : window.innerWidth - width - 20, window.innerWidth - width - 12));
+    page.style.setProperty('--acct-card-left', `${left}px`);
+    page.style.setProperty('--acct-card-top', `${top}px`);
+    page.style.setProperty('--acct-card-height', `${Math.max(0, window.innerHeight - top - 12)}px`);
   }
   // 제품 웹사이트의 한글 뉴런 그림을 로그인 배경으로 옅게 쓴다.
   const art = el('pre', 'acct-login-art', loginNeurons);
   art.setAttribute('aria-hidden', 'true');
   layer.append(page);
   page.setAttribute('role', embedded ? 'region' : 'dialog');
-  if (!embedded) page.setAttribute('aria-modal', 'true');
   page.setAttribute('aria-label', '계정');
   const bar = el('div', 'acct-bar');
   const back = button('acct-back');
@@ -177,10 +201,14 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
   avatarButton.setAttribute('aria-label', '사진 변경');
   const avatar = createAvatar('acct-avatar-large');
   avatarButton.title = '사진 변경';
-  const avatarBadge = el('span', 'acct-avatar-badge');
-  avatarBadge.setAttribute('aria-hidden', 'true');
-  avatarBadge.append(createIcon('pencil'));
-  avatarButton.append(avatar.element, avatarBadge);
+  if (!embedded) {
+    avatarButton.title = '';
+    avatarButton.setAttribute('aria-label', '프로필 사진');
+  }
+  const avatarOverlay = el('span', 'acct-avatar-overlay');
+  avatarOverlay.setAttribute('aria-hidden', 'true');
+  avatarOverlay.append(createIcon('pencil'));
+  avatarButton.append(avatar.element, avatarOverlay);
   const fileInput = el('input', 'acct-file');
   fileInput.type = 'file';
   fileInput.accept = 'image/*';
@@ -192,7 +220,8 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
   nameEdit.setAttribute('aria-label', '이름 바꾸기');
   nameEdit.title = '이름 바꾸기';
   nameEdit.append(createIcon('pencil'));
-  nameRow.append(nameText, nameEdit);
+  nameRow.append(nameText);
+  if (embedded) nameRow.append(nameEdit);
   const nameForm = el('form', 'acct-name-form');
   nameForm.noValidate = true;
   nameForm.hidden = true;
@@ -217,15 +246,41 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
 
   // ── 요금제 ──────────────────────────────────────────
   const planSection = section('plan', '요금제');
-  const planHead = el('div', 'acct-plan-head');
+  const planCard = el('div', 'acct-plan-card');
+  const rauArtHost = el('div', 'rc-bg');
+  rauArtHost.setAttribute('aria-hidden', 'true');
+  const rauArt = mountRauCardArt(planCard, rauArtHost);
+  const planSky = el('div', 'acct-plan-sky');
+  const skyArt = el('div', 'hc-art');
+  skyArt.setAttribute('aria-hidden', 'true');
+  const planCopy = el('div', 'acct-plan-copy');
+  const planWater = el('div', 'acct-plan-water');
+  const waterArt = el('div', 'hc-art');
+  waterArt.setAttribute('aria-hidden', 'true');
   const planName = el('p', 'acct-plan-name');
   const planActions = el('div', 'acct-plan-actions');
   const upgrade = button('acct-btn acct-btn-primary acct-upgrade', '업그레이드');
   const manage = button('acct-btn', '구독 관리');
   planActions.append(upgrade, manage);
-  planHead.append(planName, planActions);
+  // 구독 관리: 해지와 결제 정보. 해지는 Groble 구매자 페이지에서 끝난다.
+  const managePanel = el('div', 'acct-manage');
+  managePanel.id = 'acct-manage-panel';
+  manage.setAttribute('aria-controls', managePanel.id);
+  const manageMenu = el('div', 'acct-manage-actions');
+  const cancelPlan = button('acct-btn', '구독 해지');
+  const billing = button('acct-btn', '결제 정보');
+  manageMenu.append(cancelPlan, billing);
+  const cancelStep = el('div', 'acct-manage-step');
+  const cancelText = el('p', 'acct-manage-text');
+  cancelText.setAttribute('role', 'status');
+  const cancelActions = el('div', 'acct-manage-actions');
+  const cancelOpen = button('acct-btn acct-btn-danger', 'Groble에서 해지');
+  const cancelBack = button('acct-btn acct-btn-quiet', '돌아가기');
+  cancelActions.append(cancelOpen, cancelBack);
+  cancelStep.append(cancelText, cancelActions);
+  managePanel.append(manageMenu, cancelStep);
   const planTerm = el('p', 'acct-meta acct-plan-term');
-  // Rau 크레딧: 남은 금액, 막대, 초기화 날짜(체험은 남은 날).
+  // Rau 크레딧: 남은 비율, 막대, 초기화 날짜(체험은 남은 날).
   const credits = el('div', 'acct-rau-credits');
   const creditsValue = el('p', 'acct-rau-credits-value');
   const creditsMeter = el('span', 'acct-meter acct-rau-meter');
@@ -235,14 +290,23 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
   const creditsFill = el('span', 'acct-meter-fill');
   creditsMeter.append(creditsFill);
   const creditsMeta = el('p', 'acct-meta acct-rau-credits-meta');
-  credits.append(creditsValue, creditsMeter, creditsMeta);
-  const planAlert = el('div', 'acct-alert');
+  credits.append(creditsMeter, creditsValue, creditsMeta);
   const planAlertText = el('p', 'acct-alert-text');
   planAlertText.setAttribute('role', 'alert');
   const fixPayment = button('acct-btn acct-btn-primary', '결제 수단 바꾸기');
-  planAlert.append(planAlertText, fixPayment);
+  // 프로모션이 끝나 가면 안내와 함께 정식 버전을 살 길을 둔다.
+  const promoNotice = el('p', 'acct-plan-promo');
+  promoNotice.setAttribute('role', 'status');
+  const buyFull = button('acct-btn acct-btn-primary acct-plan-buy', '정식 버전 구매');
+  // Rau 는 안내와 단추를 크레딧 막대 아래에 둔다.
+  const promoFoot = el('div', 'acct-plan-promo-foot');
   const planError = alertLine();
-  planSection.root.append(planHead, planTerm, credits, planAlert, planError);
+  planActions.append(fixPayment, buyFull);
+  planCopy.append(planName, planTerm, promoNotice, planAlertText);
+  planSky.append(skyArt, planCopy);
+  planWater.append(waterArt, planActions);
+  planCard.append(rauArtHost, planSky, planWater, credits, promoFoot, managePanel);
+  planSection.root.append(planCard, planError);
 
   // ── 사용량 ──────────────────────────────────────────
   const statsSection = section('stats', '사용량');
@@ -304,15 +368,30 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
 
   // ── 로그아웃·계정 삭제 ──────────────────────────────
   const exit = el('section', 'acct-section acct-exit');
-  exit.setAttribute('aria-label', '로그아웃과 계정 삭제');
+  exit.setAttribute('aria-label', embedded ? '로그아웃과 계정 삭제' : '로그아웃');
   const signOut = button('acct-btn', '로그아웃');
   const deleteAccount = button('acct-btn acct-btn-danger-quiet', '계정 삭제');
   const exitError = alertLine();
   const exitRow = el('div', 'acct-exit-row');
-  exitRow.append(signOut, deleteAccount);
+  exitRow.append(signOut);
+  if (embedded) exitRow.append(deleteAccount);
   exit.append(exitRow, exitError);
 
-  signed.append(profile, planSection.root, statsSection.root, devicesSection.root, licensesSection.root, exit);
+  signed.append(profile, planSection.root);
+  if (embedded) signed.append(statsSection.root);
+  signed.append(devicesSection.root);
+  if (embedded) signed.append(licensesSection.root);
+  signed.append(exit);
+  if (!embedded && options.openSettings) {
+    const cardFooter = el('footer', 'acct-card-footer');
+    const settings = button('acct-btn acct-card-settings', '설정 열기');
+    settings.addEventListener('click', () => {
+      finish();
+      options.openSettings?.();
+    });
+    cardFooter.append(settings);
+    page.append(cardFooter);
+  }
 
   // ── 상태 ────────────────────────────────────────────
   let nameEditing = false;
@@ -326,6 +405,7 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
   let claimBusy = false;
   let signOutBusy = false;
   let manageBusy = false;
+  let manageStep: 'closed' | 'menu' | 'confirm' | 'opened' = 'closed';
   let deleting = false;
   let hasShownProfile = false;
 
@@ -341,15 +421,18 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
     }
   }
 
-  async function openManage(control: HTMLButtonElement, errorLine: HTMLElement): Promise<void> {
-    if (manageBusy) return;
+  /** 브라우저를 열었으면 참. */
+  async function openManage(control: HTMLButtonElement, errorLine: HTMLElement): Promise<boolean> {
+    if (manageBusy) return false;
     manageBusy = true;
     control.disabled = true;
     try {
       await api.openManage();
       say(errorLine, '');
+      return true;
     } catch {
       say(errorLine, '브라우저를 열지 못했어요.');
+      return false;
     } finally {
       manageBusy = false;
       control.disabled = false;
@@ -487,6 +570,7 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
     fragment.append(el('span', 'acct-plan-tier', ACCOUNT_TIER_LABEL[tier]));
     const cycle = planCycleLabel(current.plan);
     if (cycle) fragment.append(el('span', 'acct-plan-cycle', cycle));
+    if (planCancelled(current.plan)) fragment.append(el('span', 'acct-badge', '해지됨'));
     return fragment;
   }
 
@@ -496,19 +580,82 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
     return mark;
   }
 
+  /** 갱신 중인 구독에만 해지 단계를 편다. 해지가 들어오면 접고 날짜 줄과 표로 보인다. */
+  function renderManage(planInfo: AccountStatus['plan']): void {
+    const cancelled = planCancelled(planInfo);
+    if (cancelled) cancelRefreshUntil = 0;
+    const renews = !manage.hidden && !cancelled;
+    if (!renews) manageStep = 'closed';
+    if (renews) manage.setAttribute('aria-expanded', manageStep === 'closed' ? 'false' : 'true');
+    else manage.removeAttribute('aria-expanded');
+    managePanel.hidden = manageStep === 'closed';
+    manageMenu.hidden = manageStep !== 'menu';
+    cancelStep.hidden = manageStep !== 'confirm' && manageStep !== 'opened';
+    cancelText.textContent = manageStep === 'opened'
+      ? 'Groble에서 해지를 마치면 여기에 표시됩니다.'
+      : `취소해도 ${planInfo.expiresAt ? formatAccountDate(planInfo.expiresAt) : '이번 기간'}까지는 사용 가능합니다`;
+  }
+
+  /** 등급과 상태에 맞는 표를 입힌다. 무료는 그림 없는 판이다. */
+  let hamaArtKey = '';
+  function renderPlanCard(planInfo: AccountStatus['plan']): void {
+    const kind = planCardKind(planInfo);
+    const panel = manageStep === 'closed' ? null : manageStep === 'menu' ? 'manage' : 'confirm';
+    const look = planInfo.tier === 'rau'
+      ? rauCardLook(kind, planInfo.rau?.remainingPercent === 0, panel === 'confirm')
+      : null;
+    const hama = planInfo.tier === 'hama' ? hamaCardLook(kind) : null;
+    if (look && promoNotice.parentElement !== promoFoot) {
+      promoFoot.append(promoNotice, buyFull);
+    } else if (!look && promoNotice.parentElement === promoFoot) {
+      planCopy.insertBefore(promoNotice, planAlertText);
+      planActions.append(buyFull);
+    }
+    planCard.classList.toggle('hc', Boolean(hama));
+    planCard.classList.toggle('rc', Boolean(look));
+    if (hama || look) planSection.root.dataset.card = planInfo.tier;
+    else delete planSection.root.dataset.card;
+    for (const key of ['kind', 'sky', 'live', 'panel', 'surface', 'end']) delete planCard.dataset[key];
+    if (panel && (hama || look)) planCard.dataset.panel = panel;
+    if (hama) {
+      planCard.dataset.kind = kind;
+      planCard.dataset.sky = hama.sky;
+      if (hama.live) planCard.dataset.live = '';
+      if (hamaArtKey !== kind) {
+        hamaArtKey = kind;
+        skyArt.innerHTML = hama.skyArt;
+        waterArt.innerHTML = hama.waterArt;
+      }
+    }
+    if (look) {
+      planCard.dataset.surface = look.surface;
+      planCard.dataset.end = look.end;
+      if (look.live) planCard.dataset.live = '';
+    }
+    rauArt.update(look);
+  }
+
+  function setManageStep(step: typeof manageStep, focus?: HTMLElement): void {
+    manageStep = step;
+    render();
+    focus?.focus({ preventScroll: true });
+  }
+
+  function refreshAfterCancel(): void {
+    if (Date.now() < cancelRefreshUntil) void api.refresh().catch(() => {});
+  }
+
   /** Rau 크레딧 칸을 채운다. Rau 자격이 없으면 숨긴다. */
   function renderCredits(current: AccountStatus): void {
     const left = rauCredits(current.plan.rau);
-    credits.hidden = !left || current.plan.tier !== 'rau';
+    credits.hidden = !left || current.plan.tier !== 'rau' || current.plan.paymentFailed;
     if (!left || credits.hidden) return;
-    creditsValue.replaceChildren(
-      el('span', 'acct-rau-credits-left', rauCreditsLine(left)),
-      el('span', 'acct-stat-of', ` / ${usd(left.allowanceUsd)}`),
-    );
-    creditsMeter.setAttribute('aria-valuemax', String(left.allowanceUsd));
-    creditsMeter.setAttribute('aria-valuenow', String(left.remainingUsd));
-    creditsFill.style.width = `${(rauCreditRatio(left) * 100).toFixed(1)}%`;
-    const meta = left.trial && current.trial ? trialLine(current.trial) : rauResetLine(left);
+    creditsValue.textContent = rauCreditsLine(left);
+    creditsMeter.setAttribute('aria-valuemax', '100');
+    creditsMeter.setAttribute('aria-valuenow', String(left.remainingPercent));
+    creditsMeter.setAttribute('aria-valuetext', rauCreditsLine(left));
+    creditsFill.style.width = `${left.remainingPercent}%`;
+    const meta = left.trial ? '' : rauResetLine(left);
     creditsMeta.textContent = meta;
     creditsMeta.hidden = !meta;
     credits.dataset.source = left.trial ? 'trial' : 'plan';
@@ -530,7 +677,7 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
     const copy = el('span', 'acct-device-copy');
     const name = el('span', 'acct-device-name', device.name);
     if (device.current) name.append(el('span', 'acct-badge', '이 기기'));
-    const meta = `${platformLabel(device.platform)} · ${device.current ? '지금 사용 중' : formatLastSeen(device.lastSeenAt)}`;
+    const meta = `${platformLabel(device.platform)} · ${device.current ? '지금' : formatLastSeen(device.lastSeenAt)}`;
     copy.append(name, el('span', 'acct-meta', meta));
     const actions = el('span', 'acct-device-actions');
     if (deviceConfirm === device.id) {
@@ -541,14 +688,14 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
         render();
         deviceList.querySelector<HTMLElement>(`[data-device-id="${CSS.escape(device.id)}"] .acct-device-remove`)?.focus();
       });
-      const yes = button('acct-btn acct-btn-danger acct-device-confirm', device.current ? '빼고 로그아웃' : '빼기');
+      const yes = button('acct-btn acct-btn-danger acct-device-confirm', device.current ? '등록 해제 후 로그아웃' : '등록 해제');
       yes.disabled = deviceBusy !== null;
       if (deviceBusy === device.id) setBusy(yes, true);
       yes.addEventListener('click', () => { void removeDevice(device); });
       actions.append(no, yes);
     } else {
-      const remove = button('acct-btn acct-btn-quiet acct-device-remove', '빼기');
-      remove.setAttribute('aria-label', `${device.name} 빼기`);
+      const remove = button('acct-btn acct-btn-quiet acct-device-remove', '등록 해제');
+      remove.setAttribute('aria-label', `${device.name} 등록 해제`);
       remove.disabled = deviceBusy !== null;
       remove.addEventListener('click', () => {
         deviceConfirm = device.id;
@@ -596,7 +743,7 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
   function renderSigned(current: AccountStatus): void {
     const account = current.account!;
     avatar.paint(current, store.avatar());
-    avatarButton.disabled = photoBusy;
+    avatarButton.disabled = photoBusy || !embedded;
     avatarButton.dataset.busy = photoBusy ? 'true' : 'false';
     nameText.textContent = account.name;
     nameRow.hidden = nameEditing;
@@ -613,20 +760,28 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
     planName.replaceChildren(planNameNode(current));
     planSection.root.dataset.tier = planInfo.tier;
     manage.hidden = !planInfo.manageUrl || planInfo.paymentFailed;
+    renderManage(planInfo);
     // 결제가 실패한 동안은 지난 결제일 대신 안내 한 줄만 둔다.
     const trialEnded = current.trial?.state === 'ended' && planInfo.tier !== 'rau';
-    const term = planInfo.paymentFailed ? '' : trialEnded ? '무료 체험이 끝났어요' : planTermLine(planInfo);
+    const trialTerm = planInfo.rau?.source === 'trial' && current.trial ? trialLine(current.trial) : '';
+    const term = planInfo.paymentFailed ? '' : trialEnded ? '무료 체험이 끝났어요' : trialTerm || planTermLine(planInfo);
     planTerm.textContent = term;
     planTerm.hidden = !term;
-    planAlert.hidden = !planInfo.paymentFailed;
+    planAlertText.hidden = !planInfo.paymentFailed;
+    fixPayment.hidden = !planInfo.paymentFailed;
     planAlertText.textContent = planInfo.paymentFailed ? paymentFailedLine(planInfo) : '';
     renderCredits(current);
+    renderPlanCard(planInfo);
     // 결제가 실패한 동안은 결제 수단 바꾸기만 권한다. 체험 중이면 계속 쓸 Rau 를 권한다.
     const onTrial = planInfo.tier === 'rau' && planInfo.rau?.source === 'trial';
     const families: PlanFamily[] = plan?.api && !planInfo.paymentFailed
       ? (onTrial ? ['rau'] : upgradeFamilies(planInfo.tier))
       : [];
-    upgrade.hidden = families.length === 0;
+    const promoLine = promoEndingLine(planInfo);
+    promoNotice.textContent = promoLine;
+    promoNotice.hidden = !promoLine;
+    buyFull.hidden = !promoLine || !plan?.api;
+    upgrade.hidden = families.length === 0 || !buyFull.hidden;
     upgradeFocus = families.length === 1 ? families[0]! : undefined;
     if (plan?.status()?.pendingCheckout) say(planError, '');
     else if (plan?.status()?.lastCheckout?.code === 'timed_out') {
@@ -687,11 +842,11 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
     }
     if (signedIn) hasShownProfile = true;
     const authPopup = !embedded && !signedIn && !hasShownProfile;
-    layer.dataset.modal = authPopup ? 'true' : 'false';
+    layer.dataset.modal = 'false';
     page.dataset.authPopup = authPopup ? 'true' : 'false';
-    back.setAttribute('aria-label', signedIn ? '돌아가기' : '닫기');
-    back.title = signedIn ? '돌아가기' : '닫기';
-    back.replaceChildren(createIcon(signedIn ? 'browserBack' : 'close'));
+    back.setAttribute('aria-label', '닫기');
+    back.title = '닫기';
+    back.replaceChildren(createIcon('close'));
     page.dataset.state = signedIn ? 'signed_in' : current?.state ?? 'signed_out';
     signIn.element.hidden = signedIn;
     signed.hidden = !signedIn;
@@ -730,7 +885,30 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
     if (!plan) return;
     openPlanCard({ store: plan, license: null, account: store, ...(upgradeFocus ? { focus: upgradeFocus } : {}) });
   });
-  manage.addEventListener('click', () => { void openManage(manage, planError); });
+  buyFull.addEventListener('click', () => {
+    const tier = status()?.plan.tier;
+    if (!plan) return;
+    openPlanCard({ store: plan, license: null, account: store, ...(tier === 'hama' || tier === 'rau' ? { focus: tier } : {}) });
+  });
+  manage.addEventListener('click', () => {
+    const current = status();
+    if (current && planCancelled(current.plan)) {
+      void openManage(manage, planError);
+      return;
+    }
+    if (manageStep === 'closed') setManageStep('menu', cancelPlan);
+    else setManageStep('closed');
+  });
+  cancelPlan.addEventListener('click', () => setManageStep('confirm', cancelOpen));
+  billing.addEventListener('click', () => { void openManage(billing, planError); });
+  cancelBack.addEventListener('click', () => setManageStep('menu', cancelPlan));
+  cancelOpen.addEventListener('click', () => {
+    void openManage(cancelOpen, planError).then((opened) => {
+      if (!opened) return;
+      cancelRefreshUntil = Date.now() + CANCEL_REFRESH_MS;
+      setManageStep('opened');
+    });
+  });
   fixPayment.addEventListener('click', () => { void openManage(fixPayment, planError); });
   redeemInput.addEventListener('input', () => {
     say(redeemNote, '');
@@ -810,6 +988,8 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
   }
 
   function reveal(next: AccountPageOptions): void {
+    if (next.anchor) anchor = next.anchor;
+    positionCard();
     if (next.plan) plan = next.plan;
     if (next.onSignedIn) onSignedIn = next.onSignedIn;
     if (next.plan) subscribePlan();
@@ -847,6 +1027,9 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
     signIn.dispose();
     document.removeEventListener('keydown', onKeyDown, true);
     document.removeEventListener('pointerdown', onPointerDown, true);
+    window.removeEventListener('resize', positionCard);
+    window.removeEventListener('focus', refreshAfterCancel);
+    rauArt.dispose();
     if (!embedded) openPage = null;
     page.classList.remove('acct-page-open');
     const remove = (): void => { layer.remove(); };
@@ -861,10 +1044,28 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
     }
     resolveClosed();
   }
-  back.addEventListener('click', finish);
+  back.addEventListener('click', () => {
+    if (embedded || reducedMotion()) {
+      finish();
+      return;
+    }
+    if (back.dataset.closing === 'true') return;
+    const icon = back.querySelector('.ag-icon');
+    if (!icon) { finish(); return; }
+    back.dataset.closing = 'true';
+    const rotation = icon.animate(
+      [{ transform: 'rotate(0deg)' }, { transform: 'rotate(45deg)' }],
+      { duration: 160, easing: 'cubic-bezier(0.2, 0, 0, 1)', fill: 'forwards' },
+    );
+    void rotation.finished.then(finish, () => {});
+  });
 
   (options.container ?? document.body).append(layer);
+  positionCard();
+  window.addEventListener('focus', refreshAfterCancel);
+  refreshAfterCancel();
   if (!embedded) {
+    window.addEventListener('resize', positionCard);
     document.addEventListener('keydown', onKeyDown, true);
     document.addEventListener('pointerdown', onPointerDown, true);
   }

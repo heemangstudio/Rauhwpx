@@ -345,7 +345,7 @@ test('offline refreshes keep the lease and the account view, also after a restar
 
   const restarted = ctx.make();
   const status = await restarted.getStatus();
-  assert.deepEqual([status.state, status.plan.tier, status.plan.rau.source, status.plan.rau.allowanceUsd], ['signed_in', 'rau', 'plan', 8]);
+  assert.deepEqual([status.state, status.plan.tier, status.plan.rau.source, status.plan.rau.remainingPercent], ['signed_in', 'rau', 'plan', 100]);
   assert.equal(await restarted.currentLease(), lease);
   ctx.server.setOffline(false);
   const back = await restarted.refresh();
@@ -627,15 +627,15 @@ test('a Rau trial starts once per account after sign-in, makes the lease Rau, an
   assert.equal(callsTo(server, '/v1/account/rau-trial').length, 0);
 
   let status = await signIn(ctx);
-  assert.deepEqual([status.plan.tier, status.trial.state, status.trial.days, status.trial.allowanceUsd], ['free', 'available', 7, 2]);
-  assert.deepEqual(status.plan.rau, { eligible: false, source: null, allowanceUsd: null, usedUsd: null, remainingUsd: null, resetsAt: null });
+  assert.deepEqual([status.plan.tier, status.trial.state, status.trial.days], ['free', 'available', 7]);
+  assert.deepEqual(status.plan.rau, { eligible: false, source: null, remainingPercent: null, resetsAt: null });
   assert.equal(await manager.currentLease(), null, 'a free lease never reaches hosted features');
 
   const started = await manager.startRauTrial();
   assert.equal(started.ok, true, started.code);
   status = started.status;
   assert.deepEqual([status.plan.tier, status.trial.state, status.trial.startedAt, status.trial.endsAt], ['rau', 'active', T0, T0 + 7 * DAY]);
-  assert.deepEqual(status.plan.rau, { eligible: true, source: 'trial', allowanceUsd: 2, usedUsd: 0, remainingUsd: 2, resetsAt: T0 + 7 * DAY });
+  assert.deepEqual(status.plan.rau, { eligible: true, source: 'trial', remainingPercent: 100, resetsAt: T0 + 7 * DAY });
   const lease = await manager.currentLease();
   assert.ok(lease);
   assert.equal(verifyAccountLease(lease, { publicKeys: DEV_PUBLIC_KEYS, now: T0 }).payload.tier, 'rau');

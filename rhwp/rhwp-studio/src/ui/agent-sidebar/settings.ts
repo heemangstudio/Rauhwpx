@@ -517,7 +517,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   element.setAttribute('aria-hidden', 'true');
 
   const header = el('div', 'ag-threads-header');
-  const title = el('span', 'ag-threads-title', '설정');
   const close = el('button', 'ag-threads-btn ag-threads-close ag-settings-close');
   close.type = 'button';
   close.setAttribute('aria-label', '채팅으로 돌아가기');
@@ -526,7 +525,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   close.addEventListener('click', () => {
     element.dispatchEvent(new CustomEvent('ag-settings-close-request', { bubbles: true }));
   });
-  header.append(title, close);
+  header.append(close);
 
   const layout = el('div', 'ag-settings-layout');
   const navigation = el('nav', 'ag-settings-nav');

@@ -193,7 +193,7 @@ test('a Rau key learns on OpenRouter Haiku first, with the owner\'s key and neve
   const rau = await s.buy('rauMonthly');
   assert.deepEqual(await s.status(rau.lease), { status: 200, body: {
     ok: true, eligible: true, source: 'plan', reason: null, upgradeUrl: UPGRADE,
-    allowanceUsd: 8, usedUsd: 0, remainingUsd: 8, resetsAt: PERIOD_END,
+    remainingPercent: 100, resetsAt: PERIOD_END,
   } });
 
   assert.equal((await s.learn(rau.lease)).status, 200);
@@ -205,7 +205,7 @@ test('a Rau key learns on OpenRouter Haiku first, with the owner\'s key and neve
   assert.equal(s.anthropic.calls.length, 0);
   // OpenRouter reported $0.0004; Haiku bills at its own list price.
   assert.equal((await s.billed(rau.keyId, 1)).usedUsd, HAIKU_CALL_USD);
-  assert.deepEqual([(await s.status(rau.lease)).body.usedUsd, (await s.status(rau.lease)).body.remainingUsd], [HAIKU_CALL_USD, 8 - HAIKU_CALL_USD]);
+  assert.equal((await s.status(rau.lease)).body.remainingPercent, 100, 'rounds up while credit is left');
 });
 
 test('without Rau, hosted Rau refuses before any upstream call, and the old agent and Hama routes are gone', async (t) => {
@@ -213,7 +213,7 @@ test('without Rau, hosted Rau refuses before any upstream call, and the old agen
   const hama = await s.buy('hamaMonthly');
   assert.deepEqual(await s.status(hama.lease), { status: 200, body: {
     ok: true, eligible: false, source: null, reason: 'rau_plan_required', upgradeUrl: UPGRADE,
-    allowanceUsd: null, usedUsd: null, remainingUsd: null, resetsAt: null,
+    remainingPercent: null, resetsAt: null,
   } });
   const learned = await s.learn(hama.lease);
   assert.deepEqual([learned.status, await learned.json()], [403, { ok: false, error: 'rau_plan_required', upgradeUrl: UPGRADE }]);
@@ -314,14 +314,14 @@ test('credits: a call is refused before upstream once the month is spent, and th
   await s.billed(rau.keyId, 2);
   const calls = s.openrouter.calls.length;
   const learned = await s.learn(rau.lease, { prompt: 'three' });
-  assert.deepEqual([learned.status, await learned.json()], [402, { ok: false, error: 'rau_credits_exhausted', allowanceUsd: 0.005, usedUsd: 2 * HAIKU_CALL_USD, resetsAt: PERIOD_END }]);
+  assert.deepEqual([learned.status, await learned.json()], [402, { ok: false, error: 'rau_credits_exhausted', resetsAt: PERIOD_END }]);
   assert.equal(s.openrouter.calls.length, calls, 'nothing reached upstream');
-  assert.deepEqual((await s.status(rau.lease)).body.remainingUsd, 0);
+  assert.equal((await s.status(rau.lease)).body.remainingPercent, 0);
 
   clock.now = Date.parse(PERIOD_END);
   const lease = await s.renew(rau);
   const next = (await s.status(lease)).body;
-  assert.deepEqual([next.usedUsd, next.remainingUsd, next.resetsAt], [0, 0.005, '2026-12-20T05:22:11.000Z']);
+  assert.deepEqual([next.remainingPercent, next.resetsAt], [100, '2026-12-20T05:22:11.000Z']);
   assert.equal((await s.learn(lease, { prompt: 'new month' })).status, 200);
 });
 
@@ -333,7 +333,7 @@ test('a plan gets $8 a month by default: spend just under it is admitted, at it 
   assert.equal((await s.billed(rau.keyId, 2)).usedUsd, 7.993325);
   await s.seedSpend(rau.keyId, 8);
   assert.equal((await s.learn(rau.lease, { prompt: 'at' })).status, 402);
-  assert.deepEqual([(await s.status(rau.lease)).body.allowanceUsd, (await s.status(rau.lease)).body.remainingUsd], [8, 0]);
+  assert.equal((await s.status(rau.lease)).body.remainingPercent, 0);
 });
 
 test('Rau-0.1 learns with one user message, 2000 tokens, no thinking, and answers the joined text and its credits', async (t) => {
@@ -343,7 +343,7 @@ test('Rau-0.1 learns with one user message, 2000 tokens, no thinking, and answer
   assert.equal(res.status, 200);
   assert.deepEqual(await res.json(), {
     ok: true, text: 'Hello there!', model: 'rau-0.1',
-    usage: { allowanceUsd: 8, usedUsd: HAIKU_CALL_USD, remainingUsd: 8 - HAIKU_CALL_USD, resetsAt: PERIOD_END },
+    usage: { remainingPercent: 100, resetsAt: PERIOD_END },
   });
   const [call] = s.openrouter.calls;
   assert.deepEqual(call.body, { max_tokens: 2000, messages: [{ role: 'user', content: '문서 기억 프롬프트' }], stream: false, model: HAIKU_OR });

@@ -51,13 +51,13 @@ function paint(row: string, col: number, str: string): string {
 }
 
 // 쉴 때는 입을 다물고, 하품·말하기·환호할 때 아이콘 자세로 입을 연다.
-const STAND = [...FORWARD, LEGS];
-const STEP = [...FORWARD, LEGS_STEP];
-const EAR = [FORWARD[0]!, paint(FORWARD[1]!, 5, 's'), ...FORWARD.slice(2), LEGS];
+export const STAND = [...FORWARD, LEGS];
+export const STEP = [...FORWARD, LEGS_STEP];
+export const EAR = [FORWARD[0]!, paint(FORWARD[1]!, 5, 's'), ...FORWARD.slice(2), LEGS];
 const OPEN = [...LOGO, LEGS];
-const OPEN_EAR = [paint(LOGO[0]!, 5, 's'), ...LOGO.slice(1), LEGS];
+export const OPEN_EAR = [paint(LOGO[0]!, 5, 's'), ...LOGO.slice(1), LEGS];
 // 몸이 한 줄 내려앉고 다리를 접는다.
-const CROUCH = [BLANK, ...FORWARD];
+export const CROUCH = [BLANK, ...FORWARD];
 const SLEEP = [BLANK, ...FORWARD.slice(0, 6), '.ssssssss.....'];
 // 앞발을 내밀었다가 자판을 두드린다.
 const PAW_UP = [...FORWARD.slice(0, 5), paint(FORWARD[5]!, 9, 'oo'), FORWARD[6]!, LEGS];
@@ -115,7 +115,7 @@ const PROPS: Record<string, [readonly string[], number, number]> = {
   drop: [['h'], 4, 0],
 };
 
-const Z_FADE = ['W', 'h', 'o', 's'];
+export const Z_FADE = ['W', 'h', 'o', 's'];
 
 // 장면 캔버스: 하마의 c 열, r 행은 (c - OX, r + OY) 에 놓인다.
 const OX = -4;

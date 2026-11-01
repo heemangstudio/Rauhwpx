@@ -32,9 +32,8 @@ export interface AccountLicense {
 export interface AccountRau {
   eligible: boolean;
   source: 'plan' | 'trial' | null;
-  allowanceUsd: number | null;
-  usedUsd: number | null;
-  remainingUsd: number | null;
+  /** 남은 크레딧의 몫(0~100). */
+  remainingPercent: number | null;
   resetsAt: number | null;
 }
 
@@ -58,7 +57,6 @@ export interface AccountTrial {
   startedAt: number | null;
   endsAt: number | null;
   days: number;
-  allowanceUsd: number;
 }
 
 export interface AccountStats {

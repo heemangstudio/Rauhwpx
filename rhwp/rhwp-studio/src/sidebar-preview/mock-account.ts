@@ -1,6 +1,6 @@
 /**
  * 데스크톱 계정 API(rhwpDesktop.account)의 미리보기 대역. `?account=` 로 시작 장면을 고른다(없으면 웹처럼 API 없음):
- * signed-out · signing-in · choose-device · free · hama · rau · rau-trial · trial-ended · payment-failed · offline.
+ * signed-out · signing-in · choose-device · free · hama · rau · rau-trial · trial-ended · annual · cancelled · promo · promo-ending · hama-promo-ending · payment-failed · offline.
  * free·hama 는 Rau 체험을 쓸 수 있고(trial available), rau-trial 은 체험 중, trial-ended 는 체험이 끝난 무료 계정이다.
  * 체험 시작(startRauTrial)은 0.35초 뒤 Rau 체험 중이 된다. `&trialFail=trial_used` 처럼 주면 그 코드로 거절한다.
  *
@@ -24,7 +24,7 @@ import type {
 import type { PlanTier } from '../ui/plan/plan-types.ts';
 
 export const mockAccountScenarios = [
-  'signed-out', 'signing-in', 'choose-device', 'free', 'hama', 'rau', 'rau-trial', 'trial-ended', 'payment-failed', 'offline',
+  'signed-out', 'signing-in', 'choose-device', 'free', 'hama', 'rau', 'rau-trial', 'trial-ended', 'annual', 'cancelled', 'promo', 'promo-ending', 'hama-promo-ending', 'payment-failed', 'offline',
 ] as const;
 export type MockAccountScenario = (typeof mockAccountScenarios)[number];
 
@@ -63,25 +63,23 @@ export function mockAccountScenario(params: URLSearchParams): MockAccountScenari
 
 /** 장면이 정하는 요금제 등급. 로그아웃은 무료. */
 export function mockAccountTier(scenario: MockAccountScenario): PlanTier {
-  if (scenario === 'rau' || scenario === 'rau-trial') return 'rau';
-  if (scenario === 'hama' || scenario === 'payment-failed' || scenario === 'offline') return 'hama';
+  if (scenario === 'rau' || scenario === 'rau-trial' || scenario === 'promo' || scenario === 'promo-ending') return 'rau';
+  if (scenario === 'hama' || scenario === 'hama-promo-ending' || scenario === 'annual' || scenario === 'cancelled' || scenario === 'payment-failed' || scenario === 'offline') return 'hama';
   return 'free';
 }
 
 const TRIAL_DAYS = 7;
-const TRIAL_ALLOWANCE_USD = 2;
-const RAU_ALLOWANCE_USD = 8;
 
 function trialFor(state: AccountTrial['state'], now = Date.now()): AccountTrial {
-  if (state === 'available') return { state, startedAt: null, endsAt: null, days: TRIAL_DAYS, allowanceUsd: TRIAL_ALLOWANCE_USD };
+  if (state === 'available') return { state, startedAt: null, endsAt: null, days: TRIAL_DAYS };
   // 진행 중은 이틀째(5일 남음), 끝난 체험은 열흘 전에 시작했다.
   const startedAt = now - (state === 'active' ? 2 : 10) * DAY_MS;
-  return { state, startedAt, endsAt: startedAt + TRIAL_DAYS * DAY_MS, days: TRIAL_DAYS, allowanceUsd: TRIAL_ALLOWANCE_USD };
+  return { state, startedAt, endsAt: startedAt + TRIAL_DAYS * DAY_MS, days: TRIAL_DAYS };
 }
 
 function scenarioTrial(scenario: MockAccountScenario | 'signed-in'): AccountTrial['state'] {
   if (scenario === 'rau-trial') return 'active';
-  if (scenario === 'trial-ended' || scenario === 'rau') return 'ended';
+  if (scenario === 'trial-ended' || scenario === 'rau' || scenario === 'promo' || scenario === 'promo-ending') return 'ended';
   return 'available';
 }
 
@@ -132,7 +130,7 @@ function fullDevices(): AccountDevice[] {
 
 function planFor(tier: PlanTier, scenario: MockAccountScenario | 'signed-in'): AccountPlan {
   const now = Date.now();
-  const noRau = { eligible: false, source: null, allowanceUsd: null, usedUsd: null, remainingUsd: null, resetsAt: null } as const;
+  const noRau = { eligible: false, source: null, remainingPercent: null, resetsAt: null } as const;
   if (tier === 'free') {
     return {
       tier, keyId: null, edition: null, plan: null, expiresAt: null, autoRenew: null, paymentFailed: false, paymentGraceEndsAt: null,
@@ -144,22 +142,25 @@ function planFor(tier: PlanTier, scenario: MockAccountScenario | 'signed-in'): A
     return {
       tier, keyId: null, edition: null, plan: null, expiresAt: null, autoRenew: null, paymentFailed: false, paymentGraceEndsAt: null,
       manageUrl: null,
-      rau: { eligible: true, source: 'trial', allowanceUsd: TRIAL_ALLOWANCE_USD, usedUsd: 0.65, remainingUsd: 1.35, resetsAt: trial.endsAt },
+      rau: { eligible: true, source: 'trial', remainingPercent: 68, resetsAt: trial.endsAt },
     };
   }
   const failed = scenario === 'payment-failed';
+  const annual = scenario === 'annual' || scenario === 'cancelled';
+  const ending = scenario === 'promo-ending' || scenario === 'hama-promo-ending';
+  const promo = scenario === 'promo' || ending;
   return {
     tier,
     keyId: tier === 'rau' ? 'key-PLAN1' : 'key-H8YJA',
     edition: tier,
-    plan: failed ? 'annual' : 'monthly',
-    expiresAt: now + (failed ? -2 : 24) * DAY_MS,
-    autoRenew: true,
+    plan: promo ? null : failed || annual ? 'annual' : 'monthly',
+    expiresAt: now + (failed ? -2 : annual ? 300 : promo ? (ending ? 30 : 200) : 24) * DAY_MS,
+    autoRenew: scenario !== 'cancelled' && !promo,
     paymentFailed: failed,
     paymentGraceEndsAt: failed ? now + 5 * DAY_MS : null,
-    manageUrl: 'https://groble.im/manage/purchase',
+    manageUrl: promo ? null : 'https://groble.im/manage/purchase',
     rau: tier === 'rau'
-      ? { eligible: true, source: 'plan', allowanceUsd: RAU_ALLOWANCE_USD, usedUsd: 2.8, remainingUsd: 5.2, resetsAt: now + 24 * DAY_MS }
+      ? { eligible: true, source: 'plan', remainingPercent: 65, resetsAt: now + 24 * DAY_MS }
       : noRau,
   };
 }
@@ -439,7 +440,7 @@ export function createMockAccount(
         trial: active,
         plan: {
           ...planFor('rau', 'rau-trial'),
-          rau: { eligible: true, source: 'trial', allowanceUsd: TRIAL_ALLOWANCE_USD, usedUsd: 0, remainingUsd: TRIAL_ALLOWANCE_USD, resetsAt: active.endsAt },
+          rau: { eligible: true, source: 'trial', remainingPercent: 100, resetsAt: active.endsAt },
         },
       });
       options.report('Rau trial started (sample)');
@@ -458,7 +459,7 @@ export function createMockAccount(
       emit(build(next));
     },
     setTier(tier) {
-      if (status.state !== 'signed_in' || (status.plan.tier === tier && status.plan.rau?.source !== 'trial')) return;
+      if (status.state !== 'signed_in' || (status.plan.tier === tier && status.plan.rau?.source !== 'trial' && status.plan.autoRenew !== false)) return;
       const plan = planFor(tier, 'signed-in');
       const licenses = tier === 'free' ? [] : [licenseFor(plan, tier === 'rau' ? 'HAMA-R4UXX-•••••-•••••-•••••-PLAN1' : undefined)];
       emit({ ...status, plan, licenses });

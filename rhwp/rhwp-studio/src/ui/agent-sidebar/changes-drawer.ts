@@ -62,7 +62,7 @@ function isLong(text: string): boolean {
 }
 
 // Keep the full text in the DOM. The six-line preview is only a CSS clamp.
-function diffLine(sign: '+' | '−' | '·', pieces: DiffPiece[], key?: string): HTMLElement {
+function diffLine(sign: '+' | '−' | '', pieces: DiffPiece[], key?: string): HTMLElement {
   const row = el('div', `ag-changes-line ag-changes-line-${sign === '+' ? 'add' : sign === '−' ? 'del' : 'neutral'}`);
   row.append(el('span', 'ag-changes-sign', sign));
   const content = el('div', 'ag-changes-line-content');
@@ -198,7 +198,7 @@ export function renderPendingOpDiff(op: PendingOp, imageUrls?: Map<string, strin
     const parts = inlineParts(op.oldValue, op.newValue);
     lines.append(diffLine('−', parts.before, `${op.id}:del`), diffLine('+', parts.after, `${op.id}:add`));
   } else {
-    lines.append(diffLine('·', [{ text: pendingObjectDetail(op), changed: false }], `${op.id}:ctx`));
+    lines.append(diffLine('', [{ text: pendingObjectDetail(op), changed: false }], `${op.id}:ctx`));
     // 행/열/표 삭제 — 지워진 내용을 삭제 줄로 보여 준다.
     if (op.kind === 'object' && 'removedText' in op.obj && op.obj.removedText?.trim()) {
       lines.append(diffLine('−', [{ text: op.obj.removedText, changed: true }], `${op.id}:del`));
@@ -359,7 +359,7 @@ function renderDiffItem(item: DiffItem, onNavigate?: (item: DiffItem) => void, n
   if (item.severity === 'removed') parts.before = [{ text: before, changed: false }];
   if (item.leftPreview || item.severity !== 'added') lines.append(diffLine('−', parts.before, `${keyPrefix}${item.id}:del`));
   if (item.rightPreview || item.severity !== 'removed') lines.append(diffLine('+', parts.after, `${keyPrefix}${item.id}:add`));
-  if (!lines.childElementCount) lines.append(diffLine('·', [{ text: displayDiffTitle(item), changed: false }]));
+  if (!lines.childElementCount) lines.append(diffLine('', [{ text: displayDiffTitle(item), changed: false }]));
   card.append(lines);
   return card;
 }

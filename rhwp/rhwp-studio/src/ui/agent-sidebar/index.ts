@@ -3153,9 +3153,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
   bindDocumentNameMenu(workspaceDocumentName);
 
-  // 대화 화면에서는 제목을 비운다 — 대화 위에 '대화'라고 적는 것은 정보가 없다.
-  const workspaceTitle = el('div', 'ag-workspace-title');
-
   function rememberThreadComposerDraft(): void {
     // 질문의 직접 입력이 입력기를 빌렸으면 먼저 돌려받는다 — 답은 질문 초안에 남고,
     // 입력기에는 이 채팅에서 쓰던 글이 돌아와 그 글이 초안으로 저장된다. 그러지 않으면
@@ -3301,7 +3298,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   // 환경·닫기·작업 칸 단추는 오른쪽 위 한 묶음이다. 작업 칸이 열리면 그 탭 줄 안에 선다.
   const workspaceCorner = el('div', 'ag-workspace-corner');
   workspaceCorner.append(environmentWrap, workspaceExitBtn, workspacePanelBtn);
-  workspaceBar.append(workspaceLeading, workspaceTitle, workspaceDocumentContext, workspaceTrailing);
+  workspaceBar.append(workspaceLeading, workspaceDocumentContext, workspaceTrailing);
 
   // 전역 설정이 꺼져 있어도 이 문서에 버전 기록이 있으면(예: 자동 저장본 복구) 버전 창을 연다.
   const versionsReachable = (): boolean => (
@@ -5193,6 +5190,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   });
   const settingsPage = settingsPanel.element;
   const initialSetupDeps: InitialSetupDeps = {
+    openDocumentFile,
     openAgentSetup: (agent) => settingsPanel.openAgentSetup(agent),
     beginAgentConnect: (agent) => settingsPanel.beginAgentConnect(agent),
     plan: planStore,
@@ -6471,7 +6469,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     root.classList.remove('ag-settings-open');
     workspaceSettingsBtn.setAttribute('aria-expanded', 'false');
     workspaceSettingsBtn.classList.remove('ag-active');
-    workspaceTitle.textContent = '';
     applyWorkspaceExitLabel(false);
     settingsPage.setAttribute('aria-hidden', 'true');
     settingsPanel.close();
@@ -6591,7 +6588,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     root.classList.toggle('ag-settings-open', open);
     workspaceSettingsBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
     workspaceSettingsBtn.classList.toggle('ag-active', open);
-    workspaceTitle.textContent = open ? '설정' : '';
     applyWorkspaceExitLabel(open);
     settingsPage.setAttribute('aria-hidden', open ? 'false' : 'true');
     if (fullscreen) {

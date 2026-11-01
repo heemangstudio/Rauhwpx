@@ -149,8 +149,8 @@ test('글꼴 단계는 한컴 글꼴을 스스로 찾지 못했을 때만 넣는
   assert.equal(planFontStep({ ...base, canDiscover: true, hancomFonts: true }), null);
   // 찾을 방법이 없는 브라우저는 묻지 않는다.
   assert.equal(planFontStep(base), null);
-  assert.deepEqual(planSteps('discover'), ['intro', 'theme', 'fonts', 'welcome']);
-  assert.deepEqual(planSteps(null), ['intro', 'theme', 'welcome']);
+  assert.deepEqual(planSteps('discover'), ['intro', 'theme', 'fonts', 'welcome', 'free']);
+  assert.deepEqual(planSteps(null), ['intro', 'theme', 'welcome', 'free']);
 });
 
 test('AI 경로는 로그인과 유료 요금제를 확인한 뒤 연결로 이어진다', () => {
@@ -163,7 +163,7 @@ test('AI 경로는 로그인과 유료 요금제를 확인한 뒤 연결로 이�
   assert.deepEqual(planSteps(null, { ai: true, signedIn: true, tier: 'hama', assistants: true }), ['intro', 'theme', 'welcome', 'models', 'assistants']);
   assert.deepEqual(planSteps(null, { ai: true, signedIn: true, tier: 'rau', assistants: true }), ['intro', 'theme', 'welcome', 'rau', 'models', 'assistants']);
   assert.deepEqual(planSteps(null, { ai: true, signedIn: true, tier: 'free', assistants: true }), ['intro', 'theme', 'welcome', 'plans']);
-  assert.deepEqual(planSteps(null, { ai: false, assistants: true }), ['intro', 'theme', 'welcome']);
+  assert.deepEqual(planSteps(null, { ai: false, assistants: true }), ['intro', 'theme', 'welcome', 'free']);
 });
 
 test('한컴 설치 폴더의 글꼴이나 한컴 전용 글꼴이 있으면 한컴 글꼴이 있다고 본다', () => {

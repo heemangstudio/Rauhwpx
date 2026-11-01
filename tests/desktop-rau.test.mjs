@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { createRauClient, RAU_PROMPT_MAX_BYTES, RAU_UPGRADE_URL, RauServerError } from '../desktop/rau-client.mjs';
+import { createRauClient, RAU_PROMPT_MAX_BYTES, RAU_UPGRADE_URL, RauServerError, remainingPercentFrom } from '../desktop/rau-client.mjs';
 import { handleRauRequest, installRauHost } from '../desktop/rau-host.mjs';
 
 const LEASE = 'eyJ2IjoyfQ.c2lnbmF0dXJl';
@@ -19,10 +19,10 @@ function fakeFetch(answer) {
 }
 
 test('learn posts the prompt with the lease as a bearer token and returns the text and credits', async () => {
-  const { calls, fetchImpl } = fakeFetch([200, { ok: true, text: '{"ops":[]}', model: 'rau-0.1', usage: { allowanceUsd: 8, usedUsd: 0.2, remainingUsd: 7.8, resetsAt: RESETS_AT } }]);
+  const { calls, fetchImpl } = fakeFetch([200, { ok: true, text: '{"ops":[]}', model: 'rau-0.1', usage: { remainingPercent: 98, resetsAt: RESETS_AT } }]);
   const client = createRauClient({ baseUrl: 'https://keys.test/', fetchImpl });
   const result = await client.learn(LEASE, 'prompt');
-  assert.deepEqual([result.text, result.model, result.usage], ['{"ops":[]}', 'rau-0.1', { allowanceUsd: 8, usedUsd: 0.2, remainingUsd: 7.8, resetsAt: Date.parse(RESETS_AT) }]);
+  assert.deepEqual([result.text, result.model, result.usage], ['{"ops":[]}', 'rau-0.1', { remainingPercent: 98, resetsAt: Date.parse(RESETS_AT) }]);
   assert.equal(calls[0].url, 'https://keys.test/v1/rau/learn');
   assert.equal(calls[0].init.method, 'POST');
   assert.equal(calls[0].init.headers.Authorization, `Bearer ${LEASE}`);
@@ -39,8 +39,8 @@ test('every contract error maps to its code with the details the hub needs', asy
       (e) => e.code === 'rau_plan_required' && e.upgradeUrl === RAU_UPGRADE_URL],
     // 예전 서버의 이름은 더 받지 않는다.
     [403, { ok: false, error: 'rau_requires_basic' }, (e) => e.code === 'server'],
-    [402, { ok: false, error: 'rau_credits_exhausted', allowanceUsd: 8, usedUsd: 8.01, resetsAt: RESETS_AT },
-      (e) => e.code === 'rau_credits_exhausted' && e.allowanceUsd === 8 && e.usedUsd === 8.01 && e.resetsAt === Date.parse(RESETS_AT)],
+    [402, { ok: false, error: 'rau_credits_exhausted', resetsAt: RESETS_AT },
+      (e) => e.code === 'rau_credits_exhausted' && e.resetsAt === Date.parse(RESETS_AT)],
     [429, { ok: false, error: 'rate_limited' }, (e) => e.code === 'rate_limited'],
     [502, { ok: false, error: 'upstream_unavailable' }, (e) => e.code === 'upstream_unavailable'],
     [503, { ok: false, error: 'rau_not_configured' }, (e) => e.code === 'rau_not_configured'],
@@ -77,7 +77,8 @@ test('the hub gets the result or the error code, never the lease, and nothing is
   const refused = await handleRauRequest(licensed, { type: 'rhwp-rau-request', id: 'r2', operation: 'learn', prompt: 'refuse' });
   assert.deepEqual([refused.ok, refused.code, refused.upgradeUrl], [false, 'rau_plan_required', 'https://heemangstudios.com/pricing.html#rau']);
   const spent = await handleRauRequest(licensed, { type: 'rhwp-rau-request', id: 'r3', operation: 'learn', prompt: 'spent' });
-  assert.deepEqual([spent.ok, spent.code, spent.allowanceUsd, spent.resetsAt], [false, 'rau_credits_exhausted', 2, Date.parse(RESETS_AT)]);
+  assert.deepEqual([spent.ok, spent.code, spent.resetsAt], [false, 'rau_credits_exhausted', Date.parse(RESETS_AT)]);
+  assert.doesNotMatch(JSON.stringify(spent), /usd/i, 'an older server\'s dollars stop here');
   for (const response of [ok, refused, spent]) assert.equal(JSON.stringify(response).includes(LEASE), false);
 
   const before = calls.length;
@@ -91,8 +92,8 @@ test('Studio gets eligibility and credits, and opens only our upgrade pages', as
   const handlers = new Map();
   const opened = [];
   const answers = [
-    [200, { ok: true, eligible: false, source: null, reason: 'rau_plan_required', upgradeUrl: 'https://groble.im/rau', allowanceUsd: null, usedUsd: null, remainingUsd: null, resetsAt: null }],
-    [200, { ok: true, eligible: true, source: 'trial', reason: null, upgradeUrl: RAU_UPGRADE_URL, allowanceUsd: 2, usedUsd: 0.5, remainingUsd: 1.5, resetsAt: RESETS_AT }],
+    [200, { ok: true, eligible: false, source: null, reason: 'rau_plan_required', upgradeUrl: 'https://groble.im/rau', remainingPercent: null, resetsAt: null }],
+    [200, { ok: true, eligible: true, source: 'trial', reason: null, upgradeUrl: RAU_UPGRADE_URL, remainingPercent: 75, resetsAt: RESETS_AT }],
     [403, { ok: false, error: 'rau_plan_required', upgradeUrl: 'https://heemangstudios.com/pricing.html#rau' }],
   ];
   const { calls, fetchImpl } = fakeFetch(() => answers.shift());
@@ -105,13 +106,13 @@ test('Studio gets eligibility and credits, and opens only our upgrade pages', as
     isTrustedStudioEvent: (event) => event.trusted === true,
   });
   const trusted = { trusted: true };
-  const noUsage = { allowanceUsd: null, usedUsd: null, remainingUsd: null, resetsAt: null };
+  const noUsage = { remainingPercent: null, resetsAt: null };
   assert.deepEqual(await handlers.get('rau:status')(trusted), { ok: true, eligible: false, source: null, reason: 'no_license', upgradeUrl: RAU_UPGRADE_URL, ...noUsage });
   assert.equal(calls.length, 0);
   lease = LEASE;
   assert.deepEqual(await handlers.get('rau:status')(trusted), { ok: true, eligible: false, source: null, reason: 'rau_plan_required', upgradeUrl: 'https://groble.im/rau', ...noUsage });
   const trial = await handlers.get('rau:status')(trusted);
-  assert.deepEqual(trial, { ok: true, eligible: true, source: 'trial', reason: null, upgradeUrl: RAU_UPGRADE_URL, allowanceUsd: 2, usedUsd: 0.5, remainingUsd: 1.5, resetsAt: Date.parse(RESETS_AT) });
+  assert.deepEqual(trial, { ok: true, eligible: true, source: 'trial', reason: null, upgradeUrl: RAU_UPGRADE_URL, remainingPercent: 75, resetsAt: Date.parse(RESETS_AT) });
   assert.equal((await handlers.get('rau:status')(trusted)).reason, 'rau_plan_required');
   assert.equal(JSON.stringify(trial).includes(LEASE), false);
 
@@ -119,6 +120,15 @@ test('Studio gets eligibility and credits, and opens only our upgrade pages', as
   await handlers.get('rau:open-upgrade')(trusted, 'https://heemangstudios.com/pricing.html#rau');
   assert.deepEqual(opened, [RAU_UPGRADE_URL, 'https://heemangstudios.com/pricing.html#rau']);
   assert.throws(() => handlers.get('rau:status')({}), /Untrusted Rau IPC sender/);
+});
+
+test('the percent left survives a server that still sends only dollars', () => {
+  assert.equal(remainingPercentFrom({ remainingPercent: 65 }), 65);
+  assert.equal(remainingPercentFrom({ allowanceUsd: 8, usedUsd: 2.8, remainingUsd: 5.2 }), 65);
+  assert.equal(remainingPercentFrom({ allowanceUsd: 8, usedUsd: 3 }), 63);
+  assert.equal(remainingPercentFrom({ allowanceUsd: 2, remainingUsd: 0.01 }), 1, 'stays above 0 while credit is left');
+  assert.equal(remainingPercentFrom({ allowanceUsd: 8, remainingUsd: 0 }), 0);
+  assert.equal(remainingPercentFrom({}), null);
 });
 
 test('the hub status operation answers eligibility and credits without the lease or the agent route', async () => {
@@ -134,7 +144,8 @@ test('the hub status operation answers eligibility and credits without the lease
 
   const spent = await handleRauRequest(licensed, message('s1'));
   assert.equal(spent.ok, true);
-  assert.deepEqual([spent.value.eligible, spent.value.source, spent.value.remainingUsd], [true, 'plan', 0]);
+  assert.deepEqual([spent.value.eligible, spent.value.source, spent.value.remainingPercent], [true, 'plan', 0]);
+  assert.doesNotMatch(JSON.stringify(spent), /usd/i, 'an older server\'s dollars stop here');
   assert.equal('agent' in spent.value, false);
   assert.equal(JSON.stringify(spent).includes(LEASE), false);
   assert.equal(calls[0].url.endsWith('/v1/rau/status'), true);

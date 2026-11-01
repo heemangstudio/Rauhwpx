@@ -1488,7 +1488,7 @@ async function initialize(): Promise<void> {
   void suppressDesktopServiceWorker();
   installDesktopWindowChrome();
   installLicenseGate();
-  listenForAccountPageEvents({ plan: sharedPlanStore() });
+  listenForAccountPageEvents({ plan: sharedPlanStore(), openSettings: openProfileSettings });
   installDesktopDocumentState({
     subscribe: (update) => {
       desktopDocumentStateUpdate = update;
@@ -3051,6 +3051,14 @@ async function renameRecentDocument(row: RecentDoc, name: string): Promise<strin
 
 let documentHome: DocumentHome | null = null;
 
+function openProfileSettings(): void {
+  const fromHome = document.documentElement.classList.contains('document-home-open');
+  eventBus.emit('settings:open', {
+    destination: 'account',
+    ...(fromHome ? { fullscreen: true, from: 'home', onOpen: () => documentHome?.hide() } : {}),
+  });
+}
+
 /** 새 문서를 처음 본 시각. 홈의 저장하지 않은 문서는 새것부터 놓인다. */
 const newDocumentSeenAt = new Map<string, number>();
 
@@ -3184,7 +3192,7 @@ function installDocumentHome(): void {
     },
     mountTopbarTrailing: (slot) => {
       mountHomeRauEntry(slot);
-      mountAccountButton(slot, { store: accountStore(), plan: sharedPlanStore() });
+      mountAccountButton(slot, { store: accountStore(), plan: sharedPlanStore(), openSettings: openProfileSettings });
     },
     mountCorner: (slot) => mountUpdateHippo(slot, window, sharedPlanStore()),
     unsaved: {

@@ -213,21 +213,21 @@ export async function checkAccountPage({ page, open, screenshot }) {
   await page.waitForFunction(() => !document.querySelector('.ag-pricing-card'), { timeout: 5000 });
   await page.waitForFunction(() => document.querySelector('.acct-plan-tier')?.textContent === 'Rau');
   assert.ok((await calls(page)).includes('startRauTrial'));
-  assert.equal(await page.$eval('.acct-rau-credits-meta', (node) => node.textContent), '무료 체험 7일 남음');
-  assert.match(await page.$eval('.acct-rau-credits-value', (node) => node.textContent), /\$2\.00 남음 \/ \$2\.00/);
+  assert.equal(await page.$eval('.acct-plan-term', (node) => node.textContent), '무료 체험 7일 남음');
+  assert.match(await page.$eval('.acct-rau-credits-value', (node) => node.textContent), /^100% 남음$/);
   assert.equal(await page.$eval('.acct-upgrade', (node) => node.hidden), false);
 
   // Rau 요금제: 크레딧 남은 금액과 초기화 날짜, 더 올라갈 요금제는 없다.
   await open('reset=1&account=rau&open=account');
   await page.waitForSelector('.acct-page .acct-rau-credits:not([hidden])', { visible: true });
-  assert.match(await page.$eval('.acct-rau-credits-value', (node) => node.textContent), /\$5\.20 남음 \/ \$8\.00/);
+  assert.match(await page.$eval('.acct-rau-credits-value', (node) => node.textContent), /^65% 남음$/);
   assert.match(await page.$eval('.acct-rau-credits-meta', (node) => node.textContent), /초기화$/);
   assert.equal(await page.$eval('.acct-upgrade', (node) => node.hidden), true);
   await screenshot('account-page-rau');
   // 체험 중: 남은 날과 크레딧.
   await open('reset=1&account=rau-trial&open=account');
   await page.waitForSelector('.acct-page .acct-rau-credits:not([hidden])', { visible: true });
-  assert.equal(await page.$eval('.acct-rau-credits-meta', (node) => node.textContent), '무료 체험 5일 남음');
+  assert.equal(await page.$eval('.acct-plan-term', (node) => node.textContent), '무료 체험 5일 남음');
   await screenshot('account-page-rau-trial');
   // 체험이 끝난 무료 계정: 체험 단추 없이 구독을 권한다.
   await open('reset=1&account=trial-ended&open=account');
