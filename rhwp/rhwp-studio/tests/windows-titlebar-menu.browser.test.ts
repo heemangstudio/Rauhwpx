@@ -24,9 +24,10 @@ test('Windows compact menus dispatch commands and return keyboard focus on dismi
     await page.evaluate(async () => {
       await import('../src/styles/menu-bar.css');
       const { MenuBar } = await import('../src/ui/menu-bar.ts');
+      const { EventBus } = await import('../src/core/event-bus.ts');
       const commands: string[] = [];
       Object.assign(window, { menuCommands: commands });
-      new MenuBar(document.querySelector('#menu-bar')!, {} as any,
+      new MenuBar(document.querySelector('#menu-bar')!, new EventBus(),
         { enabledChecker: () => (id: string) => id !== 'file:save', dispatch: (id: string) => commands.push(id) } as any,
         { get: () => undefined } as any);
     });
