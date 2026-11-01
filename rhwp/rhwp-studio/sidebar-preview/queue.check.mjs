@@ -366,7 +366,8 @@ export async function checkFollowUpGap(page, origin, artifacts) {
   await waitFor(page, (before) => window.sidebarPreview.snapshot().stops > before, stopsBefore,
     'opening another chat did not stop this one');
   await openThreads();
-  await page.click(`.ag-threads-item[data-thread-id="${secondThread}"]`);
+  // 목록은 열린 뒤에도 다시 그려진다. 그리는 사이에 좌표로 누르면 빗나가므로 항목을 직접 누른다.
+  await page.$eval(`.ag-threads-item[data-thread-id="${secondThread}"]`, (item) => item.click());
   await waitFor(page, () => document.querySelector('.ag-followups')?.dataset.hold === 'stopped', undefined,
     'the message stopped with the chat did not come back to the queue');
   state = await queueState(page);
@@ -447,13 +448,12 @@ export async function checkComposerSendPath(page, origin) {
 
   await openPreview(page, origin, 'reset=1&scenario=chat');
   // 로컬 명령은 사용자 메시지를 보내지 않는다.
-  await submit('/fast status');
-  await submit('/문체학습');
-  await page.waitForSelector('#ag-settings-pane-rau', { visible: true });
+  await submit('/settings');
+  await page.waitForSelector('.ag-settings-layout', { visible: true });
   assert.deepEqual(await sent(), [], 'local commands never reach the agent');
   assert.equal(await page.$$eval('.ag-msg-user', (nodes) => nodes.length), 0);
   await page.$eval('.ag-settings-close', (close) => close.click());
-  await page.waitForSelector('#ag-settings-pane-rau', { hidden: true });
+  await page.waitForSelector('.ag-settings-layout', { hidden: true });
   // 설정이 닫히며 채팅 화면이 돌아오는 동안에는 입력창을 누를 수 없다.
   await page.waitForSelector('.ag-input', { visible: true });
 

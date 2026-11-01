@@ -104,8 +104,6 @@ test('Rau tab requests add, edit, delete, restore and undo, broadcast each chang
   assert.equal(add.ok, true);
   assert.equal(frames.at(-1).type, 'user-memory');
   const userRule = add.memory.rules.find((rule) => rule.origin === 'user');
-  const edit = await hub.studioRequest({ op: 'edit', id: userRule.id, text: "'고객' 대신 '사용자'" });
-  assert.equal(edit.memory.rules.find((rule) => rule.id === userRule.id).text, "'고객' 대신 '사용자'");
   const removed = await hub.studioRequest({ op: 'delete', id: userRule.id });
   assert.equal(removed.memory.retired[0].reason, 'deleted');
   const restored = await hub.studioRequest({ op: 'restore', id: userRule.id });
@@ -119,7 +117,8 @@ test('Rau tab requests add, edit, delete, restore and undo, broadcast each chang
 
   for (const [msg, code] of [
     [{ op: 'undo', eventId: escalation.id }, 'USER_MEMORY_UNDO_STALE'],
-    [{ op: 'edit', id: 'rule_000000000000', text: 'x' }, 'USER_MEMORY_NOT_FOUND'],
+    [{ op: 'delete', id: 'rule_000000000000' }, 'USER_MEMORY_NOT_FOUND'],
+    [{ op: 'edit', id: userRule.id, text: 'x' }, 'USER_MEMORY_INVALID'],
     [{ op: 'add', rule: { kind: 'decision', text: 'x' } }, 'USER_MEMORY_INVALID'],
     [{ op: 'wipe' }, 'USER_MEMORY_INVALID'],
   ]) {

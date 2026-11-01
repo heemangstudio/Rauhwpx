@@ -352,26 +352,11 @@ function studioRequest(op: T.UserMemoryOp): T.UserMemoryResult {
           const kind = cleanKind(op.rule?.kind);
           const text = cleanLine(op.rule?.text, ACCOUNT_RULE_TEXT_MAX, 'text');
           const subject = deriveSubject(kind, text);
-          if (activeBySubject(subject)) throw new MemoryError('USER_MEMORY_SUBJECT_TAKEN', 'A rule on that subject already exists; edit it instead.');
+          if (activeBySubject(subject)) throw new MemoryError('USER_MEMORY_SUBJECT_TAKEN', 'A rule on that subject already exists.');
           const rule = newRule({ kind, subject, text, strength: 3, origin: 'user' });
           record('new', rule, { rule: null }, { rule }, 'user');
         });
         break;
-      case 'edit': {
-        const found = state.rules.find((candidate) => candidate.id === op.id);
-        if (!found) throw new MemoryError('USER_MEMORY_NOT_FOUND', 'That rule no longer exists.');
-        const text = cleanLine(op.text, ACCOUNT_RULE_TEXT_MAX, 'text');
-        const kind = op.kind === undefined ? found.kind : cleanKind(op.kind);
-        // 허브처럼 그대로면 사건도 리비전도 없다.
-        if (text === found.text && kind === found.kind) break;
-        write(() => {
-          const rule = state.rules.find((candidate) => candidate.id === op.id)!;
-          const before = clone(rule);
-          Object.assign(rule, { text, kind, origin: 'user', rev: rule.rev + 1, updatedAt: new Date().toISOString() });
-          record('edited', rule, { rule: before }, { rule }, 'user', before.text !== text ? { prevText: before.text } : {});
-        });
-        break;
-      }
       case 'delete':
         write(() => {
           const rule = state.rules.find((candidate) => candidate.id === op.id);
@@ -386,7 +371,7 @@ function studioRequest(op: T.UserMemoryOp): T.UserMemoryResult {
           const retired = state.retired.find((candidate) => candidate.id === op.id);
           if (!retired) throw new MemoryError('USER_MEMORY_NOT_FOUND', 'That rule is no longer in the retired list.');
           if (activeBySubject(retired.subject)) {
-            throw new MemoryError('USER_MEMORY_SUBJECT_TAKEN', 'Another rule now holds that subject; edit or delete it first.');
+            throw new MemoryError('USER_MEMORY_SUBJECT_TAKEN', 'Another rule now holds that subject; delete it first.');
           }
           const beforeRetired = clone(retired);
           state.retired = state.retired.filter((candidate) => candidate !== retired);

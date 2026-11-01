@@ -3605,7 +3605,7 @@
   transform: translateY(-25%) rotate(225deg);
 }
 
-/* AI 묶음 — 머리를 누르면 연결, 사용량, 사용자화가 아래로 펼쳐지는 세로 트리. */
+/* AI 묶음 — 머리를 누르면 연결, 사용량, 사용자화, Rau 가 아래로 펼쳐지는 세로 트리. */
 .ag-root .ag-settings-page .ag-settings-nav-group {
   display: flex;
   align-items: center;

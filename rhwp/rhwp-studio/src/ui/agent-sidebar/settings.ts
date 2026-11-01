@@ -423,7 +423,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   } catch {
     // 세션 저장소가 없어도 기본 목적지로 계속 진행한다.
   }
-  // AI 아래 세부 탭(연결, 사용량, 사용자화)과 사이드 목록에서 펼친 상태.
+  // AI 아래 세부 탭(연결, 사용량, 사용자화, Rau)과 사이드 목록에서 펼친 상태.
   let currentAiSection: AiSettingsSection = 'connection';
   try {
     currentAiSection = aiSettingsSection(`ai-${sessionStorage.getItem('rhwp-settings-ai-section')}`) ?? 'connection';
@@ -541,7 +541,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     { id: 'editing', label: '편집', icon: 'editing' },
     { id: 'theme', label: '테마', icon: 'theme' },
     { id: 'ai', label: 'AI', icon: 'ai' },
-    { id: 'rau', label: 'Rau', icon: 'rau' },
     { id: 'browser', label: '브라우저', icon: 'browser' },
     { id: 'skills', label: '스킬', icon: 'skills' },
     { id: 'project', label: '프로젝트', icon: 'project' },
@@ -552,6 +551,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     { id: 'connection', label: '연결', icon: 'connection' },
     { id: 'usage', label: '사용량', icon: 'usage' },
     { id: 'custom', label: '사용자화', icon: 'customize' },
+    { id: 'rau', label: 'Rau', icon: 'rau' },
   ];
   const aiSectionButtons = new Map<AiSettingsSection, HTMLButtonElement>();
   // AI 는 탭이 아니라 묶음 머리다. 누르면 아래에 세부 탭이 펼쳐진다.
@@ -610,13 +610,15 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     panes.set(destination.id, pane);
     navButtons.set(destination.id, button);
   }
-  // Rau 탭: Rau 요금제(체험 포함)가 아니면 자물쇠를 달고, 누르면 요금제 카드가 열린다.
-  const rauNavButton = navButtons.get('rau')!;
-  const rauNavLock = el('span', 'ag-settings-nav-group-lock ag-settings-nav-rau-lock');
-  rauNavLock.setAttribute('aria-hidden', 'true');
-  rauNavLock.append(createIcon('lock'));
-  rauNavButton.append(rauNavLock);
-  panes.get('rau')?.append(rauPane.root);
+  // Rau 세부 탭: Rau 요금제(체험 포함)가 아니면 자물쇠를 달고, 누르면 요금제 카드가 열린다.
+  const createRauLock = (): HTMLElement => {
+    const lock = el('span', 'ag-settings-nav-group-lock ag-settings-nav-rau-lock');
+    lock.setAttribute('aria-hidden', 'true');
+    lock.append(createIcon('lock'));
+    return lock;
+  };
+  const rauNavButton = aiSectionButtons.get('rau')!;
+  rauNavButton.append(createRauLock());
   layout.append(navigation, body);
   body.append(...panes.values());
   element.append(header, layout);
@@ -1470,6 +1472,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     ['custom', instructionsSection.root],
     ['custom', templatesSection.root],
     ['custom', notificationsSection.root],
+    ['rau', rauPane.root],
     ...(autofixSection ? [['connection', autofixSection.root] as const] : []),
   ];
   // 좁은 폭에서는 사이드 목록이 가로 탭 줄이 되므로 세부 탭을 본문 위에 따로 둔다.
@@ -1482,9 +1485,11 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     segment.type = 'button';
     segment.setAttribute('role', 'tab');
     segment.addEventListener('click', () => selectAiSection(section.id));
+    if (section.id === 'rau') segment.append(createRauLock());
     aiSubnav.appendChild(segment);
     aiSubnavButtons.set(section.id, segment);
   }
+  const rauSegment = aiSubnavButtons.get('rau')!;
   aiContent.append(
     aiSubnav,
     defaults.root,
@@ -1496,6 +1501,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     notificationsSection.root,
     ...(autofixSection ? [autofixSection.root] : []),
     editLockSection.root,
+    rauPane.root,
     aiFooter,
   );
   panes.get('ai')?.appendChild(aiContent);
@@ -1526,7 +1532,8 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   }
   for (const [section, button] of aiSectionButtons) {
     button.addEventListener('click', () => {
-      if (currentDestination === 'ai') selectAiSection(section);
+      if (section === 'rau' && rauLocked()) openRauPlans?.();
+      else if (currentDestination === 'ai') selectAiSection(section);
       else void requestDestination('ai', section);
     });
   }
@@ -1536,7 +1543,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     const targets: SettingsSearchTarget[] = [];
     for (const destination of destinations) {
       const pane = panes.get(destination.id);
-      if (!pane || (destination.id === 'ai' && aiLocked()) || (destination.id === 'rau' && rauLocked())) continue;
+      if (!pane || (destination.id === 'ai' && aiLocked())) continue;
       for (const label of pane.querySelectorAll<HTMLElement>(searchSelector)) {
         const text = label.textContent?.trim();
         // 프로젝트·보관한 채팅 이름은 설정이 아니다.
@@ -1549,6 +1556,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
         const aiSection = destination.id === 'ai'
           ? aiSectionMembers.find(([, member]) => member.contains(label))?.[0]
           : undefined;
+        if (aiSection === 'rau' && rauLocked()) continue;
         const sectionLabel = aiSection ? aiSections.find((section) => section.id === aiSection)?.label : undefined;
         const icon = aiSection ? aiSections.find((section) => section.id === aiSection)?.icon : destination.icon;
         targets.push({
@@ -1662,7 +1670,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
         return themeSettings.isDirty();
       case 'ai':
         return isAiDirty();
-      case 'rau':
       case 'browser':
       case 'skills':
       case 'archive':
@@ -1711,24 +1718,35 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     return deps.agentLocked?.() === true;
   }
 
-  /** 요금제를 알고 Rau 가 아니면 Rau 탭이 잠긴다. 요금제 API 가 없는 웹 Studio 에서는 열려 있다. */
+  /** 요금제를 알고 Rau 가 아니면 Rau 세부 탭이 잠긴다. 요금제 API 가 없는 웹 Studio 에서는 열려 있다. */
   function rauLocked(): boolean {
     return planLocksRau(deps.plan?.status() ?? null);
   }
 
   function syncRauLock(): void {
     const locked = rauLocked();
-    rauNavButton.classList.toggle('ag-settings-ai-locked', locked);
-    rauNavButton.classList.toggle('ag-settings-rau-locked', locked);
-    // 자물쇠 그림은 aria-hidden 이라 잠김을 말로도 알린다.
-    if (locked) {
-      rauNavButton.title = 'Rau에서 쓸 수 있어요';
-      rauNavButton.setAttribute('aria-description', 'Rau에서 쓸 수 있어요');
-    } else {
-      rauNavButton.removeAttribute('title');
-      rauNavButton.removeAttribute('aria-description');
+    for (const button of [rauNavButton, rauSegment]) {
+      button.classList.toggle('ag-settings-ai-locked', locked);
+      button.classList.toggle('ag-settings-rau-locked', locked);
+      // 자물쇠 그림은 aria-hidden 이라 잠김을 말로도 알린다.
+      if (locked) {
+        button.title = 'Rau에서 쓸 수 있어요';
+        button.setAttribute('aria-description', 'Rau에서 쓸 수 있어요');
+      } else {
+        button.removeAttribute('title');
+        button.removeAttribute('aria-description');
+      }
     }
-    if (locked && currentDestination === 'rau') selectDestination('editing');
+    if (locked && currentAiSection === 'rau') {
+      currentAiSection = 'connection';
+      renderAiSectionState();
+      syncRauPane();
+    }
+  }
+
+  function syncRauPane(): void {
+    if (settingsOpen && currentDestination === 'ai' && currentAiSection === 'rau') rauPane.open();
+    else rauPane.close();
   }
 
   function syncPlanLock(): void {
@@ -1763,12 +1781,18 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       segment.setAttribute('aria-selected', String(selected));
     }
     for (const [section, member] of aiSectionMembers) member.classList.toggle('ag-settings-ai-off', section !== currentAiSection);
+    // Rau 는 바로 저장되므로 AI 초안의 적용 줄을 두지 않는다.
+    aiFooter.classList.toggle('ag-settings-ai-off', currentAiSection === 'rau');
     syncTokenUsage();
     const pane = panes.get('ai');
     pane?.setAttribute('aria-labelledby', aiGroupExpanded ? `ag-settings-tab-ai-${currentAiSection}` : aiGroupHeader.id);
   }
 
   function selectAiSection(section: AiSettingsSection): void {
+    if (section === 'rau' && rauLocked()) {
+      openRauPlans?.();
+      return;
+    }
     const changed = section !== currentAiSection;
     currentAiSection = section;
     aiGroupExpanded = true;
@@ -1778,23 +1802,27 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       // 세션 저장소가 막혀도 설정 탐색은 계속 동작한다.
     }
     renderAiSectionState();
+    syncRauPane();
     if (changed) panes.get('ai')?.scrollTo({ top: 0 });
   }
 
   function selectDestination(requested: SettingsDestination, aiSection?: AiSettingsSection): void {
     let destination = requested;
+    let section = aiSection;
+    // 잠긴 Rau 를 바로 열면 자리를 옮기지 않고 요금제 카드를 Rau 칸에 맞춰 연다.
+    if (section === 'rau' && rauLocked()) {
+      openRauPlans?.();
+      section = undefined;
+      destination = currentDestination === 'ai' && aiLocked() ? 'editing' : currentDestination;
+    }
     // 설정 열기, 검색, 연결 안내 어디서 오든 잠긴 AI 로는 들어가지 않는다.
     if (destination === 'ai' && aiLocked()) {
       deps.openPlans?.();
       destination = currentDestination === 'ai' ? 'editing' : currentDestination;
     }
-    if (destination === 'rau' && rauLocked()) {
-      openRauPlans?.();
-      destination = currentDestination === 'rau' ? 'editing' : currentDestination;
-    }
     if (destination === 'ai') {
       aiGroupExpanded = true;
-      if (aiSection) selectAiSection(aiSection);
+      if (section) selectAiSection(section);
     }
     currentDestination = destination;
     lastDestination = destination;
@@ -1811,8 +1839,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     if (destination === 'skills') refreshSkills?.();
     if (destination === 'project') projectPane.open();
     if (destination === 'archive') archivePane.open();
-    if (destination === 'rau' && settingsOpen) rauPane.open();
-    else rauPane.close();
+    syncRauPane();
     if (destination === 'ai') for (const row of assistantRows) void row.refresh(true);
     panes.get(destination)?.scrollTo({ top: 0 });
   }
@@ -1973,7 +2000,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
         case 'ai':
           cancelAiDraft();
           return true;
-        case 'rau':
         case 'browser':
       case 'skills':
         case 'archive':
@@ -1995,7 +2021,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
         return themeSettings.apply();
       case 'ai':
         return applyAiDraft();
-      case 'rau':
       case 'browser':
       case 'skills':
       case 'archive':
@@ -3570,7 +3595,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       closeAgentSetup();
       finishTemplateName(null);
     },
-    rauVisible: () => settingsOpen && currentDestination === 'rau' && rauPane.isOpen(),
+    rauVisible: () => settingsOpen && currentDestination === 'ai' && currentAiSection === 'rau' && rauPane.isOpen(),
     requestClose: resolveDirtyExit,
     isDirty(): boolean {
       return editingSettings.isDirty() || themeSettings.isDirty() || isAiDirty() || projectPane.isDirty();

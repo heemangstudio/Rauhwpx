@@ -375,7 +375,6 @@ export function createMockBridge(
   let turnStartDelayMs = 20;
   let stageDelayMs = 0;
   let permission: T.PermissionProfile = 'safe';
-  let tier: T.ServiceTier = 'standard';
   let workflow: T.AgentWorkflowState = {
     workflow: 'direct',
     phase: 'direct',
@@ -953,7 +952,6 @@ export function createMockBridge(
       return () => leaseListeners.delete(listener);
     },
     getPermissionProfile: () => permission,
-    getServiceTier: () => tier,
     getWorkflowState: () => workflow,
     takeOverConnection: () => setConnection('connected'),
     reconnectNow: async () => {
@@ -1285,7 +1283,6 @@ export function createMockBridge(
         model: model ?? defaultModelForAgent(agent),
         effort,
         permissionProfile: permission,
-        serviceTier: tier,
         threadId,
         documentId,
         documentName,
@@ -1858,10 +1855,6 @@ export function createMockBridge(
       permission = profile;
       emit({ type: 'permission-changed', permissionProfile: profile });
     },
-    setServiceTier: (serviceTier) => {
-      tier = serviceTier;
-      emit({ type: 'service-tier-changed', serviceTier });
-    },
     listSkills: () =>
       later(() => emit({ type: 'skills-catalog', catalog: data.skills })),
     listHarnessSkills: () =>
@@ -2110,7 +2103,6 @@ export function createMockBridge(
       compaction: sessionCompaction(agent),
       model: defaultModelForAgent(agent),
       permissionProfile: permission,
-      serviceTier: tier,
       threadId,
       ...workflow,
     });

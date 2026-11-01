@@ -25,7 +25,7 @@ test('bridge matches rapid settings replies, reconnects, failures and queued fol
       Object.assign(bridge, {
         state: 'connected', requestSeq: 0, pendingChatStart: null, chatStartSent: false,
         activeAgent: null, selectedAgent: 'codex', selectedModel: null, selectedEffort: null,
-        permissionProfile: 'safe', serviceTier: 'standard', workflow: 'direct', phase: 'direct',
+        permissionProfile: 'safe', workflow: 'direct', phase: 'direct',
         threadId: 'test-thread', documentId: 'test-document', documentName: 'test.hwpx',
         revision: { revision: 42 },
         chatHistory: [], queuedMessages: [], workflowSwitchPending: false,

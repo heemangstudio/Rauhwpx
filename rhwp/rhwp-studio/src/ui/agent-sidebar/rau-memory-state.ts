@@ -258,7 +258,7 @@ export function styleLearnErrorMessage(code: string, options: { legacy?: boolean
   }
   switch (code) {
     case 'RAU_PLAN_REQUIRED': return '문체 학습은 Rau 요금제에서 쓸 수 있어요.';
-    case 'RAU_CREDITS_EXHAUSTED': return '이번 달 Rau 크레딧을 다 써서 지금은 배울 수 없어요. 장기기억은 그대로 보고 고칠 수 있어요.';
+    case 'RAU_CREDITS_EXHAUSTED': return '이번 달 Rau 크레딧을 다 써서 지금은 배울 수 없어요. 장기기억은 그대로 보고 더하거나 지울 수 있어요.';
     case 'RAU_UNAVAILABLE': return '지금 Rau 에 닿지 않아요. 잠시 뒤에 다시 올려 주세요.';
     case 'LEARN_BUSY': return '다른 창에서 문체 학습이 돌고 있어요. 끝난 뒤에 올려 주세요.';
     case 'NO_TEXT': return '올린 파일에서 읽을 수 있는 글을 찾지 못했어요.';

@@ -183,6 +183,7 @@ function readUpload(value) {
     id: value.id.slice(0, 40),
     at: isoOr(value.at, new Date(0).toISOString()),
     files: Array.isArray(value.files) ? value.files.filter((name) => typeof name === 'string').map((name) => name.slice(0, 512)).slice(0, MAX_UPLOAD_NAMES) : [],
+    fingerprints: Array.isArray(value.fingerprints) ? value.fingerprints.filter((hash) => typeof hash === 'string' && /^[a-f0-9]{64}$/.test(hash)).slice(0, 20) : [],
     counts: { new: count('new'), reinforced: count('reinforced'), dampened: count('dampened'), conflicts: count('conflicts') },
   };
 }
@@ -387,7 +388,7 @@ export class UserMemoryStore {
    * 같은 습관의 규칙은 files 만큼 보강, 다른 습관의 규칙은 files 만큼 감쇄(0 이면 물러나고 새 습관이 잇는다),
    * 사용자가 만든 규칙과 다르면 충돌로 남긴다. 사용자가 지운 습관은 다시 들이지 않는다.
    */
-  applyUpload(candidates, { files = [], skippedFiles = [] } = {}) {
+  applyUpload(candidates, { files = [], skippedFiles = [], fingerprints = [] } = {}) {
     return this.#write((state, txn) => {
       const summary = { new: [], reinforced: [], dampened: [], retired: [], conflicts: [], skippedFiles: [...skippedFiles] };
       const item = (rule, extra = {}) => ({ ruleId: rule.id, kind: rule.kind, subject: rule.subject, text: rule.text, ...extra });
@@ -445,6 +446,7 @@ export class UserMemoryStore {
         summary.new.push(item(rule, { strength: { from: 0, to: rule.strength } }));
       }
       const record = {
+        fingerprints: fingerprints.filter((hash) => typeof hash === 'string' && /^[a-f0-9]{64}$/.test(hash)).slice(0, 20),
         id: `upl_${base36(12, this.random)}`,
         at: txn.stamp,
         files: files.map((name) => String(name).slice(0, 512)).slice(0, MAX_UPLOAD_NAMES),
@@ -463,24 +465,9 @@ export class UserMemoryStore {
       const cleanKind = normalizeKind(kind);
       const cleanText = cleanLine(text, MAX_RULE_TEXT_CHARS, 'text');
       const cleanSubject = typeof subject === 'string' && subject.trim() ? cleanLine(subject, MAX_RULE_SUBJECT_CHARS, 'subject') : deriveSubject(cleanKind, cleanText);
-      if (this.activeBySubject(state, cleanSubject)) throw memoryError('USER_MEMORY_SUBJECT_TAKEN', 'A rule on that subject already exists; edit it instead.');
+      if (this.activeBySubject(state, cleanSubject)) throw memoryError('USER_MEMORY_SUBJECT_TAKEN', 'A rule on that subject already exists.');
       const rule = this.#newRule(state, txn, { kind: cleanKind, subject: cleanSubject, text: cleanText, strength: 3, origin: 'user' });
       txn.event({ kind: 'new', rule, before: { rule: null }, after: { rule }, source: 'user' });
-      return clone(rule);
-    });
-  }
-
-  /** 사용자가 글·종류를 고쳤다. 그 뒤로는 사용자의 규칙이다. */
-  editRule(id, { text, kind } = {}) {
-    return this.#write((state, txn) => {
-      const rule = state.rules.find((candidate) => candidate.id === id);
-      if (!rule) throw memoryError('USER_MEMORY_NOT_FOUND', 'That rule no longer exists.');
-      const before = clone(rule);
-      const cleanText = text === undefined ? rule.text : cleanLine(text, MAX_RULE_TEXT_CHARS, 'text');
-      const cleanKind = kind === undefined ? rule.kind : normalizeKind(kind);
-      if (cleanText === rule.text && cleanKind === rule.kind) return clone(rule);
-      Object.assign(rule, { text: cleanText, kind: cleanKind, origin: 'user', overrides: {}, rev: rule.rev + 1, updatedAt: txn.stamp });
-      txn.event({ kind: 'edited', rule, before: { rule: before }, after: { rule }, source: 'user', prevText: before.text !== rule.text ? before.text : undefined });
       return clone(rule);
     });
   }
@@ -502,7 +489,7 @@ export class UserMemoryStore {
       const retired = state.retired.find((candidate) => candidate.id === id);
       if (!retired) throw memoryError('USER_MEMORY_NOT_FOUND', 'That rule is no longer in the retired list.');
       if (this.activeBySubject(state, retired.subject)) {
-        throw memoryError('USER_MEMORY_SUBJECT_TAKEN', 'Another rule now holds that subject; edit or delete it first.');
+        throw memoryError('USER_MEMORY_SUBJECT_TAKEN', 'Another rule now holds that subject; delete it first.');
       }
       const before = clone(retired);
       state.retired = state.retired.filter((candidate) => candidate !== retired);
