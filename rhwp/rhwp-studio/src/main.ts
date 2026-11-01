@@ -3186,7 +3186,7 @@ function installDocumentHome(): void {
       mountHomeRauEntry(slot);
       mountAccountButton(slot, { store: accountStore(), plan: sharedPlanStore() });
     },
-    mountCorner: (slot) => mountUpdateHippo(slot, window, __APP_VERSION__, sharedPlanStore()),
+    mountCorner: (slot) => mountUpdateHippo(slot, window, sharedPlanStore()),
     unsaved: {
       list: () => unsavedDocumentStore.list(),
       subscribe: (listener) => unsavedDocumentStore.subscribe(listener),

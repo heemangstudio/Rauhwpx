@@ -44,6 +44,19 @@
   image-rendering: pixelated;
 }
 
+/* 릴리스 노트 클립보드를 들 때는 채팅 하마를 같은 칸에 그린다. */
+.uh-chat-art {
+  position: absolute;
+  inset: 0;
+  display: none;
+  width: 100%;
+  height: 100%;
+  image-rendering: pixelated;
+}
+
+.uh[data-art='chat'] .uh-sprite { display: none; }
+.uh[data-art='chat'] .uh-chat-art { display: block; }
+
 .uh-hippo,
 .uh-ears {
   position: absolute;
@@ -68,6 +81,11 @@
   bottom: 0;
   width: 60px;
   height: 27px;
+}
+
+.uh[data-art='chat'] .uh-ears {
+  right: 45px;
+  width: 63px;
 }
 
 .uh-hippo[hidden],
@@ -106,6 +124,14 @@
 
 .uh-board[data-tone='warning'] { --uh-edge: var(--uh-warning); }
 
+/* 릴리스 노트 클립보드는 팻말 전체가 픽셀 그림이라 판의 면과 테두리를 지운다. */
+.uh-board[data-sign='notes'] {
+  min-height: 0;
+  padding: 0;
+  background: none;
+  box-shadow: none;
+}
+
 .uh-board.is-stacked {
   flex-direction: column;
   align-items: stretch;
@@ -122,46 +148,6 @@
   line-height: 1.5;
   letter-spacing: -0.01em;
   word-break: keep-all;
-}
-
-/* ── 릴리스 노트 ── 굵은 버전 줄, 3px 네모로 시작하는 항목, 흐린 "외 N개 더". */
-.uh-heading {
-  font-size: 13px;
-  font-weight: 700;
-  line-height: 1.4;
-  letter-spacing: -0.01em;
-}
-
-.uh-board[data-sign='notes'] {
-  gap: 3px;
-  padding: 9px 12px;
-}
-
-.uh-board[data-sign='notes'] .uh-text {
-  gap: 1px;
-  font-weight: 500;
-}
-
-.uh-board[data-sign='notes'] .uh-text span {
-  position: relative;
-  padding-left: 12px;
-}
-
-.uh-board[data-sign='notes'] .uh-text span::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: calc(0.75em - 2px);
-  width: 6px;
-  height: 6px;
-  background: #62b3e2; /* 하마 몸 색 */
-}
-
-.uh-footnote {
-  padding-left: 12px;
-  color: var(--dh-text-secondary, #5b636e);
-  font-size: 12px;
-  line-height: 1.5;
 }
 
 .uh-actions {
@@ -206,6 +192,15 @@
 }
 
 .uh-act-text:hover { background: var(--uh-press); }
+
+.uh-act-picture {
+  height: auto;
+  background: none;
+  clip-path: none;
+}
+
+.uh-act-picture:hover .uh-icon { transform: translateY(calc(-1 * var(--uh-px))); }
+.uh-act-picture:active .uh-icon { transform: none; }
 
 .uh-act:focus-visible {
   outline: 2px solid var(--dh-focus, #4b5563);

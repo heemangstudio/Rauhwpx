@@ -4,7 +4,7 @@ Tagged releases publish signed and notarized macOS arm64 DMG/ZIP files and an un
 
 ## Tagged release
 
-Update the version in `package.json` and both version fields in `package-lock.json`, and add at least one Korean note for that version to `RELEASE_NOTES` in `rhwp/rhwp-studio/src/ui/update-hippo/release-notes.ts`. The update hippo shows the first four on the document home after users update. Run `npm run test:ci`, `npm run check:docs` and `node scripts/check-release-notes.mjs`, commit the changes, then push the matching `v<version>` tag. The workflow rejects a tag that does not match `package.json`, or a version without notes, before building.
+Update the version in `package.json` and both version fields in `package-lock.json`, and add Korean notes for that version to `RELEASE_NOTES` in `rhwp/rhwp-studio/src/ui/update-hippo/release-notes.ts`: new things under `added`, fixed problems under `fixed` (at least one entry). After users update, the hippo on the document home holds a release notes clipboard, and clicking it opens all of them in a popup. For a day after the update, the hippo stays tucked with its ears showing, and clicking the ears brings the clipboard back. Run `npm run test:ci`, `npm run check:docs` and `node scripts/check-release-notes.mjs`, commit the changes, then push the matching `v<version>` tag. The workflow rejects a tag that does not match `package.json`, or a version without notes, before building.
 
 ```sh
 git tag "v$(node -p "require('./package.json').version")"
