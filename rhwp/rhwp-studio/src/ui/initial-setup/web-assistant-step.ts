@@ -69,7 +69,7 @@ export function assistantCardDetail(state: AssistantCardState, account: string |
     case 'verified': return account ?? '';
     case 'signed-out': return '로그인 필요 · 다시 누르기';
     case 'challenge': return '사람 확인 필요 · 눌러서 열기';
-    case 'failed': return '확인하지 못함 · 다시 시도';
+    case 'failed': return '확인하지 못함';
   }
 }
 
