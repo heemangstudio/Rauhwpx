@@ -10,5 +10,4 @@
 - 결함(수정 전): 측정 fit 실패 → 행 분할 → 마지막 행 sliver 2쪽 조각.
 - 기대(한글 정합): RowBreak 는 나눔 허용이지 강제가 아님 — 선언 fit 시 통째 1쪽,
   AFTER TABLE 2쪽, 전체 2쪽.
-- 검증: `rhwp dump-pages samples/task2105/rowbreak_table_declared_fits.hwpx` /
-  `cargo test --test it page_count_pins`
+- 검증: `rhwp dump-pages samples/task2105/rowbreak_table_declared_fits.hwpx`

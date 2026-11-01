@@ -14,8 +14,7 @@
 이 baseline 이 기준 PDF 의 잉크 구간(605.5..620.5)과 맞는다. 표는 636.4px 에 놓이며 이 수정
 전후로 움직이지 않는다.
 
-회귀 시험은 `tests/issue_7018_tac_host_line_baseline.rs` 다. 글자 런은 자기 줄
-baseline(13.6px)을 쓰고, 표 배치는 이 수정이 바꾸지 않는다.
+글자 런은 자기 줄 baseline(13.6px)을 쓰고, 표 배치는 이 수정이 바꾸지 않는다.
 
 `layout_inline_table_paragraph` 가 런마다 `char_offsets` + `LineSeg.text_start` 로
 속한 저장 줄의 baseline 을 고른다. `wrapped_below_table` 문단 단위 분기에만 기대면
