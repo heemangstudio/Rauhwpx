@@ -668,8 +668,10 @@ html:is(.desktop-mac, .desktop-windows) .acct-page.acct-embedded {
   text-align: center;
 }
 
+/* grid 라야 사진 아래 글줄 틈이 사라져 단추가 사진과 같은 원이 된다. */
 .acct-profile-avatar {
   position: relative;
+  display: grid;
   flex: none;
   padding: 0;
   border: 0;
@@ -677,46 +679,62 @@ html:is(.desktop-mac, .desktop-windows) .acct-page.acct-embedded {
   background: transparent;
 }
 
-.acct-profile-avatar::after {
-  content: '';
+/* 사진을 어둡게 덮고 가운데에 연필을 띄운다. 사진 색과 상관없이 보이도록 테마 토큰을 쓰지 않는다. */
+.acct-avatar-overlay {
   position: absolute;
   inset: 0;
-  border-radius: 50%;
-  background: rgb(0 0 0 / 0);
-  transition: background-color var(--ag-dur-fast) var(--ag-ease-out);
-}
-
-.acct-profile-avatar:hover:not(:disabled)::after {
-  background: rgb(0 0 0 / 0.12);
-}
-
-.acct-avatar-badge {
-  position: absolute;
-  z-index: 1;
-  top: 0;
-  right: 0;
   display: grid;
   place-items: center;
-  width: 32px;
-  height: 32px;
   border-radius: 50%;
-  background: #5f6368;
+  background: rgb(0 0 0 / 0.5);
   color: #fff;
-  box-shadow: 0 0 0 2px var(--n-surface);
-  transition: background-color var(--ag-dur-fast) var(--ag-ease-out);
+  opacity: 0;
+  transition: opacity var(--ag-dur-fast) var(--ag-ease-out);
 }
 
-.acct-avatar-badge .ag-icon {
-  width: 15px;
-  height: 15px;
+/* 머리글자는 연필과 겹치므로 더 깊이 눌러 연필만 읽히게 한다. */
+.acct-avatar:not([data-kind='image']) + .acct-avatar-overlay {
+  background: rgb(0 0 0 / 0.75);
 }
 
-.acct-profile-avatar:hover:not(:disabled) .acct-avatar-badge {
-  background: #74787d;
+.acct-avatar-overlay .ag-icon {
+  width: 18px;
+  height: 18px;
 }
 
-.acct-profile-avatar[data-busy='true'] .acct-avatar {
-  opacity: 0.5;
+.acct-profile-avatar:is(:hover, :focus-visible):not(:disabled) .acct-avatar-overlay,
+.acct-profile-avatar[data-busy='true'] .acct-avatar-overlay {
+  opacity: 1;
+}
+
+.acct-profile-avatar[data-busy='true'] .acct-avatar-overlay .ag-icon {
+  display: none;
+}
+
+.acct-profile-avatar[data-busy='true'] .acct-avatar-overlay::after {
+  content: '';
+  width: 20px;
+  height: 20px;
+  border: 2px solid rgb(255 255 255 / 0.35);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: acct-avatar-spin 0.8s linear infinite;
+}
+
+@keyframes acct-avatar-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .acct-avatar-overlay {
+    transition: none;
+  }
+
+  .acct-profile-avatar[data-busy='true'] .acct-avatar-overlay::after {
+    animation: none;
+  }
 }
 
 .acct-profile-copy {
@@ -1384,11 +1402,6 @@ html:is(.desktop-mac, .desktop-windows) .acct-page.acct-profile-card {
     transform: none;
     transition: none;
   }
-}
-
-.acct-profile-card .acct-avatar-badge,
-.acct-profile-card .acct-profile-avatar::after {
-  display: none;
 }
 
 .acct-card-footer {

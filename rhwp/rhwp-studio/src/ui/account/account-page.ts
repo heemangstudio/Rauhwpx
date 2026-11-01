@@ -195,10 +195,10 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
     avatarButton.title = '';
     avatarButton.setAttribute('aria-label', '프로필 사진');
   }
-  const avatarBadge = el('span', 'acct-avatar-badge');
-  avatarBadge.setAttribute('aria-hidden', 'true');
-  avatarBadge.append(createIcon('pencil'));
-  avatarButton.append(avatar.element, avatarBadge);
+  const avatarOverlay = el('span', 'acct-avatar-overlay');
+  avatarOverlay.setAttribute('aria-hidden', 'true');
+  avatarOverlay.append(createIcon('pencil'));
+  avatarButton.append(avatar.element, avatarOverlay);
   const fileInput = el('input', 'acct-file');
   fileInput.type = 'file';
   fileInput.accept = 'image/*';
