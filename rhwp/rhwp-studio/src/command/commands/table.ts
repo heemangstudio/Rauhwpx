@@ -150,11 +150,11 @@ function stub(id: string, label: string, icon?: string, shortcut?: string): Comm
   };
 }
 
-function blockCalcCommand(id: string, label: string, func: string, shortcut: string): CommandDef {
+function blockCalcCommand(id: string, label: string, func: string, shortcut?: string): CommandDef {
   return {
     id,
     label,
-    shortcutLabel: shortcut,
+    ...(shortcut ? { shortcutLabel: shortcut } : {}),
     canExecute: inTable,
     execute(services) {
       const ih = services.getInputHandler();
@@ -1013,7 +1013,8 @@ export const tableCommands: CommandDef[] = [
     canExecute: inTable,
     execute(services) { openFormulaDialog(services); },
   },
-  blockCalcCommand('table:block-sum', '블록 합계', 'SUM', 'Ctrl+Shift+S'),
+  // Ctrl+Shift+S 는 다른 이름으로 저장 단축키라 블록 합계에는 표시하지 않는다.
+  blockCalcCommand('table:block-sum', '블록 합계', 'SUM'),
   blockCalcCommand('table:block-avg', '블록 평균', 'AVERAGE', 'Ctrl+Shift+A'),
   blockCalcCommand('table:block-product', '블록 곱', 'PRODUCT', 'Ctrl+Shift+P'),
   {

@@ -38,6 +38,7 @@ import { checkTaste, checkTasteHistory } from './taste.check.mjs';
 import { checkRauUpgrade } from './rau-upgrade.check.mjs';
 import { checkPlanCard } from './plan-card.check.mjs';
 import { checkRauTab } from './rau-tab.check.mjs';
+import { checkShortcutsTab } from './shortcuts-tab.check.mjs';
 import { checkAccountPage } from './account-page.check.mjs';
 import { checkChatScrollRail } from './chat-scroll-rail.check.mjs';
 import { browserLaunchArgs, findBrowserExecutable } from '../tests/browser-support.ts';
@@ -66,6 +67,7 @@ const focusedChecks = {
   'rau-upgrade': (h) => checkRauUpgrade(h),
   'plan-card': (h) => checkPlanCard(h),
   'rau-tab': (h) => checkRauTab(h),
+  'shortcuts-tab': (h) => checkShortcutsTab(h),
   'account-page': (h) => checkAccountPage(h),
   'scroll-rail': (h) => checkChatScrollRail(h),
   'focus-composer': async ({ page, open }) => {

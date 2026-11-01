@@ -1,6 +1,7 @@
 import type { CommandDispatcher } from '@/command/dispatcher';
 import type { CommandRegistry } from '@/command/registry';
 import { formatShortcutLabel } from '@/engine/navigation-keymap';
+import { shortcutLabelFor } from '@/command/effective-shortcuts';
 
 /** 컨텍스트 메뉴 항목 정의 */
 export interface ContextMenuItem {
@@ -59,10 +60,11 @@ export class ContextMenu {
       row.appendChild(labelSpan);
 
       // 단축키 표시
-      if (def.shortcutLabel) {
+      const shortcutLabel = shortcutLabelFor(cmdId, def);
+      if (shortcutLabel) {
         const shortcut = document.createElement('span');
         shortcut.className = 'md-shortcut';
-        shortcut.textContent = formatShortcutLabel(def.shortcutLabel);
+        shortcut.textContent = formatShortcutLabel(shortcutLabel);
         row.appendChild(shortcut);
       }
 

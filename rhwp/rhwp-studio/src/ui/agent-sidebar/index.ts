@@ -237,6 +237,8 @@ import {
   type ToolOutcomeView,
 } from './tool-presentation.ts';
 import { createSettingsPanel } from './settings.ts';
+import type { ShortcutSettingsDeps } from './settings-shortcuts.ts';
+import { isShortcutRecording } from '../../command/effective-shortcuts.ts';
 import type { SignInWindow } from './web-assistant-settings.ts';
 import {
   isSettingsDestination,
@@ -374,6 +376,8 @@ export interface AgentSidebarDeps {
   /** inset 전환 후 용지 가운데 정렬을 요청할 때 사용 */
   eventBus?: EventBus;
   editorSettingsRuntime?: EditorSettingsRuntime;
+  /** 설정 → 단축키의 서비스와 명령 목록. 앱은 명령 레지스트리에서, 미리보기는 표본에서 만든다. */
+  shortcutSettings?: ShortcutSettingsDeps;
   /** 설정 → Pi 의 선물 크레딧. 생략하면 macOS 데스크톱의 rhwpDesktop.gift 를 쓰고, null 이면 없다. */
   gift?: DesktopGiftApi | null;
   /** 처음 설정의 라이선스 장. 생략하면 rhwpDesktop.license 를 쓰고, null 이면 장이 없다. */
@@ -2951,6 +2955,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   // 캡처 단계에서 받아 문서 단축키·입력기 처리보다 먼저 가져간다.
   const onAgentShortcutKeyDown = (e: KeyboardEvent) => {
     if (!active || e.defaultPrevented || e.isComposing || e.keyCode === 229) return;
+    // 설정 → 단축키가 키를 기록하는 중이면 그 키는 기록기 몫이다.
+    if (isShortcutRecording()) return;
     if (isMacPlatform && e.ctrlKey && e.metaKey && !e.altKey && !e.shiftKey
       && (e.code === 'KeyS' || e.code === 'KeyJ')) {
       e.preventDefault();
@@ -5187,6 +5193,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     refreshSkills: () => bridge.listSkills(),
     deleteArchivedThread: (thread) => deleteThreadWithConfirm(thread),
     gift: deps.gift === undefined ? desktopGiftApi() : deps.gift,
+    shortcutSettings: deps.shortcutSettings,
   });
   const settingsPage = settingsPanel.element;
   const initialSetupDeps: InitialSetupDeps = {

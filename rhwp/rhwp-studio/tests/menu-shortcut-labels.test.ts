@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import { CommandRegistry } from '../src/command/registry.ts';
 import { syncMenuShortcutLabels } from '../src/ui/menu-shortcut-labels.ts';
+import { shortcuts } from '../src/command/effective-shortcuts.ts';
 import type { CommandDef } from '../src/command/types.ts';
 import type { PlatformKind } from '../src/engine/navigation-keymap.ts';
 
@@ -164,5 +165,54 @@ test('표 줄/칸 메뉴는 macOS에서 Option 기호로 표시한다', () => {
 
     assert.equal(insertItem.shortcut?.textContent, '⌥Enter');
     assert.equal(deleteItem.shortcut?.textContent, '⌥Delete');
+  });
+});
+
+test('사용자 지정 단축키를 메뉴 표시에 반영하고, 키가 없어지면 비우고, 되돌리면 원래 표시로 돌린다', () => {
+  withPlatform('other', () => {
+    const bold = new FakeMenuItem('format:bold', 'Ctrl+B');
+    const strike = new FakeMenuItem('format:strikethrough');
+    const registry = new CommandRegistry();
+    registry.register({ id: 'format:bold', label: '굵게', shortcutLabel: 'Ctrl+B', execute: () => {} });
+    registry.register({ id: 'format:strikethrough', label: '취소선', execute: () => {} });
+    const container = new FakeContainer([bold, strike]) as unknown as HTMLElement;
+    try {
+      syncMenuShortcutLabels(container, registry);
+      assert.equal(bold.shortcut?.textContent, 'Ctrl+B');
+      assert.equal(strike.shortcut, null, '단축키 없는 항목은 그대로 둔다');
+
+      assert.equal(shortcuts.assign('format:bold', 'mod+shift+b').ok, true);
+      assert.equal(shortcuts.assign('format:strikethrough', 'mod+shift+x').ok, true);
+      syncMenuShortcutLabels(container, registry);
+      assert.equal(bold.shortcut?.textContent, 'Ctrl+Shift+B');
+      assert.equal(strike.shortcut?.textContent, 'Ctrl+Shift+X');
+
+      for (const binding of shortcuts.bindings('format:bold')) shortcuts.remove('format:bold', binding.id);
+      syncMenuShortcutLabels(container, registry);
+      assert.equal(bold.shortcut?.textContent, '', '키가 하나도 없으면 표시를 비운다');
+
+      shortcuts.resetAll();
+      syncMenuShortcutLabels(container, registry);
+      assert.equal(bold.shortcut?.textContent, 'Ctrl+B');
+      assert.equal(strike.shortcut?.textContent, '', '새로 만든 표시는 비워 원래처럼 보이지 않게 한다');
+    } finally {
+      shortcuts.resetAll();
+    }
+  });
+});
+
+test('사용자 지정 단축키는 macOS 메뉴에서도 기호로 보인다', () => {
+  withPlatform('mac', () => {
+    const item = new FakeMenuItem('format:bold', 'Ctrl+B');
+    try {
+      shortcuts.assign('format:bold', 'alt+f8');
+      syncMenuShortcutLabels(
+        new FakeContainer([item]) as unknown as HTMLElement,
+        registryWith({ id: 'format:bold', shortcutLabel: 'Ctrl+B' }),
+      );
+      assert.equal(item.shortcut?.textContent, '⌥F8');
+    } finally {
+      shortcuts.resetAll();
+    }
   });
 });

@@ -29,7 +29,6 @@ import type {
 } from '@/core/types';
 import type { CommandDispatcher } from '@/command/dispatcher';
 import type { EditorEditMode } from '@/command/types';
-import { matchShortcut, defaultShortcuts } from '@/command/shortcut-map';
 import type { ContextMenu, ContextMenuItem } from '@/ui/context-menu';
 import type { CommandPalette } from '@/ui/command-palette';
 import type { CellSelectionRenderer } from './cell-selection-renderer';

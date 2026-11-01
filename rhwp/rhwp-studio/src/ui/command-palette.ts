@@ -2,6 +2,7 @@ import type { CommandRegistry } from '@/command/registry';
 import type { CommandDispatcher } from '@/command/dispatcher';
 import type { CommandDef } from '@/command/types';
 import { formatShortcutLabel } from '@/engine/navigation-keymap';
+import { shortcutLabelFor } from '@/command/effective-shortcuts';
 
 /**
  * `/` 커맨드 팔레트
@@ -166,7 +167,8 @@ export class CommandPalette {
     return this.items.filter(def => {
       if (def.label.toLowerCase().includes(q)) return true;
       if (def.id.toLowerCase().includes(q)) return true;
-      if (def.shortcutLabel && (def.shortcutLabel.toLowerCase().includes(q) || formatShortcutLabel(def.shortcutLabel).toLowerCase().includes(q))) return true;
+      const shortcutLabel = shortcutLabelFor(def.id, def);
+      if (shortcutLabel && (shortcutLabel.toLowerCase().includes(q) || formatShortcutLabel(shortcutLabel).toLowerCase().includes(q))) return true;
       return false;
     });
   }
@@ -204,10 +206,11 @@ export class CommandPalette {
 
       row.appendChild(labelEl);
 
-      if (def.shortcutLabel) {
+      const shortcutLabel = shortcutLabelFor(def.id, def);
+      if (shortcutLabel) {
         const kbd = document.createElement('span');
         kbd.className = 'cp-item-shortcut';
-        kbd.textContent = formatShortcutLabel(def.shortcutLabel);
+        kbd.textContent = formatShortcutLabel(shortcutLabel);
         row.appendChild(kbd);
       }
 

@@ -79,6 +79,8 @@ import { createPlanStore } from '../ui/plan/plan-store.ts';
 import { mountHomeScene } from './home-scene.ts';
 import { startSpecialEvent } from '../ui/special-event/special-event-trigger.ts';
 import { installManualAutofix } from '../ui/autofix/autofix-manual.ts';
+import { shortcuts } from '../command/effective-shortcuts.ts';
+import { previewShortcutCatalog } from './mock-shortcuts.ts';
 import { isInitialSetupActive, onInitialSetupInactive, wasLicensedHere } from '../ui/initial-setup/active.ts';
 
 const params = new URLSearchParams(location.search);
@@ -675,6 +677,8 @@ const sidebar = initAgentSidebar({
     preview: (settings) => applyPreviewCompactToolbar(settings.view.compactToolbar),
     committed: (settings) => applyPreviewCompactToolbar(settings.view.compactToolbar),
   },
+  // 설정 → 단축키: 앱과 같은 서비스(localStorage 'rhwp-shortcuts')에 표본 명령 목록.
+  shortcutSettings: { service: shortcuts, catalog: () => previewShortcutCatalog },
 });
 mock.boot();
 if (params.get('hub') === 'down') mock.setConnection('disconnected');
@@ -970,6 +974,7 @@ if (parallel === 'locked') {
 const preview = { ...mock, sidebar, versions, eventBus, enterFocusMode, undoState, restoreState, navigation, typingHold, linkCalls, detachCalls,
   gift: mockGift,
   planCardRequests,
+  shortcuts,
   autofix: mockAutofix,
   plan: mockPlan,
   account: mockAccount,
