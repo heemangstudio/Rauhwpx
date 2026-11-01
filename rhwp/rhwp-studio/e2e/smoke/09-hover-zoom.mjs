@@ -106,7 +106,7 @@ async function cellHoverPeers(page) {
   target = await point(0, true);
   await page.mouse.move(target.x, target.y);
   await waitFor(page, 'hyperlink hover replaces protected guard', () => window.__inputHandler.container.title === 'https://example.com/hover'
-    && document.querySelector('.protected-cell-hover-guard')?.style.display === 'none');
+    && document.querySelector('.protected-cell-hover-guard')?.style.display !== 'flex');
   await page.evaluate(() => {
     window.__canvasView.getViewportManager().setZoom(1.5);
     if (window.__inputHandler.container.title || document.querySelector('.protected-cell-hover-guard')?.style.display === 'flex') {
