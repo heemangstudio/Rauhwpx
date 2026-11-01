@@ -366,7 +366,8 @@ export async function checkFollowUpGap(page, origin, artifacts) {
   await waitFor(page, (before) => window.sidebarPreview.snapshot().stops > before, stopsBefore,
     'opening another chat did not stop this one');
   await openThreads();
-  await page.click(`.ag-threads-item[data-thread-id="${secondThread}"]`);
+  // 목록은 열린 뒤에도 다시 그려진다. 그리는 사이에 좌표로 누르면 빗나가므로 항목을 직접 누른다.
+  await page.$eval(`.ag-threads-item[data-thread-id="${secondThread}"]`, (item) => item.click());
   await waitFor(page, () => document.querySelector('.ag-followups')?.dataset.hold === 'stopped', undefined,
     'the message stopped with the chat did not come back to the queue');
   state = await queueState(page);
