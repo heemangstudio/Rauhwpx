@@ -67,45 +67,27 @@ export function deleteConfirmMatches(email: string | null | undefined, typed: st
   return want !== '' && typed.trim().toLowerCase() === want;
 }
 
-export function usd(value: number): string {
-  return `$${(Math.round(value * 100) / 100).toFixed(2)}`;
-}
-
 /** Rau 크레딧. 자격이 없거나 값이 없으면 null. */
 export interface RauCredits {
-  allowanceUsd: number;
-  remainingUsd: number;
+  remainingPercent: number;
   resetsAt: number | null;
   trial: boolean;
 }
 
-function finiteUsd(value: number | null | undefined): number | null {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
-}
-
 export function rauCredits(rau: AccountRau | null | undefined): RauCredits | null {
   if (!rau?.eligible) return null;
-  const allowanceUsd = finiteUsd(rau.allowanceUsd);
-  if (allowanceUsd === null) return null;
-  const used = finiteUsd(rau.usedUsd);
-  const remaining = finiteUsd(rau.remainingUsd) ?? (used === null ? allowanceUsd : Math.max(0, allowanceUsd - used));
+  const percent = rau.remainingPercent;
+  if (typeof percent !== 'number' || !Number.isFinite(percent)) return null;
   return {
-    allowanceUsd,
-    remainingUsd: Math.min(allowanceUsd, remaining),
+    remainingPercent: Math.min(100, Math.max(0, percent)),
     resetsAt: typeof rau.resetsAt === 'number' && rau.resetsAt > 0 ? rau.resetsAt : null,
     trial: rau.source === 'trial',
   };
 }
 
-/** 크레딧 막대의 채움(남은 몫, 0~1). */
-export function rauCreditRatio(credits: RauCredits): number {
-  if (!(credits.allowanceUsd > 0)) return 0;
-  return Math.min(1, Math.max(0, credits.remainingUsd / credits.allowanceUsd));
-}
-
 /** 예: 65% 남음 */
 export function rauCreditsLine(credits: RauCredits): string {
-  return `${Math.round(rauCreditRatio(credits) * 100)}% 남음`;
+  return `${credits.remainingPercent}% 남음`;
 }
 
 /** 크레딧이 다시 차는 날. 체험은 다시 차지 않으므로 빈 글. 예: 11월 30일 초기화 */

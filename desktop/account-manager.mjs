@@ -19,6 +19,7 @@
 //   서버로 보낸다. 보내지 못한 묶음은 같은 batchId 로 다시 보낸다. 로그인하지 않은 동안의 기록은 버린다.
 // - 이 기기의 예전 라이선스 키는 로그인하면 한 번, 그 뒤로 하루에 한 번까지 계정에 연결한다. 키는 지우지 않는다.
 // - 토큰·로그인 코드·verifier·이메일·키는 기록에 남기지 않는다.
+import { remainingPercentFrom } from './rau-client.mjs';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { createServer } from 'node:http';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
@@ -60,7 +61,6 @@ const RAU_SOURCES = new Set(['plan', 'trial']);
 const TRIAL_STATES = new Set(['available', 'active', 'ended']);
 /** 서버가 정한 체험 길이와 크레딧. 서버가 보내지 않으면 이 값으로 보인다. */
 export const RAU_TRIAL_DAYS = 7;
-export const RAU_TRIAL_ALLOWANCE_USD = 2;
 const LICENSE_STATUSES = new Set(['active', 'past_due', 'expired', 'revoked']);
 /** 다시 시도해도 같은 답이 오는 키 연결 실패. */
 const INVALID_KEY_CODES = new Set(['invalid_key', 'revoked', 'invalid_format']);
@@ -107,7 +107,7 @@ export function accountErrorMessage(code) {
 }
 
 const NO_RAU = Object.freeze({
-  eligible: false, source: null, allowanceUsd: null, usedUsd: null, remainingUsd: null, resetsAt: null,
+  eligible: false, source: null, remainingPercent: null, resetsAt: null,
 });
 const FREE_PLAN = Object.freeze({
   tier: 'free', edition: null, plan: null, expiresAt: null, autoRenew: null,
@@ -215,7 +215,6 @@ const text = (value, max) => (typeof value === 'string' ? value.replace(CONTROL_
 const epochOrNull = (value) => (Number.isSafeInteger(value) && value >= 0 ? value : null);
 const boolOrNull = (value) => (typeof value === 'boolean' ? value : null);
 const count = (value) => (Number.isSafeInteger(value) && value >= 0 ? value : 0);
-const usdOrNull = (value) => (Number.isFinite(value) && value >= 0 ? value : null);
 const oneOf = (value, set) => (set.has(value) ? value : null);
 
 function isoToEpoch(value) {
@@ -289,9 +288,7 @@ function sanitizeRau(raw) {
   return {
     eligible: true,
     source: oneOf(raw.source, RAU_SOURCES),
-    allowanceUsd: usdOrNull(raw.allowanceUsd),
-    usedUsd: usdOrNull(raw.usedUsd),
-    remainingUsd: usdOrNull(raw.remainingUsd),
+    remainingPercent: remainingPercentFrom(raw),
     resetsAt: epochOrNull(isoToEpoch(raw.resetsAt)),
   };
 }
@@ -320,7 +317,6 @@ function sanitizeTrial(raw) {
     startedAt: epochOrNull(isoToEpoch(raw.startedAt)),
     endsAt: epochOrNull(isoToEpoch(raw.endsAt)),
     days,
-    allowanceUsd: usdOrNull(raw.allowanceUsd) ?? RAU_TRIAL_ALLOWANCE_USD,
   };
 }
 

@@ -55,7 +55,7 @@ function world({ stores, avatars, workosBase, clock }) {
     avatars,
     rauConfigured: () => true,
     // The Rau service's view of a trial's credits, fixed so both worlds answer alike.
-    rauUsage: async (principal) => ({ allowanceUsd: 2, usedUsd: 0.5, remainingUsd: 1.5, resetsAt: Date.parse(principal.endsAt) }),
+    rauUsage: async (principal) => ({ remainingPercent: 75, resetsAt: Date.parse(principal.endsAt) }),
     deviceLimit: 2,
     adminToken: ADMIN,
     now: () => clock.now,

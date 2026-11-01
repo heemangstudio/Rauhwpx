@@ -83,7 +83,7 @@ test('server with a database: every store lives in Postgres, only feedback attac
   const { keyId, lease, rau } = await activated.json();
   assert.equal(rau.eligible, true);
   const status = await (await fetch(`${origin}/v1/rau/status`, { headers: { Authorization: `Bearer ${lease}` } })).json();
-  assert.deepEqual([status.eligible, status.source, status.usedUsd], [true, 'plan', 0]);
+  assert.deepEqual([status.eligible, status.source, status.remainingPercent], [true, 'plan', 100]);
   // The frozen plan grants Rau from the hama tables.
   assert.equal((await (await activate({ key: legacy.key, deviceId: 'device-pg-legacy' })).json()).rau.eligible, true);
   // A forged webhook is answered, then recorded after the response.

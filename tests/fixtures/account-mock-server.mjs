@@ -154,31 +154,28 @@ export function createMockAccountServer({
       startedAt: trial?.startedAt ?? null,
       endsAt: trial?.endsAt ?? null,
       days: TRIAL_DAYS,
-      allowanceUsd: RAU_TRIAL_ALLOWANCE_USD,
     };
   }
+
+  const percentLeft = (allowance, used) => Math.ceil((Math.max(0, allowance - used) / allowance) * 100);
 
   /** 호스팅 Rau 자격과 크레딧. 플랜이 체험보다 먼저다. */
   function rauOf(account) {
     const primary = primaryOf(account);
     if (primary?.edition === 'rau') {
-      const usedUsd = account.rauUsedUsd;
       return {
-        eligible: true, source: 'plan', allowanceUsd: RAU_PLAN_ALLOWANCE_USD, usedUsd,
-        remainingUsd: Math.max(0, RAU_PLAN_ALLOWANCE_USD - usedUsd), resetsAt: now() + 20 * DAY,
+        eligible: true, source: 'plan',
+        remainingPercent: percentLeft(RAU_PLAN_ALLOWANCE_USD, account.rauUsedUsd), resetsAt: now() + 20 * DAY,
       };
     }
     if (trialActive(account) || (account.trial && now() < account.trial.endsAt)) {
-      const usedUsd = account.trial.usedUsd;
       return {
         eligible: trialActive(account), source: trialActive(account) ? 'trial' : null,
-        allowanceUsd: trialActive(account) ? RAU_TRIAL_ALLOWANCE_USD : null,
-        usedUsd: trialActive(account) ? usedUsd : null,
-        remainingUsd: trialActive(account) ? Math.max(0, RAU_TRIAL_ALLOWANCE_USD - usedUsd) : null,
+        remainingPercent: trialActive(account) ? percentLeft(RAU_TRIAL_ALLOWANCE_USD, account.trial.usedUsd) : null,
         resetsAt: trialActive(account) ? account.trial.endsAt : null,
       };
     }
-    return { eligible: false, source: null, allowanceUsd: null, usedUsd: null, remainingUsd: null, resetsAt: null };
+    return { eligible: false, source: null, remainingPercent: null, resetsAt: null };
   }
 
   function spendRau(account, usd) {

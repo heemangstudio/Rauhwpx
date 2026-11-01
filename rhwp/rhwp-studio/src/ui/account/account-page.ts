@@ -21,7 +21,6 @@ import {
   planCycleLabel,
   planTermLine,
   platformLabel,
-  rauCreditRatio,
   rauCredits,
   rauCreditsLine,
   rauResetLine,
@@ -538,9 +537,9 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
     if (!left || credits.hidden) return;
     creditsValue.textContent = rauCreditsLine(left);
     creditsMeter.setAttribute('aria-valuemax', '100');
-    creditsMeter.setAttribute('aria-valuenow', String(Math.round(rauCreditRatio(left) * 100)));
+    creditsMeter.setAttribute('aria-valuenow', String(left.remainingPercent));
     creditsMeter.setAttribute('aria-valuetext', rauCreditsLine(left));
-    creditsFill.style.width = `${(rauCreditRatio(left) * 100).toFixed(1)}%`;
+    creditsFill.style.width = `${left.remainingPercent}%`;
     const meta = left.trial && current.trial ? trialLine(current.trial) : rauResetLine(left);
     creditsMeta.textContent = meta;
     creditsMeta.hidden = !meta;

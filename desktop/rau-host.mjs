@@ -4,7 +4,7 @@ import { RAU_UPGRADE_URL, RauServerError, upgradeUrlFrom } from './rau-client.mj
 
 /** 키가 없거나 lease 가 지금 검증되지 않을 때(무료 lease 포함). 서버에 묻지 않는다. */
 const NO_LICENSE = 'no_license';
-const NO_USAGE = Object.freeze({ allowanceUsd: null, usedUsd: null, remainingUsd: null, resetsAt: null });
+const NO_USAGE = Object.freeze({ remainingPercent: null, resetsAt: null });
 
 /** Studio 의 rau:status 답(RauStatus). 호스팅 기능에 줄 lease 가 없으면 서버에 묻지 않고 자격이 없다고 답한다. */
 async function statusFor({ client, currentLease }) {
@@ -42,9 +42,7 @@ function errorFields(error) {
   return {
     code,
     ...(code === 'rau_plan_required' ? { upgradeUrl: upgradeUrlFrom(error.upgradeUrl) } : {}),
-    ...(code === 'rau_credits_exhausted'
-      ? { allowanceUsd: error.allowanceUsd, usedUsd: error.usedUsd, resetsAt: error.resetsAt }
-      : {}),
+    ...(code === 'rau_credits_exhausted' ? { resetsAt: error.resetsAt } : {}),
   };
 }
 

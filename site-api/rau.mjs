@@ -113,6 +113,13 @@ export function createRauService({
 
   const allowanceOf = (source) => (source === 'trial' ? RAU_TRIAL_ALLOWANCE_USD : allowanceUsd);
 
+  /** What clients see of their credits: a whole percent, 0 only when nothing is left. Dollars stay on the server. */
+  function remainingPercent(allowance, used) {
+    const remaining = allowance - used;
+    if (!(allowance > 0) || remaining <= 0) return 0;
+    return Math.min(100, Math.ceil(Math.round((remaining / allowance) * 1e8) / 1e6));
+  }
+
   /**
    * Where a principal stands now: its period, allowance and spend. Null when it has no Rau now: no
    * principal or a trial outside its 7 days. A spent trial still stands (remaining 0) until its end, so
@@ -141,12 +148,12 @@ export function createRauService({
   }
 
   /**
-   * The current period of a principal for the account page: `{ allowanceUsd, usedUsd, remainingUsd,
-   * resetsAt (epoch ms) }`, or null outside it. Read-only.
+   * The current period of a principal for the account page: `{ remainingPercent, resetsAt (epoch ms) }`,
+   * or null outside it. Read-only.
    */
   async function usage(principal) {
     const s = standing(principal, await read());
-    return s ? { allowanceUsd: s.allowanceUsd, usedUsd: s.usedUsd, remainingUsd: s.remainingUsd, resetsAt: s.period.end } : null;
+    return s ? { remainingPercent: remainingPercent(s.allowanceUsd, s.usedUsd), resetsAt: s.period.end } : null;
   }
 
   async function status(lease) {
@@ -156,12 +163,12 @@ export function createRauService({
     if (!s) {
       return {
         ok: true, eligible: false, source: null, reason: 'rau_plan_required', upgradeUrl,
-        allowanceUsd: null, usedUsd: null, remainingUsd: null, resetsAt: null,
+        remainingPercent: null, resetsAt: null,
       };
     }
     return {
       ok: true, eligible: true, source: s.source, reason: null, upgradeUrl,
-      allowanceUsd: s.allowanceUsd, usedUsd: s.usedUsd, remainingUsd: s.remainingUsd, resetsAt: isoOf(s.period.end),
+      remainingPercent: remainingPercent(s.allowanceUsd, s.usedUsd), resetsAt: isoOf(s.period.end),
     };
   }
 
@@ -207,7 +214,7 @@ export function createRauService({
     inFlight.set(s.ledgerId, (inFlight.get(s.ledgerId) ?? 0) + 1);
     try {
       if (s.usedUsd >= s.allowanceUsd) {
-        throw rauError('rau_credits_exhausted', 402, { allowanceUsd: s.allowanceUsd, usedUsd: s.usedUsd, resetsAt: isoOf(s.period.end) });
+        throw rauError('rau_credits_exhausted', 402, { resetsAt: isoOf(s.period.end) });
       }
       const answer = await upstream.complete({
         max_tokens: RAU_LEARN_MAX_TOKENS,
@@ -220,7 +227,7 @@ export function createRauService({
         ok: true,
         text: answer.text,
         model: RAU_LEARN_MODEL,
-        usage: { allowanceUsd: s.allowanceUsd, usedUsd: used, remainingUsd: usd(Math.max(0, s.allowanceUsd - used)), resetsAt: isoOf(s.period.end) },
+        usage: { remainingPercent: remainingPercent(s.allowanceUsd, used), resetsAt: isoOf(s.period.end) },
       };
     } finally {
       const left = (inFlight.get(s.ledgerId) ?? 1) - 1;

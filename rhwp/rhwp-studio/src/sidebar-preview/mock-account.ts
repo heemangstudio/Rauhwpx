@@ -69,14 +69,12 @@ export function mockAccountTier(scenario: MockAccountScenario): PlanTier {
 }
 
 const TRIAL_DAYS = 7;
-const TRIAL_ALLOWANCE_USD = 2;
-const RAU_ALLOWANCE_USD = 8;
 
 function trialFor(state: AccountTrial['state'], now = Date.now()): AccountTrial {
-  if (state === 'available') return { state, startedAt: null, endsAt: null, days: TRIAL_DAYS, allowanceUsd: TRIAL_ALLOWANCE_USD };
+  if (state === 'available') return { state, startedAt: null, endsAt: null, days: TRIAL_DAYS };
   // 진행 중은 이틀째(5일 남음), 끝난 체험은 열흘 전에 시작했다.
   const startedAt = now - (state === 'active' ? 2 : 10) * DAY_MS;
-  return { state, startedAt, endsAt: startedAt + TRIAL_DAYS * DAY_MS, days: TRIAL_DAYS, allowanceUsd: TRIAL_ALLOWANCE_USD };
+  return { state, startedAt, endsAt: startedAt + TRIAL_DAYS * DAY_MS, days: TRIAL_DAYS };
 }
 
 function scenarioTrial(scenario: MockAccountScenario | 'signed-in'): AccountTrial['state'] {
@@ -132,7 +130,7 @@ function fullDevices(): AccountDevice[] {
 
 function planFor(tier: PlanTier, scenario: MockAccountScenario | 'signed-in'): AccountPlan {
   const now = Date.now();
-  const noRau = { eligible: false, source: null, allowanceUsd: null, usedUsd: null, remainingUsd: null, resetsAt: null } as const;
+  const noRau = { eligible: false, source: null, remainingPercent: null, resetsAt: null } as const;
   if (tier === 'free') {
     return {
       tier, keyId: null, edition: null, plan: null, expiresAt: null, autoRenew: null, paymentFailed: false, paymentGraceEndsAt: null,
@@ -144,7 +142,7 @@ function planFor(tier: PlanTier, scenario: MockAccountScenario | 'signed-in'): A
     return {
       tier, keyId: null, edition: null, plan: null, expiresAt: null, autoRenew: null, paymentFailed: false, paymentGraceEndsAt: null,
       manageUrl: null,
-      rau: { eligible: true, source: 'trial', allowanceUsd: TRIAL_ALLOWANCE_USD, usedUsd: 0.65, remainingUsd: 1.35, resetsAt: trial.endsAt },
+      rau: { eligible: true, source: 'trial', remainingPercent: 68, resetsAt: trial.endsAt },
     };
   }
   const failed = scenario === 'payment-failed';
@@ -159,7 +157,7 @@ function planFor(tier: PlanTier, scenario: MockAccountScenario | 'signed-in'): A
     paymentGraceEndsAt: failed ? now + 5 * DAY_MS : null,
     manageUrl: 'https://groble.im/manage/purchase',
     rau: tier === 'rau'
-      ? { eligible: true, source: 'plan', allowanceUsd: RAU_ALLOWANCE_USD, usedUsd: 2.8, remainingUsd: 5.2, resetsAt: now + 24 * DAY_MS }
+      ? { eligible: true, source: 'plan', remainingPercent: 65, resetsAt: now + 24 * DAY_MS }
       : noRau,
   };
 }
@@ -439,7 +437,7 @@ export function createMockAccount(
         trial: active,
         plan: {
           ...planFor('rau', 'rau-trial'),
-          rau: { eligible: true, source: 'trial', allowanceUsd: TRIAL_ALLOWANCE_USD, usedUsd: 0, remainingUsd: TRIAL_ALLOWANCE_USD, resetsAt: active.endsAt },
+          rau: { eligible: true, source: 'trial', remainingPercent: 100, resetsAt: active.endsAt },
         },
       });
       options.report('Rau trial started (sample)');
