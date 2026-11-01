@@ -60,7 +60,7 @@ export function webAssistantStatusView(service: WebAssistant, status: WebAssista
   if (options.error && !options.checking) return { text: '확인하지 못함', tone: 'warn' };
   if (options.checking || status.signedIn === null) return { text: '확인 중…', tone: 'off' };
   if (!status.signedIn) return { text: '로그인 필요', tone: 'warn' };
-  return { text: status.account ? `연결됨, ${status.account}` : '연결됨', tone: 'ok' };
+  return { text: status.account ? `연결됨 · ${status.account}` : '연결됨', tone: 'ok' };
 }
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className: string, text?: string): HTMLElementTagNameMap[K] {

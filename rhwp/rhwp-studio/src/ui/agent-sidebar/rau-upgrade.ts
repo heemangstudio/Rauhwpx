@@ -4,7 +4,7 @@
 import { createIcon } from './icons.ts';
 
 export const RAU_UPGRADE_PRICE = '월 ₩14,900';
-export const RAU_PRICE_LINE = '월 ₩14,900\u2003연 ₩149,000';
+export const RAU_PRICE_LINE = '월 ₩14,900 · 연 ₩149,000';
 export const RAU_PRICING_URL = 'https://heemangstudios.com/pricing.html#rau';
 const DISMISSED_KEY = 'rhwp.rau-upgrade.dismissed';
 
@@ -37,7 +37,7 @@ export function rauStateLine(status: RauStatus, timeZone?: string): string {
   if (trial) return reset ? `무료 체험 ${date(reset)}까지` : '무료 체험';
   if (remaining === null) return '켜짐';
   const left = `$${(Math.round(remaining * 100) / 100).toFixed(2)} 남음`;
-  return reset ? `${left}\u2003${date(reset)} 초기화` : left;
+  return reset ? `${left} · ${date(reset)} 초기화` : left;
 }
 
 export interface DesktopRauApi {

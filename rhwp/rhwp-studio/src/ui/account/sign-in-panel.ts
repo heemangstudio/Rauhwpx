@@ -198,7 +198,7 @@ export function createSignInPanel(
     const copy = el('span', 'acct-device-copy');
     copy.append(
       el('span', 'acct-device-name', device.name),
-      el('span', 'acct-meta', `${platformLabel(device.platform)}, ${formatLastSeen(device.lastSeenAt)}`),
+      el('span', 'acct-meta', `${platformLabel(device.platform)} · ${formatLastSeen(device.lastSeenAt)}`),
     );
     const actions = el('span', 'acct-device-actions');
     if (confirming === device.id) {

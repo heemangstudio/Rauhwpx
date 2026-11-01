@@ -39,7 +39,7 @@ export function mountAccountButton(
     const account = isSignedIn(status) ? status!.account : null;
     const name = account ? accountDisplayName(account) : '';
     label.textContent = account ? name : '로그인';
-    control.title = account ? `${name}, ${account.email}` : '로그인';
+    control.title = account ? `${name} · ${account.email}` : '로그인';
     control.setAttribute('aria-label', account ? `계정, ${name}` : '계정, 로그인');
   };
   sync();

@@ -161,7 +161,7 @@ export function licenseLine(license: AccountLicense): string {
       ? (license.status === 'expired' ? `${formatAccountDate(license.expiresAt)} 만료` : `${formatAccountDate(license.expiresAt)}까지`)
       : '',
   ];
-  return parts.filter(Boolean).join(', ');
+  return parts.filter(Boolean).join(' · ');
 }
 
 export function licenseStatusLabel(license: AccountLicense): string {

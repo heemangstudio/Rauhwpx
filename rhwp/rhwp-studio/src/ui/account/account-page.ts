@@ -563,7 +563,7 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
     const copy = el('span', 'acct-device-copy');
     const name = el('span', 'acct-device-name', device.name);
     if (device.current) name.append(el('span', 'acct-badge', '이 기기'));
-    const meta = `${platformLabel(device.platform)}, ${device.current ? '지금 사용 중' : formatLastSeen(device.lastSeenAt)}`;
+    const meta = `${platformLabel(device.platform)} · ${device.current ? '지금' : formatLastSeen(device.lastSeenAt)}`;
     copy.append(name, el('span', 'acct-meta', meta));
     const actions = el('span', 'acct-device-actions');
     if (deviceConfirm === device.id) {
