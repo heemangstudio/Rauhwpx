@@ -67,45 +67,27 @@ export function deleteConfirmMatches(email: string | null | undefined, typed: st
   return want !== '' && typed.trim().toLowerCase() === want;
 }
 
-export function usd(value: number): string {
-  return `$${(Math.round(value * 100) / 100).toFixed(2)}`;
-}
-
 /** Rau 크레딧. 자격이 없거나 값이 없으면 null. */
 export interface RauCredits {
-  allowanceUsd: number;
-  remainingUsd: number;
+  remainingPercent: number;
   resetsAt: number | null;
   trial: boolean;
 }
 
-function finiteUsd(value: number | null | undefined): number | null {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
-}
-
 export function rauCredits(rau: AccountRau | null | undefined): RauCredits | null {
   if (!rau?.eligible) return null;
-  const allowanceUsd = finiteUsd(rau.allowanceUsd);
-  if (allowanceUsd === null) return null;
-  const used = finiteUsd(rau.usedUsd);
-  const remaining = finiteUsd(rau.remainingUsd) ?? (used === null ? allowanceUsd : Math.max(0, allowanceUsd - used));
+  const percent = rau.remainingPercent;
+  if (typeof percent !== 'number' || !Number.isFinite(percent)) return null;
   return {
-    allowanceUsd,
-    remainingUsd: Math.min(allowanceUsd, remaining),
+    remainingPercent: Math.min(100, Math.max(0, percent)),
     resetsAt: typeof rau.resetsAt === 'number' && rau.resetsAt > 0 ? rau.resetsAt : null,
     trial: rau.source === 'trial',
   };
 }
 
-/** 크레딧 막대의 채움(남은 몫, 0~1). */
-export function rauCreditRatio(credits: RauCredits): number {
-  if (!(credits.allowanceUsd > 0)) return 0;
-  return Math.min(1, Math.max(0, credits.remainingUsd / credits.allowanceUsd));
-}
-
-/** 예: $5.20 남음 */
+/** 예: 65% 남음 */
 export function rauCreditsLine(credits: RauCredits): string {
-  return `${usd(credits.remainingUsd)} 남음`;
+  return `${credits.remainingPercent}% 남음`;
 }
 
 /** 크레딧이 다시 차는 날. 체험은 다시 차지 않으므로 빈 글. 예: 11월 30일 초기화 */
@@ -140,10 +122,39 @@ export function planCycleLabel(plan: AccountPlan): string {
   return plan.tier === 'free' || !plan.plan ? '' : CYCLE_LABEL[plan.plan];
 }
 
-/** 다음 결제일이나 끝나는 날. 평생·무료는 빈 글. */
+/** 샀다가 해지한 구독. 끝나는 날까지 쓰고 갱신되지 않는다. 처음부터 갱신이 없는 선물·프로모션 키는 아니다. */
+export function planCancelled(plan: AccountPlan): boolean {
+  return plan.tier !== 'free' && plan.autoRenew === false && Boolean(plan.manageUrl) && !plan.paymentFailed;
+}
+
+export type PlanCardKind = 'free' | 'monthly' | 'yearly' | 'cancelled' | 'gift' | 'failed' | 'lifetime' | 'trial';
+
+/** 요금제 카드의 그림과 표면을 정하는 상태. 선물·프로모션 키는 처음부터 갱신이 없다. */
+export function planCardKind(plan: AccountPlan): PlanCardKind {
+  if (plan.tier === 'free') return 'free';
+  if (plan.paymentFailed) return 'failed';
+  if (plan.rau?.source === 'trial') return 'trial';
+  if (plan.plan === 'lifetime') return 'lifetime';
+  if (planCancelled(plan)) return 'cancelled';
+  if (plan.autoRenew === false) return 'gift';
+  return plan.plan === 'annual' ? 'yearly' : 'monthly';
+}
+
+/** 프로모션이 끝나 가는 안내를 띄우는 날 수. */
+const PROMO_NOTICE_DAYS = 31;
+
+/** 끝나기 한 달 전부터의 프로모션 안내. 30일 밑으로는 남은 날을 센다. 해당 없으면 빈 글. */
+export function promoEndingLine(plan: AccountPlan, now = Date.now()): string {
+  if (planCardKind(plan) !== 'gift' || !plan.expiresAt) return '';
+  const left = daysLeft(plan.expiresAt, now);
+  if (left <= 0 || left > PROMO_NOTICE_DAYS) return '';
+  return `프로모션 기간이 ${left >= 30 ? '1달' : `${left}일`} 남았습니다`;
+}
+
+/** 갱신일이나 끝나는 날. 평생·무료는 빈 글. */
 export function planTermLine(plan: AccountPlan): string {
   if (plan.tier === 'free' || plan.plan === 'lifetime' || !plan.expiresAt) return '';
-  return plan.autoRenew === false ? `${formatAccountDate(plan.expiresAt)}까지` : `다음 결제 ${formatAccountDate(plan.expiresAt)}`;
+  return plan.autoRenew === false ? `${formatAccountDate(plan.expiresAt)}까지` : `${formatAccountDate(plan.expiresAt)}에 갱신`;
 }
 
 export function paymentFailedLine(plan: AccountPlan): string {
@@ -152,13 +163,15 @@ export function paymentFailedLine(plan: AccountPlan): string {
     : '결제가 되지 않았어요. 결제 수단을 바꿔 주세요.';
 }
 
-/** 라이선스 줄의 설명. 예: Hama · 연간 · 2027년 10월 20일까지 */
+/** 라이선스 줄의 설명. 예: Hama · 연간 · 2027년 10월 20일에 갱신 */
 export function licenseLine(license: AccountLicense): string {
   const parts = [
     license.tier === 'beta' ? '베타' : license.edition ? EDITION_LABEL[license.edition] : '',
     license.plan ? CYCLE_LABEL[license.plan] : '',
     license.plan !== 'lifetime' && license.expiresAt
-      ? (license.status === 'expired' ? `${formatAccountDate(license.expiresAt)} 만료` : `${formatAccountDate(license.expiresAt)}까지`)
+      ? (license.status === 'expired' ? `${formatAccountDate(license.expiresAt)} 만료`
+        : license.autoRenew === true && license.status !== 'revoked' ? `${formatAccountDate(license.expiresAt)}에 갱신`
+        : `${formatAccountDate(license.expiresAt)}까지`)
       : '',
   ];
   return parts.filter(Boolean).join(' · ');

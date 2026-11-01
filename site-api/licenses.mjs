@@ -1207,13 +1207,13 @@ export function createLicensesService({
       const end = accessEnd(license);
       const live = isLive(license, nowMs, paymentGraceMaxMs);
       const rau = live ? rauPrincipalOf(license, await legacyPlanOf(license)) : null;
-      return { license, live, end, rau, rank: rau ? 2 : 1, subscribed: isPlanEdition(license.edition) };
+      return { license, live, end, rau, rank: rau ? 2 : 1, subscribed: isPlanEdition(license.edition) && !isGiftKey(license) };
     }));
   }
 
   /**
    * Primary first: highest rank, then a Hama or Rau subscription (so the account shows the plan it pays
-   * for, not a beta or lifetime key), then latest access end (lifetime last forever), then oldest.
+   * for, not a beta, lifetime or gift key), then latest access end (lifetime last forever), then oldest.
    */
   function byPrimary(a, b) {
     if (a.rank !== b.rank) return b.rank - a.rank;

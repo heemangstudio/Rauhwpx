@@ -22,7 +22,7 @@ export const RAU_ELIGIBILITY_WAIT_MS = 1_500;
 
 /**
  * 데스크톱 main 에 학습을 맡기는 IPC 경로. RHWP_RAU_BROKER=ipc 로 띄운 허브에서만 쓸 수 있다.
- * learn(prompt) → { text, model }, status() → RauStatus {eligible, source, reason, remainingUsd, …}.
+ * learn(prompt) → { text, model }, status() → RauStatus {eligible, source, reason, remainingPercent, …}.
  * 실패하면 code(와 upgradeUrl·resetsAt 등)를 단 Error.
  */
 export function createIpcRauSource({ processRef = process, timeoutMs = RAU_SOURCE_TIMEOUT_MS } = {}) {
@@ -101,7 +101,7 @@ function resetsAtFrom(value) {
 export function availabilityFromStatus(status) {
   if (!status || typeof status !== 'object') return 'unavailable';
   if (status.eligible !== true) return 'not_eligible';
-  return Number.isFinite(status.remainingUsd) && status.remainingUsd <= 0 ? 'exhausted' : 'active';
+  return Number.isFinite(status.remainingPercent) && status.remainingPercent <= 0 ? 'exhausted' : 'active';
 }
 
 /**

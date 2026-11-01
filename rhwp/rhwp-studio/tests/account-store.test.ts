@@ -4,6 +4,10 @@ import test from 'node:test';
 import {
   accountRenewalPrompt,
   deleteConfirmMatches,
+  licenseLine,
+  planCancelled,
+  planTermLine,
+  promoEndingLine,
   rauCredits,
   rauCreditsLine,
   rauResetLine,
@@ -161,21 +165,58 @@ test('the renewal notice follows the account plan', () => {
   assert.equal(accountRenewalPrompt({ ...lapsed, licenses: [{ ...lapsed.licenses[0]!, plan: 'lifetime' }] }), null);
 });
 
+test('a renewing plan shows its renewal day, and a cancelled plan shows the day it ends', () => {
+  const expiresAt = Date.UTC(2027, 9, 20, 3);
+  const renewing: AccountStatus['plan'] = { ...FREE_PLAN, tier: 'hama', edition: 'hama', plan: 'annual', expiresAt, autoRenew: true, manageUrl: 'https://groble.im/manage/purchase' };
+  assert.equal(planTermLine(renewing), '2027년 10월 20일에 갱신');
+  assert.equal(planCancelled(renewing), false);
+  const cancelled = { ...renewing, autoRenew: false };
+  assert.equal(planTermLine(cancelled), '2027년 10월 20일까지');
+  assert.equal(planCancelled(cancelled), true);
+  // 처음부터 갱신이 없는 선물·프로모션 키는 해지한 것이 아니다.
+  const gift = { ...cancelled, manageUrl: null };
+  assert.equal(planTermLine(gift), '2027년 10월 20일까지');
+  assert.equal(planCancelled(gift), false);
+  assert.equal(planCancelled({ ...cancelled, paymentFailed: true }), false);
+
+  const license = { keyId: 'k1', maskedKey: 'HAMA-…', tier: 'paid' as const, edition: 'hama' as const, plan: 'annual' as const, status: 'active' as const, expiresAt, autoRenew: true, primary: true };
+  assert.equal(licenseLine(license), 'Hama · 연간 · 2027년 10월 20일에 갱신');
+  assert.equal(licenseLine({ ...license, autoRenew: false }), 'Hama · 연간 · 2027년 10월 20일까지');
+});
+
+test('promo plans warn one month before they end, and other plans never do', () => {
+  const day = 86_400_000;
+  const now = Date.UTC(2026, 10, 1, 3);
+  const promo: AccountStatus['plan'] = { ...FREE_PLAN, tier: 'rau', edition: 'rau', plan: null, expiresAt: now + 200 * day, autoRenew: false, manageUrl: null };
+  assert.equal(promoEndingLine(promo, now), '');
+  assert.equal(promoEndingLine({ ...promo, expiresAt: now + 32 * day }, now), '');
+  assert.equal(promoEndingLine({ ...promo, expiresAt: now + 31 * day }, now), '프로모션 기간이 1달 남았습니다');
+  assert.equal(promoEndingLine({ ...promo, expiresAt: now + 30 * day }, now), '프로모션 기간이 1달 남았습니다');
+  assert.equal(promoEndingLine({ ...promo, expiresAt: now + 29 * day }, now), '프로모션 기간이 29일 남았습니다');
+  assert.equal(promoEndingLine({ ...promo, expiresAt: now + day }, now), '프로모션 기간이 1일 남았습니다');
+  // 해지한 구독과 갱신되는 구독은 프로모션이 아니다.
+  const paid = { ...promo, plan: 'annual' as const, expiresAt: now + 10 * day, manageUrl: 'https://groble.im/manage/purchase' };
+  assert.equal(promoEndingLine({ ...paid, autoRenew: false }, now), '');
+  assert.equal(promoEndingLine({ ...paid, autoRenew: true }, now), '');
+});
+
 test('Rau credits show what is left of the allowance, with the reset day or the trial days', () => {
   const day = 86_400_000;
   const now = Date.UTC(2026, 10, 1, 3);
   assert.equal(rauCredits(null), null);
-  assert.equal(rauCredits({ eligible: false, source: null, allowanceUsd: null, usedUsd: null, remainingUsd: null, resetsAt: null }), null);
-  const plan = rauCredits({ eligible: true, source: 'plan', allowanceUsd: 8, usedUsd: 2.8, remainingUsd: 5.2, resetsAt: Date.UTC(2026, 10, 30, 3) })!;
-  assert.equal(rauCreditsLine(plan), '$5.20 남음');
+  assert.equal(rauCredits({ eligible: false, source: null, remainingPercent: null, resetsAt: null }), null);
+  const plan = rauCredits({ eligible: true, source: 'plan', remainingPercent: 65, resetsAt: Date.UTC(2026, 10, 30, 3) })!;
+  assert.equal(rauCreditsLine(plan), '65% 남음');
+  assert.equal(rauCreditsLine({ ...plan, remainingPercent: 0 }), '0% 남음');
+  assert.equal(rauCreditsLine({ ...plan, remainingPercent: 100 }), '100% 남음');
   assert.equal(rauResetLine(plan), '11월 30일 초기화');
-  // 남은 값이 없으면 쓴 값으로 셈하고, 넘치는 값은 한도로 자른다.
-  assert.equal(rauCredits({ eligible: true, source: 'plan', allowanceUsd: 8, usedUsd: 3, remainingUsd: null, resetsAt: null })!.remainingUsd, 5);
-  assert.equal(rauCredits({ eligible: true, source: 'plan', allowanceUsd: 8, usedUsd: 0, remainingUsd: 12, resetsAt: null })!.remainingUsd, 8);
+  // 값이 없으면 칸을 숨기고, 넘치는 값은 100 으로 자른다.
+  assert.equal(rauCredits({ eligible: true, source: 'plan', remainingPercent: null, resetsAt: null }), null);
+  assert.equal(rauCredits({ eligible: true, source: 'plan', remainingPercent: 150, resetsAt: null })!.remainingPercent, 100);
   // 체험은 다시 차지 않아서 초기화 날짜를 보이지 않고, 남은 날을 센다.
-  const trialCredits = rauCredits({ eligible: true, source: 'trial', allowanceUsd: 2, usedUsd: 0.65, remainingUsd: 1.35, resetsAt: now + 5 * day })!;
+  const trialCredits = rauCredits({ eligible: true, source: 'trial', remainingPercent: 68, resetsAt: now + 5 * day })!;
   assert.equal(rauResetLine(trialCredits), '');
-  const trial = { state: 'active' as const, startedAt: now - 2 * day, endsAt: now + 5 * day - 1000, days: 7, allowanceUsd: 2 };
+  const trial = { state: 'active' as const, startedAt: now - 2 * day, endsAt: now + 5 * day - 1000, days: 7 };
   assert.equal(trialLine(trial, now), '무료 체험 5일 남음');
   assert.equal(trialLine({ ...trial, endsAt: now + 3_600_000 }, now), '무료 체험 1일 남음');
   assert.equal(trialLine({ ...trial, state: 'ended' }, now), '');

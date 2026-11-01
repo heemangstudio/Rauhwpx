@@ -991,7 +991,7 @@ function successText(name: string, args: Args, result: Args, category: ToolCateg
       : result['status'] === 'pending' ? '허용 대기' : '';
     case 'request_secret': return result['pending'] === true ? '입력 대기' : '';
     case 'ask_chatgpt':
-    case 'ask_claude': return str(result['answer']) ? (result['truncated'] === true ? '답 받음 · 일부' : '답 받음') : '';
+    case 'ask_claude': return str(result['answer']) ? (result['truncated'] === true ? '답 받음, 일부' : '답 받음') : '';
     case 'browser_request_account': return result['granted'] === true ? '이미 허용됨' : result['pending'] === true ? '허용 대기' : '';
     case 'apply_edits': {
       const applied = num(result['applied']) ?? count(result['results']) ?? count(args['edits']);

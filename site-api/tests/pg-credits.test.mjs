@@ -81,15 +81,18 @@ test('hosted Rau on Postgres answers and stores exactly what the memory store do
     return learn(lease)(w).finally(() => { next.call = {}; });
   };
 
-  assert.deepEqual((await step('status before any call', (w) => w.rau.status('plan'))).value.usedUsd, 0);
+  assert.deepEqual((await step('status before any call', (w) => w.rau.status('plan'))).value.remainingPercent, 100);
   assert.equal((await step('not eligible', (w) => w.rau.status('hama'))).value.eligible, false);
   assert.equal((await step('learn without Rau', learn('hama'))).error.code, 'rau_plan_required');
   assert.equal((await step('bad prompt', (w) => w.rau.learn('plan', Buffer.from('{"prompt":""}')))).error.code, 'invalid');
   assert.equal((await step('first learn', learn('plan'))).value.text, '{"ops":[]}');
   clock.now += MINUTE;
   next.costUsd = 0.4;
-  const billedOnce = (await step('learn with an id', learnAs('plan', { id: 'msg_same_1', model: 'haiku', route: 'anthropic' }))).value.usage.usedUsd;
-  assert.equal((await step('the same id again', learnAs('plan', { id: 'msg_same_1', model: 'haiku', route: 'anthropic' }))).value.usage.usedUsd, billedOnce, 'billed once');
+  const totalBilled = async (label) => (await step(label, (w) => w.rau.admin.list(ADMIN))).value.ledgers.reduce((sum, ledger) => sum + ledger.totalUsd, 0);
+  await step('learn with an id', learnAs('plan', { id: 'msg_same_1', model: 'haiku', route: 'anthropic' }));
+  const billedOnce = await totalBilled('billed after the first call');
+  await step('the same id again', learnAs('plan', { id: 'msg_same_1', model: 'haiku', route: 'anthropic' }));
+  assert.equal(await totalBilled('billed after the same id'), billedOnce, 'billed once');
   next.costUsd = 0.000000123;
   await step('learn without id', learnAs('plan', { id: undefined, model: undefined, route: null }));
   await step('status', (w) => w.rau.status('plan'));

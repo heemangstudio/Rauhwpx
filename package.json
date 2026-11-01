@@ -71,6 +71,7 @@
     "asar": true,
     "files": [
       "desktop/**/*",
+      "!desktop/electron-memo/**",
       "rhwp/rhwp-shared/fonts/*.mjs",
       "rhwp/rhwp-studio/dist/**/*",
       "!rhwp/rhwp-studio/dist/samples/**",

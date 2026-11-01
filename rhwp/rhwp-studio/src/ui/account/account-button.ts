@@ -1,4 +1,4 @@
-// 문서 홈 위 막대의 계정 단추: 20px 둥근 사진과 이름(로그아웃이면 '로그인'). 누르면 계정 페이지를 열고, 열려 있으면 닫는다.
+// 문서 홈 위 막대의 계정 단추. 누르면 단추 아래에 프로필 카드를 연다.
 // 데스크톱 계정 API 가 있을 때만 단다(웹 Studio 에는 없다).
 import './account-button.css';
 import { accountDisplayName } from './account-format.ts';
@@ -9,20 +9,27 @@ import type { PlanStore } from '../plan/plan-store.ts';
 
 export function mountAccountButton(
   slot: HTMLElement,
-  { store, plan }: { store: AccountStore; plan: PlanStore | null },
+  { store, plan, openSettings }: { store: AccountStore; plan: PlanStore | null; openSettings?: () => void },
 ): () => void {
   if (!store.api) return () => {};
   const control = document.createElement('button');
   control.type = 'button';
   control.className = 'acct-button';
   control.setAttribute('aria-haspopup', 'dialog');
+  control.setAttribute('aria-expanded', 'false');
   const avatar = createAvatar('acct-button-avatar');
   const label = document.createElement('span');
   label.className = 'acct-button-label';
   control.append(avatar.element, label);
   control.addEventListener('click', () => {
     if (isAccountPageOpen()) closeAccountPage();
-    else openAccountPage({ store, plan });
+    else {
+      const card = openAccountPage({ store, plan, anchor: control, openSettings });
+      if (card) {
+        control.setAttribute('aria-expanded', 'true');
+        void card.closed.then(() => control.setAttribute('aria-expanded', 'false'));
+      }
+    }
   });
   slot.append(control);
 

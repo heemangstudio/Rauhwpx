@@ -19,12 +19,12 @@ export function mockRauMode(params: URLSearchParams): MockRauMode {
 
 export function mockRauStatus(mode: Exclude<MockRauMode, 'off'>, now = Date.now()): RauStatus {
   const base = { ok: true, reason: null, upgradeUrl: MOCK_RAU_UPGRADE_URL } as const;
-  if (mode === 'rau') return { ...base, eligible: true, source: 'plan', allowanceUsd: 8, usedUsd: 2.8, remainingUsd: 5.2, resetsAt: now + 18 * DAY_MS };
-  if (mode === 'trial') return { ...base, eligible: true, source: 'trial', allowanceUsd: 2, usedUsd: 0.65, remainingUsd: 1.35, resetsAt: now + 5 * DAY_MS };
-  if (mode === 'exhausted') return { ...base, eligible: true, source: 'plan', allowanceUsd: 8, usedUsd: 8, remainingUsd: 0, resetsAt: now + 9 * DAY_MS };
+  if (mode === 'rau') return { ...base, eligible: true, source: 'plan', remainingPercent: 65, resetsAt: now + 18 * DAY_MS };
+  if (mode === 'trial') return { ...base, eligible: true, source: 'trial', remainingPercent: 68, resetsAt: now + 5 * DAY_MS };
+  if (mode === 'exhausted') return { ...base, eligible: true, source: 'plan', remainingPercent: 0, resetsAt: now + 9 * DAY_MS };
   return {
     ok: true, eligible: false, source: null, reason: 'rau_plan_required', upgradeUrl: MOCK_RAU_UPGRADE_URL,
-    allowanceUsd: null, usedUsd: null, remainingUsd: null, resetsAt: null,
+    remainingPercent: null, resetsAt: null,
   };
 }
 

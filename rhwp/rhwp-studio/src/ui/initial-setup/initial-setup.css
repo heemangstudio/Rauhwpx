@@ -726,6 +726,19 @@
   transition: background var(--ag-dur-fast) var(--ag-ease-out);
 }
 
+.rhwp-setup-dot[data-entering='true']::before {
+  animation: rhwp-setup-dot-in var(--ag-dur-slow) var(--ag-spring) both;
+}
+
+@keyframes rhwp-setup-dot-in {
+  from { opacity: 0; transform: scale(0.4); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rhwp-setup-dot[data-entering='true']::before { animation: none; }
+}
+
 .rhwp-setup-dot[aria-current='step']::before,
 .rhwp-setup-dot:hover::before {
   background: var(--n-ink);

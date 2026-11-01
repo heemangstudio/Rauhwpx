@@ -14,3 +14,4 @@ desktop/bin/
 rhwp/rhwp-studio/dist-sidebar/
 rhwp/rhwp-studio/sidebar-preview/artifacts/
 /output/
+.electron-memos/
