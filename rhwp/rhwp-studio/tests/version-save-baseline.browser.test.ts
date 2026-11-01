@@ -218,3 +218,73 @@ test('enabling history after unsaved edits records the saved content, not the ed
     await page.close();
   }
 });
+
+test('history turned on while opening a document builds the structural merge manifest at the next commit', { timeout: 60_000 }, async () => {
+  assert.ok(browser);
+  const page = await browser.newPage();
+  try {
+    await page.goto(`${baseUrl}/tests/fixtures/version-store-idb.html`);
+    const result = await page.evaluate(async () => {
+      const [{ WasmBridge }, { EventBus }, { DocumentDirtyState }, versions, { DocumentVersionController }] = await Promise.all([
+        import('/src/core/wasm-bridge.ts'),
+        import('/src/core/event-bus.ts'),
+        import('/src/core/document-dirty-state.ts'),
+        import('/src/versioning/index.ts'),
+        import('/src/versioning/controller.ts'),
+      ]);
+      const wasm = new WasmBridge();
+      await wasm.initialize();
+      wasm.loadDocument(new Uint8Array(await (await fetch('/samples/shift-return.hwp')).arrayBuffer()), 'shift-return.hwp');
+      const eventBus = new EventBus();
+      const dirty = new DocumentDirtyState(eventBus);
+      const store = new versions.VersionGraphStore({ indexedDB: null });
+      const controller = new DocumentVersionController({
+        store, wasm, eventBus, documentState: dirty,
+        getInputHandler: () => null,
+        getDocumentId: () => 'auto-enable-on-open',
+        autoEnable: () => true,
+        agentBridge: {
+          pendingEdits: { hasPending: () => false, onChange: () => () => undefined },
+          onEvent: () => () => undefined,
+          isTurnRunning: () => false,
+          getEditingLease: () => ({ active: false, agent: 'codex' as const }),
+          requestCheckpointTitle: async () => null,
+        },
+      });
+      const coverage = async (id: string) => {
+        const commit = await store.getCommit(id as never);
+        return commit?.mergeManifestId ? (await store.getMergeManifest(commit.mergeManifestId))?.coverage ?? null : null;
+      };
+      try {
+        await controller.documentLoaded();
+        const initial = controller.getState().commits[0]!.id;
+        const openedCoverage = await coverage(initial);
+        wasm.insertText(0, 0, 0, 'EDIT ');
+        dirty.markDirty('typing');
+        eventBus.emit('document-mutated');
+        await controller.checkpoint();
+        const head = controller.getState().commits[0]!.id;
+        return {
+          enabled: controller.getState().enabled,
+          openedCoverage,
+          initialCoverage: await coverage(initial),
+          headCoverage: await coverage(head),
+          commits: controller.getState().commits.length,
+        };
+      } finally {
+        controller.dispose();
+        await store.close();
+        wasm.releaseDocument();
+      }
+    });
+    assert.equal(result.enabled, true);
+    // 문서를 열 때는 비교 스냅샷 manifest 로 바로 켠다.
+    assert.equal(result.openedCoverage, 'compare-fallback');
+    // 다음 커밋이 첫 커밋의 구조 manifest 를 만들어 병합 기준이 끊기지 않는다.
+    assert.equal(result.initialCoverage, 'full-document');
+    assert.equal(result.headCoverage, 'full-document');
+    assert.equal(result.commits, 2);
+  } finally {
+    await page.close();
+  }
+});
