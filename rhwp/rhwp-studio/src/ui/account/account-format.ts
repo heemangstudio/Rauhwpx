@@ -122,10 +122,15 @@ export function planCycleLabel(plan: AccountPlan): string {
   return plan.tier === 'free' || !plan.plan ? '' : CYCLE_LABEL[plan.plan];
 }
 
-/** 다음 결제일이나 끝나는 날. 평생·무료는 빈 글. */
+/** 샀다가 해지한 구독. 끝나는 날까지 쓰고 갱신되지 않는다. 처음부터 갱신이 없는 선물·프로모션 키는 아니다. */
+export function planCancelled(plan: AccountPlan): boolean {
+  return plan.tier !== 'free' && plan.autoRenew === false && Boolean(plan.manageUrl) && !plan.paymentFailed;
+}
+
+/** 갱신일이나 끝나는 날. 평생·무료는 빈 글. */
 export function planTermLine(plan: AccountPlan): string {
   if (plan.tier === 'free' || plan.plan === 'lifetime' || !plan.expiresAt) return '';
-  return plan.autoRenew === false ? `${formatAccountDate(plan.expiresAt)}까지` : `다음 결제 ${formatAccountDate(plan.expiresAt)}`;
+  return plan.autoRenew === false ? `${formatAccountDate(plan.expiresAt)}까지` : `${formatAccountDate(plan.expiresAt)}에 갱신`;
 }
 
 export function paymentFailedLine(plan: AccountPlan): string {
@@ -134,13 +139,15 @@ export function paymentFailedLine(plan: AccountPlan): string {
     : '결제가 되지 않았어요. 결제 수단을 바꿔 주세요.';
 }
 
-/** 라이선스 줄의 설명. 예: Hama · 연간 · 2027년 10월 20일까지 */
+/** 라이선스 줄의 설명. 예: Hama · 연간 · 2027년 10월 20일에 갱신 */
 export function licenseLine(license: AccountLicense): string {
   const parts = [
     license.tier === 'beta' ? '베타' : license.edition ? EDITION_LABEL[license.edition] : '',
     license.plan ? CYCLE_LABEL[license.plan] : '',
     license.plan !== 'lifetime' && license.expiresAt
-      ? (license.status === 'expired' ? `${formatAccountDate(license.expiresAt)} 만료` : `${formatAccountDate(license.expiresAt)}까지`)
+      ? (license.status === 'expired' ? `${formatAccountDate(license.expiresAt)} 만료`
+        : license.autoRenew === true && license.status !== 'revoked' ? `${formatAccountDate(license.expiresAt)}에 갱신`
+        : `${formatAccountDate(license.expiresAt)}까지`)
       : '',
   ];
   return parts.filter(Boolean).join(' · ');

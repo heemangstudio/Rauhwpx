@@ -22,6 +22,8 @@ import {
   planTermLine,
   platformLabel,
   rauCredits,
+  planCancelled,
+  formatAccountDate,
   rauCreditsLine,
   rauResetLine,
   trialAvailable,
@@ -63,6 +65,10 @@ export interface AccountPageHandle {
   close(): void;
   closed: Promise<void>;
 }
+
+/** 해지하러 Groble 을 연 뒤 이때까지는 창에 돌아올 때마다 상태를 다시 받는다. 해지는 웹훅으로 서버에 온다. */
+let cancelRefreshUntil = 0;
+const CANCEL_REFRESH_MS = 60 * 60 * 1000;
 
 let openPage: { handle: AccountPageHandle; reveal(options: AccountPageOptions): void } | null = null;
 
@@ -243,6 +249,23 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
   const manage = button('acct-btn', '구독 관리');
   planActions.append(upgrade, manage);
   planHead.append(planName, planActions);
+  // 구독 관리: 해지와 결제 정보. 해지는 Groble 구매자 페이지에서 끝난다.
+  const managePanel = el('div', 'acct-manage');
+  managePanel.id = 'acct-manage-panel';
+  manage.setAttribute('aria-controls', managePanel.id);
+  const manageMenu = el('div', 'acct-manage-actions');
+  const cancelPlan = button('acct-btn', '구독 해지');
+  const billing = button('acct-btn', '결제 정보');
+  manageMenu.append(cancelPlan, billing);
+  const cancelStep = el('div', 'acct-manage-step');
+  const cancelText = el('p', 'acct-manage-text');
+  cancelText.setAttribute('role', 'status');
+  const cancelActions = el('div', 'acct-manage-actions');
+  const cancelOpen = button('acct-btn acct-btn-danger', 'Groble에서 해지');
+  const cancelBack = button('acct-btn acct-btn-quiet', '돌아가기');
+  cancelActions.append(cancelOpen, cancelBack);
+  cancelStep.append(cancelText, cancelActions);
+  managePanel.append(manageMenu, cancelStep);
   const planTerm = el('p', 'acct-meta acct-plan-term');
   // Rau 크레딧: 남은 비율, 막대, 초기화 날짜(체험은 남은 날).
   const credits = el('div', 'acct-rau-credits');
@@ -261,7 +284,7 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
   const fixPayment = button('acct-btn acct-btn-primary', '결제 수단 바꾸기');
   planAlert.append(planAlertText, fixPayment);
   const planError = alertLine();
-  planSection.root.append(planHead, planTerm, credits, planAlert, planError);
+  planSection.root.append(planHead, managePanel, planTerm, credits, planAlert, planError);
 
   // ── 사용량 ──────────────────────────────────────────
   const statsSection = section('stats', '사용량');
@@ -360,6 +383,7 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
   let claimBusy = false;
   let signOutBusy = false;
   let manageBusy = false;
+  let manageStep: 'closed' | 'menu' | 'confirm' | 'opened' = 'closed';
   let deleting = false;
   let hasShownProfile = false;
 
@@ -375,15 +399,18 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
     }
   }
 
-  async function openManage(control: HTMLButtonElement, errorLine: HTMLElement): Promise<void> {
-    if (manageBusy) return;
+  /** 브라우저를 열었으면 참. */
+  async function openManage(control: HTMLButtonElement, errorLine: HTMLElement): Promise<boolean> {
+    if (manageBusy) return false;
     manageBusy = true;
     control.disabled = true;
     try {
       await api.openManage();
       say(errorLine, '');
+      return true;
     } catch {
       say(errorLine, '브라우저를 열지 못했어요.');
+      return false;
     } finally {
       manageBusy = false;
       control.disabled = false;
@@ -521,6 +548,7 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
     fragment.append(el('span', 'acct-plan-tier', ACCOUNT_TIER_LABEL[tier]));
     const cycle = planCycleLabel(current.plan);
     if (cycle) fragment.append(el('span', 'acct-plan-cycle', cycle));
+    if (planCancelled(current.plan)) fragment.append(el('span', 'acct-badge', '해지됨'));
     return fragment;
   }
 
@@ -528,6 +556,32 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
     const mark = el('span', 'acct-rau-mark');
     mark.setAttribute('aria-hidden', 'true');
     return mark;
+  }
+
+  /** 갱신 중인 구독에만 해지 단계를 편다. 해지가 들어오면 접고 날짜 줄과 표로 보인다. */
+  function renderManage(planInfo: AccountStatus['plan']): void {
+    const cancelled = planCancelled(planInfo);
+    if (cancelled) cancelRefreshUntil = 0;
+    const renews = !manage.hidden && !cancelled;
+    if (!renews) manageStep = 'closed';
+    if (renews) manage.setAttribute('aria-expanded', manageStep === 'closed' ? 'false' : 'true');
+    else manage.removeAttribute('aria-expanded');
+    managePanel.hidden = manageStep === 'closed';
+    manageMenu.hidden = manageStep !== 'menu';
+    cancelStep.hidden = manageStep !== 'confirm' && manageStep !== 'opened';
+    cancelText.textContent = manageStep === 'opened'
+      ? 'Groble에서 해지를 마치면 여기에 표시됩니다.'
+      : `취소해도 ${planInfo.expiresAt ? formatAccountDate(planInfo.expiresAt) : '이번 기간'}까지는 사용 가능합니다`;
+  }
+
+  function setManageStep(step: typeof manageStep, focus?: HTMLElement): void {
+    manageStep = step;
+    render();
+    focus?.focus({ preventScroll: true });
+  }
+
+  function refreshAfterCancel(): void {
+    if (Date.now() < cancelRefreshUntil) void api.refresh().catch(() => {});
   }
 
   /** Rau 크레딧 칸을 채운다. Rau 자격이 없으면 숨긴다. */
@@ -645,6 +699,7 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
     planName.replaceChildren(planNameNode(current));
     planSection.root.dataset.tier = planInfo.tier;
     manage.hidden = !planInfo.manageUrl || planInfo.paymentFailed;
+    renderManage(planInfo);
     // 결제가 실패한 동안은 지난 결제일 대신 안내 한 줄만 둔다.
     const trialEnded = current.trial?.state === 'ended' && planInfo.tier !== 'rau';
     const term = planInfo.paymentFailed ? '' : trialEnded ? '무료 체험이 끝났어요' : planTermLine(planInfo);
@@ -762,7 +817,25 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
     if (!plan) return;
     openPlanCard({ store: plan, license: null, account: store, ...(upgradeFocus ? { focus: upgradeFocus } : {}) });
   });
-  manage.addEventListener('click', () => { void openManage(manage, planError); });
+  manage.addEventListener('click', () => {
+    const current = status();
+    if (current && planCancelled(current.plan)) {
+      void openManage(manage, planError);
+      return;
+    }
+    if (manageStep === 'closed') setManageStep('menu', cancelPlan);
+    else setManageStep('closed');
+  });
+  cancelPlan.addEventListener('click', () => setManageStep('confirm', cancelOpen));
+  billing.addEventListener('click', () => { void openManage(billing, planError); });
+  cancelBack.addEventListener('click', () => setManageStep('menu', cancelPlan));
+  cancelOpen.addEventListener('click', () => {
+    void openManage(cancelOpen, planError).then((opened) => {
+      if (!opened) return;
+      cancelRefreshUntil = Date.now() + CANCEL_REFRESH_MS;
+      setManageStep('opened');
+    });
+  });
   fixPayment.addEventListener('click', () => { void openManage(fixPayment, planError); });
   redeemInput.addEventListener('input', () => {
     say(redeemNote, '');
@@ -882,6 +955,7 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
     document.removeEventListener('keydown', onKeyDown, true);
     document.removeEventListener('pointerdown', onPointerDown, true);
     window.removeEventListener('resize', positionCard);
+    window.removeEventListener('focus', refreshAfterCancel);
     if (!embedded) openPage = null;
     page.classList.remove('acct-page-open');
     const remove = (): void => { layer.remove(); };
@@ -914,6 +988,8 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
 
   (options.container ?? document.body).append(layer);
   positionCard();
+  window.addEventListener('focus', refreshAfterCancel);
+  refreshAfterCancel();
   if (!embedded) {
     window.addEventListener('resize', positionCard);
     document.addEventListener('keydown', onKeyDown, true);

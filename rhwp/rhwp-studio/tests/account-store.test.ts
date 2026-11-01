@@ -4,6 +4,9 @@ import test from 'node:test';
 import {
   accountRenewalPrompt,
   deleteConfirmMatches,
+  licenseLine,
+  planCancelled,
+  planTermLine,
   rauCredits,
   rauCreditsLine,
   rauResetLine,
@@ -159,6 +162,25 @@ test('the renewal notice follows the account plan', () => {
   assert.equal(accountRenewalPrompt(lapsed)?.title, 'Hama 기간이 끝났어요');
   assert.equal(accountRenewalPrompt({ ...lapsed, licenses: [{ ...lapsed.licenses[0]!, edition: 'rau' }] })?.title, 'Rau 기간이 끝났어요');
   assert.equal(accountRenewalPrompt({ ...lapsed, licenses: [{ ...lapsed.licenses[0]!, plan: 'lifetime' }] }), null);
+});
+
+test('a renewing plan shows its renewal day, and a cancelled plan shows the day it ends', () => {
+  const expiresAt = Date.UTC(2027, 9, 20, 3);
+  const renewing: AccountStatus['plan'] = { ...FREE_PLAN, tier: 'hama', edition: 'hama', plan: 'annual', expiresAt, autoRenew: true, manageUrl: 'https://groble.im/manage/purchase' };
+  assert.equal(planTermLine(renewing), '2027년 10월 20일에 갱신');
+  assert.equal(planCancelled(renewing), false);
+  const cancelled = { ...renewing, autoRenew: false };
+  assert.equal(planTermLine(cancelled), '2027년 10월 20일까지');
+  assert.equal(planCancelled(cancelled), true);
+  // 처음부터 갱신이 없는 선물·프로모션 키는 해지한 것이 아니다.
+  const gift = { ...cancelled, manageUrl: null };
+  assert.equal(planTermLine(gift), '2027년 10월 20일까지');
+  assert.equal(planCancelled(gift), false);
+  assert.equal(planCancelled({ ...cancelled, paymentFailed: true }), false);
+
+  const license = { keyId: 'k1', maskedKey: 'HAMA-…', tier: 'paid' as const, edition: 'hama' as const, plan: 'annual' as const, status: 'active' as const, expiresAt, autoRenew: true, primary: true };
+  assert.equal(licenseLine(license), 'Hama · 연간 · 2027년 10월 20일에 갱신');
+  assert.equal(licenseLine({ ...license, autoRenew: false }), 'Hama · 연간 · 2027년 10월 20일까지');
 });
 
 test('Rau credits show what is left of the allowance, with the reset day or the trial days', () => {

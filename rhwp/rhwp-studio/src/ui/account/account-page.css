@@ -948,6 +948,46 @@ html:is(.desktop-mac, .desktop-windows) .acct-page.acct-embedded {
   font-size: var(--ag-fs-body);
 }
 
+.acct-plan-name .acct-badge {
+  margin-left: 0;
+}
+
+.acct-manage {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.acct-manage[hidden],
+.acct-manage-actions[hidden],
+.acct-manage-step[hidden] {
+  display: none;
+}
+
+.acct-manage-step {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.acct-manage:not([hidden]) + .acct-plan-term {
+  margin-top: 10px;
+}
+
+.acct-manage-text {
+  margin: 0;
+  color: var(--n-ink-secondary);
+  font-size: var(--ag-fs-secondary);
+  line-height: 1.5;
+}
+
+.acct-manage-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .acct-plan-term {
   margin-top: 4px;
   font-size: var(--ag-fs-secondary);

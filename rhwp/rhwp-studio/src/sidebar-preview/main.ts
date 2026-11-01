@@ -223,7 +223,7 @@ const liveChat = reload === 'running' || reload === 'question' || reload === 'en
  * 요금제 카드의 '키 직접 입력'이 쓰도록 라이선스 대역도 무료 상태로 함께 둔다(HAMA- 키가 Hama 를 연다).
  */
 /*
- * 계정. `account=signed-out|signing-in|choose-device|free|hama|rau|rau-trial|trial-ended|payment-failed|offline` 이면
+ * 계정. `account=signed-out|signing-in|choose-device|free|hama|rau|rau-trial|trial-ended|annual|cancelled|payment-failed|offline` 이면
  * 데스크톱 계정 API 가 생기고, `plan=` 이 없으면 요금제 대역도 계정의 등급과 로그인 여부를 따라 함께 생긴다.
  * `open=plans`(`&focus=hama|rau`)는 요금제 카드를, `open=account`(`&section=plan|devices|licenses|sign-in`)는 계정 페이지를
  * 띄운 채로 연다(스크린숏용).
