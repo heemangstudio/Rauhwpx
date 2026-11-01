@@ -191,7 +191,6 @@ export function redactableTail(value, limit) {
  * @property {string} [effort]
  * @property {string} [resumeSessionId] 이어 받을 네이티브 세션 커서. 허브가 canResume 으로 확인한 값만 넘긴다.
  * @property {number} [contextWindow] 공급자가 알려 주지 않을 때 쓰는 모델 콘텍스트 창 크기 (pi).
- * @property {'standard'|'fast'} [serviceTier]
  * @property {string} [toolProfile]
  * @property {string} [agentRole]
  * @property {string} [systemPromptOverride]

@@ -352,7 +352,7 @@ origin and is unaffected.
   `node sidebar-preview/check.mjs rau-tab` covers Settings → Rau: the lock on Free and Hama
   (`Rau에서 쓸 수 있어요`, opening the 요금제 card on Rau) and the open tab on Rau; editing,
   deleting, adding, undoing and restoring rules; the 문체 학습 running and result cards; the
-  composer pill while the tab is closed, the invite and legacy chips and `/문체학습`; and the chat
+  composer pill while the tab is closed, and the invite and legacy chips; and the chat
   marker's labels from `item.change` with account undo. It saves `rau-tab-open.png`,
   `rau-tab-memory.png`, `rau-tab-running.png`, `rau-tab-result.png`, `rau-tab-locked.png`,
   `rau-tab-dark.png`, `rau-pill.png` and `rau-marker.png` in `artifacts/`.

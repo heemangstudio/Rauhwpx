@@ -53,7 +53,7 @@ function bridgeFixture(overrides: Record<string, unknown> = {}) {
     projectWorktreeBinding: null, projectBindPending: false,
     pendingChatPermissionRequests: new Map(), pendingPermissionCancellations: new Map(), chatPermissionGrants: [],
     pendingInterrupt: false, pendingSetupCancels: new Map(),
-    selectedAgent: 'pi', selectedModel: null, selectedEffort: null, permissionProfile: 'safe', serviceTier: 'standard',
+    selectedAgent: 'pi', selectedModel: null, selectedEffort: null, permissionProfile: 'safe',
     chatHistory: [], queuedMessages: [], messageReceipts: new Map(), awaitingAcceptanceId: null,
     turnSnapshots: { reset() {} },
     projects: { worktrees },

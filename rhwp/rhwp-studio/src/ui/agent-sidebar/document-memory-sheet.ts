@@ -79,7 +79,7 @@ const ERROR_TEXT: Record<string, string> = {
 const OFFLINE_TEXT = '에이전트 허브에 연결되어 있지 않습니다.';
 const HISTORY_NOTE_MS = 3_200;
 
-/** 기록에서 배우기 결과의 안내. 배운 것이 있으면 구분선이 남으므로 null. 시트와 /learn 이 함께 쓴다. */
+/** 기록에서 배우기 결과의 안내. 배운 것이 있으면 구분선이 남으므로 null. 시트가 쓴다. */
 export function historyOutcomeNote(outcome: TasteHistoryOutcome): { text: string; error: boolean } | null {
   if (outcome.status === 'review') return { text: '검토 중인 변경이 있습니다.', error: false };
   if (outcome.status === 'empty') return { text: '배울 기록이 없습니다.', error: false };

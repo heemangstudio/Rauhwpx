@@ -2,7 +2,7 @@
 //  - 잠금: Free·Hama 는 자물쇠와 요금제 카드(Rau 칸), 요금제 API 가 없으면 열려 있고 잔잔한 안내.
 //  - 기억: 문체·용어 묶음과 강도 그릇, 지우기·더하기(있는 규칙은 고칠 수 없음), 물러난 기억 되살리기, 최근 변화 되돌리기.
 //  - 문체 학습: 도는 카드(파일별 진행, 찾는 규칙이 쌓임) → 결과 카드, 멈추기, 실패, 직접 올리기, 입력창 알약.
-//  - 입력창: 권유 칩, 이전 원고 칩, /문체학습.
+//  - 입력창: 권유 칩, 이전 원고 칩.
 //  - 채팅 구분선: item.change 의 표, 강도, 계정 줄 되돌리기, 모두 보기 → Rau 탭.
 import assert from 'node:assert/strict';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -441,28 +441,6 @@ async function checkLegacyChip({ page, open, screenshot }) {
   assert.equal((await memory(page)).rules.length, 0);
 }
 
-async function checkSlashCommand({ page, open }) {
-  const submit = async (value) => {
-    await page.focus('.ag-input');
-    await page.type('.ag-input', value);
-    await page.keyboard.press('Enter');
-  };
-  // Rau: 설정 → Rau 가 열린다. 에이전트에게는 가지 않는다.
-  await open('reset=1&plan=rau&userMemory=sample');
-  await submit('/문체학습');
-  await page.waitForSelector(PANE, { visible: true });
-  assert.deepEqual(await page.evaluate(() => window.sidebarPreview.snapshot().messageTexts), []);
-  assert.equal(await page.$eval('.ag-input', (input) => input.value), '');
-  assert.equal(await page.$$eval('.ag-msg-user', (nodes) => nodes.length), 0);
-
-  // Hama: 요금제 카드가 Rau 칸에 맞춰 열린다. 탭은 열리지 않는다.
-  await open('reset=1&plan=hama&userMemory=sample');
-  await submit('/문체학습');
-  await page.waitForSelector('.ag-pricing-col[data-plan="rau"][data-focus="true"]', { visible: true });
-  assert.equal(await shown(page, PANE), false);
-  assert.deepEqual(await page.evaluate(() => window.sidebarPreview.snapshot().messageTexts), []);
-}
-
 // ── 채팅 구분선 ─────────────────────────────────────────
 
 const labelItems = () => [
@@ -640,7 +618,6 @@ export async function checkRauTab(harness) {
     await checkUpload(h);
     await checkComposerChips(h);
     await checkLegacyChip(h);
-    await checkSlashCommand(h);
     await checkMarker(h);
     await checkDark(h);
   } finally {

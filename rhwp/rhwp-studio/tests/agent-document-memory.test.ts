@@ -132,7 +132,7 @@ async function connectedBridge({ openedFromFile = true }: { openedFromFile?: boo
   socket.receive({
     type: 'welcome', protocol: 5,
     session: {
-      agent: 'pi', model: 'mock-model', effort: null, permissionProfile: 'safe', serviceTier: 'standard',
+      agent: 'pi', model: 'mock-model', effort: null, permissionProfile: 'safe',
       sessionId: 'provider-1', threadId: 'thread-1', documentId: 'doc-1', documentName: '보고서.hwpx',
       status: 'idle', turnId: null, activeTemplateId: null, pendingUserQuestion: null,
       workflow: 'direct', phase: 'direct', capabilityEpoch: 1, latestPlan: null,

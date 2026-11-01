@@ -1,4 +1,4 @@
-import type { AgentName, PiModelConfig, ServiceTier } from './types.ts';
+import type { AgentName, PiModelConfig } from './types.ts';
 
 export interface AgentModelOption { id: string; label: string }
 export interface ModelCatalogEntry extends AgentModelOption { description?: string; supportedEfforts?: string[] }
@@ -267,5 +267,3 @@ export function resolveEffortForAgent(agent: AgentName, effort?: string | null, 
   return effort && isEffortForAgent(agent, effort, model) ? effort : defaultEffortForAgent(agent, model);
 }
 export function labelForEffort(agent: AgentName, effortId: string, model?: string | null): string { return effortsForAgent(agent, model).find((effort) => effort.id === effortId)?.label ?? effortId; }
-export function agentSupportsFast(agent: AgentName): boolean { return agent === 'codex'; }
-export function resolveServiceTier(agent: AgentName, requested?: string | null): ServiceTier { return agent === 'codex' && requested === 'fast' ? 'fast' : 'standard'; }

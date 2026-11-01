@@ -43,7 +43,7 @@ Each open document keeps its own agent session, so agents keep working when you 
 
 ### Modes
 
-The mode sets how far the agent may change the document. Pick it from the mode button in the composer, cycle with `Shift+Tab`, or start a message with `/chat`, `/plan`, `/agent` or `/full`.
+The mode sets how far the agent may change the document. Pick it from the mode button in the composer or cycle with `Shift+Tab`.
 
 | Mode | What it does to the document | Use it for |
 | --- | --- | --- |

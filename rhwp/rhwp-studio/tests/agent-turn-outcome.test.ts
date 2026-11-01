@@ -444,7 +444,6 @@ function stoppedBeforeWelcome(nextThreadId: string | null) {
     awaitingWelcome: true,
     chatStartSent: false,
     chatHistory: [],
-    serviceTier: 'standard',
     sendJson(frame: any) { frames.push(frame); return true; },
   });
   bridge.stopChat();
@@ -485,7 +484,7 @@ test('a chat stopped before the hub answers for another chat or a draft is stopp
 test('a stop with an open welcome goes out at once', () => {
   const { bridge } = welcomeFixture({ turnRunning: false, activeAgent: 'claude' });
   const frames: any[] = [];
-  Object.assign(bridge, { awaitingWelcome: false, chatHistory: [], serviceTier: 'standard', sendJson(frame: any) { frames.push(frame); return true; } });
+  Object.assign(bridge, { awaitingWelcome: false, chatHistory: [], sendJson(frame: any) { frames.push(frame); return true; } });
   bridge.stopChat();
   assert.deepEqual(frames.map((frame) => frame.type), ['chat-stop']);
 });

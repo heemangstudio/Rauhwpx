@@ -15,7 +15,6 @@ function thread(id: string, documentId: string | null, docKey: string | null): C
     agent: 'claude',
     model: 'claude-sonnet-4-6',
     effort: 'medium',
-    serviceTier: 'standard',
     workflow: 'direct',
     documentId,
     docKey,
