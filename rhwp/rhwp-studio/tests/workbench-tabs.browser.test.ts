@@ -124,7 +124,7 @@ test('wide browser panes keep the chat header out of tab pointer targets', { tim
       vite.middlewares.use((request, response, next) => {
         if (request.url !== '/workspace-tabs-harness') return next();
         response.setHeader('Content-Type', 'text/html');
-        response.end('<!doctype html><html class="desktop-mac"><body><aside class="ag-root ag-fullscreen ag-rail-collapsed ag-workbench-open ag-review-collapsed" style="--ag-review-w:1060px;--ag-workspace-lead-inset:80px;--ag-text:#222;--ag-text-secondary:#666;--ag-bg:#fff;--ag-font:system-ui"><div class="ag-stage"><header class="ag-workspace-bar"><div class="ag-workspace-leading">Hama</div><div class="ag-workspace-title"></div><div class="ag-workspace-document-context"><span class="ag-workspace-chat-title">A long conversation title</span><span class="ag-workspace-document-name">document.hwpx</span></div><div class="ag-workspace-trailing"><span class="ag-workspace-agent-context">Codex</span></div></header></div></aside></body></html>');
+        response.end('<!doctype html><html class="desktop-mac"><body><aside class="ag-root ag-fullscreen ag-rail-collapsed ag-workbench-open ag-review-collapsed" style="--ag-review-w:1060px;--ag-workspace-lead-inset:80px;--ag-text:#222;--ag-text-secondary:#666;--ag-bg:#fff;--ag-font:system-ui"><div class="ag-stage"><header class="ag-workspace-bar"><div class="ag-workspace-leading">Hama</div><div class="ag-workspace-document-context"><span class="ag-workspace-chat-title">A long conversation title</span><span class="ag-workspace-document-name">document.hwpx</span></div><div class="ag-workspace-trailing"><span class="ag-workspace-agent-context">Codex</span></div></header></div></aside></body></html>');
       });
     } }],
   });

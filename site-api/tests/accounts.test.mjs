@@ -32,7 +32,7 @@ const REDIRECT = 'https://site.test/v1/account/auth/callback';
 const RAU_KEY = ['test', 'openrouter', 'placeholder'].join('-');
 // A key bought at planPaid's default time bills monthly from then.
 const RAU_RESETS_AT = Date.parse('2026-11-20T05:22:11.000Z');
-const NO_RAU = { eligible: false, source: null, allowanceUsd: null, usedUsd: null, remainingUsd: null, resetsAt: null };
+const NO_RAU = { eligible: false, source: null, remainingPercent: null, resetsAt: null };
 
 function pkce() {
   const verifier = randomBytes(32).toString('base64url');
@@ -126,6 +126,21 @@ async function setup(t, env = {}, { clock = { now: T0 } } = {}) {
     giftStatus: (lease) => fetch(`${origin}/v1/gift/status`, { headers: bearer(lease) }).then(json),
   };
 }
+
+test('a bought plan becomes primary over a promo key that runs longer', async (t) => {
+  const s = await setup(t);
+  const me = await s.signIn({ email: 'promo@example.com' }, device(1));
+  const issued = await s.post('/v1/admin/gift-codes/issue', { plan: 'rau', durationMonths: 12, count: 1 }, s.bearer(ADMIN)).then(s.json);
+  assert.equal(issued.status, 200, JSON.stringify(issued.body));
+  const redeemed = await s.post('/v1/account/gift-codes/redeem', { code: issued.body.codes[0] }, s.bearer(me.session)).then(s.json);
+  assert.deepEqual([redeemed.body.plan.tier, redeemed.body.plan.plan, redeemed.body.plan.autoRenew, redeemed.body.plan.manageUrl], ['rau', null, false, null]);
+
+  await s.buy(planPaid({ sku: 'rauMonthly', merchantUid: 'promo_buy', ref: 'ref-promo', email: 'promo@example.com' }));
+  const { plan, licenses } = (await s.refresh(me.session)).body;
+  assert.deepEqual([plan.tier, plan.plan, plan.autoRenew], ['rau', 'monthly', true]);
+  assert.ok(plan.manageUrl);
+  assert.equal(licenses.length, 2);
+});
 
 test('config: defaults, provider and device-limit checks fail startup on a typo', () => {
   const config = resolveAccountConfig({});
@@ -299,7 +314,7 @@ test('the token answer is the whole account payload with a v2 lease', async (t) 
     session: body.session,
     account: { id: body.account.id, email: 'new@example.com', name: 'new', avatar: null, provider: 'google', createdAt: new Date(T0).toISOString() },
     plan: { tier: 'free', keyId: null, edition: null, plan: null, expiresAt: null, autoRenew: null, paymentFailed: false, paymentGraceEndsAt: null, manageUrl: null, rau: NO_RAU },
-    trial: { state: 'available', startedAt: null, endsAt: null, days: 7, allowanceUsd: 2 },
+    trial: { state: 'available', startedAt: null, endsAt: null, days: 7 },
     licenses: [],
     devices: [{ id: 'device-0001', name: '맥북 에어', platform: 'darwin', appVersion: '2.1.0', addedAt: T0, lastSeenAt: T0, current: true }],
     deviceLimit: 5,
@@ -427,14 +442,14 @@ test('a v2 lease reaches the gift and Rau with the license each purpose needs, a
   const gift = await s.giftStatus(mixed.lease);
   assert.deepEqual([gift.status, gift.body.eligible], [200, true], 'the gift picks the beta key');
   const notRau = (await s.rauStatus(mixed.lease)).body;
-  assert.deepEqual([notRau.eligible, notRau.reason, notRau.usedUsd], [false, 'rau_plan_required', null]);
+  assert.deepEqual([notRau.eligible, notRau.reason, notRau.remainingPercent], [false, 'rau_plan_required', null]);
 
   const rauUser = await s.signIn({ email: 'rau@example.com' }, device(2));
   await s.buy(planPaid({ sku: 'rauMonthly', merchantUid: 'rau_1', ref: 'ref-rau', email: 'rau@example.com' }));
   const refreshed = (await s.refresh(rauUser.session)).body;
-  assert.deepEqual([refreshed.plan.tier, refreshed.plan.edition, refreshed.plan.rau], ['rau', 'rau', { eligible: true, source: 'plan', allowanceUsd: 8, usedUsd: 0, remainingUsd: 8, resetsAt: RAU_RESETS_AT }]);
+  assert.deepEqual([refreshed.plan.tier, refreshed.plan.edition, refreshed.plan.rau], ['rau', 'rau', { eligible: true, source: 'plan', remainingPercent: 100, resetsAt: RAU_RESETS_AT }]);
   const rau = (await s.rauStatus(refreshed.lease)).body;
-  assert.deepEqual([rau.eligible, rau.source, rau.allowanceUsd], [true, 'plan', 8]);
+  assert.deepEqual([rau.eligible, rau.source, rau.remainingPercent], [true, 'plan', 100]);
   assert.equal((await s.giftStatus(refreshed.lease)).body.eligible, false);
 
   // A free account: Rau answers rau_plan_required, the gift refuses the lease.
@@ -456,7 +471,7 @@ test('v1 license leases keep working unchanged, and never carry a trial', async 
     const activated = await (await s.post('/v1/license/activate', { key, deviceId: `mac-v1-${sku}`, platform: 'darwin' })).json();
     assert.equal(JSON.parse(Buffer.from(activated.lease.split('.')[0], 'base64url')).v, 1);
     const rau = await s.rauStatus(activated.lease);
-    assert.deepEqual([rau.status, rau.body.eligible, rau.body.allowanceUsd], [200, eligible, eligible ? 8 : null], sku);
+    assert.deepEqual([rau.status, rau.body.eligible, rau.body.remainingPercent], [200, eligible, eligible ? 100 : null], sku);
     assert.equal((await s.giftStatus(activated.lease)).body.eligible, false);
   }
   // The account's trial belongs to its account lease only.
@@ -732,12 +747,12 @@ test('a trial gives a signed-in account Rau for 7 days with $2, once, and a Hama
   const started = await s.startTrial(me.session);
   assert.equal(started.status, 200, JSON.stringify(started.body));
   const body = started.body;
-  assert.deepEqual(body.trial, { state: 'active', startedAt: T0, endsAt: TRIAL_END, days: 7, allowanceUsd: 2 });
+  assert.deepEqual(body.trial, { state: 'active', startedAt: T0, endsAt: TRIAL_END, days: 7 });
   assert.deepEqual([body.plan.tier, body.plan.edition, body.plan.keyId], ['rau', 'hama', body.licenses[0].keyId], 'the trial lifts the tier, the Hama key stays primary');
-  assert.deepEqual(body.plan.rau, { eligible: true, source: 'trial', allowanceUsd: 2, usedUsd: 0, remainingUsd: 2, resetsAt: TRIAL_END });
+  assert.deepEqual(body.plan.rau, { eligible: true, source: 'trial', remainingPercent: 100, resetsAt: TRIAL_END });
   assert.equal(verifyAccountLease(body.lease, keys, { now: T0 }).payload.tier, 'rau');
   const status = (await s.rauStatus(body.lease)).body;
-  assert.deepEqual([status.eligible, status.source, status.allowanceUsd, status.resetsAt], [true, 'trial', 2, new Date(TRIAL_END).toISOString()]);
+  assert.deepEqual([status.eligible, status.source, status.remainingPercent, status.resetsAt], [true, 'trial', 100, new Date(TRIAL_END).toISOString()]);
   assert.equal((await s.stored()).accounts[me.account.id].rauTrial.endsAt, new Date(TRIAL_END).toISOString());
 
   assert.deepEqual(await s.startTrial(me.session), { status: 409, body: { ok: false, error: 'trial_used' } });
@@ -759,15 +774,15 @@ test('a trial ends once its $2 is spent: just under it Rau still runs, at it Rau
   const period = { start: T0, end: TRIAL_END, source: 'trial' };
   await seedRauSpend(s, me.account.id, 1.99, period);
   const under = (await s.refresh(me.session)).body;
-  assert.deepEqual([under.trial.state, under.plan.rau.usedUsd, under.plan.rau.remainingUsd], ['active', 1.99, 0.01]);
-  assert.equal((await s.rauStatus(under.lease)).body.remainingUsd, 0.01);
+  assert.deepEqual([under.trial.state, under.plan.rau.remainingPercent], ['active', 1]);
+  assert.equal((await s.rauStatus(under.lease)).body.remainingPercent, 1);
   await seedRauSpend(s, me.account.id, 2, period);
   const spent = (await s.refresh(me.session)).body;
   assert.deepEqual([spent.trial.state, spent.plan.tier, spent.plan.rau], ['ended', 'free', NO_RAU]);
   const status = (await s.rauStatus(spent.lease)).body;
-  assert.deepEqual([status.eligible, status.source, status.remainingUsd, status.resetsAt], [true, 'trial', 0, new Date(TRIAL_END).toISOString()]);
+  assert.deepEqual([status.eligible, status.source, status.remainingPercent, status.resetsAt], [true, 'trial', 0, new Date(TRIAL_END).toISOString()]);
   const learn = await s.post('/v1/rau/learn', { prompt: 'x' }, { authorization: `Bearer ${spent.lease}` });
-  assert.deepEqual([learn.status, await learn.json()], [402, { ok: false, error: 'rau_credits_exhausted', allowanceUsd: 2, usedUsd: 2, resetsAt: new Date(TRIAL_END).toISOString() }]);
+  assert.deepEqual([learn.status, await learn.json()], [402, { ok: false, error: 'rau_credits_exhausted', resetsAt: new Date(TRIAL_END).toISOString() }]);
 
   s.clock.now = TRIAL_END;
   const over = (await s.refresh(me.session)).body;

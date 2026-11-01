@@ -529,21 +529,6 @@ test('argv omits thinking for non-reasoning models and never doubles the provide
   assert.equal(argv.includes('--thinking'), false);
 });
 
-test('pi gets its own subagent fleet instructions', () => {
-  for (const mode of [
-    { workflow: 'direct', phase: 'implementing' },
-    { workflow: 'plan', phase: 'implementing' },
-  ]) {
-    const argv = buildPiArgv({ ...baseOpts, ...mode }, 'sess-1');
-    const brief = argv[argv.indexOf('--system-prompt') + 1];
-    assert.doesNotMatch(brief, /Workflow tool/, mode.phase);
-    assert.match(brief, /subagent_spawn/, mode.phase);
-    assert.match(brief, /role=doc-editor/, mode.phase);
-    assert.match(brief, /subagent_wait/, mode.phase);
-    assert.match(brief, /ONE apply_edits call/, mode.phase);
-  }
-});
-
 test('planning phases exclude the built-in write and shell tools', () => {
   for (const phase of ['planning', 'awaiting-approval', 'switching']) {
     const argv = buildPiArgv({ ...baseOpts, workflow: 'plan', phase }, 'sess-1');

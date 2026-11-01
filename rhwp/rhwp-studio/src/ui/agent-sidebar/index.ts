@@ -12,7 +12,7 @@ import './plan-presentation.css';
 import '../../styles/inline-rename.css';
 import '../../styles/worktree-chip.css';
 import { confirmSheet, dismissOpenSheets, openSheet } from './sheet.ts';
-import { historyOutcomeNote, openDocumentMemorySheet, type DocumentMemorySheetHandle } from './document-memory-sheet.ts';
+import { openDocumentMemorySheet, type DocumentMemorySheetHandle } from './document-memory-sheet.ts';
 import { createTasteMarkerView, type TasteMarkerView } from './taste-marker.ts';
 import { tasteMarkerLabel } from '../../agent/taste.ts';
 import { installSelectMenus } from './select-menu.ts';
@@ -35,7 +35,6 @@ import type {
   CompactionSupport,
   CompactionTrigger,
   PermissionProfile,
-  ServiceTier,
   PendingChangeSet,
   PendingEditsChangeEvent,
   PendingOp,
@@ -62,8 +61,6 @@ import {
   modelSupportsImages,
   resolveEffortForAgent,
   resolveModelForAgent,
-  resolveServiceTier,
-  agentSupportsFast,
 } from '../../agent/models.ts';
 import { loadAgentPrefs, type AgentPrefs } from '../../agent/agent-prefs.ts';
 import { userSettings } from '../../core/user-settings.ts';
@@ -352,7 +349,7 @@ import {
   type TurnInterruptionRowState,
 } from './turn-interruption-row.ts';
 import { createRequestCardController } from './request-card.ts';
-import { createModeMenu, parseModeCommand } from './mode-menu.ts';
+import { createModeMenu } from './mode-menu.ts';
 import { fitPopupAboveViewportTop } from './popup-fit.ts';
 import { createTurnRestoreActions } from './turn-restore-action.ts';
 import type { TurnRestoreControl } from '../../agent/turn-checkpoints.ts';
@@ -1103,7 +1100,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   let selectedAgent: AgentName = bridge.getActiveAgent() ?? agentPrefs.defaultAgent;
   let selectedModel = resolveModelForAgent(selectedAgent, agentPrefs.defaultModel);
   let selectedEffort = resolveEffortForAgent(selectedAgent, agentPrefs.defaultEffort, selectedModel);
-  let selectedServiceTier: ServiceTier = resolveServiceTier(selectedAgent, null);
   let connState: ConnectionState = bridge.getConnectionState();
   /** 지금까지 실패한 연결 시도 수 — 점 색만 고른다. 화면에는 세지 않는다. */
   let connAttempt = 0;
@@ -1293,7 +1289,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     agent: selectedAgent,
     model: selectedModel,
     effort: selectedEffort,
-    serviceTier: selectedServiceTier,
     docKey: currentDocKey,
     documentId: currentDocumentId,
   });
@@ -1498,7 +1493,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     // 새 채팅·스레드 전환(force)만 입력기를 잠근다. 모델/추론 강도만 바꿀 때는
     // 같은 대화를 다시 열 뿐이라 입력칸·피커가 비활성으로 깜빡이지 않게 둔다.
     bridgeThreadId = currentThread.id;
-    bridge.setServiceTier(selectedServiceTier);
     if (force) chatStartPendingThreadId = currentThread.id;
     // 브리지는 보내는 순간 제공자로 대화와 커서를 다시 만든다. 이 값은 제공자가 없을 때의 대비다.
     const { history } = providerStartContext(currentThread, selectedAgent, undeliveredMessages);
@@ -1947,7 +1941,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     setSelectedAgent(agent);
     selectedModel = resolveModelForAgent(agent, selectedModel);
     selectedEffort = resolveEffortForAgent(agent, selectedEffort, selectedModel);
-    selectedServiceTier = resolveServiceTier(agent, selectedServiceTier);
     rebuildLlmMenu();
     rebuildEffortMenu();
     updateWorkspaceAgentContext();
@@ -3162,9 +3155,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
   bindDocumentNameMenu(workspaceDocumentName);
 
-  // 대화 화면에서는 제목을 비운다 — 대화 위에 '대화'라고 적는 것은 정보가 없다.
-  const workspaceTitle = el('div', 'ag-workspace-title');
-
   function rememberThreadComposerDraft(): void {
     // 질문의 직접 입력이 입력기를 빌렸으면 먼저 돌려받는다 — 답은 질문 초안에 남고,
     // 입력기에는 이 채팅에서 쓰던 글이 돌아와 그 글이 초안으로 저장된다. 그러지 않으면
@@ -3310,7 +3300,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   // 환경·닫기·작업 칸 단추는 오른쪽 위 한 묶음이다. 작업 칸이 열리면 그 탭 줄 안에 선다.
   const workspaceCorner = el('div', 'ag-workspace-corner');
   workspaceCorner.append(environmentWrap, workspaceExitBtn, workspacePanelBtn);
-  workspaceBar.append(workspaceLeading, workspaceTitle, workspaceDocumentContext, workspaceTrailing);
+  workspaceBar.append(workspaceLeading, workspaceDocumentContext, workspaceTrailing);
 
   // 전역 설정이 꺼져 있어도 이 문서에 버전 기록이 있으면(예: 자동 저장본 복구) 버전 창을 연다.
   const versionsReachable = (): boolean => (
@@ -5205,6 +5195,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   });
   const settingsPage = settingsPanel.element;
   const initialSetupDeps: InitialSetupDeps = {
+    openDocumentFile,
     openAgentSetup: (agent) => settingsPanel.openAgentSetup(agent),
     beginAgentConnect: (agent) => settingsPanel.beginAgentConnect(agent),
     plan: planStore,
@@ -6478,7 +6469,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     root.classList.remove('ag-settings-open');
     workspaceSettingsBtn.setAttribute('aria-expanded', 'false');
     workspaceSettingsBtn.classList.remove('ag-active');
-    workspaceTitle.textContent = '';
     applyWorkspaceExitLabel(false);
     settingsPage.setAttribute('aria-hidden', 'true');
     settingsPanel.close();
@@ -6598,7 +6588,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     root.classList.toggle('ag-settings-open', open);
     workspaceSettingsBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
     workspaceSettingsBtn.classList.toggle('ag-active', open);
-    workspaceTitle.textContent = open ? '설정' : '';
     applyWorkspaceExitLabel(open);
     settingsPage.setAttribute('aria-hidden', open ? 'false' : 'true');
     if (fullscreen) {
@@ -6693,45 +6682,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     } else versionManagerPage?.close();
   }
 
-  function applyFastCommand(action: 'on' | 'off' | 'status' | 'toggle'): void {
-    if (!agentSupportsFast(selectedAgent)) {
-      systemMessage('Fast는 Codex에서만 사용할 수 있습니다.');
-      return;
-    }
-    if (action === 'status') {
-      systemMessage(selectedServiceTier === 'fast'
-        ? 'Codex Fast가 켜져 있습니다. 다음 턴부터 우선 처리됩니다.'
-        : 'Codex Fast가 꺼져 있습니다.');
-      return;
-    }
-    if (isControlLocked()) {
-      systemMessage('응답이 끝난 뒤에 Fast를 바꿀 수 있습니다.');
-      return;
-    }
-    const next: ServiceTier = action === 'toggle'
-      ? (selectedServiceTier === 'fast' ? 'standard' : 'fast')
-      : (action === 'on' ? 'fast' : 'standard');
-    if (next === selectedServiceTier) {
-      systemMessage(next === 'fast'
-        ? 'Codex Fast가 이미 켜져 있습니다.'
-        : 'Codex Fast가 이미 꺼져 있습니다.');
-      return;
-    }
-    selectedServiceTier = next;
-    currentThread.serviceTier = next;
-    persistCurrentThread();
-    if (!draftChat && bridge.getActiveAgent() === 'codex') bridge.setServiceTier(next);
-    systemMessage(next === 'fast'
-      ? 'Codex Fast를 켰습니다. 다음 턴부터 우선 처리됩니다.'
-      : 'Codex Fast를 껐습니다.');
-  }
-
   type SlashOption = {
     value: string;
     label: string;
     detail: string;
-    local?: 'skills' | 'style' | 'settings' | 'templates' | 'fast' | 'compact' | 'learn';
-    mode?: AgentMode;
+    local?: 'skills' | 'settings' | 'templates' | 'compact';
     templateId?: string;
     skillName?: string;
     skillIcon?: ProductSkillIcon | null;
@@ -6896,27 +6851,13 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     if (!match || input.value.trimStart().startsWith('//')) { setSlashMenuOpen(false); return; }
     const query = match[1].toLowerCase();
     const base: SlashOption[] = [
-      { value: '/chat', label: '/chat', detail: '채팅 모드', mode: 'chat' },
-      { value: '/plan', label: '/plan', detail: '플랜 모드', mode: 'plan' },
-      { value: '/agent', label: '/agent', detail: '에이전트 모드', mode: 'agent' },
-      { value: '/full', label: '/full', detail: '전체 모드', mode: 'full' },
-      ...(agentSupportsFast(selectedAgent)
-        ? [{
-            value: '/fast',
-            label: '/fast',
-            detail: selectedServiceTier === 'fast' ? 'Codex Fast 끄기' : 'Codex Fast 켜기',
-            local: 'fast' as const,
-          }]
-        : []),
       { value: '/compact', label: '/compact', detail: '콘텍스트 압축', local: 'compact' },
-      { value: '/learn', label: '/learn', detail: '기록에서 배우기', local: 'learn' },
-      { value: '/문체학습', label: '/문체학습', detail: '원고로 문체 배우기 (Rau)', local: 'style' },
-      { value: '/settings', label: '/settings', detail: '설정 열기 (연결, 기본값, 사용량)', local: 'settings' },
+      { value: '/settings', label: '/settings', detail: '설정 열기', local: 'settings' },
       { value: '/templates', label: '/templates', detail: '문서 템플릿 선택', local: 'templates' },
       { value: '/skills', label: '/skills', detail: '스킬 라이브러리 열기', local: 'skills' },
     ];
     const product = skillCatalog.rows
-      .filter((skill) => skill.enabled)
+      .filter((skill) => skill.enabled && skill.kind !== 'sealed')
       .map((skill) => ({
         value: `/${skill.name}`,
         label: `/${skill.name}`,
@@ -6924,11 +6865,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         skillName: skill.name,
         skillIcon: skill.icon,
       }));
-    // 다른 채팅이 편집하는 동안에는 채팅 말고 다른 모드 명령을 보이지 않는다.
-    const offered = chatModeLockReason === null
-      ? base
-      : base.filter((option) => !option.mode || option.mode === 'chat');
-    slashOptions = [...offered, ...product].filter((option) => option.label.slice(1).toLowerCase().includes(query));
+    slashOptions = [...base, ...product].filter((option) => option.label.slice(1).toLowerCase().includes(query));
     slashIndex = Math.min(slashIndex, Math.max(0, slashOptions.length - 1));
     renderSlashRows();
   }
@@ -6977,12 +6914,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       input.focus();
       return;
     }
-    if (option.mode) {
-      input.value = '';
-      void requestMode(option.mode);
-      return;
-    }
-    if (option.local === 'style') { input.value = ''; openRauTab(); return; }
     if (option.local === 'settings') { input.value = ''; requestSettingsOpen(); return; }
     if (option.local === 'templates') {
       input.value = '/templates ';
@@ -6991,9 +6922,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       return;
     }
     if (option.local === 'skills') { input.value = ''; setSkillsPanelOpen(true); return; }
-    if (option.local === 'fast') { input.value = ''; applyFastCommand(selectedServiceTier === 'fast' ? 'off' : 'on'); return; }
     if (option.local === 'compact') { input.value = ''; resizeComposerInput(); void requestCompaction(); return; }
-    if (option.local === 'learn') { input.value = ''; resizeComposerInput(); void learnFromHistory(); return; }
     input.value = `${option.value} `;
     input.focus();
   }
@@ -7578,14 +7507,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       return;
     }
     if (readOnlyDocLabel !== null || mergeResolverLocked) return;
-    // /문체학습 은 무엇도 보내지 않는다 — 무료에서도 다른 Rau 입구처럼 요금제 카드를 Rau 칸에 맞춰 연다.
-    if (input.value.trim() === '/문체학습' && !activeComposerSkill) {
-      input.value = '';
-      setSlashMenuOpen(false);
-      resizeComposerInput();
-      openRauTab();
-      return;
-    }
     // 무료 요금제: 보내기·Enter·슬래시·스킬 모두 여기로 온다. 아무것도 보내지 않고 요금제 카드를 연다.
     if (planBlocksAgent()) return;
     if (questionController.isPresented()) {
@@ -7681,38 +7602,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       }
     }
     if (!activeComposerSkill) {
-      const modeCommand = parseModeCommand(text);
-      if (modeCommand) {
-        const { mode, rest } = modeCommand;
-        input.value = '';
-        setSlashMenuOpen(false);
-        if (!switchMode(mode)) {
-          if (rest) input.value = rest;
-          return;
-        }
-        if (!rest) {
-          input.focus();
-          return;
-        }
-        text = rest;
-      }
-      const fastCommand = text.match(/^\/fast(?:\s+(on|off|status))?$/i);
-      if (fastCommand) {
-        input.value = '';
-        setSlashMenuOpen(false);
-        const arg = fastCommand[1]?.toLowerCase();
-        applyFastCommand(arg === 'on' || arg === 'off' || arg === 'status' ? arg : 'toggle');
-        return;
-      }
-      if (/^\/fast\b/i.test(text)) {
-        input.value = '';
-        setSlashMenuOpen(false);
-        systemMessage('/fast 인자: on, off, status');
-        return;
-      }
       if (text === '/compact') { input.value = ''; setSlashMenuOpen(false); resizeComposerInput(); void requestCompaction(); return; }
-      if (text === '/learn') { input.value = ''; setSlashMenuOpen(false); resizeComposerInput(); void learnFromHistory(); return; }
-      if (text === '/문체학습') { input.value = ''; setSlashMenuOpen(false); resizeComposerInput(); openRauTab(); return; }
       if (text === '/settings') { input.value = ''; requestSettingsOpen(); return; }
       if (text === '/skills') { input.value = ''; setSkillsPanelOpen(true); return; }
     }
@@ -7916,7 +7806,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     currentThread.agent = selectedAgent;
     currentThread.model = selectedModel;
     currentThread.effort = selectedEffort;
-    currentThread.serviceTier = selectedServiceTier;
     currentThread.workflow = chatWorkflow;
     if (activePlan) currentThread.latestPlan = activePlan;
     else delete currentThread.latestPlan;
@@ -8582,7 +8471,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   function applyThreadMeta(thread: ChatThread): void {
     selectedModel = resolveModelForAgent(thread.agent, thread.model);
     selectedEffort = resolveEffortForAgent(thread.agent, thread.effort, selectedModel);
-    selectedServiceTier = resolveServiceTier(thread.agent, thread.serviceTier);
     setSelectedAgent(thread.agent);
     rebuildLlmMenu();
     rebuildEffortMenu();
@@ -9399,7 +9287,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     const nextEffort = resolveEffortForAgent(nextAgent, agentPrefs.defaultEffort, nextModel);
     selectedModel = nextModel;
     selectedEffort = nextEffort;
-    selectedServiceTier = resolveServiceTier(nextAgent, null);
     setSelectedAgent(nextAgent);
     rebuildLlmMenu();
     rebuildEffortMenu();
@@ -9469,7 +9356,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       agent: selectedAgent,
       model: selectedModel,
       effort: selectedEffort,
-      serviceTier: selectedServiceTier,
       docKey: currentDocKey,
       documentId: currentDocumentId,
     });
@@ -9679,7 +9565,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     applyChatSessionState({
       agent: bridge.getActiveAgent() ?? selectedAgent,
       permissionProfile: bridge.getPermissionProfile(),
-      serviceTier: bridge.getServiceTier(),
     });
     setTurnRunning(bridge.isTurnRunning());
     const interaction = bridge.getPendingUserQuestion();
@@ -9730,7 +9615,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   /** 허브 세션의 에이전트·모델·속도·권한·작업 방식을 이 채팅에 맞춘다 — chat-started 와 다시 붙이기가 함께 쓴다. */
   function applyChatSessionState(
-    e: Pick<Extract<SidebarEvent, { type: 'chat-started' }>, 'agent' | 'model' | 'effort' | 'serviceTier' | 'permissionProfile'>,
+    e: Pick<Extract<SidebarEvent, { type: 'chat-started' }>, 'agent' | 'model' | 'effort' | 'permissionProfile'>,
   ): void {
     chatStartPendingThreadId = null;
     const prevAgent = selectedAgent;
@@ -9750,10 +9635,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     currentThread.agent = selectedAgent;
     currentThread.model = selectedModel;
     currentThread.effort = selectedEffort;
-    if (e.serviceTier === 'fast' || e.serviceTier === 'standard') {
-      selectedServiceTier = resolveServiceTier(selectedAgent, e.serviceTier);
-      currentThread.serviceTier = selectedServiceTier;
-    }
     if (e.permissionProfile) {
       permissionProfile = e.permissionProfile;
       updateModeChip();
@@ -12301,16 +12182,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
 
   /** /learn — 문서 기억 시트의 기록에서 배우기와 같다. 배운 것은 구분선으로, 나머지는 알림으로 남는다. */
-  let historyLearning = false;
-  async function learnFromHistory(): Promise<void> {
-    if (historyLearning) return;
-    historyLearning = true;
-    showToast({ message: '기록에서 배우는 중입니다.', durationMs: 2400 });
-    const outcome = await bridge.learnFromHistory().finally(() => { historyLearning = false; });
-    const note = historyOutcomeNote(outcome);
-    if (note) showToast({ message: note.text, durationMs: 3200 });
-  }
-
   /**
    * 문서를 뗀 뒤의 압축에서 조용히 넘기는 거절 — 압축을 못 하거나, 할 것이 없거나, 콘텍스트가 작아 필요 없거나
    * (COMPACTION_NOT_NEEDED: 허브가 떼어 냄 알림만 다음 턴에 싣는다), 그새 일이 시작됐다.
@@ -12714,11 +12585,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         permissionProfile = e.permissionProfile;
         updateModeChip();
         updateComposer();
-        break;
-      case 'service-tier-changed':
-        selectedServiceTier = resolveServiceTier(selectedAgent, e.serviceTier);
-        currentThread.serviceTier = selectedServiceTier;
-        persistCurrentThread();
         break;
       case 'reference-status': {
         const message = currentThread.messages.find((item) => item.messageId === e.messageId);

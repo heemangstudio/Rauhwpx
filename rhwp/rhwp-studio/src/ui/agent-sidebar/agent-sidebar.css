@@ -7639,7 +7639,6 @@ html.ag-fs-vt-exit::view-transition-new(root) {
   grid-row: 1;
 }
 
-.ag-fullscreen .ag-workspace-title,
 .ag-fullscreen .ag-workspace-document-context {
   grid-column: 2;
   grid-row: 1;
@@ -7689,10 +7688,6 @@ html:is(.desktop-mac, .desktop-windows) .ag-fullscreen {
 
 html:is(.desktop-mac, .desktop-windows) .ag-fullscreen .ag-workspace-bar {
   -webkit-app-region: drag;
-}
-
-html:is(.desktop-mac, .desktop-windows) .ag-fullscreen .ag-workspace-title {
-  height: 100%;
 }
 
 /* 두 번 눌러 이름을 바꾸는 글자는 창 끌기에서 빼야 더블클릭이 창 확대로 가지 않는다. */
@@ -8142,16 +8137,6 @@ html:is(.desktop-mac, .desktop-windows) .ag-fullscreen .ag-workspace-bar :is(
 .ag-workspace-document-name.ag-document-switch:focus-visible {
   outline: var(--ag-focus-ring);
   outline-offset: 1px;
-}
-
-.ag-workspace-title {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  justify-content: center;
-  color: var(--ag-text-secondary);
-  font-size: var(--ag-fs-secondary);
-  font-weight: var(--ag-fw-medium);
 }
 
 .ag-workspace-agent-context {
@@ -10054,18 +10039,6 @@ html:is(.desktop-mac, .desktop-windows) .ag-fullscreen .ag-workspace-bar :is(
   background-position: 0 100%;
   background-repeat: repeat-x;
   background-size: 6px 3px;
-}
-
-/* 변경 목록의 끝을 점 세 개로 닫는다. */
-.ag-versions-changes-host::after {
-  content: '·  ·  ·';
-  display: block;
-  padding-top: 14px;
-  color: var(--ag-text-tertiary);
-  font-family: var(--ag-mono);
-  letter-spacing: 0.2em;
-  text-align: center;
-  opacity: 0.6;
 }
 
 /* 계획 초안 제안 — 대화 끝의 작은 알약. */

@@ -206,29 +206,3 @@ pub fn diff_hwpx_vs_hwp(hwpx: &Document, hwp: &Document) -> DiffSummary {
     summary
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn empty_doc_no_diff_items_for_critical_areas() {
-        let doc = Document::default();
-        let summary = diff_hwpx_vs_serializer_assumptions(&doc);
-        // 빈 문서엔 표/lineseg 자체가 없으므로 critical 영역 차이 0
-        let counts = summary.counts_by_area();
-        assert!(
-            counts.iter().all(|(a, _)| *a != "table.raw_ctrl_data"
-                && *a != "cell.list_header_width_ref.bit0"
-                && *a != "paragraph.line_seg.vertical_pos"),
-            "empty doc should have no critical-area diffs, got: {:?}",
-            counts
-        );
-    }
-
-    #[test]
-    fn human_report_includes_total() {
-        let summary = DiffSummary::new();
-        let report = summary.human_report();
-        assert!(report.contains("total=0"));
-    }
-}

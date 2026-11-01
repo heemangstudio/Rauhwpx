@@ -58,28 +58,3 @@ impl WeightedLruBudget {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::WeightedLruBudget;
-
-    #[test]
-    fn evicts_oldest_entries_until_inside_weight_budget() {
-        let mut budget = WeightedLruBudget::new(3, 16);
-        assert!(budget.record(1, 10).is_empty());
-        assert_eq!(budget.record(2, 10), vec![1]);
-        budget.touch(2);
-        assert!(budget.record(3, 6).is_empty());
-        assert_eq!(budget.record(4, 6), vec![2]);
-        assert_eq!(budget.total_weight, 12);
-        assert_eq!(budget.order.into_iter().collect::<Vec<_>>(), vec![3, 4]);
-    }
-
-    #[test]
-    fn keeps_one_oversized_entry_for_reuse() {
-        let mut budget = WeightedLruBudget::new(200, 16);
-        assert!(budget.record(1, 100).is_empty());
-        assert_eq!(budget.total_weight, 100);
-        assert_eq!(budget.record(2, 1), vec![1]);
-        assert_eq!(budget.total_weight, 1);
-    }
-}

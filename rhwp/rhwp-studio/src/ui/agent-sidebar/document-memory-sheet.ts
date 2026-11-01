@@ -10,7 +10,7 @@
  * 항목마다 강도(1–5)를 Rau 탭과 같은 물그릇(strength-gauge)으로 보인다. 보강·감쇄로 바뀌면 물이 움직인다.
  *
  * Rau 요금제(체험 포함)이고 허브가 장기기억을 쓸 수 있다고 하면, 아래에 '장기기억' 칸을 읽기 전용으로 둔다.
- * 장기기억은 창 하나가 함께 보는 RauMemoryStore 에서 읽고, 고치기는 설정의 Rau 탭에서 한다.
+ * 장기기억은 창 하나가 함께 보는 RauMemoryStore 에서 읽고, 지우기는 설정의 Rau 탭에서 한다.
  * 같은 종류·주제의 문서 기억이 장기기억과 다른 지침을 담으면 두 줄 모두에 덮어쓰기 표를 단다.
  */
 import './document-memory-sheet.css';
@@ -79,7 +79,7 @@ const ERROR_TEXT: Record<string, string> = {
 const OFFLINE_TEXT = '에이전트 허브에 연결되어 있지 않습니다.';
 const HISTORY_NOTE_MS = 3_200;
 
-/** 기록에서 배우기 결과의 안내. 배운 것이 있으면 구분선이 남으므로 null. 시트와 /learn 이 함께 쓴다. */
+/** 기록에서 배우기 결과의 안내. 배운 것이 있으면 구분선이 남으므로 null. 시트가 쓴다. */
 export function historyOutcomeNote(outcome: TasteHistoryOutcome): { text: string; error: boolean } | null {
   if (outcome.status === 'review') return { text: '검토 중인 변경이 있습니다.', error: false };
   if (outcome.status === 'empty') return { text: '배울 기록이 없습니다.', error: false };

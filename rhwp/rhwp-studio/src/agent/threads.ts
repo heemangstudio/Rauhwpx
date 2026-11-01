@@ -18,7 +18,6 @@ import type {
   ProductSkillIcon,
   ProviderFailure,
   ProviderFailureOrigin,
-  ServiceTier,
   StructuredPlan,
   TasteLearnItem,
   TasteHistoryLearned,
@@ -380,8 +379,6 @@ export interface ChatThread {
   agent: AgentName;
   model: string;
   effort: string;
-  /** Codex Fast 서비스 티어. 레거시 채팅과 다른 프로바이더는 standard. */
-  serviceTier: ServiceTier;
   workflow: AgentWorkflow;
   /** 이 채팅이 속한 문서(파일 이름). null = 문서 없이 시작한 채팅. */
   docKey: string | null;
@@ -440,7 +437,6 @@ export interface ThreadDraft {
   agent: AgentName;
   model: string;
   effort: string;
-  serviceTier?: ServiceTier;
   workflow?: AgentWorkflow;
   docKey?: string | null;
   documentId?: string | null;
@@ -1372,7 +1368,6 @@ function normalizeStoredThread(thread: StoredChatThread): ChatThread {
     // 예전에 저장한 앞선 실패 알림의 다시 시도 요청은 읽을 때 걷는다(dropStaleRetries).
     messages: dropStaleRetries(messages),
     workflow: isAgentWorkflow(thread.workflow) ? thread.workflow : 'direct',
-    serviceTier: thread.serviceTier === 'fast' ? 'fast' : 'standard',
     docKey: typeof storedDocKey === 'string' && storedDocKey ? storedDocKey : null,
     documentId: typeof storedDocumentId === 'string' && storedDocumentId ? storedDocumentId : null,
     activeTemplateId: typeof storedActiveTemplateId === 'string' && storedActiveTemplateId ? storedActiveTemplateId : null,
@@ -2569,7 +2564,6 @@ export function createEmptyThread(draft: ThreadDraft): ChatThread {
     agent: draft.agent,
     model: draft.model,
     effort: draft.effort,
-    serviceTier: draft.serviceTier === 'fast' ? 'fast' : 'standard',
     workflow: draft.workflow ?? 'direct',
     docKey: draft.docKey ?? null,
     documentId: draft.documentId ?? null,

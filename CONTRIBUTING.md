@@ -48,7 +48,7 @@ cargo fmt --check
 cargo clippy --locked --tests
 ```
 
-말뭉치 라운드트립 sweep 과 느린 테스트는 `tests/sweeps/`에 있고 기본 `cargo test`에서 빠집니다. `cargo test --locked --profile release-test --test sweeps`로 실행하세요. PNG/PDF 래스터 테스트는 `cargo test --locked --features native-skia --test it`에서만 컴파일됩니다. 전체 엔진 검증 명령은 [.github/workflows/nightly.yml](.github/workflows/nightly.yml)에 있습니다. WASM을 다시 빌드하려면 저장소 루트에서 `npm run build:wasm`을 실행하세요.
+전체 엔진 검증 명령은 [.github/workflows/nightly.yml](.github/workflows/nightly.yml)에 있습니다. WASM을 다시 빌드하려면 저장소 루트에서 `npm run build:wasm`을 실행하세요.
 
 ### Studio와 에이전트
 

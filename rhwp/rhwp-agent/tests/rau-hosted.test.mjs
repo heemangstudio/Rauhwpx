@@ -111,7 +111,7 @@ test('a plan refusal skips learning, prompts once, and is remembered until the l
 
 test('exhausted credits skip hosted Rau until they reset, without prompting', async (t) => {
   const resetsAt = Date.parse('2026-11-01T00:00:00Z');
-  const source = fakeSource(refusal('rau_credits_exhausted', { allowanceUsd: 8, usedUsd: 8, resetsAt }));
+  const source = fakeSource(refusal('rau_credits_exhausted', { resetsAt }));
   const h = harness(t, { source });
   await h.run();
   await h.run();
@@ -215,19 +215,19 @@ test('the IPC status operation asks the desktop for eligibility', async () => {
   const source = createIpcRauSource({ processRef });
   const status = source.status();
   assert.deepEqual([sent[0].type, sent[0].operation, 'prompt' in sent[0]], ['rhwp-rau-request', 'status', false]);
-  processRef.emit('message', { type: 'rhwp-rau-response', id: sent[0].id, ok: true, value: { eligible: true, source: 'trial', remainingUsd: 1.5 } });
-  assert.deepEqual(await status, { eligible: true, source: 'trial', remainingUsd: 1.5 });
+  processRef.emit('message', { type: 'rhwp-rau-response', id: sent[0].id, ok: true, value: { eligible: true, source: 'trial', remainingPercent: 75 } });
+  assert.deepEqual(await status, { eligible: true, source: 'trial', remainingPercent: 75 });
 });
 
 test('eligibility maps the desktop answer, is cached for its TTL, waits only briefly and refreshes on a license change', async () => {
-  assert.equal(availabilityFromStatus({ eligible: true, remainingUsd: 3 }), 'active');
-  assert.equal(availabilityFromStatus({ eligible: true, remainingUsd: 0 }), 'exhausted');
-  assert.equal(availabilityFromStatus({ eligible: true, remainingUsd: null }), 'active');
+  assert.equal(availabilityFromStatus({ eligible: true, remainingPercent: 3 }), 'active');
+  assert.equal(availabilityFromStatus({ eligible: true, remainingPercent: 0 }), 'exhausted');
+  assert.equal(availabilityFromStatus({ eligible: true, remainingPercent: null }), 'active');
   assert.equal(availabilityFromStatus({ eligible: false, reason: 'rau_plan_required' }), 'not_eligible');
   assert.equal(availabilityFromStatus(null), 'unavailable');
 
   const clock = { t: 1_000 };
-  let answer = { eligible: true, remainingUsd: 2 };
+  let answer = { eligible: true, remainingPercent: 2 };
   let asks = 0;
   let hold = null;
   const listeners = new Set();
@@ -257,7 +257,7 @@ test('eligibility maps the desktop answer, is cached for its TTL, waits only bri
   // 데스크톱이 늦으면 길게 기다리지 않고 지난 답을 쓰고, 새 답은 들어오는 대로 기억한다.
   let release;
   hold = new Promise((resolve) => { release = resolve; });
-  answer = { eligible: true, remainingUsd: 0 };
+  answer = { eligible: true, remainingPercent: 0 };
   clock.t += 61_000;
   const started = Date.now();
   assert.equal(await hosted.eligibility(), 'not_eligible');
@@ -275,7 +275,7 @@ test('eligibility maps the desktop answer, is cached for its TTL, waits only bri
   assert.deepEqual(changes, ['active', 'not_eligible', 'exhausted', 'unavailable']);
 
   // learn 이 크레딧 소진을 받으면 쓸 수 있음도 exhausted 가 된다.
-  answer = { eligible: true, remainingUsd: 5 };
+  answer = { eligible: true, remainingPercent: 5 };
   for (const listener of listeners) listener();
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(hosted.cachedEligibility(), 'active');

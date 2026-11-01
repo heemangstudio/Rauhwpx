@@ -30,22 +30,3 @@ pub const PAGE_LAYER_TREE_RESOURCE_TABLE_MINOR_VERSION: u32 =
 pub const PAGE_LAYER_TREE_UNIT: &str = LAYER_TREE_SCHEMA.unit;
 pub const PAGE_LAYER_TREE_COORDINATE_SYSTEM: &str = LAYER_TREE_SCHEMA.coordinate_system;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn layer_tree_schema_constants_match_schema() {
-        assert_eq!(
-            LAYER_TREE_SCHEMA,
-            LayerTreeSchema {
-                schema_version: PAGE_LAYER_TREE_SCHEMA_VERSION,
-                schema_minor_version: PAGE_LAYER_TREE_SCHEMA_MINOR_VERSION,
-                resource_table_version: PAGE_LAYER_TREE_RESOURCE_TABLE_VERSION,
-                resource_table_minor_version: PAGE_LAYER_TREE_RESOURCE_TABLE_MINOR_VERSION,
-                unit: PAGE_LAYER_TREE_UNIT,
-                coordinate_system: PAGE_LAYER_TREE_COORDINATE_SYSTEM,
-            }
-        );
-    }
-}

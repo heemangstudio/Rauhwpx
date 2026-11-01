@@ -18,26 +18,8 @@ export interface RauStatus {
   source?: 'plan' | 'trial' | null;
   reason?: 'rau_plan_required' | 'no_license' | null;
   upgradeUrl?: string;
-  allowanceUsd?: number | null;
-  usedUsd?: number | null;
-  remainingUsd?: number | null;
+  remainingPercent?: number | null;
   resetsAt?: number | null;
-}
-
-/** 설정의 Rau 줄 상태 글. 예: $5.20 남음 · 11월 30일 초기화, 크레딧을 다 쓰면 11월 30일까지 크레딧 소진. */
-export function rauStateLine(status: RauStatus, timeZone?: string): string {
-  const date = (ms: number): string => new Intl.DateTimeFormat('ko-KR', { month: 'long', day: 'numeric', ...(timeZone ? { timeZone } : {}) }).format(new Date(ms));
-  const remaining = typeof status.remainingUsd === 'number' && Number.isFinite(status.remainingUsd) ? Math.max(0, status.remainingUsd) : null;
-  const trial = status.source === 'trial';
-  const reset = typeof status.resetsAt === 'number' && status.resetsAt > 0 ? status.resetsAt : null;
-  if (remaining === 0) {
-    if (trial) return '체험 크레딧 소진';
-    return reset ? `${date(reset)}까지 크레딧 소진` : '크레딧 소진';
-  }
-  if (trial) return reset ? `무료 체험 ${date(reset)}까지` : '무료 체험';
-  if (remaining === null) return '켜짐';
-  const left = `$${(Math.round(remaining * 100) / 100).toFixed(2)} 남음`;
-  return reset ? `${left} · ${date(reset)} 초기화` : left;
 }
 
 export interface DesktopRauApi {

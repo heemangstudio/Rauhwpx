@@ -2261,14 +2261,6 @@
   background: var(--ag-set-bg);
 }
 
-/* 패널 제목 하나의 크기: 사이드바 문서 이름·전체 화면 문서 이름·설정 제목이 같다. */
-.ag-settings-page .ag-threads-title {
-  color: var(--n-ink);
-  font-size: var(--ag-fs-body);
-  font-weight: var(--ag-fw-strong);
-  letter-spacing: var(--ag-track-tight);
-}
-
 .ag-settings-page .ag-settings-body,
 .ag-settings-page .ag-settings-pane {
   background: transparent;
@@ -3605,7 +3597,7 @@
   transform: translateY(-25%) rotate(225deg);
 }
 
-/* AI 묶음 — 머리를 누르면 연결, 사용량, 사용자화가 아래로 펼쳐지는 세로 트리. */
+/* AI 묶음 — 머리를 누르면 연결, 사용량, 사용자화, Rau 가 아래로 펼쳐지는 세로 트리. */
 .ag-root .ag-settings-page .ag-settings-nav-group {
   display: flex;
   align-items: center;

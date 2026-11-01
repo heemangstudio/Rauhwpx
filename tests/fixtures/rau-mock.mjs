@@ -7,12 +7,10 @@ export const RAU_UPGRADE_URL = 'https://heemangstudios.com/pricing.html#rau';
 /** 한 번의 학습 요청이 쓰는 크레딧(USD). */
 const CALL_COST_USD = 0.01;
 
-const round = (usd) => Math.round(usd * 1e6) / 1e6;
-
 /**
  * @param {{ authenticate: (headers: object) => ({ account: object } | null),
- *   rauOf: (account: object) => ({ eligible: boolean, source: 'plan'|'trial'|null, allowanceUsd: number|null,
- *     usedUsd: number|null, remainingUsd: number|null, resetsAt: number|null }),
+ *   rauOf: (account: object) => ({ eligible: boolean, source: 'plan'|'trial'|null, remainingPercent: number|null,
+ *     resetsAt: number|null }),
  *   spend: (account: object, usd: number) => void }} deps
  */
 export function createRauMock({ authenticate, rauOf, spend }) {
@@ -28,9 +26,7 @@ export function createRauMock({ authenticate, rauOf, spend }) {
       source: rau.source,
       reason: rau.eligible ? null : 'rau_plan_required',
       upgradeUrl: RAU_UPGRADE_URL,
-      allowanceUsd: rau.allowanceUsd,
-      usedUsd: rau.usedUsd,
-      remainingUsd: rau.remainingUsd,
+      remainingPercent: rau.remainingPercent,
       resetsAt: iso(rau.resetsAt),
     };
   }
@@ -46,14 +42,14 @@ export function createRauMock({ authenticate, rauOf, spend }) {
     if (path === '/v1/rau/learn' && method === 'POST') {
       if (!rau.eligible) return [403, { ok: false, error: 'rau_plan_required', upgradeUrl: RAU_UPGRADE_URL }];
       if (typeof body?.prompt !== 'string' || !body.prompt) return [400, { ok: false, error: 'invalid' }];
-      if (rau.remainingUsd !== null && rau.remainingUsd <= 0) {
-        return [402, { ok: false, error: 'rau_credits_exhausted', allowanceUsd: rau.allowanceUsd, usedUsd: rau.usedUsd, resetsAt: new Date(rau.resetsAt).toISOString() }];
+      if (rau.remainingPercent !== null && rau.remainingPercent <= 0) {
+        return [402, { ok: false, error: 'rau_credits_exhausted', resetsAt: new Date(rau.resetsAt).toISOString() }];
       }
       spend(who.account, CALL_COST_USD);
       const after = rauOf(who.account);
       return [200, {
         ok: true, text: JSON.stringify({ ops: [] }), model: 'rau-0.1',
-        usage: { allowanceUsd: after.allowanceUsd, usedUsd: round(after.usedUsd), remainingUsd: round(after.remainingUsd), resetsAt: new Date(after.resetsAt).toISOString() },
+        usage: { remainingPercent: after.remainingPercent, resetsAt: new Date(after.resetsAt).toISOString() },
       }];
     }
     return [404, { ok: false, error: 'not_found' }];

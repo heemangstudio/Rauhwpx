@@ -53,7 +53,7 @@ type ThreadRetryPayload = import('../src/agent/threads.ts').ThreadRetryPayload;
 function thread(id: string): ChatThread {
   return {
     id, title: id, titleRequested: false, createdAt: 0, updatedAt: 0, agent: 'claude', model: 'm', effort: 'medium',
-    serviceTier: 'standard', workflow: 'direct', docKey: null, documentId: null, messages: [],
+    workflow: 'direct', docKey: null, documentId: null, messages: [],
   } as unknown as ChatThread;
 }
 

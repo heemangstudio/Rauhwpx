@@ -675,7 +675,7 @@ function contextBridge(overrides: Record<string, unknown> = {}) {
     messageReceipts: new Map(),
     state: 'connected', requestSeq: 0, pendingChatStart: null, chatStartSent: false,
     activeAgent: 'claude', selectedAgent: 'claude', selectedModel: null, selectedEffort: null,
-    editingAgent: 'claude', permissionProfile: 'safe', serviceTier: 'standard',
+    editingAgent: 'claude', permissionProfile: 'safe',
     workflow: 'direct', phase: 'direct', threadId: 'thread-1', documentId: 'doc-1', documentName: 'a.hwpx',
     activeTemplateId: null, revision: { revision: 7 }, chatHistory: [], queuedMessages: [],
     workflowSwitchPending: false, turnRunning: false, pendingTurnOpen: false, pendingUserQuestion: null,

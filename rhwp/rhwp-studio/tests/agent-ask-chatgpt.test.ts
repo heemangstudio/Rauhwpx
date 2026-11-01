@@ -28,24 +28,6 @@ test('ask_chatgpt cards show the question, the full answer and an Open in ChatGP
   assert.equal(failed.text, 'ChatGPT 로그인 필요');
 });
 
-test('the ChatGPT and Claude settings rows read hub status into short Korean states', () => {
-  assert.equal(readWebAssistantStatus({ enabled: 'yes' }), null);
-  const view = (value: unknown, options = {}) => webAssistantStatusView('chatgpt', readWebAssistantStatus(value), options).text;
-  assert.equal(view({ enabled: false, available: false, signedIn: null }), '데스크톱 앱에서만 사용 가능');
-  assert.equal(view({ enabled: false, available: true, signedIn: null }), '꺼짐');
-  assert.equal(view({ enabled: true, available: true, signedIn: null }), '확인 중…');
-  assert.equal(view({ enabled: true, available: true, signedIn: false }), '로그인 필요');
-  assert.equal(view({ enabled: true, available: true, signedIn: true, account: 'user@example.com' }), '연결됨 · user@example.com');
-  assert.equal(view({ enabled: true, available: true, signedIn: true }, { error: 'CHATGPT_CHALLENGE' }), 'ChatGPT 확인 필요');
-  // 확인이 실패하면 계속 확인 중으로 보이지 않는다.
-  assert.equal(view({ enabled: true, available: true, signedIn: null }, { error: 'BROWSER_NATIVE_FAILED' }), '확인하지 못함');
-  // 로그인 창이 열린 동안에는 그 창에서 로그인하라고 안내한다.
-  assert.equal(view({ enabled: true, available: true, signedIn: false }, { signingIn: true }), '로그인 창에서 로그인하세요');
-  const claude = (value: unknown, options = {}) => webAssistantStatusView('claude', readWebAssistantStatus(value), options).text;
-  assert.equal(claude({ enabled: true, available: true, signedIn: true }, { error: 'CLAUDE_CHALLENGE' }), 'Claude 확인 필요');
-  assert.equal(claude({ enabled: true, available: true, signedIn: null }, { error: 'CLAUDE_SIGNED_OUT' }), '로그인 필요');
-});
-
 test('ask_claude cards show the answer with an Open in Claude link and only accept claude.ai chats', () => {
   const chat = 'https://claude.ai/chat/0b5c3f9e-1d2a-4c8b-9e7f-123456789abc';
   const claudeArgs = JSON.stringify({ question: '내가 선호하는 말투는?' });
@@ -58,10 +40,4 @@ test('ask_claude cards show the answer with an Open in Claude link and only acce
   assert.equal(presentToolResult({ tool: 'ask_claude', argsJson: claudeArgs, ok: true, preview: '', result: { chatUrl: CHAT, answer: 'x' } }).link, undefined);
   const limited = presentToolResult({ tool: 'ask_claude', argsJson: claudeArgs, ok: false, preview: '', error: { code: 'CLAUDE_LIMIT', message: 'limit' } });
   assert.equal(limited.text, 'Claude 사용 한도 도달');
-});
-
-test('the chatgpt permission request is a normal per-chat card', () => {
-  const request = readChatPermissionRequest({ requestId: 'r1', capability: 'chatgpt', reason: 'Check the preferred tone.', threadId: 't1', documentId: null, turnId: 'turn-1', agent: 'claude', createdAt: new Date().toISOString(), scopes: ['chat', 'always'] });
-  assert.equal(request?.capability, 'chatgpt');
-  assert.equal(readChatPermissionRequest({ requestId: 'r2', capability: 'claude', reason: 'Check the preferred tone.', threadId: 't1', documentId: null, turnId: 'turn-1', agent: 'codex', createdAt: new Date().toISOString(), scopes: ['chat', 'always'] })?.capability, 'claude');
 });

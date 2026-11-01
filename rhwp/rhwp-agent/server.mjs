@@ -2165,10 +2165,6 @@ function resolveEffort(agent, model, requested, record = null) {
   return allowed.has(preferred) ? preferred : [...allowed][0];
 }
 
-function resolveServiceTier(agent, requested) {
-  if (agent !== 'codex') return 'standard';
-  return requested === 'fast' ? 'fast' : 'standard';
-}
 // 새 탭·새로고침이 스튜디오 자리를 넘겨받으면 이전 페이지의 실행기와 함께 인플라이트 호출도
 // 사라진다 — 30초 타임아웃까지 기다리지 말고 즉시 NO_STUDIO 로 실패시킨다.
 // 단순히 소켓만 잠깐 끊긴 경우(같은 인스턴스가 곧바로 재접속)에는 호출을 살려 두고,
@@ -3102,7 +3098,6 @@ function sessionInfo(record) {
       model: activeSession.model,
       effort: activeSession.effort,
       permissionProfile: activeSession.permissionProfile,
-      serviceTier: activeSession.serviceTier,
       sessionId: activeSession.sessionId,
       threadId: activeSession.threadId,
       documentId: activeSession.documentId,
@@ -5450,7 +5445,6 @@ async function startSession(
   requestedDocumentName,
   requestedHistory,
   force = false,
-  requestedServiceTier,
   { providerSessionId = null, handoffHistory = null, providerContextUsage = null } = {},
 ) {
   if (record.processCleanupUncertain === true) throw agentProcessCleanupUncertain();
@@ -5460,7 +5454,6 @@ async function startSession(
   const model = await resolveModel(agent, requestedModel, record);
   const effort = resolveEffort(agent, model, requestedEffort, record);
   const permissionProfile = resolvePermissionProfile(requestedPermission);
-  const serviceTier = resolveServiceTier(agent, requestedServiceTier);
   const workflow = resolveWorkflow(requestedWorkflow);
   const { threadId, documentId, documentName } = resolveSessionIdentity({
     threadId: requestedThreadId,
@@ -5477,7 +5470,6 @@ async function startSession(
     && currentSession.model === model
     && currentSession.effort === effort
     && currentSession.permissionProfile === permissionProfile
-    && currentSession.serviceTier === serviceTier
     && currentSession.planning.workflow === workflow
     && currentSession.threadId === threadId
     && currentSession.documentId === documentId
@@ -5559,7 +5551,6 @@ async function startSession(
     permissionProfile,
     // "항상" 허용한 권한은 새 채팅에도 들어간다. "이 채팅" 허용은 같은 채팅을 이어 갈 때만 남는다.
     chatPermissionGrants: normalizeChatPermissionGrants([...(continuing ? currentSession.chatPermissionGrants : []), ...chatPermissionPolicy.list()]),
-    serviceTier,
     isolatedHome: record.isolatedHome,
     codexHome: record.codexHome,
     codexAuthPath: currentSourceCodexAuthPath,
@@ -5629,7 +5620,6 @@ async function startSession(
     permissionProfile,
     chatPermissionGrants: opts.chatPermissionGrants,
     chatScopedGrants: continuing ? normalizeChatPermissionGrants(currentSession.chatScopedGrants ?? []) : [],
-    serviceTier,
     backend,
     generation,
     providerRole,
@@ -6056,7 +6046,6 @@ async function handleStudioMessage(record, sock, msg) {
           msg.documentName,
           msg.history,
           Boolean(msg.force),
-          msg.serviceTier,
           {
             providerSessionId: typeof msg.providerSessionId === 'string' ? msg.providerSessionId : null,
             handoffHistory: Array.isArray(msg.handoffHistory) ? msg.handoffHistory : null,
@@ -6086,7 +6075,6 @@ async function handleStudioMessage(record, sock, msg) {
           model: s.model,
           effort: s.effort,
           permissionProfile: s.permissionProfile,
-          serviceTier: s.serviceTier,
           sessionId: s.sessionId,
           status: s.status,
           turnId: s.turnId,
@@ -6509,25 +6497,6 @@ async function handleStudioMessage(record, sock, msg) {
         return;
       }
       void enqueueWorkflowTransition(record, activeSession, () => answerChatPermission(record, sock, msg));
-      return;
-    }
-    case 'chat-service-tier-set': {
-      if (!record.agentSession) {
-        sendJson(sock, { v: 1, type: 'chat-error', code: 'AGENT_NOT_STARTED', message: 'Start a chat before changing the service tier.' });
-        return;
-      }
-      if (record.agentSession.status === 'running') {
-        sendJson(sock, { v: 1, type: 'chat-error', code: 'AGENT_BUSY', message: 'Service tier can only change between turns.' });
-        return;
-      }
-      const tier = resolveServiceTier(record.agentSession.agent, msg.serviceTier);
-      try {
-        record.agentSession.backend.setServiceTier?.(tier);
-        record.agentSession.serviceTier = tier;
-        sendJson(sock, { v: 1, type: 'chat-service-tier-changed', serviceTier: tier });
-      } catch (e) {
-        sendJson(sock, { v: 1, type: 'chat-error', code: 'SERVICE_TIER_CHANGE_FAILED', message: String(e?.message ?? e) });
-      }
       return;
     }
     case 'chat-workflow-set': {

@@ -63,5 +63,7 @@ test('설정 목적지는 편집·테마·AI·스킬·프로젝트·보관함만
   assert.equal(isSettingsDestination('ai-billing'), false);
   assert.equal(aiSettingsSection('ai-connection'), 'connection');
   assert.equal(aiSettingsSection('connections'), 'connection');
+  assert.equal(aiSettingsSection('rau'), 'rau');
+  assert.equal(normalizeSettingsDestination('rau'), 'ai');
   assert.equal(aiSettingsSection('ai'), undefined);
 });

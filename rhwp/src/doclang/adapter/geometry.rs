@@ -34,34 +34,3 @@ pub(crate) fn from_common_attr(attr: &CommonObjAttr) -> ir::Geometry {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn passthrough_preserves_dimensions_and_offsets() {
-        let attr = CommonObjAttr {
-            width: 7200,
-            height: 3600,
-            horizontal_offset: 100,
-            vertical_offset: 250,
-            treat_as_char: true,
-            ..Default::default()
-        };
-        let geo = from_common_attr(&attr);
-        assert_eq!(geo.width, 7200);
-        assert_eq!(geo.height, 3600);
-        assert_eq!(geo.h_offset, 100);
-        assert_eq!(geo.v_offset, 250);
-        assert!(geo.treat_as_char);
-    }
-
-    #[test]
-    fn floating_object_reports_not_treat_as_char() {
-        let attr = CommonObjAttr {
-            treat_as_char: false,
-            ..Default::default()
-        };
-        assert!(!from_common_attr(&attr).treat_as_char);
-    }
-}

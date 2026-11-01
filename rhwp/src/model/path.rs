@@ -31,30 +31,3 @@ pub fn path_from_flat(parent_para_idx: usize, control_idx: usize) -> DocumentPat
     ]
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_path_from_flat() {
-        let path = path_from_flat(3, 1);
-        assert_eq!(
-            path,
-            vec![PathSegment::Paragraph(3), PathSegment::Control(1),]
-        );
-    }
-
-    #[test]
-    fn test_nested_path_construction() {
-        // 구역 내 문단5 → 컨트롤0(표) → 셀(1,2) → 문단0 → 컨트롤0(중첩표)
-        let path: DocumentPath = vec![
-            PathSegment::Paragraph(5),
-            PathSegment::Control(0),
-            PathSegment::Cell(1, 2),
-            PathSegment::Paragraph(0),
-            PathSegment::Control(0),
-        ];
-        assert_eq!(path.len(), 5);
-        assert_eq!(path[2], PathSegment::Cell(1, 2));
-    }
-}

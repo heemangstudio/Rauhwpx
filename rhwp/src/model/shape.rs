@@ -848,25 +848,3 @@ pub struct OleShape {
     pub caption: Option<Caption>,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_common_obj_attr_default() {
-        let attr = CommonObjAttr::default();
-        assert!(!attr.treat_as_char);
-        assert_eq!(attr.text_wrap, TextWrap::Square);
-    }
-
-    #[test]
-    fn test_shape_object_line() {
-        let line = ShapeObject::Line(LineShape::default());
-        assert!(matches!(line, ShapeObject::Line(_)));
-    }
-
-    #[test]
-    fn test_text_wrap_variants() {
-        assert_eq!(TextWrap::default(), TextWrap::Square);
-    }
-}

@@ -1,9 +1,9 @@
 // 호스팅 Rau HTTP 클라이언트. 키 서버와 같은 주소를 쓰고, 계정 lease 로 인증한다.
-//   GET  /v1/rau/status (Bearer lease)           → {ok, eligible, source, reason, upgradeUrl, allowanceUsd, usedUsd,
-//                                                    remainingUsd, resetsAt(ISO)}
-//   POST /v1/rau/learn  (Bearer lease) {prompt}  → {ok, text, model, usage:{allowanceUsd, usedUsd, remainingUsd, resetsAt}}
+//   GET  /v1/rau/status (Bearer lease)           → {ok, eligible, source, reason, upgradeUrl, remainingPercent,
+//                                                    resetsAt(ISO)}
+//   POST /v1/rau/learn  (Bearer lease) {prompt}  → {ok, text, model, usage:{remainingPercent, resetsAt}}
 //   실패: {ok:false, error: 'unauthorized' 401 | 'rau_plan_required' 403 (+upgradeUrl)
-//          | 'rau_credits_exhausted' 402 (+allowanceUsd, usedUsd, resetsAt) | 'rate_limited' 429
+//          | 'rau_credits_exhausted' 402 (+resetsAt) | 'rate_limited' 429
 //          | 'upstream_unavailable' 502 | 'rau_not_configured' 503}
 // status 는 Studio 의 rau:status 가 쓰고, learn 은 Rau-0.1 학습이 쓴다.
 // lease 는 메인 프로세스 밖으로 나가지 않는다.
@@ -29,8 +29,6 @@ export class RauServerError extends Error {
     this.code = code;
     this.status = details.status ?? null;
     this.upgradeUrl = details.upgradeUrl ?? null;
-    this.allowanceUsd = details.allowanceUsd ?? null;
-    this.usedUsd = details.usedUsd ?? null;
     this.resetsAt = details.resetsAt ?? null;
   }
 }
@@ -56,13 +54,24 @@ export function resetsAtFrom(value) {
   return null;
 }
 
-const usd = (value) => (Number.isFinite(value) && value >= 0 ? value : null);
+/**
+ * 남은 크레딧의 몫(0~100). 달러만 보내는 서버의 답도 몫으로 바꾼다. 앱 안쪽으로는 몫만 넘기고 달러는 여기서 버린다.
+ * 값을 알 수 없으면 null.
+ */
+export function remainingPercentFrom(body) {
+  const percent = body?.remainingPercent;
+  if (Number.isFinite(percent) && percent >= 0 && percent <= 100) return percent;
+  const allowance = body?.allowanceUsd;
+  if (!Number.isFinite(allowance) || allowance <= 0) return null;
+  const remaining = Number.isFinite(body?.remainingUsd) ? body.remainingUsd
+    : Number.isFinite(body?.usedUsd) ? allowance - body.usedUsd : allowance;
+  if (remaining <= 0) return 0;
+  return Math.min(100, Math.ceil(Math.round((remaining / allowance) * 1e8) / 1e6));
+}
 
 function usageFrom(body) {
   return {
-    allowanceUsd: usd(body?.allowanceUsd),
-    usedUsd: usd(body?.usedUsd),
-    remainingUsd: usd(body?.remainingUsd),
+    remainingPercent: remainingPercentFrom(body),
     resetsAt: resetsAtFrom(body?.resetsAt),
   };
 }
@@ -133,7 +142,7 @@ export function createRauClient({
         source: eligible && (body.source === 'plan' || body.source === 'trial') ? body.source : null,
         reason: eligible ? null : 'rau_plan_required',
         upgradeUrl: upgradeUrlFrom(body.upgradeUrl),
-        ...(eligible ? usageFrom(body) : { allowanceUsd: null, usedUsd: null, remainingUsd: null, resetsAt: null }),
+        ...(eligible ? usageFrom(body) : { remainingPercent: null, resetsAt: null }),
       };
     },
   };

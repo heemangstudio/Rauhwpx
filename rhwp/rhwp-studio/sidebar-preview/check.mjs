@@ -8,7 +8,6 @@ import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { createServer } from 'vite';
 import puppeteer from 'puppeteer-core';
-import { checkChipAlignment } from './chip-alignment.check.mjs';
 import { checkPiModels } from './pi-models.check.mjs';
 import { checkSelectMenu } from './select-menu.check.mjs';
 import { checkMarkdownEditor } from './markdown-editor.check.mjs';
@@ -26,7 +25,6 @@ import { checkDraftChat, checkNewChatWhileRunning, checkChatModeLock, checkNewCh
 import { checkChatResume } from './chat-resume.check.mjs';
 import { checkChatPermissions } from './permissions.check.mjs';
 import { checkWorkbench } from './workbench.check.mjs';
-import { checkWorkspaceBrand } from './workspace-brand.check.mjs';
 import { checkBrowserSettings } from './browser-settings.check.mjs';
 import { checkBrowserWorkbench } from './browser-workbench.check.mjs';
 import { checkNativeBrowserRecovery } from './browser-native-recovery.check.mjs';
@@ -141,7 +139,6 @@ const focusedChecks = {
   'browser-workbench': (h) => checkBrowserWorkbench(h),
   'browser-native-recovery': (h) => checkNativeBrowserRecovery(h),
   workbench: (h) => checkWorkbench({ page: h.page, origin: h.origin, screenshot: h.screenshot }),
-  'workspace-brand': (h) => checkWorkspaceBrand(h.page, h.origin, h.screenshot),
   changes: (h) => checkChangesPreview(h.page, h.origin, h.artifacts),
   plan: (h) => checkPlanPreview(h.page, h.origin, h.artifacts),
   permissions: (h) => checkChatPermissions(h.page, h.origin, h.screenshot),
@@ -150,7 +147,6 @@ const focusedChecks = {
   sessions: (h) => checkSessionsPreview(h.page, h.origin),
   context: (h) => checkContextPreview(h.page, h.origin, h.artifacts),
   resume: (h) => checkChatResume(h.page, h.origin, h.screenshot),
-  chip: (h) => checkChipAlignment(h.page, h.origin),
   'pi-models': (h) => checkPiModels(h.page, h.origin),
   'select-menu': (h) => checkSelectMenu(h.page, h.origin),
   'markdown-editor': (h) => checkMarkdownEditor(h.page, h.origin, h.artifacts),

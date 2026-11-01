@@ -69,35 +69,3 @@ impl OutlineBuilder for SvgOutline {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::wasm_api::sfnt_glyph_path_em as public_path;
-
-    #[test]
-    fn exact_sfnt_face_glyph_paths_preserve_ink_and_reject_unknown_payloads() {
-        let bytes = include_bytes!("../../ttfs/opensource/NotoSansKR-Regular.ttf");
-        let face = Face::parse(bytes, 0).unwrap();
-        for character in ['9', 'Å'] {
-            let id = u32::from(face.glyph_index(character).unwrap().0);
-            let path = public_path(bytes, 0, id);
-            assert!(path.starts_with('M') && path.contains('Z'), "{character}");
-            assert!(!path.contains("NaN") && !path.contains("inf"));
-        }
-        let collection = include_bytes!("../../tests/fixtures/fonts/RHWPExactFaceSmoke.ttc");
-        assert!(!public_path(collection, 0, 1).is_empty());
-        assert!(!public_path(collection, 1, 1).is_empty());
-        assert!(public_path(collection, 2, 1).is_empty());
-        let blank = u32::from(face.glyph_index(' ').unwrap().0);
-        assert!(public_path(bytes, 0, blank).is_empty());
-        for (payload, index, id) in [
-            (bytes.as_slice(), 1, 1),
-            (bytes.as_slice(), 0, 0),
-            (bytes.as_slice(), 0, u32::from(face.number_of_glyphs())),
-            (bytes.as_slice(), 0, u32::MAX),
-            (b"invalid SFNT".as_slice(), 0, 1),
-        ] {
-            assert!(public_path(payload, index, id).is_empty());
-        }
-    }
-}

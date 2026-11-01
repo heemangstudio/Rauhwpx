@@ -567,8 +567,6 @@ const chordMapM: Record<string, string | [string, Record<string, unknown>]> = {
   ㄷ: 'insert:endnote', // 한글 IME
   s: 'page:hide',
   ㄴ: 'page:hide', // 한글 IME
-  m: 'insert:equation',
-  ㅡ: 'insert:equation', // 한글 IME
   // 글자 색 chord (한컴 Ctrl+M,? 정합 — 검정/빨강/파랑/자주/초록/노랑/청록/흰색)
   k: ['format:text-color', { color: '#000000' }],
   ㅏ: ['format:text-color', { color: '#000000' }], // 한글 IME
@@ -586,6 +584,16 @@ const chordMapM: Record<string, string | [string, Record<string, unknown>]> = {
   ㅊ: ['format:text-color', { color: '#008080' }], // 한글 IME
   w: ['format:text-color', { color: '#FFFFFF' }],
   ㅈ: ['format:text-color', { color: '#FFFFFF' }], // 한글 IME
+};
+
+/** 코드 단축키 → 커맨드 ID 매핑 (Ctrl+N,? 형태)
+ *
+ * 한컴과 같은 Ctrl+N,M 수식. 데스크톱 앱(Electron)에는 Ctrl+N을 쓰는 메뉴가 없어
+ * 편집기가 받는다. 일반 Chrome 탭에서는 브라우저가 새 창으로 가로챈다.
+ */
+const chordMapN: Record<string, string> = {
+  m: 'insert:equation',
+  ㅡ: 'insert:equation', // 한글 IME
 };
 
 /** chordMapM 항목을 dispatch 한다 (색상 chord 는 params 동반). */
@@ -763,7 +771,7 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
     }
   }
 
-  // ─── 1. 코드 단축키 2번째 키 처리 (Ctrl+K → ? / Ctrl+M → ?) ───
+  // ─── 1. 코드 단축키 2번째 키 처리 (Ctrl+K → ? / Ctrl+M → ? / Ctrl+N → ?) ───
   if (this._pendingChordK) {
     this._pendingChordK = false;
     const key = e.key.toLowerCase();
@@ -781,6 +789,17 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
     if (entry && this.dispatcher) {
       e.preventDefault();
       dispatchChordM(this.dispatcher, entry);
+      return;
+    }
+  }
+  // 한글 IME의 'Process' 키는 아래 IME 처리에서 e.code로 찾는다.
+  if (this._pendingChordN && e.key !== 'Process') {
+    this._pendingChordN = false;
+    const key = e.key.toLowerCase();
+    const cmdId = chordMapN[key];
+    if (cmdId && this.dispatcher) {
+      e.preventDefault();
+      this.dispatcher.dispatch(cmdId);
       return;
     }
   }
@@ -864,6 +883,21 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
       e.preventDefault();
       this._pendingChordM = true;
       return;
+    }
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.code === 'KeyN') {
+      e.preventDefault();
+      this._pendingChordN = true;
+      return;
+    }
+    // Ctrl+N 다음 키 — 한글 IME에서는 e.code로 chordMapN lookup
+    if (this._pendingChordN) {
+      this._pendingChordN = false;
+      const cmdId = e.code === 'KeyM' ? chordMapN.m : undefined;
+      if (cmdId && this.dispatcher) {
+        e.preventDefault();
+        this.dispatcher.dispatch(cmdId);
+        return;
+      }
     }
     // chord 2번째 키 — _pendingChordM 활성화 시 e.code로 chordMapM lookup
     if (this._pendingChordM) {
@@ -1850,7 +1884,7 @@ export function handleCtrlKey(this: any, e: KeyboardEvent): void {
     }
   }
 
-  // ─── 코드 단축키 1번째 키 (Ctrl+K / Ctrl+M) ───
+  // ─── 코드 단축키 1번째 키 (Ctrl+K / Ctrl+M / Ctrl+N) ───
   if ((e.key === 'k' || e.key === 'K' || e.key === 'ㅏ') && !e.shiftKey && !e.altKey) {
     e.preventDefault();
     // 글자를 선택한 채 Ctrl/Cmd+K → 바로 하이퍼링크 대화상자. 선택이 없으면 Ctrl+K,? 코드 단축키.
@@ -1866,6 +1900,12 @@ export function handleCtrlKey(this: any, e: KeyboardEvent): void {
   if ((e.key === 'm' || e.key === 'M' || e.key === 'ㅡ') && !e.shiftKey && !e.altKey) {
     e.preventDefault();
     this._pendingChordM = true;
+    return;
+  }
+  // Ctrl+N,? (수식). 데스크톱 앱에서는 Ctrl+N이 편집기까지 온다.
+  if ((e.key === 'n' || e.key === 'N' || e.key === 'ㅜ') && !e.shiftKey && !e.altKey) {
+    e.preventDefault();
+    this._pendingChordN = true;
     return;
   }
   if ((e.key === 'g' || e.key === 'G' || e.key === 'ㅎ') && !e.shiftKey && !e.altKey) {

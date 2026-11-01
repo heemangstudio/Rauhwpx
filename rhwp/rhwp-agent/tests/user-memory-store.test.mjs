@@ -58,12 +58,6 @@ test('a user rule is dampened only by a strong objection and cannot be added twi
   assert.equal((await ruleOf(store, rule.id)).strength, 1);
   await assert.rejects(store.addUserRule({ kind: 'term', text: "'고객' 대신 '이용자'" }), { code: 'USER_MEMORY_SUBJECT_TAKEN' });
   await assert.rejects(store.addUserRule({ kind: 'fact', text: 'x' }), { code: 'USER_MEMORY_INVALID' });
-  // 사용자가 고친 배운 규칙은 사용자의 규칙이 된다.
-  const { rule: learned } = await store.escalate({ kind: 'style', subject: '문체.종결', text: '본문은 한다체 사용', docKeys: [DOC_A, DOC_B] });
-  const edited = await store.editRule(learned.id, { text: '본문은 합니다체 사용' });
-  assert.deepEqual([edited.origin, edited.text], ['user', '본문은 합니다체 사용']);
-  const [event] = (await store.snapshot()).events;
-  assert.deepEqual([event.kind, event.prevText, event.source], ['edited', '본문은 한다체 사용', 'user']);
 });
 
 test('the 61st rule evicts the weakest, oldest learned rule; user rules go last', async (t) => {

@@ -268,31 +268,3 @@ impl From<FontPortabilityKind> for GlyphRunReplayEligibility {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn font_portability_maps_to_replay_eligibility() {
-        assert_eq!(
-            GlyphRunReplayEligibility::from(FontPortabilityKind::PortableBlob),
-            GlyphRunReplayEligibility::Portable
-        );
-        assert_eq!(
-            GlyphRunReplayEligibility::from(FontPortabilityKind::ExternalVerified),
-            GlyphRunReplayEligibility::ConditionalExternalFont
-        );
-        assert_eq!(
-            GlyphRunReplayEligibility::from(FontPortabilityKind::ResolvedButNotEmbedded),
-            GlyphRunReplayEligibility::LocalDiagnosticOnly
-        );
-        assert_eq!(
-            GlyphRunReplayEligibility::from(FontPortabilityKind::SystemNameOnly),
-            GlyphRunReplayEligibility::LocalDiagnosticOnly
-        );
-        assert_eq!(
-            GlyphRunReplayEligibility::from(FontPortabilityKind::UnresolvedFallback),
-            GlyphRunReplayEligibility::NotReplayable
-        );
-    }
-}

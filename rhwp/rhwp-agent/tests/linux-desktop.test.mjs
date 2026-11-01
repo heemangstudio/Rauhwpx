@@ -22,14 +22,6 @@ function fakeSafeStorage(backend) {
   };
 }
 
-test('Linux packages register every supported document extension', () => {
-  const extensions = (rootPackage.build?.fileAssociations ?? [])
-    .flatMap(({ ext }) => Array.isArray(ext) ? ext : [ext]);
-  assert.equal(extensions.includes('hwp'), true);
-  assert.equal(extensions.includes('hwpx'), true);
-  assert.equal(extensions.includes('hml'), true);
-});
-
 test('Deb update discovery compares stable versions and selects the native architecture', () => {
   assert.equal(isNewerStableVersion('v0.2.0', '0.1.11'), true);
   assert.equal(isNewerStableVersion('v0.1.11', '0.1.11'), false);

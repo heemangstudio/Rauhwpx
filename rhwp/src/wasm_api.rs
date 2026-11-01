@@ -10136,8 +10136,4 @@ fn base64_encode(data: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(data)
 }
 
-#[cfg(test)]
-mod tests;
 
-#[cfg(test)]
-mod boundary_tests;

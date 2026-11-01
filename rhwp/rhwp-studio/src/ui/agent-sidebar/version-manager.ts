@@ -688,16 +688,6 @@ function laneGraph(
   return graph;
 }
 
-/** 빈 변경 탭의 점 그림 — 접힌 귀퉁이가 있는 빈 종이. */
-const DOT_ART_CLEAN = [
-  '· · · · · ·  ',
-  '·         · ·',
-  '·           ·',
-  '·    ✓      ·',
-  '·           ·',
-  '· · · · · · ·',
-].join('\n');
-
 function reasonLabel(reason: string): string {
   const labels: Record<string, string> = {
     initial: '첫 버전',
@@ -896,7 +886,7 @@ export function createVersionManagerPage(controller: VersionManagerController): 
   changesPanel.setAttribute('role', 'tabpanel');
   const changesEmpty = el('div', 'ag-versions-changes-empty');
   changesEmpty.setAttribute('aria-label', '커밋 전 변경 없음');
-  changesEmpty.append(el('pre', 'ag-dot-art', DOT_ART_CLEAN), el('span', '', '깨끗함'));
+  changesEmpty.append(el('span', '', '깨끗함'));
   const changesHost = el('div', 'ag-versions-changes-host');
   // 검토 카드는 changes drawer 의 검토 자리와 같은 모양을 쓴다.
   const reviewHost = el('div', 'ag-versions-review-host ag-changes-review-slot');

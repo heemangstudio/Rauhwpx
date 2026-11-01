@@ -229,11 +229,11 @@ test('a Rau code in days: hosted Rau and its monthly credits start at redemption
     [plan.tier, plan.edition, plan.plan, plan.autoRenew, new Date(license.expiresAt).toISOString(), leaseOf(res.body).tier],
     ['rau', 'rau', null, false, '2026-12-15T14:59:59.999Z', 'rau'],
   );
-  assert.deepEqual(plan.rau, { eligible: true, source: 'plan', allowanceUsd: 8, usedUsd: 0, remainingUsd: 8, resetsAt });
+  assert.deepEqual(plan.rau, { eligible: true, source: 'plan', remainingPercent: 100, resetsAt });
   assert.equal((await s.licensesFile()).licenses[license.keyId].edition, 'rau');
   const status = await fetch(`${s.origin}/v1/rau/status`, { headers: s.bearer(res.body.lease) });
   const body = await status.json();
-  assert.deepEqual([status.status, body.eligible, body.source, body.allowanceUsd, body.resetsAt], [200, true, 'plan', 8, new Date(resetsAt).toISOString()]);
+  assert.deepEqual([status.status, body.eligible, body.source, body.remainingPercent, body.resetsAt], [200, true, 'plan', 100, new Date(resetsAt).toISOString()]);
 });
 
 test('batches issued before the rename keep their meaning: stored `basic` grants Hama, stored `hama` (the old hosted plan) grants Rau', async (t) => {

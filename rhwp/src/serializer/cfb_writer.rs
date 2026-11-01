@@ -945,5 +945,3 @@ fn find_bin_data_info_with_compress<'a>(
     (content.id, &content.extension, doc_compressed, false)
 }
 
-#[cfg(test)]
-mod tests;

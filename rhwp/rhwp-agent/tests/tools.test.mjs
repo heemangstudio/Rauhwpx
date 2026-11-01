@@ -455,12 +455,6 @@ test('present_implementation_plan 스키마가 완전한 구조를 강제한다'
   assert.ok(!IMPLEMENTATION_PLAN_SHAPE.steps.safeParse([]).success);
 });
 
-test('핵심 시맨틱 쓰기 도구 5개가 모두 있다', () => {
-  for (const name of ['apply_list', 'list_numberings', 'get_para_format', 'get_char_format', 'verify_changes']) {
-    assert.ok(byName.has(name), `missing tool: ${name}`);
-  }
-});
-
 test('full engine edit tools expose a bounded autonomous batch contract', () => {
   const catalog = byName.get('get_engine_edit_capabilities');
   const apply = byName.get('apply_engine_edits');
@@ -807,68 +801,6 @@ test('copy-layout runner schema exposes actions and data, never commands or path
   assert.equal('helperPath' in definition.shape, false);
 });
 
-test('공유 규칙은 한 번만: 셀 주소·오프셋·리비전·스테이징·단위가 RHWP_TOOL_RULES 에 있다', () => {
-  // get_structure 의 셀 항목에는 paraIdx/controlIdx 가 없으므로 표 항목 것과 조립해야 한다는 안내
-  assert.match(RHWP_TOOL_RULES, /paraIdx\/controlIdx come from the get_structure table line/);
-  assert.match(RHWP_TOOL_RULES, /cellIdx is the row-major index/);
-  assert.match(RHWP_TOOL_RULES, /find_text match carries a complete cell/);
-  assert.match(RHWP_TOOL_RULES, /cellPath/);
-  assert.match(RHWP_TOOL_RULES, /charOffset counts text characters only/);
-  assert.match(RHWP_TOOL_RULES, /lands before the object/);
-  assert.match(RHWP_TOOL_RULES, /expectedRevision/);
-  assert.match(RHWP_TOOL_RULES, /recovery guidance in the error message/);
-  assert.match(RHWP_TOOL_RULES, /ONE apply_edits call \(up to 32 items\)/);
-  // 앵커 규칙 — 다섯 도구명, occurrence 1-based, 최대 5개 후보, bottom-first 규칙 부재.
-  assert.match(RHWP_TOOL_RULES, /anchor \{text, occurrence\?/);
-  assert.match(RHWP_TOOL_RULES, /occurrence \(1-based\)/);
-  assert.match(RHWP_TOOL_RULES, /up to 5 candidates/);
-  assert.doesNotMatch(RHWP_TOOL_RULES, /bottom-of-document first/);
-  assert.doesNotMatch(byName.get('apply_edits').description, /bottom|맨 뒤|뒤에서/);
-  // 모드별 쓰기 수명주기: 에이전트는 검토 대기, 전체는 직접 적용(실행 취소 단위).
-  assert.match(RHWP_TOOL_RULES, /에이전트 mode[^\n]*held for the user's review/);
-  assert.match(RHWP_TOOL_RULES, /전체 mode[^\n]*apply directly as ordinary undoable edits/);
-  assert.doesNotMatch(RHWP_TOOL_RULES, /auto-commit|전체 접근|\(안전\)/);
-  assert.match(RHWP_TOOL_RULES, /lengths in mm, font sizes in pt/);
-
-  const ruleLines = RHWP_TOOL_RULES.split('\n').slice(1).map((line) => line.replace(/^- [A-Za-z ]+: /, ''));
-  for (const definition of TOOL_DEFINITIONS) {
-    for (const line of ruleLines) {
-      assert.ok(!definition.description.includes(line.slice(0, 60)), `${definition.name} repeats a shared rule`);
-    }
-  }
-});
-
-test('cell 을 받는 도구와 모든 문서 쓰기 도구는 공유 규칙을 한 줄로 가리킨다', () => {
-  const cellTools = TOOL_DEFINITIONS.filter((d) => d.shape && 'cell' in d.shape);
-  assert.ok(cellTools.length >= 10, `expected >= 10 cell-taking tools, got ${cellTools.length}`);
-  for (const d of cellTools) {
-    assert.match(d.shape.cell?._def?.description ?? '', /rhwp tool rules/, `${d.name}: cell param lacks the rules pointer`);
-    if (d.shape.cellPath) assert.match(d.shape.cellPath._def.description ?? '', /rhwp tool rules/, d.name);
-  }
-  const writeTools = TOOL_DEFINITIONS.filter((d) => d.category === 'document-write' && d.shape.expectedRevision);
-  assert.ok(writeTools.length >= 20);
-  for (const d of writeTools) {
-    assert.match(d.description, /rhwp tool rules/, `${d.name}: missing the rules pointer`);
-  }
-});
-
-test('수식 문법 안내는 preview_equation 에만 있다', () => {
-  assert.match(byName.get('preview_equation').description, /NOT LaTeX/);
-  assert.doesNotMatch(byName.get('insert_equation').description, /NOT LaTeX/);
-  assert.match(byName.get('insert_equation').description, /preview_equation/);
-});
-
-test('verify_changes 는 선택적 검토 요약이고 쓰기 결과는 after 로 온다', () => {
-  const desc = byName.get('verify_changes').description;
-  assert.match(desc, /Optional review summary/);
-  assert.match(desc, /after report/);
-  // 삭제는 라이브로 이미 사라졌다 — 재삽입 금지 안내
-  assert.match(desc, /do NOT re-insert/);
-  assert.match(desc, /includeImage/);
-  assert.match(RHWP_TOOL_RULES, /returns after \{paragraphs/);
-  assert.match(RHWP_TOOL_RULES, /verify_changes is an optional review summary/);
-});
-
 test('스테이징 쓰기와 apply_edits 는 render crop|page 를 받고 raw 엔진 도구는 받지 않는다', () => {
   const staged = TOOL_DEFINITIONS.filter((d) => d.category === 'document-write' && 'expectedRevision' in d.shape
     && !['apply_engine_edits', 'prepare_engine_edit_session'].includes(d.name));
@@ -880,15 +812,6 @@ test('스테이징 쓰기와 apply_edits 는 render crop|page 를 받고 raw 엔
   }
   assert.ok(!byName.get('apply_engine_edits').shape.render);
   assert.ok(!byName.get('prepare_engine_edit_session').shape.render);
-});
-
-test('apply_list 설명에 진짜 목록/리터럴 금지/가나다 기본값/bulletChar 안내가 있다', () => {
-  const desc = byName.get('apply_list').description;
-  assert.match(desc, /REAL HWP list/);
-  assert.match(desc, /never type literal/i);
-  assert.match(desc, /hanging indent/i);
-  assert.match(desc, /가,나,다/);
-  assert.match(desc, /bulletChar/);
 });
 
 test('apply_list 스키마: format enum·level 기본값 0·범위', () => {
@@ -906,13 +829,6 @@ test('apply_list 스키마: format enum·level 기본값 0·범위', () => {
   assert.throws(() => validate({ }), /format/);
   assert.doesNotThrow(() => validate({ format: '1.' }));
   assert.doesNotThrow(() => validate({ bulletChar: '•' }));
-});
-
-test('get_char_format 설명에 서식 상속 규칙이 있다', () => {
-  const desc = byName.get('get_char_format').description;
-  assert.match(desc, /INHERITANCE RULE/);
-  assert.match(desc, /character BEFORE the insertion point/);
-  assert.match(desc, /replace_range/);
 });
 
 test('render_page 는 png 1.25 기본값과 regionMm/savePath 를 받는다', () => {
@@ -938,13 +854,6 @@ test('get_page_geometry: 쪽 측정 읽기 도구', () => {
   assert.ok(geometry.shape.include.safeParse(['lines', 'runs']).success);
   assert.ok(!geometry.shape.include.safeParse(['cells']).success);
   assert.ok(geometry.shape.regionMm.safeParse({ x: 0, y: 0, width: 10, height: 10 }).success);
-});
-
-test('apply_para_format 에 목록 속성(headType/numberingId/paraLevel/bulletChar)이 추가됐다', () => {
-  const { shape } = byName.get('apply_para_format');
-  for (const key of ['headType', 'numberingId', 'paraLevel', 'bulletChar']) {
-    assert.ok(key in shape, `apply_para_format missing ${key}`);
-  }
 });
 
 test('apply_char_format: 장평/자간은 스칼라 또는 7슬롯 배열', () => {

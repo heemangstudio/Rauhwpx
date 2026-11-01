@@ -9,8 +9,7 @@
 - 결함(수정 전): #2093 신뢰 경로의 controls.is_empty() 배제 + 개체 하단 넘침으로
   앵커+개체 2쪽 단독 (한글 1쪽 — 개체 하단 여백 스필).
 - 기대: 1쪽, 개체 여백 스필. visual sweep OK 1=1쪽(88.3%), 오라클 MATCH.
-- 검증: `rhwp dump-pages samples/task2137/156618554_petfood_press.hwp` /
-  `cargo test --test it page_count_pins::issue_2137`
+- 검증: `rhwp dump-pages samples/task2137/156618554_petfood_press.hwp`
 
 ## 156637323_unification_lecture.hwpx (실문서, 공개 보도자료)
 - 출처: korea.kr 통일부 — 국립통일교육원장 한미연합사 특강(2024-06-24).

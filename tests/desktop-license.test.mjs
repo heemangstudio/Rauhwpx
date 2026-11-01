@@ -648,3 +648,50 @@ test('copying the key writes the activated key to the clipboard and nothing befo
   assert.equal(await invoke('license:copy-key'), true);
   assert.deepEqual(copied, [key]);
 });
+
+test('the promotion code field sends GIFT codes to the account and HAMA keys to the device', async (t) => {
+  const { manager, server } = await setup(t);
+  const redeemed = [];
+  let answer = { ok: true };
+  const { installLicenseHost } = await import('../desktop/license-host.mjs');
+  const handlers = new Map();
+  installLicenseHost({
+    ipcMain: { handle(channel, fn) { handlers.set(channel, fn); } },
+    BrowserWindow: FakeLicenseWindow, shell: {}, manager,
+    redeemGift: async (code) => { redeemed.push(code); return answer; },
+    isTrustedStudioEvent: () => true, log: quiet,
+  });
+  const submit = (value) => handlers.get('license:activate')({ sender: {} }, value);
+
+  const ok = await submit(' gift-abcd efgh-jkmn-pqrs ');
+  assert.equal(ok.ok, true);
+  assert.equal(ok.kind, 'gift');
+  assert.deepEqual(redeemed, ['GIFT-ABCD-EFGH-JKMN-PQRS']);
+
+  const bad = await submit('GIFT-123');
+  assert.equal(bad.code, 'invalid_format');
+  assert.match(bad.message, /프로모션 코드 형식이 아니에요/);
+  assert.equal(redeemed.length, 1);
+
+  const cases = {
+    sign_in_required: /먼저 로그인/, invalid_code: /찾을 수 없어요/, code_redeemed: /이미 다른 계정/,
+    code_revoked: /취소된/, code_expired: /기한이 지난/, network: /서버에 연결하지 못했어요/,
+  };
+  for (const [code, pattern] of Object.entries(cases)) {
+    answer = { ok: false, code, message: 'x' };
+    const result = await submit('GIFT-ABCD-EFGH-JKMN-PQRS');
+    assert.equal(result.code, code);
+    assert.match(result.message, pattern);
+    assert.equal(result.signInRequired, code === 'sign_in_required');
+  }
+
+  const unknown = await submit('nonsense');
+  assert.equal(unknown.kind, 'license');
+  assert.match(unknown.message, /프로모션 코드 형식이 아니에요/);
+
+  const key = server.issueKey();
+  const activated = await submit(key.toLowerCase());
+  assert.equal(activated.ok, true);
+  assert.equal(activated.kind, 'license');
+  assert.equal((await manager.status()).state, 'licensed');
+});

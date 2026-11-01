@@ -1606,6 +1606,12 @@ const licenseHost = installLicenseHost({
   shell,
   clipboard,
   manager: licenseManager,
+  // accountManager 는 아래에서 만든다. 핸들러는 앱이 뜬 뒤에만 불린다.
+  redeemGift: (code) => accountManager.redeem(code),
+  signIn: async () => {
+    const providers = (await accountManager.getStatus()).providers ?? [];
+    return accountManager.signIn(providers.includes('email') ? 'email' : providers[0] ?? 'email');
+  },
   isTrustedStudioEvent,
   studioWebContents,
   parentWindow: () => BrowserWindow.getFocusedWindow() ?? sessions.windows().at(-1) ?? null,
@@ -2508,6 +2514,24 @@ if (strayUpdateCopy) {
   });
 
   app.whenReady().then(async () => {
+    if (!app.isPackaged && devOrigin) {
+      try {
+        const { installMemoLayer } = await import('./electron-memo/main.mjs');
+        await installMemoLayer({
+          app,
+          session: electronSession.defaultSession,
+          ipcMain,
+          storeDir: join(__dirname, '..', '.electron-memos'),
+          isTrustedUrl: (url) => {
+            try { return new URL(url).origin === devOrigin; } catch { return false; }
+          },
+          locale: 'ko',
+          repoRoot: join(__dirname, '..'),
+        });
+      } catch (error) {
+        console.warn('[memo] failed to start:', error);
+      }
+    }
     // 비밀 저장소·허브·북마크보다 먼저 2.0.11 프로필의 파일을 합친다. 실패해도 앱은 뜬다.
     await rebrandImport.prepare().catch((error) => {
       console.warn('[hamaeditor] 2.0.11 profile import failed:', error);

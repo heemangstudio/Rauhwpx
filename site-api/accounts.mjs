@@ -12,7 +12,7 @@ import {
   verifyAccountLease,
 } from './license-lease.mjs';
 import { licenseError, tokenEquals } from './licenses.mjs';
-import { RAU_TRIAL_ALLOWANCE_USD, RAU_TRIAL_DAYS } from './rau-ledger.mjs';
+import { RAU_TRIAL_DAYS } from './rau-ledger.mjs';
 import { createRateLimiter } from './rate-limit.mjs';
 import { createMemoryStore } from './store.mjs';
 import { maskedEmail } from './workos.mjs';
@@ -133,7 +133,7 @@ export function createAccountsService({
   avatarDir,
   avatars = createFileAvatars(avatarDir),
   // Bound late to the Rau service: whether hosted Rau runs, and a principal's current period
-  // ({ allowanceUsd, usedUsd, remainingUsd, resetsAt }) or null (rau.usage).
+  // ({ remainingPercent, resetsAt }) or null (rau.usage).
   rauConfigured = () => false,
   rauUsage = async () => null,
   providers = ['email', 'google'],
@@ -335,7 +335,7 @@ export function createAccountsService({
    * account with the same email reads as ended here.
    */
   async function trialOf(state, account) {
-    const fixed = { days: RAU_TRIAL_DAYS, allowanceUsd: RAU_TRIAL_ALLOWANCE_USD };
+    const fixed = { days: RAU_TRIAL_DAYS };
     const stored = account.rauTrial;
     if (!stored) {
       const byEmail = own(state.trialEmails, emailKey(account.emailLower));
@@ -349,22 +349,20 @@ export function createAccountsService({
     const principal = trialPrincipal(account);
     // A ledger that cannot be read leaves a running trial active.
     const usage = principal ? await usageOf(principal) : null;
-    const active = principal && (!usage || usage.remainingUsd > 0) ? principal : null;
+    const active = principal && (!usage || usage.remainingPercent > 0) ? principal : null;
     return {
       active: active ? { principal: active, usage: usage ?? null } : null,
       view: { state: active ? 'active' : 'ended', startedAt: ms(stored.startedAt), endsAt: ms(stored.endsAt), ...fixed },
     };
   }
 
-  const NO_RAU = Object.freeze({ eligible: false, source: null, allowanceUsd: null, usedUsd: null, remainingUsd: null, resetsAt: null });
+  const NO_RAU = Object.freeze({ eligible: false, source: null, remainingPercent: null, resetsAt: null });
 
   function rauView(source, usage) {
     return {
       eligible: true,
       source,
-      allowanceUsd: usage?.allowanceUsd ?? null,
-      usedUsd: usage?.usedUsd ?? null,
-      remainingUsd: usage?.remainingUsd ?? null,
+      remainingPercent: usage?.remainingPercent ?? null,
       resetsAt: usage?.resetsAt ?? null,
     };
   }

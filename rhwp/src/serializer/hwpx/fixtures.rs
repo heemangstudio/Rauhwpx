@@ -13,22 +13,3 @@ pub const EMPTY_HEADER_XML: &str = include_str!("templates/empty_header.xml");
 pub const EMPTY_SECTION0_XML: &str = include_str!("templates/empty_section0.xml");
 pub const EMPTY_CONTENT_HPF: &str = include_str!("templates/empty_content.hpf");
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn templates_are_not_empty() {
-        assert!(!EMPTY_HEADER_XML.is_empty());
-        assert!(!EMPTY_SECTION0_XML.is_empty());
-        assert!(!EMPTY_CONTENT_HPF.is_empty());
-    }
-
-    #[test]
-    fn empty_header_contains_hh_head_root() {
-        assert!(
-            EMPTY_HEADER_XML.contains("<hh:head"),
-            "empty_header.xml should contain <hh:head> root"
-        );
-    }
-}

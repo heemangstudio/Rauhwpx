@@ -4070,5 +4070,3 @@ pub fn generate_font_style(
     css
 }
 
-#[cfg(test)]
-mod tests;

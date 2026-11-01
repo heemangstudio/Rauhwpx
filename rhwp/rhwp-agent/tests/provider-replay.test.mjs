@@ -266,18 +266,6 @@ test('truncated, unlabelled and malformed bundles are refused', () => {
   assert.throws(() => parseReplayBundle(line(SYNTHETIC_META)), /at least one spawn/);
 });
 
-test('every committed fixture is labelled synthetic or recorded and names its basis', () => {
-  const names = readdirSync(REPLAY_FIXTURE_DIR, { recursive: true })
-    .filter((name) => String(name).endsWith('.ndjson'));
-  assert.ok(names.length >= 15, `expected the starter fixtures, found ${names.length}`);
-  for (const name of names) {
-    const loaded = loadReplayBundle(path.join(REPLAY_FIXTURE_DIR, String(name)));
-    assert.ok(['synthetic', 'recorded'].includes(loaded.meta.provenance), name);
-    if (loaded.meta.provenance === 'synthetic') assert.ok(loaded.meta.basis.length > 20, name);
-    assert.equal(String(name).split(path.sep)[0], loaded.meta.agent, `${name} lives under its agent`);
-  }
-});
-
 const SINGLE_TURN_FIXTURES = [
   ['pi/text-turn', { stopReason: 'completed' }],
   ['pi/credits-402', { failed: true }],

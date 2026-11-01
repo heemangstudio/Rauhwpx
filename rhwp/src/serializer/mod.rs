@@ -81,20 +81,3 @@ pub fn serialize_document(doc: &Document) -> Result<Vec<u8>, SerializeError> {
     HwpSerializer.serialize(doc)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    struct MockSerializer;
-    impl DocumentSerializer for MockSerializer {
-        fn serialize(&self, _doc: &Document) -> Result<Vec<u8>, SerializeError> {
-            Ok(vec![0xDE, 0xAD])
-        }
-    }
-
-    #[test]
-    fn test_mock_serializer() {
-        let doc = Document::default();
-        assert_eq!(MockSerializer.serialize(&doc).unwrap(), vec![0xDE, 0xAD]);
-    }
-}

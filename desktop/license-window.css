@@ -23,3 +23,4 @@ dd { margin: 0; font-variant-numeric: tabular-nums; }
 footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: auto; padding-top: 22px; }
 .contact { margin: 0; color: var(--muted); font-size: 13px; }
 [hidden] { display: none !important; }
+.hint { margin: 6px 0 0; color: var(--muted); font-size: 13px; }
