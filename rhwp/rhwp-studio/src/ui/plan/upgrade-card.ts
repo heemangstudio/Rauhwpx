@@ -23,7 +23,7 @@ export type PlanCardFocus = PlanFamily;
 const SUCCESS_HOLD_MS = 1200;
 
 const TIER_LABEL: Record<PlanTier, string> = { free: '무료', hama: 'Hama', rau: 'Rau' };
-const SKU_LABEL: Record<PlanSku, string> = { hamaMonthly: 'Hama · 월간', hamaYearly: 'Hama · 연간', rauMonthly: 'Rau · 월간', rauYearly: 'Rau · 연간' };
+const SKU_LABEL: Record<PlanSku, string> = { hamaMonthly: 'Hama 월간', hamaYearly: 'Hama 연간', rauMonthly: 'Rau 월간', rauYearly: 'Rau 연간' };
 /** 칸마다 한두 줄. 모델·회사 이름은 쓰지 않는다. */
 const FEATURES: Record<'free' | PlanFamily, string[]> = {
   free: ['문서 편집'],

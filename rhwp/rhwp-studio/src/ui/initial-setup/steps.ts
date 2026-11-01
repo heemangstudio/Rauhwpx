@@ -23,7 +23,7 @@ import {
   isLocalFontAccessSupported,
 } from '../../core/local-fonts.ts';
 
-export type SetupStep = 'intro' | 'theme' | 'fonts' | 'welcome' | 'account' | 'plans' | 'models' | 'rau';
+export type SetupStep = 'intro' | 'theme' | 'fonts' | 'welcome' | 'free' | 'account' | 'plans' | 'models' | 'rau';
 /** missing: 데스크톱에서 색인에 한컴 글꼴이 없다. discover: 브라우저에서 아직 못 찾았다. */
 export type FontStepKind = 'missing' | 'discover';
 
@@ -94,7 +94,7 @@ export function planSteps(
   const steps: SetupStep[] = ['intro', 'theme'];
   if (fontStep) steps.push('fonts');
   steps.push('welcome');
-  if (!options.ai) return steps;
+  if (!options.ai) return [...steps, 'free'];
   if (options.account) steps.push('account');
   if (!options.signedIn) return steps;
   if (!options.tier || options.tier === 'free') return [...steps, 'plans'];

@@ -10091,18 +10091,6 @@ html:is(.desktop-mac, .desktop-windows) .ag-fullscreen .ag-workspace-bar :is(
   background-size: 6px 3px;
 }
 
-/* 변경 목록의 끝을 점 세 개로 닫는다. */
-.ag-versions-changes-host::after {
-  content: '·  ·  ·';
-  display: block;
-  padding-top: 14px;
-  color: var(--ag-text-tertiary);
-  font-family: var(--ag-mono);
-  letter-spacing: 0.2em;
-  text-align: center;
-  opacity: 0.6;
-}
-
 /* 계획 초안 제안 — 대화 끝의 작은 알약. */
 .ag-plan-suggest {
   display: flex;

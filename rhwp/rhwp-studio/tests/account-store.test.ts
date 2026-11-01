@@ -167,7 +167,10 @@ test('Rau credits show what is left of the allowance, with the reset day or the 
   assert.equal(rauCredits(null), null);
   assert.equal(rauCredits({ eligible: false, source: null, allowanceUsd: null, usedUsd: null, remainingUsd: null, resetsAt: null }), null);
   const plan = rauCredits({ eligible: true, source: 'plan', allowanceUsd: 8, usedUsd: 2.8, remainingUsd: 5.2, resetsAt: Date.UTC(2026, 10, 30, 3) })!;
-  assert.equal(rauCreditsLine(plan), '$5.20 남음');
+  assert.equal(rauCreditsLine(plan), '65% 남음');
+  assert.equal(rauCreditsLine({ ...plan, remainingUsd: 0 }), '0% 남음');
+  assert.equal(rauCreditsLine({ ...plan, remainingUsd: 8 }), '100% 남음');
+  assert.equal(rauCreditsLine({ ...plan, allowanceUsd: 0, remainingUsd: 0 }), '0% 남음');
   assert.equal(rauResetLine(plan), '11월 30일 초기화');
   // 남은 값이 없으면 쓴 값으로 셈하고, 넘치는 값은 한도로 자른다.
   assert.equal(rauCredits({ eligible: true, source: 'plan', allowanceUsd: 8, usedUsd: 3, remainingUsd: null, resetsAt: null })!.remainingUsd, 5);

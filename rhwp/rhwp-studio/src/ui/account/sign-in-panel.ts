@@ -198,7 +198,7 @@ export function createSignInPanel(
     const copy = el('span', 'acct-device-copy');
     copy.append(
       el('span', 'acct-device-name', device.name),
-      el('span', 'acct-meta', `${platformLabel(device.platform)} · ${formatLastSeen(device.lastSeenAt)}`),
+      el('span', 'acct-meta', `${platformLabel(device.platform)}, ${formatLastSeen(device.lastSeenAt)}`),
     );
     const actions = el('span', 'acct-device-actions');
     if (confirming === device.id) {
@@ -211,9 +211,9 @@ export function createSignInPanel(
       yes.addEventListener('click', () => { void replace(device); });
       actions.append(no, yes);
     } else {
-      const remove = button('acct-btn acct-device-remove', '빼기');
+      const remove = button('acct-btn acct-device-remove', '등록 해제');
       remove.disabled = replacing !== null;
-      remove.setAttribute('aria-label', `${device.name} 빼기`);
+      remove.setAttribute('aria-label', `${device.name} 등록 해제`);
       remove.addEventListener('click', () => {
         confirming = device.id;
         render();

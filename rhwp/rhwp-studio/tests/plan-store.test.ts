@@ -52,8 +52,8 @@ test('each product opens its tier, and upgrades only go up', () => {
   assert.deepEqual(upgradeFamilies('hama'), ['rau']);
   assert.deepEqual(upgradeFamilies('rau'), []);
   // 값을 모르면 기본값으로 보인다.
-  assert.equal(familyPriceLine(null, 'rau'), '월 ₩14,900 · 연 ₩149,000');
-  assert.equal(familyPriceLine(status('hama'), 'hama'), '월 ₩3,900 · 연 ₩39,000');
+  assert.equal(familyPriceLine(null, 'rau'), '월 ₩14,900\u2003연 ₩149,000');
+  assert.equal(familyPriceLine(status('hama'), 'hama'), '월 ₩3,900\u2003연 ₩39,000');
 });
 
 test('the store follows status changes and an unknown status does not lock', async () => {

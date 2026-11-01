@@ -26,7 +26,7 @@ export function planSkuAvailable(status: PlanStatus | null, sku: PlanSku): boole
 export function familyPriceLine(status: PlanStatus | null, family: PlanFamily): string {
   const monthly = planPrice(status, PLAN_CYCLES[family].monthly);
   const yearly = planPrice(status, PLAN_CYCLES[family].yearly);
-  return [monthly === null ? '' : `월 ${won(monthly)}`, yearly === null ? '' : `연 ${won(yearly)}`].filter(Boolean).join(' · ');
+  return [monthly === null ? '' : `월 ${won(monthly)}`, yearly === null ? '' : `연 ${won(yearly)}`].filter(Boolean).join('\u2003');
 }
 
 /** 지금 요금제에서 사 볼 만한 요금제. 무료는 둘 다, Hama 는 Rau, Rau 는 없다. */

@@ -1,5 +1,5 @@
 /* ─── 계정 페이지 ─────────────────────────────────────
-   창의 제목 막대 아래를 모두 덮는 한 장. 가운데 한 단(680px)에 머리카락 선으로 칸을 나눈다.
+   홈에서는 단추에 붙는 프로필 카드, 설정에서는 한 단의 계정 화면으로 쓴다.
    면·잉크·모서리·움직임은 에이전트 UI 토큰을 쓰고, Hama 파랑은 Hama 표와 사용량 막대에만 쓴다. */
 
 .acct-layer {
@@ -881,6 +881,10 @@ html:is(.desktop-mac, .desktop-windows) .acct-page.acct-embedded {
 
 /* Rau 크레딧 */
 .acct-rau-credits {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px 12px;
   margin-top: 16px;
 }
 
@@ -890,12 +894,15 @@ html:is(.desktop-mac, .desktop-windows) .acct-page.acct-embedded {
 
 .acct-rau-credits-value {
   margin: 0;
+  text-align: right;
+  white-space: nowrap;
   font-variant-numeric: tabular-nums;
-}
-
-.acct-rau-credits-left {
   font-size: var(--ag-fs-body);
   font-weight: var(--ag-fw-strong);
+}
+
+.acct-rau-meter {
+  margin: 0;
 }
 
 .acct-rau-meter .acct-meter-fill {
@@ -903,6 +910,7 @@ html:is(.desktop-mac, .desktop-windows) .acct-page.acct-embedded {
 }
 
 .acct-rau-credits-meta {
+  grid-column: 1 / -1;
   margin: 0;
   font-size: var(--ag-fs-secondary);
 }
@@ -1219,4 +1227,177 @@ html:is(.desktop-mac, .desktop-windows) .acct-page.acct-embedded {
   .acct-claim {
     grid-template-columns: minmax(0, 1fr);
   }
+}
+
+/* 홈 프로필: 배경을 가리지 않는 세로 카드. */
+:root[data-theme-effective='dark'] .acct-page.acct-profile-card {
+  background: var(--n-surface);
+}
+
+.acct-page.acct-profile-card,
+html:is(.desktop-mac, .desktop-windows) .acct-page.acct-profile-card {
+  position: fixed;
+  inset: auto;
+  top: var(--acct-card-top);
+  left: var(--acct-card-left);
+  width: min(360px, calc(100vw - 24px));
+  height: auto;
+  max-height: min(560px, var(--acct-card-height));
+  min-height: 0;
+  box-sizing: border-box;
+  overflow: hidden;
+  border: 1px solid var(--n-ink-hairline);
+  border-radius: 16px;
+  box-shadow: var(--ag-elev-sheet);
+  transform-origin: top right;
+}
+
+.acct-profile-card .acct-bar {
+  flex: 0 0 32px;
+  height: 32px;
+  justify-content: flex-end;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+.acct-profile-card .acct-back {
+  background: transparent;
+}
+
+.acct-profile-card .acct-back[data-closing='true'] {
+  outline: none;
+}
+
+.acct-profile-card .acct-column,
+.acct-profile-card[data-auth-popup='true'] .acct-column {
+  min-height: 0;
+  padding: 0 12px 20px 20px;
+}
+
+.acct-profile-card .acct-scroll {
+  scrollbar-gutter: auto;
+}
+
+.acct-profile-card .acct-profile {
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+  padding: 0 0 20px;
+  text-align: left;
+}
+
+.acct-profile-card .acct-avatar-large {
+  width: 52px;
+  height: 52px;
+}
+
+.acct-profile-card .acct-name-row {
+  justify-content: flex-start;
+}
+
+.acct-profile-card .acct-name {
+  font-size: 20px;
+  line-height: 1.3;
+}
+
+.acct-profile-card .acct-email-row {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+}
+
+.acct-profile-card .acct-profile-plan {
+  display: none;
+}
+
+.acct-profile-card .acct-profile-copy {
+  text-align: left;
+  align-items: flex-start;
+}
+
+.acct-profile-card .acct-section {
+  margin-top: 0;
+  padding: 16px 0;
+}
+
+.acct-profile-card .acct-section[data-section='plan'] {
+  margin-top: 0;
+  padding: 12px;
+}
+
+.acct-profile-card [data-section='plan'] .acct-section-head {
+  margin-bottom: 6px;
+}
+
+.acct-profile-card .acct-plan-term {
+  margin: 4px 0 0;
+}
+
+.acct-profile-card .acct-rau-credits {
+  margin-top: 10px;
+  gap: 4px 10px;
+}
+
+.acct-profile-card .acct-plan-actions:not(:has(button:not([hidden]))) {
+  display: none;
+}
+
+.acct-profile-card .acct-plan-head {
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.acct-profile-card .acct-plan-actions {
+  flex-wrap: wrap;
+}
+
+.acct-profile-card .acct-exit-row {
+  justify-content: flex-end;
+}
+
+.acct-profile-card .acct-stats,
+.acct-profile-card .acct-stats[data-count='2'] {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.acct-profile-card .acct-device {
+  grid-template-columns: 20px minmax(0, 1fr);
+}
+
+.acct-profile-card .acct-device-actions {
+  grid-column: 2;
+  justify-self: start;
+}
+
+.acct-profile-card .acct-claim,
+.acct-profile-card .acct-name-form {
+  flex-wrap: wrap;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.acct-profile-card .acct-name-input {
+  min-width: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .acct-page.acct-profile-card {
+    transform: none;
+    transition: none;
+  }
+}
+
+.acct-profile-card .acct-avatar-badge,
+.acct-profile-card .acct-profile-avatar::after {
+  display: none;
+}
+
+.acct-card-footer {
+  flex: none;
+  padding: 12px 12px 12px 20px;
+  border-top: 1px solid var(--n-ink-hairline);
+}
+
+.acct-card-settings {
+  width: 100%;
+  justify-content: center;
 }

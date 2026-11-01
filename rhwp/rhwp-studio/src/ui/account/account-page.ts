@@ -1,4 +1,4 @@
-// 계정 화면. 홈에서는 별도로 열고, 설정에서는 계정 탭 안에 붙인다.
+// 계정 화면. 홈에서는 프로필 카드로 열고, 설정에서는 계정 탭 안에 붙인다.
 // 로그아웃이면 로그인 판만, 로그인했으면 한 단의 프로필 화면(사진·이름·이메일, 요금제와 Rau 크레딧, 사용량, 기기, 라이선스,
 // 로그아웃·계정 삭제)을 보인다. 동작마다 그 단추에 진행을 보이고 오류는 그 옆에 한 줄로 둔다.
 // 어디서든 window 의 'rhwp:open-account' 이벤트로 연다(detail.section 으로 갈 곳을 짚는다).
@@ -28,7 +28,6 @@ import {
   trialAvailable,
   trialButtonLabel,
   trialLine,
-  usd,
   validateAccountName,
   NAME_MAX,
 } from './account-format.ts';
@@ -56,6 +55,9 @@ export interface AccountPageOptions {
   onSignedIn?: () => void;
   /** 설정의 계정 탭 안에 붙인다. 별도 창·대화상자를 열지 않는다. */
   container?: HTMLElement;
+  /** 홈 프로필 카드가 붙는 단추. 생략하면 현재 보이는 계정 단추를 쓴다. */
+  anchor?: HTMLElement;
+  openSettings?: () => void;
 }
 
 export interface AccountPageHandle {
@@ -148,13 +150,26 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
   if (embedded) {
     layer.classList.add('acct-embedded-layer');
     page.classList.add('acct-embedded');
+  } else {
+    page.classList.add('acct-profile-card');
+  }
+  let anchor = options.anchor ?? [...document.querySelectorAll<HTMLElement>('.acct-button')]
+    .find((node) => node.getBoundingClientRect().width > 0);
+  function positionCard(): void {
+    if (embedded) return;
+    const rect = anchor?.isConnected ? anchor.getBoundingClientRect() : null;
+    const width = Math.min(360, window.innerWidth - 24);
+    const top = Math.max(50, Math.min(rect ? rect.bottom + 8 : 64, window.innerHeight - 240));
+    const left = Math.max(12, Math.min(rect ? rect.right - width : window.innerWidth - width - 20, window.innerWidth - width - 12));
+    page.style.setProperty('--acct-card-left', `${left}px`);
+    page.style.setProperty('--acct-card-top', `${top}px`);
+    page.style.setProperty('--acct-card-height', `${Math.max(0, window.innerHeight - top - 12)}px`);
   }
   // 제품 웹사이트의 한글 뉴런 그림을 로그인 배경으로 옅게 쓴다.
   const art = el('pre', 'acct-login-art', loginNeurons);
   art.setAttribute('aria-hidden', 'true');
   layer.append(page);
   page.setAttribute('role', embedded ? 'region' : 'dialog');
-  if (!embedded) page.setAttribute('aria-modal', 'true');
   page.setAttribute('aria-label', '계정');
   const bar = el('div', 'acct-bar');
   const back = button('acct-back');
@@ -177,6 +192,10 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
   avatarButton.setAttribute('aria-label', '사진 변경');
   const avatar = createAvatar('acct-avatar-large');
   avatarButton.title = '사진 변경';
+  if (!embedded) {
+    avatarButton.title = '';
+    avatarButton.setAttribute('aria-label', '프로필 사진');
+  }
   const avatarBadge = el('span', 'acct-avatar-badge');
   avatarBadge.setAttribute('aria-hidden', 'true');
   avatarBadge.append(createIcon('pencil'));
@@ -192,7 +211,8 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
   nameEdit.setAttribute('aria-label', '이름 바꾸기');
   nameEdit.title = '이름 바꾸기';
   nameEdit.append(createIcon('pencil'));
-  nameRow.append(nameText, nameEdit);
+  nameRow.append(nameText);
+  if (embedded) nameRow.append(nameEdit);
   const nameForm = el('form', 'acct-name-form');
   nameForm.noValidate = true;
   nameForm.hidden = true;
@@ -225,7 +245,7 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
   planActions.append(upgrade, manage);
   planHead.append(planName, planActions);
   const planTerm = el('p', 'acct-meta acct-plan-term');
-  // Rau 크레딧: 남은 금액, 막대, 초기화 날짜(체험은 남은 날).
+  // Rau 크레딧: 남은 비율, 막대, 초기화 날짜(체험은 남은 날).
   const credits = el('div', 'acct-rau-credits');
   const creditsValue = el('p', 'acct-rau-credits-value');
   const creditsMeter = el('span', 'acct-meter acct-rau-meter');
@@ -235,7 +255,7 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
   const creditsFill = el('span', 'acct-meter-fill');
   creditsMeter.append(creditsFill);
   const creditsMeta = el('p', 'acct-meta acct-rau-credits-meta');
-  credits.append(creditsValue, creditsMeter, creditsMeta);
+  credits.append(creditsMeter, creditsValue, creditsMeta);
   const planAlert = el('div', 'acct-alert');
   const planAlertText = el('p', 'acct-alert-text');
   planAlertText.setAttribute('role', 'alert');
@@ -304,15 +324,30 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
 
   // ── 로그아웃·계정 삭제 ──────────────────────────────
   const exit = el('section', 'acct-section acct-exit');
-  exit.setAttribute('aria-label', '로그아웃과 계정 삭제');
+  exit.setAttribute('aria-label', embedded ? '로그아웃과 계정 삭제' : '로그아웃');
   const signOut = button('acct-btn', '로그아웃');
   const deleteAccount = button('acct-btn acct-btn-danger-quiet', '계정 삭제');
   const exitError = alertLine();
   const exitRow = el('div', 'acct-exit-row');
-  exitRow.append(signOut, deleteAccount);
+  exitRow.append(signOut);
+  if (embedded) exitRow.append(deleteAccount);
   exit.append(exitRow, exitError);
 
-  signed.append(profile, planSection.root, statsSection.root, devicesSection.root, licensesSection.root, exit);
+  signed.append(profile, planSection.root);
+  if (embedded) signed.append(statsSection.root);
+  signed.append(devicesSection.root);
+  if (embedded) signed.append(licensesSection.root);
+  signed.append(exit);
+  if (!embedded && options.openSettings) {
+    const cardFooter = el('footer', 'acct-card-footer');
+    const settings = button('acct-btn acct-card-settings', '설정 열기');
+    settings.addEventListener('click', () => {
+      finish();
+      options.openSettings?.();
+    });
+    cardFooter.append(settings);
+    page.append(cardFooter);
+  }
 
   // ── 상태 ────────────────────────────────────────────
   let nameEditing = false;
@@ -501,12 +536,10 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
     const left = rauCredits(current.plan.rau);
     credits.hidden = !left || current.plan.tier !== 'rau';
     if (!left || credits.hidden) return;
-    creditsValue.replaceChildren(
-      el('span', 'acct-rau-credits-left', rauCreditsLine(left)),
-      el('span', 'acct-stat-of', ` / ${usd(left.allowanceUsd)}`),
-    );
-    creditsMeter.setAttribute('aria-valuemax', String(left.allowanceUsd));
-    creditsMeter.setAttribute('aria-valuenow', String(left.remainingUsd));
+    creditsValue.textContent = rauCreditsLine(left);
+    creditsMeter.setAttribute('aria-valuemax', '100');
+    creditsMeter.setAttribute('aria-valuenow', String(Math.round(rauCreditRatio(left) * 100)));
+    creditsMeter.setAttribute('aria-valuetext', rauCreditsLine(left));
     creditsFill.style.width = `${(rauCreditRatio(left) * 100).toFixed(1)}%`;
     const meta = left.trial && current.trial ? trialLine(current.trial) : rauResetLine(left);
     creditsMeta.textContent = meta;
@@ -530,7 +563,7 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
     const copy = el('span', 'acct-device-copy');
     const name = el('span', 'acct-device-name', device.name);
     if (device.current) name.append(el('span', 'acct-badge', '이 기기'));
-    const meta = `${platformLabel(device.platform)} · ${device.current ? '지금 사용 중' : formatLastSeen(device.lastSeenAt)}`;
+    const meta = `${platformLabel(device.platform)}, ${device.current ? '지금 사용 중' : formatLastSeen(device.lastSeenAt)}`;
     copy.append(name, el('span', 'acct-meta', meta));
     const actions = el('span', 'acct-device-actions');
     if (deviceConfirm === device.id) {
@@ -541,14 +574,14 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
         render();
         deviceList.querySelector<HTMLElement>(`[data-device-id="${CSS.escape(device.id)}"] .acct-device-remove`)?.focus();
       });
-      const yes = button('acct-btn acct-btn-danger acct-device-confirm', device.current ? '빼고 로그아웃' : '빼기');
+      const yes = button('acct-btn acct-btn-danger acct-device-confirm', device.current ? '등록 해제 후 로그아웃' : '등록 해제');
       yes.disabled = deviceBusy !== null;
       if (deviceBusy === device.id) setBusy(yes, true);
       yes.addEventListener('click', () => { void removeDevice(device); });
       actions.append(no, yes);
     } else {
-      const remove = button('acct-btn acct-btn-quiet acct-device-remove', '빼기');
-      remove.setAttribute('aria-label', `${device.name} 빼기`);
+      const remove = button('acct-btn acct-btn-quiet acct-device-remove', '등록 해제');
+      remove.setAttribute('aria-label', `${device.name} 등록 해제`);
       remove.disabled = deviceBusy !== null;
       remove.addEventListener('click', () => {
         deviceConfirm = device.id;
@@ -596,7 +629,7 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
   function renderSigned(current: AccountStatus): void {
     const account = current.account!;
     avatar.paint(current, store.avatar());
-    avatarButton.disabled = photoBusy;
+    avatarButton.disabled = photoBusy || !embedded;
     avatarButton.dataset.busy = photoBusy ? 'true' : 'false';
     nameText.textContent = account.name;
     nameRow.hidden = nameEditing;
@@ -687,11 +720,11 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
     }
     if (signedIn) hasShownProfile = true;
     const authPopup = !embedded && !signedIn && !hasShownProfile;
-    layer.dataset.modal = authPopup ? 'true' : 'false';
+    layer.dataset.modal = 'false';
     page.dataset.authPopup = authPopup ? 'true' : 'false';
-    back.setAttribute('aria-label', signedIn ? '돌아가기' : '닫기');
-    back.title = signedIn ? '돌아가기' : '닫기';
-    back.replaceChildren(createIcon(signedIn ? 'browserBack' : 'close'));
+    back.setAttribute('aria-label', '닫기');
+    back.title = '닫기';
+    back.replaceChildren(createIcon('close'));
     page.dataset.state = signedIn ? 'signed_in' : current?.state ?? 'signed_out';
     signIn.element.hidden = signedIn;
     signed.hidden = !signedIn;
@@ -810,6 +843,8 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
   }
 
   function reveal(next: AccountPageOptions): void {
+    if (next.anchor) anchor = next.anchor;
+    positionCard();
     if (next.plan) plan = next.plan;
     if (next.onSignedIn) onSignedIn = next.onSignedIn;
     if (next.plan) subscribePlan();
@@ -847,6 +882,7 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
     signIn.dispose();
     document.removeEventListener('keydown', onKeyDown, true);
     document.removeEventListener('pointerdown', onPointerDown, true);
+    window.removeEventListener('resize', positionCard);
     if (!embedded) openPage = null;
     page.classList.remove('acct-page-open');
     const remove = (): void => { layer.remove(); };
@@ -861,10 +897,26 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
     }
     resolveClosed();
   }
-  back.addEventListener('click', finish);
+  back.addEventListener('click', () => {
+    if (embedded || reducedMotion()) {
+      finish();
+      return;
+    }
+    if (back.dataset.closing === 'true') return;
+    const icon = back.querySelector('.ag-icon');
+    if (!icon) { finish(); return; }
+    back.dataset.closing = 'true';
+    const rotation = icon.animate(
+      [{ transform: 'rotate(0deg)' }, { transform: 'rotate(45deg)' }],
+      { duration: 160, easing: 'cubic-bezier(0.2, 0, 0, 1)', fill: 'forwards' },
+    );
+    void rotation.finished.then(finish, () => {});
+  });
 
   (options.container ?? document.body).append(layer);
+  positionCard();
   if (!embedded) {
+    window.addEventListener('resize', positionCard);
     document.addEventListener('keydown', onKeyDown, true);
     document.addEventListener('pointerdown', onPointerDown, true);
   }

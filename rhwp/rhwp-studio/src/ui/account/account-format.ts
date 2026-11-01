@@ -103,9 +103,9 @@ export function rauCreditRatio(credits: RauCredits): number {
   return Math.min(1, Math.max(0, credits.remainingUsd / credits.allowanceUsd));
 }
 
-/** 예: $5.20 남음 */
+/** 예: 65% 남음 */
 export function rauCreditsLine(credits: RauCredits): string {
-  return `${usd(credits.remainingUsd)} 남음`;
+  return `${Math.round(rauCreditRatio(credits) * 100)}% 남음`;
 }
 
 /** 크레딧이 다시 차는 날. 체험은 다시 차지 않으므로 빈 글. 예: 11월 30일 초기화 */
@@ -161,7 +161,7 @@ export function licenseLine(license: AccountLicense): string {
       ? (license.status === 'expired' ? `${formatAccountDate(license.expiresAt)} 만료` : `${formatAccountDate(license.expiresAt)}까지`)
       : '',
   ];
-  return parts.filter(Boolean).join(' · ');
+  return parts.filter(Boolean).join(', ');
 }
 
 export function licenseStatusLabel(license: AccountLicense): string {

@@ -2508,6 +2508,24 @@ if (strayUpdateCopy) {
   });
 
   app.whenReady().then(async () => {
+    if (!app.isPackaged && devOrigin) {
+      try {
+        const { installMemoLayer } = await import('./electron-memo/main.mjs');
+        await installMemoLayer({
+          app,
+          session: electronSession.defaultSession,
+          ipcMain,
+          storeDir: join(__dirname, '..', '.electron-memos'),
+          isTrustedUrl: (url) => {
+            try { return new URL(url).origin === devOrigin; } catch { return false; }
+          },
+          locale: 'ko',
+          repoRoot: join(__dirname, '..'),
+        });
+      } catch (error) {
+        console.warn('[memo] failed to start:', error);
+      }
+    }
     // 비밀 저장소·허브·북마크보다 먼저 2.0.11 프로필의 파일을 합친다. 실패해도 앱은 뜬다.
     await rebrandImport.prepare().catch((error) => {
       console.warn('[hamaeditor] 2.0.11 profile import failed:', error);

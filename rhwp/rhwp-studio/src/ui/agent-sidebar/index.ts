@@ -5193,6 +5193,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   });
   const settingsPage = settingsPanel.element;
   const initialSetupDeps: InitialSetupDeps = {
+    openDocumentFile,
     openAgentSetup: (agent) => settingsPanel.openAgentSetup(agent),
     beginAgentConnect: (agent) => settingsPanel.beginAgentConnect(agent),
     plan: planStore,
