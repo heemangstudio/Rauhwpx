@@ -85,8 +85,7 @@ test('each file is sampled to min(12k, 150k / n) and the prompt is trimmed to fi
   const fitted = fitStyleLearnPrompt({ name: 'a.txt', text, budget: 12_000 });
   assert.equal(fitted.chars, 12_000, 'Korean 12k characters fit without trimming');
   assert.ok(fitted.bytes <= STYLE_LEARN_PROMPT_MAX_BYTES);
-  const knownRules = Array.from({ length: 60 }, (_, index) => ({ kind: 'term', subject: `용어.${index}`, text: '가'.repeat(150) }));
-  const crowded = fitStyleLearnPrompt({ name: 'a.txt', text, knownRules, budget: 12_000, maxBytes: 30 * 1024 });
+  const crowded = fitStyleLearnPrompt({ name: 'a.txt', text, budget: 12_000, maxBytes: 30 * 1024 });
   assert.ok(crowded.bytes <= 30 * 1024, `${crowded.bytes} bytes`);
   assert.ok(crowded.chars < 12_000 && crowded.chars > 0);
   assert.match(fitted.prompt, /Learn only from text the user wrote themselves/);
@@ -112,7 +111,7 @@ test('model output keeps at most 8 style or term rules, one per subject; broken 
 
 test('findings merge by the number of files that show each habit; the most common habit wins its subject', () => {
   const merged = mergeStyleFindings([
-    [ending, { kind: 'term', subject: '용어.고객', text: "'고객' 대신 '이용자'" }],
+    [ending, { kind: 'term', subject: '용어.고객', text: "'고객' 대신 '이용자'", evidence: ['이용자를 만난다.', '이용자를 돕는다.'] }],
     [{ ...ending, text: '본문은 한다체 사용.' }, ending],
     [{ ...ending, text: '본문은 합니다체 사용' }],
   ]);
@@ -165,11 +164,11 @@ test('a job reads every file, asks Rau two at a time, merges by file count and r
         return { ok: false, code: 'rate_limited' };
       }
       if (prompt.includes('"file_name":"d.txt"')) return { ok: true, text: '죄송합니다' };
-      return { ok: true, text: rules(ending, ...(prompt.includes('"file_name":"a.txt"') ? [{ kind: 'term', subject: '용어.고객', text: "'고객' 대신 '이용자'" }] : [])) };
+      return { ok: true, text: rules({ ...ending, evidence: ['회의를 진행한다.', '결과를 기록한다.'] }, ...(prompt.includes('"file_name":"a.txt"') ? [{ kind: 'term', subject: '용어.고객', text: "'고객' 대신 '이용자'", evidence: ['이용자를 만난다.', '이용자를 돕는다.'] }] : [])) };
     },
   });
   await h.userMemory.escalate({ kind: 'style', subject: '문체.종결', text: '본문은 한다체 사용', docKeys: [] });
-  const files = ['a.txt', 'b.txt', 'c.txt', 'd.txt'].map((name) => upload(name, `${name} 의 글. 회의를 진행한다.`));
+  const files = ['a.txt', 'b.txt', 'c.txt', 'd.txt'].map((name) => upload(name, `${name} 의 글. 회의를 진행한다. 결과를 기록한다. 이용자를 만난다. 이용자를 돕는다.`));
   files.push({ name: 'empty.hwp', bytes: Buffer.from('x') });
   const { jobId, done } = h.learner.start({ requestId: 'req-1', files });
   assert.throws(() => h.learner.start({ requestId: 'req-2', files }), { code: 'LEARN_BUSY' });
@@ -178,7 +177,7 @@ test('a job reads every file, asks Rau two at a time, merges by file count and r
   assert.equal(h.learner.status(), null);
   assert.ok(h.maxInFlight() <= 2, 'at most two learn calls at once');
   assert.equal(h.prompts.filter((prompt) => prompt.includes('"file_name":"c.txt"')).length, 2, 'rate_limited is retried once');
-  assert.match(h.prompts[0], /"known_rules":\[\{"kind":"style","subject":"문체\.종결","text":"본문은 한다체 사용"\}\]/);
+  assert.ok(!h.prompts[0].includes('known_rules'));
   const stages = [...new Set(h.frames.filter((frame) => frame.type === 'style-learn-progress').map((frame) => frame.stage))];
   assert.deepEqual(stages, ['reading', 'extracting', 'merging']);
   assert.ok(h.frames.every((frame) => frame.v === 1 && (frame.jobId === jobId) && frame.requestId === 'req-1'));
@@ -233,4 +232,91 @@ test('cancel stops a running job without waiting for the pending call, and the n
   h.learner.start({ files: [upload('b.txt', '글')] });
   assert.equal(h.learner.busy(), true);
   release();
+});
+
+test('uploads learn independently, reject invented evidence and never recount the same writing', async (t) => {
+  const sample = '회의를 진행한다. 결과를 기록한다.';
+  let invented = true;
+  const h = learnerHarness(t, { answer: async () => ({ ok: true, text: rules({ ...ending, evidence: invented ? ['없는 인용문', '또 없는 인용문'] : ['회의를 진행한다.', '결과를 기록한다.'] }) }) });
+  await h.userMemory.escalate({ ...ending, docKeys: [] });
+  await h.learner.start({ files: [upload('first.txt', sample)] }).done;
+  assert.equal((await h.userMemory.read()).rules[0].strength, 1, 'unsupported answers cannot reinforce memory');
+  invented = false;
+  await h.learner.start({ files: [upload('second.txt', sample)] }).done;
+  assert.equal((await h.userMemory.read()).rules[0].strength, 2);
+  await h.learner.start({ files: [upload('renamed.txt', sample)] }).done;
+  assert.equal((await h.userMemory.read()).rules[0].strength, 2, 'renaming and reuploading are not independent evidence');
+  assert.equal(h.prompts.length, 2, 'a successfully studied text is not billed again');
+  for (const prompt of h.prompts) assert.ok(!prompt.includes(ending.text), 'existing rules cannot seed extraction');
+});
+
+
+test('evidence must be distinct, present in the sampled writing and non-overlapping', () => {
+  const sample = '회의를 진행한다. 결과를 기록한다.';
+  for (const evidence of [undefined, ['회의를 진행한다.', '회의를 진행한다.'], ['회의를 진행한다.', '진행한다.'], ['없는 문장이다.', '결과를 기록한다.']]) {
+    assert.deepEqual(parseStyleLearnOutput(rules({ ...ending, evidence }), sample), []);
+  }
+  assert.deepEqual(parseStyleLearnOutput(rules({ ...ending, evidence: ['회의를 진행한다.', '결과를 기록한다.'] }), sample), [ending]);
+});
+
+test('contradictory writing weakens and eventually replaces memory even with a different subject name', async (t) => {
+  let oldId;
+  const h = learnerHarness(t, { answer: async (prompt) => prompt.includes('"task":"compare_style_findings"')
+    ? { ok: true, text: JSON.stringify({ contradictions: [{ finding: 0, ruleId: oldId }] }) }
+    : { ok: true, text: rules({ kind: 'style', subject: '말투.어미', text: '해체와 반말 종결 사용', evidence: ['창문을 열었어.', '바람이 들어왔지.'] }) } });
+  oldId = (await h.userMemory.escalate({ ...ending, docKeys: [] })).rule.id;
+  await h.userMemory.reinforce(oldId);
+  for (const [index, expected] of [[1, 1], [2, 0]]) {
+    await h.learner.start({ files: [upload(`${index}.txt`, `기록 ${index}. 창문을 열었어. 바람이 들어왔지.`)] }).done;
+    const state = await h.userMemory.read();
+    assert.equal(state.rules.find((rule) => rule.id === oldId)?.strength ?? 0, expected);
+    const result = h.frames.filter((frame) => frame.type === 'style-learn-result').at(-1);
+    assert.equal(result.summary.reinforced.length, 0);
+    if (index === 1) assert.equal(result.summary.dampened.length, 1);
+    else {
+      assert.equal(result.summary.retired.length, 1);
+      assert.equal(state.rules.find((rule) => rule.subject === ending.subject).text, '해체와 반말 종결 사용');
+    }
+  }
+});
+
+test('comparison preserves unrelated and user-authored memories and rejects invented matches', async (t) => {
+  for (const scenario of ['unrelated', 'user', 'invalid']) {
+    let oldId;
+    const h = learnerHarness(t, { answer: async (prompt) => prompt.includes('"task":"compare_style_findings"')
+      ? { ok: true, text: JSON.stringify({ contradictions: scenario === 'unrelated' ? [] : [{ finding: 0, ruleId: scenario === 'invalid' ? 'invented' : oldId }] }) }
+      : { ok: true, text: rules({ kind: 'style', subject: '말투.어미', text: '해체 사용', evidence: ['창문을 열었어.', '바람이 들어왔지.'] }) } });
+    const old = scenario === 'user'
+      ? await h.userMemory.addUserRule(ending)
+      : (await h.userMemory.escalate({ ...ending, docKeys: [] })).rule;
+    oldId = old.id;
+    await h.learner.start({ files: [upload('a.txt', '창문을 열었어. 바람이 들어왔지.')] }).done;
+    const state = await h.userMemory.read();
+    assert.equal(state.rules.find((rule) => rule.id === oldId).strength, old.strength, scenario);
+    const result = h.frames.find((frame) => frame.type === 'style-learn-result');
+    if (scenario === 'user') assert.equal(result.summary.conflicts.length, 1);
+    if (scenario === 'invalid') assert.deepEqual(result.summary.skippedFiles, ['a.txt']);
+    if (scenario === 'unrelated') assert.equal(result.summary.new.length, 1);
+  }
+});
+
+test('cancelling the comparison leaves existing memory untouched', async (t) => {
+  let comparing = false;
+  let release;
+  const h = learnerHarness(t, { answer: async (prompt) => {
+    if (prompt.includes('"task":"compare_style_findings"')) {
+      comparing = true;
+      return new Promise((resolve) => { release = resolve; });
+    }
+    return { ok: true, text: rules({ kind: 'style', subject: '말투.어미', text: '해체 사용', evidence: ['창문을 열었어.', '바람이 들어왔지.'] }) };
+  } });
+  await h.userMemory.escalate({ ...ending, docKeys: [] });
+  const before = await h.userMemory.read();
+  const { jobId, done } = h.learner.start({ files: [upload('a.txt', '창문을 열었어. 바람이 들어왔지.')] });
+  await until(() => comparing, 'comparison started');
+  assert.equal(h.learner.cancel(jobId), true);
+  await done;
+  release({ ok: true, text: '{"contradictions":[]}' });
+  assert.deepEqual(await h.userMemory.read(), before);
+  assert.equal(h.frames.find((frame) => frame.type === 'style-learn-error').code, 'CANCELLED');
 });

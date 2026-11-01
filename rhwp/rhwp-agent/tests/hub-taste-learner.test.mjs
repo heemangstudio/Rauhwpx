@@ -410,7 +410,7 @@ test('문체 학습 replaces 말투 맞추기: the legacy instruction moves to A
   // 올린 파일 → 진행 → 결과(모든 창). 규칙이 기억에 들어간다.
   const invalid = await request({ type: 'style-learn-start', files: [] }, 'style-learn-error');
   assert.equal(invalid.code, 'INVALID_FILES');
-  fake.queueOutputs(JSON.stringify({ rules: [{ kind: 'style', subject: '문체.종결', text: '본문은 한다체 사용' }] }));
+  fake.queueOutputs(JSON.stringify({ rules: [{ kind: 'style', subject: '문체.종결', text: '본문은 한다체 사용', evidence: ['이번 분기 매출은 늘었다', '원인은 신규 고객이다'] }] }));
   const text = '이번 분기 매출은 늘었다. 원인은 신규 고객이다.';
   studio.send({ type: 'style-learn-start', requestId: 'upload-1', files: [{ name: '보고서.txt', type: 'text/plain', size: Buffer.byteLength(text), content: Buffer.from(text).toString('base64') }] });
   const running = await studio.next((frame) => frame.type === 'style-learn-status' && frame.job);
@@ -426,7 +426,7 @@ test('문체 학습 replaces 말투 맞추기: the legacy instruction moves to A
   assert.equal(status.job, null);
 
   // 예전 원고로 배우기 — 성공하면 폴더를 지우고 legacy 가 사라진다.
-  fake.queueOutputs(JSON.stringify({ rules: [{ kind: 'style', subject: '문체.종결', text: '본문은 한다체 사용' }] }));
+  fake.queueOutputs(JSON.stringify({ rules: [{ kind: 'style', subject: '문체.종결', text: '본문은 한다체 사용', evidence: ['보고서를 한다체로 씁니다', '회의는 화요일에 연다'] }] }));
   studio.send({ type: 'style-learn-legacy', requestId: 'legacy-1', accept: true });
   const legacyResult = await studio.next((frame) => frame.type === 'style-learn-result' && frame.requestId === 'legacy-1');
   assert.deepEqual(legacyResult.summary.reinforced.map((item) => item.strength), [{ from: 1, to: 2 }]);

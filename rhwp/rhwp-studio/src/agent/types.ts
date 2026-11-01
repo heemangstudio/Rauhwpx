@@ -32,8 +32,6 @@ export interface AgentEditingLease {
   waitingForUser?: boolean;
 }
 export type PermissionProfile = 'safe' | 'unrestricted';
-/** Codex Fast 서비스 티어. 다른 프로바이더는 항상 standard. */
-export type ServiceTier = 'standard' | 'fast';
 export type AgentWorkflow = 'direct' | 'plan' | 'question';
 export type AgentPhase = 'direct' | 'planning' | 'questioning' | 'awaiting-approval' | 'switching' | 'implementing';
 
@@ -537,7 +535,6 @@ export interface UserMemorySnapshot {
 export type UserMemoryOp =
   | { op: 'list' }
   | { op: 'add'; rule: { kind: AccountRuleKind; text: string } }
-  | { op: 'edit'; id: string; text: string; kind?: AccountRuleKind }
   | { op: 'delete'; id: string }
   | { op: 'restore'; id: string }
   | { op: 'undo'; eventId: string };
@@ -1357,7 +1354,6 @@ export type SidebarEvent =
       model?: string;
       effort?: string;
       permissionProfile?: PermissionProfile;
-      serviceTier?: ServiceTier;
       threadId?: string;
       documentId?: string | null;
       documentName?: string | null;
@@ -1397,7 +1393,6 @@ export type SidebarEvent =
   | ({ type: 'taste-history-learned' } & TasteHistoryLearned)
   | { type: 'chat-template-changed'; template: DocumentTemplate | null; reason?: string }
   | { type: 'permission-changed'; permissionProfile: PermissionProfile }
-  | { type: 'service-tier-changed'; serviceTier: ServiceTier }
   | ({ type: 'workflow-changed' } & AgentWorkflowState)
   | ({ type: 'plan-ready'; plan: StructuredPlan } & AgentWorkflowState)
   | ({ type: 'plan-approved'; planId: string } & AgentWorkflowState)

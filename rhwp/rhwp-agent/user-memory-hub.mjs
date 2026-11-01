@@ -161,8 +161,6 @@ export function createUserMemoryHub({
       if (op === 'list') return { ok: true, memory: await snapshot() };
       if (op === 'add') {
         await store.addUserRule({ kind: msg.rule?.kind, text: msg.rule?.text });
-      } else if (op === 'edit') {
-        await store.editRule(msg.id, { text: msg.text, ...(msg.kind !== undefined ? { kind: msg.kind } : {}) });
       } else if (op === 'delete') {
         await store.deleteRule(msg.id);
       } else if (op === 'restore') {
@@ -172,7 +170,7 @@ export function createUserMemoryHub({
         if (!result.undone) throw hubError('USER_MEMORY_UNDO_STALE', 'That change can no longer be undone.');
         if (documentStore && result.folded.length > 0) await restoreFoldedEntries(documentStore, result.folded, { changed, log });
       } else {
-        throw hubError('USER_MEMORY_INVALID', 'op must be list, add, edit, delete, restore or undo');
+        throw hubError('USER_MEMORY_INVALID', 'op must be list, add, delete, restore or undo');
       }
       const memory = await snapshot();
       broadcast({ v: 1, type: 'user-memory', memory });

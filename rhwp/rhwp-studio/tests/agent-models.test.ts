@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-  agentSupportsFast,
   availableModelsForAgent,
   claudeModelDescription,
   claudeModelLabel,
@@ -19,7 +18,6 @@ import {
   OFFICIAL_CLAUDE_MODELS,
   resolveEffortForAgent,
   resolveModelForAgent,
-  resolveServiceTier,
   setPiModels,
   setModelCatalog,
   setSelectedModels,
@@ -74,16 +72,6 @@ test('resolveEffortForAgent clamps unsupported levels to provider default', () =
   assert.equal(resolveEffortForAgent('codex', 'xhigh'), 'xhigh');
   assert.equal(resolveEffortForAgent('codex', 'ultra'), defaultEffortForAgent('codex'));
   assert.equal(labelForEffort('claude', 'high', 'sonnet'), 'High');
-});
-
-test('Fast service tier is Codex-only and defaults to standard', () => {
-  assert.equal(agentSupportsFast('codex'), true);
-  assert.equal(agentSupportsFast('claude'), false);
-  assert.equal(resolveServiceTier('codex', 'fast'), 'fast');
-  assert.equal(resolveServiceTier('codex', 'standard'), 'standard');
-  assert.equal(resolveServiceTier('codex', 'priority'), 'standard');
-  assert.equal(resolveServiceTier('claude', 'fast'), 'standard');
-  assert.equal(resolveServiceTier('pi', 'fast'), 'standard');
 });
 
 const PI_MODEL_A: PiModelConfig = {

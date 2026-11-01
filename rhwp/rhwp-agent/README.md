@@ -48,7 +48,6 @@ Every read returns a `revision`. Every write requires `expectedRevision`. A mism
 
 These stay in Studio chat. They are not MCP tools.
 
-- `/fast [on|off|status]`. Codex Fast service tier (Codex only). The next turn uses `service_tier="fast"`.
 - `/skills`. Open the skill library.
 - `/skill-create`. Draft a user skill.
 - `/skill-edit <name>` / `/skill-delete <name>`. Change or remove a user skill.

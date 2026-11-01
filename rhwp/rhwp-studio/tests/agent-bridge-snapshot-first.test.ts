@@ -155,7 +155,6 @@ function session(overrides: Record<string, unknown> = {}) {
     model: 'mock-model',
     effort: null,
     permissionProfile: 'safe',
-    serviceTier: 'standard',
     sessionId: 'provider-session-1',
     threadId: THREAD,
     documentId: 'doc-1',
@@ -541,7 +540,7 @@ test('the template a lost session used still travels with the next message to th
   await settle();
   const start = next.frames('chat-start')[0];
   assert.ok(start, '새 세션을 연다');
-  next.receive({ type: 'chat-started', requestId: start.requestId, agent: 'pi', threadId: THREAD, sessionId: 's2', permissionProfile: 'safe', serviceTier: 'standard', workflow: 'direct', phase: 'direct' });
+  next.receive({ type: 'chat-started', requestId: start.requestId, agent: 'pi', threadId: THREAD, sessionId: 's2', permissionProfile: 'safe', workflow: 'direct', phase: 'direct' });
   await settle();
   assert.deepEqual(next.frames('chat-user-message').map((frame) => frame.activeTemplateId), ['template-1']);
   f.bridge.dispose();
@@ -625,7 +624,7 @@ test('a message sent after the socket reopens waits for the welcome of a restart
   const start = next.frames('chat-start')[0];
   assert.ok(start, 'the message opens a new session');
   assert.equal(start.threadId, THREAD);
-  next.receive({ type: 'chat-started', requestId: start.requestId, agent: 'pi', threadId: THREAD, sessionId: 's2', permissionProfile: 'safe', serviceTier: 'standard', workflow: 'direct', phase: 'direct' });
+  next.receive({ type: 'chat-started', requestId: start.requestId, agent: 'pi', threadId: THREAD, sessionId: 's2', permissionProfile: 'safe', workflow: 'direct', phase: 'direct' });
   await settle();
   const sent = next.frames('chat-user-message');
   assert.deepEqual(sent.map((frame) => frame.text), ['다시 보낼 요청']);

@@ -171,9 +171,6 @@ export function buildCodexArgv(opts, threadId) {
     ...(opts.effort
       ? ['-c', `model_reasoning_effort=${JSON.stringify(opts.effort)}`]
       : []),
-    ...(opts.serviceTier === 'fast'
-      ? ['-c', 'service_tier="fast"']
-      : []),
   ];
   const common = [
     '--json', '--skip-git-repo-check', '--ignore-user-config', '--ignore-rules',
@@ -817,12 +814,6 @@ export function createLegacyCodexSession(opts, {
       if (uncertainTreeCleanup) throw new Error('Codex process tree cleanup remains unconfirmed');
       if (profile !== 'safe' && profile !== 'unrestricted') throw new Error(`Unknown permission profile: ${profile}`);
       opts.permissionProfile = profile;
-    },
-    setServiceTier(tier) {
-      if (turnOpen || queuedTurn) throw new Error('Service tier can only change between turns');
-      if (uncertainTreeCleanup) throw new Error('Codex process tree cleanup remains unconfirmed');
-      if (tier !== 'standard' && tier !== 'fast') throw new Error(`Unknown service tier: ${tier}`);
-      opts.serviceTier = tier;
     },
     async setExecutionMode(mode) {
       if (turnOpen || queuedTurn) throw new Error('Execution mode can only change between turns');

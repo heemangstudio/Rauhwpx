@@ -280,7 +280,7 @@ function bridgeFixture(doc = fakeDocument(), overrides: Record<string, unknown> 
   Object.assign(bridge, {
     state: 'connected', requestSeq: 0, pendingChatStart: null, chatStartSent: false,
     activeAgent: 'claude', selectedAgent: 'claude', selectedModel: null, selectedEffort: null,
-    editingAgent: 'claude', permissionProfile: 'unrestricted', serviceTier: 'standard',
+    editingAgent: 'claude', permissionProfile: 'unrestricted',
     workflow: 'direct', phase: 'direct',
     threadId: 'thread-1', documentId: 'doc-1', documentName: 'a.hwpx', activeTemplateId: null,
     revision: { get revision() { return doc.state.revision; } },

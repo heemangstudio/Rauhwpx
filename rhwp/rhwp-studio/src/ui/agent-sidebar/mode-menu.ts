@@ -190,20 +190,3 @@ export function createModeMenu(onSelect: (mode: AgentMode) => void): ModeMenu {
     dispose: () => setOpen(false),
   };
 }
-
-const MODE_COMMANDS: Readonly<Record<string, AgentMode>> = {
-  chat: 'chat',
-  plan: 'plan',
-  agent: 'agent',
-  full: 'full',
-  // 이전 명령은 메뉴에 보이지 않는 별칭으로만 남긴다.
-  question: 'chat',
-  build: 'agent',
-};
-
-/** `/chat 요약해 줘` 처럼 모드 명령으로 시작하는 입력을 모드와 나머지 본문으로 나눈다. */
-export function parseModeCommand(text: string): { mode: AgentMode; rest: string } | null {
-  const match = text.match(/^\/(chat|plan|agent|full|question|build)(?:\s+([\s\S]*))?$/i);
-  if (!match) return null;
-  return { mode: MODE_COMMANDS[match[1].toLowerCase()]!, rest: (match[2] ?? '').trim() };
-}
