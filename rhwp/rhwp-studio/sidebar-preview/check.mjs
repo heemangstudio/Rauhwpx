@@ -79,18 +79,34 @@ const focusedChecks = {
       await page.waitForFunction(() => document.querySelector('#agent-sidebar')?.dataset.composerReady === 'true');
     };
     await startNewChat();
+    // 입력기 하마를 켜 두고, 빈 채팅에서는 무대 하마 하나만 보이는지 본다.
+    await page.evaluate(() => {
+      const settings = JSON.parse(localStorage.getItem('rhwp-settings') ?? '{}');
+      settings.view = { ...settings.view, showHama: true };
+      localStorage.setItem('rhwp-settings', JSON.stringify(settings));
+      window.dispatchEvent(new StorageEvent('storage', { key: 'rhwp-settings' }));
+    });
+    await page.waitForSelector('.ag-hama-perch');
     const layout = () => page.evaluate(() => {
       const chat = document.querySelector('.ag-chat-page').getBoundingClientRect();
       const composer = document.querySelector('.ag-composer').getBoundingClientRect();
       const greeting = document.querySelector('.ag-focus-greeting');
       return {
         gapBelow: Math.round(chat.bottom - composer.bottom),
-        greeting: greeting.checkVisibility() ? greeting.textContent : '',
+        greeting: greeting.checkVisibility() ? greeting.querySelector('canvas')?.getAttribute('aria-label') ?? '' : '',
+        document: greeting.querySelector('.ag-focus-greeting-doc')?.textContent ?? '',
+        composerHama: document.querySelector('.ag-hama-hippo')?.checkVisibility({ visibilityProperty: true }) ?? false,
       };
     });
     const centered = await layout();
     assert(centered.gapBelow > 200, `centered composer leaves ${centered.gapBelow}px below`);
-    assert(centered.greeting.includes('사업 제안서'), `greeting shows the document: ${centered.greeting}`);
+    assert(centered.greeting, 'the empty chat shows a pixel scene');
+    assert.equal(centered.composerHama, false, 'the composer hippo hides while the stage hippo is shown');
+    assert(centered.document.includes('사업 제안서'), `the stage shows the document: ${centered.document}`);
+    await page.click('.ag-focus-greeting-doc');
+    await page.waitForSelector('.ag-rail-popover[aria-label="문서 열기"]');
+    await page.keyboard.press('Escape');
+    await page.waitForFunction(() => !document.querySelector('.ag-rail-popover[aria-label="문서 열기"]'));
     await page.type('.ag-input', '요약해 줘');
     await page.click('.ag-send');
     await page.waitForSelector('.ag-msg-user');
@@ -99,6 +115,7 @@ const focusedChecks = {
     const sent = await layout();
     assert(sent.gapBelow < 40, `sent composer leaves ${sent.gapBelow}px below`);
     assert.equal(sent.greeting, '');
+    assert.equal(sent.composerHama, true, 'the composer hippo returns once the chat starts');
     await startNewChat();
     assert((await layout()).gapBelow > 200, 'a new chat centers the composer again');
   },

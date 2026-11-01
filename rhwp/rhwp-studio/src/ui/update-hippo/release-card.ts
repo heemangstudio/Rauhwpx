@@ -5,7 +5,7 @@
  * 확인·닫기·Esc·바깥 누르기로 닫는다.
  */
 import './release-card.css';
-import { createReleaseHama } from '../agent-sidebar/chat-hama.ts';
+import { createReleaseHama } from '../agent-sidebar/hama-art.ts';
 import { createIcon } from '../agent-sidebar/icons.ts';
 import type { ReleaseNote } from './release-notes.ts';
 

@@ -2,6 +2,7 @@ import './browser-compat.ts';
 import '../style.css';
 import './preview.css';
 import { initAgentSidebar, type AgentSidebarHandle } from '../ui/agent-sidebar/index.ts';
+import { HAMA_SHOWCASE, type HamaActionName } from '../ui/agent-sidebar/chat-hama.ts';
 import { EventBus } from '../core/event-bus.ts';
 import {
   getEffectiveTheme,
@@ -964,6 +965,52 @@ async function openLockedParallelScene(): Promise<void> {
 if (parallel === 'locked') {
   if (!sidebar.root.classList.contains('ag-fullscreen')) await enterFocusMode();
   await openLockedParallelScene();
+}
+
+/**
+ * 입력기 위 하마의 몸짓. `hama=stamp`(HAMA_SHOWCASE 의 이름)는 하마를 켜고 그 몸짓을 4.5초마다 되풀이한다.
+ * 컨트롤의 Hama 목록은 몸짓 하나를 바로 하거나, 앱 순간의 실제 편집기 이벤트를 보낸다(쉬는 중·간격 규칙을 따른다).
+ */
+const HAMA_MOMENTS: Record<string, [string, unknown?]> = {
+  'moment:saved': ['document-saved', { reason: 'save', fileName: '사업 제안서.hwpx', sourceFormat: 'hwpx' }],
+  'moment:exported': ['document-exported', { format: 'pdf', fileName: '사업 제안서.pdf' }],
+  'moment:undone': ['history-jumped'],
+  'moment:opened': ['document-swapped'],
+};
+function showHama(): void {
+  const settings = userSettings.getEditorScalarSettings();
+  if (settings.view.showHama) return;
+  settings.view.showHama = true;
+  userSettings.tryApplyEditorScalarSettings(settings);
+}
+const hamaSelect = document.querySelector<HTMLSelectElement>('#hama-action')!;
+for (const name of HAMA_SHOWCASE) hamaSelect.add(new Option(name, name));
+for (const key of Object.keys(HAMA_MOMENTS)) hamaSelect.add(new Option(key.replace('moment:', 'event: '), key));
+function playHama(value: string): void {
+  showHama();
+  const moment = HAMA_MOMENTS[value];
+  if (moment) {
+    const [event, payload] = moment;
+    eventBus.emit(event, ...(payload === undefined ? [] : [payload]));
+    report(`Hama event ${event}`);
+    return;
+  }
+  // 설정이 바뀐 뒤 하마가 붙기까지 한 프레임 기다린다.
+  requestAnimationFrame(() => {
+    if (!sidebar.playHama(value as HamaActionName)) report('Hama is off');
+  });
+}
+document.querySelector('#hama-play')!.addEventListener('click', () => playHama(hamaSelect.value));
+const hamaParam = params.get('hama');
+if (hamaParam && (HAMA_SHOWCASE as readonly string[]).includes(hamaParam)) {
+  hamaSelect.value = hamaParam;
+  showHama();
+  await sidebar.startupChatSettled();
+  const loop = (): void => {
+    playHama(hamaParam);
+    window.setTimeout(loop, 4500);
+  };
+  loop();
 }
 
 // Typed hooks for browser checks and custom scenario scripts.
