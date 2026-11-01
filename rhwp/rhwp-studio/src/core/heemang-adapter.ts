@@ -39,6 +39,8 @@ let runtime: Promise<Awaited<ReturnType<typeof initializeRuntime>>> | undefined;
 // 편집 경로의 WASM 함수는 처음 불릴 때 컴파일되므로, 문서를 연 뒤 첫 입력이 그 컴파일만큼 늦다.
 // 엔진(모듈)마다 한 번, 첫 쪽을 그린 뒤 쉬는 시간에 빈 문서 사본을 편집해 미리 컴파일해 둔다.
 let editWarmup: 'pending' | 'scheduled' | 'done' = 'pending';
+let openWarmup: 'pending' | 'scheduled' | 'done' = 'pending';
+let cancelOpenWarmupRun: (() => void) | null = null;
 // native clipboard는 같은 Engine의 문서들이 공유한다.
 let internalClipboard: { engine: Engine; text: string } | null = null;
 
@@ -434,6 +436,7 @@ export class HeemangAdapter {
 
   loadDocument(bytes: Uint8Array, name = ''): DocumentInfo {
     // 잘못된 입력은 현재 문서를 닫지 않는다.
+    this.cancelOpenWarmup();
     const next = this.engine.open(bytes);
     this.releaseDocument();
     this.doc = next;
@@ -667,6 +670,52 @@ export class HeemangAdapter {
       if (!refilled || this.doc !== doc || this.canvasPaints.get(canvas) !== paint || !canvas.isConnected) return;
       this.redrawPage(canvas, paint, false);
     }).catch(error => console.warn('[Heemang] 글꼴 윤곽선 연결 실패:', error));
+  }
+
+  /**
+   * 엔진을 읽은 뒤 쉬는 시간에 빈 문서 사본을 한 번 조판해 첫 쪽까지 만들고 닫는다. 엔진 모듈은 처음 부르는
+   * 함수를 그때 컴파일하므로, 첫 문서를 열 때 조판·쪽 그리기 코드를 컴파일하는 시간이 들지 않는다.
+   * 그 전에 문서를 열었으면 그 문서가 이미 컴파일했으므로 하지 않는다. 열린 문서·글꼴 상태는 건드리지 않는다.
+   */
+  scheduleOpenWarmup(): void {
+    const template = this.editWarmupTemplate;
+    if (openWarmup !== 'pending' || !template) return;
+    openWarmup = 'scheduled';
+    const run = () => {
+      openWarmup = 'done';
+      cancelOpenWarmupRun = null;
+      // 비교 측정용: window.__rhwpOpenWarmup = false 이면 예열하지 않고, 예열하면 걸린 시간(ms)을 남긴다.
+      const flags = globalThis as { __rhwpOpenWarmup?: boolean | number };
+      if (this.doc || flags.__rhwpOpenWarmup === false) return;
+      let scratch: Doc | null = null;
+      const startedAt = performance.now();
+      try {
+        scratch = this.engine.open(template);
+        scratch.state();
+        scratch.page(0);
+        flags.__rhwpOpenWarmup = performance.now() - startedAt;
+      } catch (error) {
+        console.warn('[Heemang] 첫 문서 조판 예열 실패:', error);
+      } finally {
+        scratch?.close();
+        scratch?.free();
+      }
+    };
+    if (typeof requestIdleCallback === 'function') {
+      const id = requestIdleCallback(run, { timeout: 2000 });
+      cancelOpenWarmupRun = () => cancelIdleCallback(id);
+    } else {
+      const id = setTimeout(run, 0);
+      cancelOpenWarmupRun = () => clearTimeout(id);
+    }
+  }
+
+  /** 문서를 열기 시작하면 아직 돌지 않은 첫 문서 예열을 거둔다. 여는 문서가 같은 코드를 컴파일한다. */
+  cancelOpenWarmup(): void {
+    if (openWarmup !== 'scheduled') return;
+    openWarmup = 'done';
+    cancelOpenWarmupRun?.();
+    cancelOpenWarmupRun = null;
   }
 
   /**
