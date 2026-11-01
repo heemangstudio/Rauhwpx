@@ -9,7 +9,9 @@ import { isInitialSetupActive, onInitialSetupInactive } from '../initial-setup/a
  * 칸 순서(FRAMES)·칸 크기·막대 열(STICK_X)을 바꾸면 여기도 같이 바꾼다. 팻말은 한글과 단추를
  * 담아야 해서 HTML 이고, 그림과 같은 3px 칸으로 테두리를 그린다.
  *
- * 새 버전의 릴리스 노트는 하마가 아니라 홈 맨 위의 카드(release-card.ts)가 보인다.
+ * 업데이트 팻말이 없으면 업데이트 뒤에 릴리스 노트 클립보드를 들고, 누르면 노트 창
+ * (release-card.ts)이 뜬다. 창을 닫으면 업데이트하고 하루가 지날 때까지 귀만 내놓고 기다린다.
+ * 클립보드를 들 때의 하마는 스프라이트가 아니라 채팅 하마 그림이다(chat-hama.ts).
  *
  * 팻말이 바뀌면 하마가 가장자리 밑으로 내려갔다가 새 팻말을 들고 올라온다. 하마를 누르면 귀만
  * 남기고 숨고, 귀를 누르면 다시 올라온다(이 페이지가 떠 있는 동안 기억한다). 움직임은 3px 칸
@@ -18,6 +20,9 @@ import { isInitialSetupActive, onInitialSetupInactive } from '../initial-setup/a
 import './update-hippo.css';
 import type { DesktopUpdateState, DesktopUpdatesApi, UpdateAllState } from '../../desktop-integration.ts';
 import { updateSign, type UpdateSign, type UpdateSignAction, type UpdateSignIcon } from './update-sign.ts';
+import { openReleaseNotes } from './release-card.ts';
+import { drawCornerHama } from '../agent-sidebar/chat-hama.ts';
+import { markReleaseNotesSeen, RELEASE_NOTES, RELEASE_NOTES_RECALL_MS, releaseNotesSign, releaseNotesView, type ReleaseNote } from './release-notes.ts';
 
 const FRAMES = ['idle', 'blink', 'ear', 'dip', 'peek'] as const;
 type Frame = (typeof FRAMES)[number];
@@ -31,6 +36,8 @@ const STICK_X = 1;
 const STICK_ROWS = 12;
 /** 숨었을 때 가장자리 위에 남는 줄: 귀와 눈. */
 const PEEK_ROWS = 3;
+/** 채팅 하마는 눈이 없어 귀와 머리 윗줄까지 남긴다. */
+const CHAT_PEEK_ROWS = 6;
 const STEP_MS = 34;
 /** 팻말이 창 오른쪽 끝에 닿지 않게 남기는 틈. */
 const EDGE_GAP = 6;
@@ -41,7 +48,7 @@ const BAR_WIDTH = 108;
 const SINK = [0.1, 0.28, 0.52, 0.8, 1];
 const RISE = [0.62, 0.32, 0.12, 0.02, -1, 0];
 
-/** 이 페이지가 떠 있는 동안 숨김을 기억한다. 다음에 앱을 켜면 다시 올라온다. */
+/** 사람이 숨긴 것을 이 페이지가 떠 있는 동안 기억한다. 다음에 앱을 켜면 다시 올라온다. */
 let rememberedDucked = false;
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -66,13 +73,54 @@ const ICONS: Record<UpdateSignIcon, readonly string[]> = {
     '.#...#.',
     '..###..',
   ],
+  // 나무판에 물린 종이. 글자도 칸으로 그렸고, 읽는 이름은 단추의 aria-label 이다.
+  clipboard: [
+    '.................KKKKKKK.................',
+    '..............KKKKCCCCCKKKK..............',
+    '.DDDDDDDDDDDDDKcccccccccccKDDDDDDDDDDDDD.',
+    'DhhhhhhhhhhhhhKCCCCCCCCCCCKhhhhhhhhhhhhhD',
+    'DhwwwwwwwwwwwwKCCCCCCCCCCCKwwwwwwwwwwwwsD',
+    'DhwPPPPPPPPPPPKKKKKKKKKKKKKPPPPPPPPPPPwsD',
+    'DhwPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPpwsD',
+    'DhwPPTTTPPPPPPPTPPPPPPPPPPPPPPPPPPPPPpwsD',
+    'DhwPPTPPTPPPPPPTPPPPPPPPPPPPPPPPPPPPPpwsD',
+    'DhwPPTPPTPPTTPPTPPTTPPPTTPPPTTTPPTTPPpwsD',
+    'DhwPPTTTPPTPPTPTPTPPTPPPPTPTPPPPTPPTPpwsD',
+    'DhwPPTPTPPTTTTPTPTTTTPPTTTPPTTPPTTTTPpwsD',
+    'DhwPPTPPTPTPPPPTPTPPPPTPPTPPPPTPTPPPPpwsD',
+    'DhwPPTPPTPPTTTPTPPTTTPPTTTPTTTPPPTTTPpwsD',
+    'DhwPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPpwsD',
+    'DhwPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPpwsD',
+    'DhwPPPPPTPPPTPPPPPPPPPPPPPPPPPPPPPPPPpwsD',
+    'DhwPPPPPTTPPTPPPPPPPTPPPPPPPPPPPPPPPPpwsD',
+    'DhwPPPPPTPTPTPPTTPPTTTPPTTPPPTTTPPPPPpwsD',
+    'DhwPPPPPTPTPTPTPPTPPTPPTPPTPTPPPPPPPPpwsD',
+    'DhwPPPPPTPPTTPTPPTPPTPPTTTTPPTTPPPPPPpwsD',
+    'DhwPPPPPTPPPTPTPPTPPTPPTPPPPPPPTPPPPPpwsD',
+    'DhwPPPPPTPPPTPPTTPPPPTPPTTTPTTTPPPPPPpwsD',
+    'DhwPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPpwsD',
+    'DhwpppppppppppppppppppppppppppppppppppwsD',
+    'DhwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwsD',
+    'DsssssssssssssssssssssssssssssssssssssssD',
+    '.DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD.',
+  ],
+};
+
+/** 여러 색 그림의 색. 없는 글자는 currentColor 다. */
+const ICON_COLORS: Readonly<Record<string, string>> = {
+  D: '#4a2c17', w: '#a3683c', h: '#c98b5b', s: '#7d4a26',
+  P: '#f2f4f7', p: '#c4cad3', T: '#2b3038',
+  K: '#5b636e', C: '#8b95a1', c: '#c4cad3',
 };
 
 function pixelIcon(name: UpdateSignIcon): SVGSVGElement {
   const rows = ICONS[name];
-  let d = '';
+  const shapes = new Map<string, string>();
   rows.forEach((row, y) => {
-    for (let x = 0; x < row.length; x += 1) if (row[x] === '#') d += `M${x} ${y}h1v1h-1z`;
+    for (let x = 0; x < row.length; x += 1) {
+      const color = row[x]!;
+      if (color !== '.') shapes.set(color, `${shapes.get(color) ?? ''}M${x} ${y}h1v1h-1z`);
+    }
   });
   const svg = document.createElementNS(SVG_NS, 'svg');
   svg.setAttribute('class', 'uh-icon');
@@ -82,9 +130,12 @@ function pixelIcon(name: UpdateSignIcon): SVGSVGElement {
   svg.setAttribute('shape-rendering', 'crispEdges');
   svg.setAttribute('aria-hidden', 'true');
   svg.setAttribute('focusable', 'false');
-  const path = document.createElementNS(SVG_NS, 'path');
-  path.setAttribute('d', d);
-  svg.append(path);
+  for (const [color, d] of shapes) {
+    const path = document.createElementNS(SVG_NS, 'path');
+    path.setAttribute('d', d);
+    if (ICON_COLORS[color]) path.style.fill = ICON_COLORS[color];
+    svg.append(path);
+  }
   return svg;
 }
 
@@ -108,6 +159,8 @@ export function createUpdateSignHippo(
   onDismiss: (key: string) => void = () => {},
 ): UpdateHippo & {
   setSign(sign: UpdateSign | null): void;
+  /** 들고 있는 팻말이 기다리는 팻말(tucked)이면 귀만 남긴다. */
+  tuck(): void;
 } {
   const element = document.createElement('div');
   element.className = 'uh';
@@ -124,12 +177,17 @@ export function createUpdateSignHippo(
   const sprite = document.createElement('span');
   sprite.className = 'uh-sprite';
   sprite.setAttribute('aria-hidden', 'true');
+  const chatArt = document.createElement('canvas');
+  chatArt.className = 'uh-chat-art';
+  chatArt.width = CELL_WIDTH;
+  chatArt.height = CELL_HEIGHT;
+  chatArt.setAttribute('aria-hidden', 'true');
   // 그림 위에 겹친 투명한 단추. 숨으면 귀 자리의 단추로 바뀐다.
   const hippo = document.createElement('button');
   hippo.type = 'button';
   hippo.className = 'uh-hippo';
   hippo.setAttribute('aria-label', '하마 숨기기');
-  rig.append(sprite, hippo, board);
+  rig.append(sprite, chatArt, hippo, board);
 
   // 숨었을 때 귀 둘레를 누르는 자리. 귀 세 줄보다 넉넉하다.
   const ears = document.createElement('button');
@@ -161,6 +219,8 @@ export function createUpdateSignHippo(
   function show(frame: Frame): void {
     sprite.style.backgroundPositionX = `${-FRAMES.indexOf(frame) * CELL_WIDTH * SCALE}px`;
     element.dataset.frame = frame;
+    const context = chatArt.getContext('2d');
+    if (context) drawCornerHama(context, frame === 'peek' || frame === 'ear' ? 'ear' : 'stand', frame !== 'peek');
   }
 
   function place(next: number): void {
@@ -176,7 +236,8 @@ export function createUpdateSignHippo(
 
   /** 서 있는 높이. 숨었으면 귀만 남는다. */
   function restY(): number {
-    return ducked ? (CELL_HEIGHT - STICK_ROWS - PEEK_ROWS) * SCALE : 0;
+    const peekRows = element.dataset.art === 'chat' ? CHAT_PEEK_ROWS : PEEK_ROWS;
+    return ducked ? (CELL_HEIGHT - STICK_ROWS - peekRows) * SCALE : 0;
   }
 
   function move(to: number, curve: readonly number[], frame: Frame, done: () => void): void {
@@ -207,7 +268,7 @@ export function createUpdateSignHippo(
   }
 
   function sink(done: () => void): void {
-    move(sunkY(), SINK, 'dip', done);
+    move(sunkY(), SINK, ducked ? 'peek' : 'dip', done);
   }
 
   function rise(done: () => void = () => {}): void {
@@ -225,7 +286,7 @@ export function createUpdateSignHippo(
     node.type = 'button';
     node.dataset.action = action.id;
     if (action.icon) {
-      node.className = 'uh-act uh-act-icon';
+      node.className = action.icon === 'clipboard' ? 'uh-act uh-act-picture' : 'uh-act uh-act-icon';
       node.setAttribute('aria-label', action.label);
       node.title = action.label;
       node.append(pixelIcon(action.icon));
@@ -319,6 +380,7 @@ export function createUpdateSignHippo(
 
   function hold(sign: UpdateSign): void {
     shown = sign;
+    element.dataset.art = sign.key.startsWith('notes:') ? 'chat' : 'sprite';
     fillBoard(sign);
     speak(sign);
     window.clearTimeout(transientTimer);
@@ -350,7 +412,6 @@ export function createUpdateSignHippo(
 
   function setDucked(next: boolean): void {
     ducked = next;
-    rememberedDucked = next;
     element.dataset.ducked = String(next);
     board.hidden = next;
     hippo.hidden = next;
@@ -370,7 +431,7 @@ export function createUpdateSignHippo(
     }
     if (next && !shown) {
       element.hidden = false;
-      setDucked(ducked);
+      setDucked(rememberedDucked || Boolean(next.tucked));
       hold(next);
       place(sunkY());
       rise(sync);
@@ -392,11 +453,13 @@ export function createUpdateSignHippo(
       updateBoard(next);
       return;
     }
-    if (next && ducked) {
-      hold(next);
+    const wantDucked = rememberedDucked || Boolean(next!.tucked);
+    if (ducked && wantDucked) {
+      hold(next!);
       return;
     }
     sink(() => {
+      setDucked(wantDucked);
       hold(next!);
       // 새 팻말이 더 높으면 올라오기 전부터 보이지 않게 더 내려 둔다.
       place(Math.max(y, sunkY()));
@@ -410,19 +473,26 @@ export function createUpdateSignHippo(
 
   /* ── 숨기·부르기 ── */
 
-  hippo.addEventListener('click', () => {
-    if (moving || !shown) return;
+  function duck(): void {
     sink(() => {
+      const hadFocus = rig.contains(document.activeElement);
       setDucked(true);
       show('peek');
-      ears.focus({ preventScroll: true });
+      if (hadFocus) ears.focus({ preventScroll: true });
       rise(sync);
     });
+  }
+
+  hippo.addEventListener('click', () => {
+    if (moving || !shown) return;
+    rememberedDucked = true;
+    duck();
   });
 
   ears.addEventListener('click', () => {
     if (moving) return;
-    move(sunkY(), SINK, 'peek', () => {
+    rememberedDucked = false;
+    sink(() => {
       setDucked(false);
       if (shown) fillBoard(shown);
       place(sunkY());
@@ -461,6 +531,9 @@ export function createUpdateSignHippo(
   return {
     element,
     setSign(sign): void { state = sign; sync(); },
+    tuck(): void {
+      if (!moving && !ducked && shown?.tucked) duck();
+    },
     dispose(): void {
       disposed = true;
       boardSize.disconnect();
@@ -473,16 +546,49 @@ export function createUpdateSignHippo(
   };
 }
 
-export function createUpdateHippo(api: DesktopUpdatesApi, plan: PlanStore | null = null): UpdateHippo {
+export interface ReleaseNotesSource {
+  version: string;
+  note: ReleaseNote;
+  /** 이미 창을 열어 본 버전이면 귀만 내놓고 시작한다. */
+  seen: boolean;
+  /** 본 뒤에도 이때까지 하마가 남아 다시 부를 수 있다. */
+  recallUntil: number;
+  /** 클립보드를 눌러 창을 열었을 때. */
+  onOpened(): void;
+}
+
+export function createUpdateHippo(api: DesktopUpdatesApi, plan: PlanStore | null = null, notes: ReleaseNotesSource | null = null): UpdateHippo {
   let state: DesktopUpdateState | null = null;
+  let notesSign = notes ? releaseNotesSign(notes.version, notes.seen) : null;
+  let notesOpen = false;
+  let notesTimer = 0;
   let confirming = false;
   let disposed = false;
   let allState: UpdateAllState | null = null;
   const unified = Boolean(api.getAllState && api.onAllState && api.updateAll);
+  // 업데이트 팻말이 먼저고, 클립보드는 그 팻말이 없을 때만 든다.
   const sync = () => hippo.setSign(isInitialSetupActive() ? null
-    : unified ? homeUpdateSign(allState, state, plan?.status() ?? null, { confirming }) : updateSign(state, { confirming }));
+    : (unified ? homeUpdateSign(allState, state, plan?.status() ?? null, { confirming }) : updateSign(state, { confirming })) ?? notesSign);
   const hippo = createUpdateSignHippo((id) => {
     switch (id) {
+      case 'release-notes':
+        if (!notes || notesOpen) break;
+        notesOpen = true;
+        notes.onOpened();
+        openReleaseNotes(notes.version, notes.note, () => {
+          notesOpen = false;
+          if (disposed) return;
+          if (Date.now() >= notes.recallUntil) {
+            notesSign = null;
+            sync();
+            return;
+          }
+          notesSign = releaseNotesSign(notes.version, true);
+          sync();
+          hippo.tuck();
+          endNotesAtRecallLimit();
+        });
+        break;
       case 'update-all': void api.updateAll?.().catch(() => {}); break;
       case 'later': void api.later?.().catch(() => {}); break;
       case 'download': void api.download().catch(() => {}); break;
@@ -495,6 +601,15 @@ export function createUpdateHippo(api: DesktopUpdatesApi, plan: PlanStore | null
         break;
     }
   });
+  /** 본 노트는 업데이트하고 하루가 지나면 실행 중에도 내려간다. */
+  function endNotesAtRecallLimit(): void {
+    window.clearTimeout(notesTimer);
+    notesTimer = window.setTimeout(() => {
+      notesSign = null;
+      sync();
+    }, Math.max(0, notes!.recallUntil - Date.now()));
+  }
+  if (notes?.seen) endNotesAtRecallLimit();
   const unsubscribeInitial = onInitialSetupInactive(sync);
   const unsubscribePlan = plan?.subscribe(sync) ?? (() => {});
   const unsubscribeAll = unified ? api.onAllState!((next) => { allState = next; sync(); }) : () => {};
@@ -513,30 +628,59 @@ export function createUpdateHippo(api: DesktopUpdatesApi, plan: PlanStore | null
   }).catch(() => {});
   return {
     element: hippo.element,
-    dispose() { disposed = true; unsubscribePlan(); unsubscribeInitial(); unsubscribeAll(); unsubscribe(); hippo.dispose(); },
+    dispose() { disposed = true; window.clearTimeout(notesTimer); unsubscribePlan(); unsubscribeInitial(); unsubscribeAll(); unsubscribe(); hippo.dispose(); },
   };
 }
 
 interface UpdatesHost {
   rhwpDesktop?: { updates?: DesktopUpdatesApi };
   location?: { search: string };
+  localStorage?: Storage;
+}
+
+function releaseNotesFor(version: string, host: UpdatesHost, forced: string | null): ReleaseNotesSource | null {
+  if (forced !== null) {
+    const shown = forced && RELEASE_NOTES[forced] ? forced : Object.keys(RELEASE_NOTES).at(-1);
+    return shown ? {
+      version: shown,
+      note: RELEASE_NOTES[shown]!,
+      seen: false,
+      recallUntil: Date.now() + RELEASE_NOTES_RECALL_MS,
+      onOpened: () => {},
+    } : null;
+  }
+  if (!host.rhwpDesktop) return null;
+  let storage: Storage | undefined;
+  try {
+    storage = host.localStorage;
+  } catch {
+    return null;
+  }
+  if (!storage) return null;
+  const store = storage;
+  const view = releaseNotesView(version, store);
+  return view ? { version, ...view, onOpened: () => markReleaseNotesSeen(version, store) } : null;
 }
 
 /**
  * 데스크톱 앱이면 하마를 slot 에 붙인다. Vite 개발 서버에서는 `?update-hippo=<상황>` 으로
  * 가짜 업데이트를 띄울 수 있다(dev-updates-mock.ts, 배포 번들에는 들어가지 않는다).
+ * `?release-notes` 는 본 기록과 상관없이 가장 최근 노트의 클립보드를 든다(`?release-notes=3.0.11`
+ * 처럼 버전을 고를 수도 있다).
  */
-export function mountUpdateHippo(slot: HTMLElement, host: UpdatesHost = window, plan: PlanStore | null = null): void {
+export function mountUpdateHippo(slot: HTMLElement, host: UpdatesHost = window, plan: PlanStore | null = null, version = __APP_VERSION__): void {
+  const params = new URLSearchParams(host.location?.search ?? '');
+  const notes = releaseNotesFor(version, host, import.meta.env.DEV ? params.get('release-notes') : null);
   const api = host.rhwpDesktop?.updates;
   if (api) {
-    slot.append(createUpdateHippo(api, plan).element);
+    slot.append(createUpdateHippo(api, plan, notes).element);
     return;
   }
   if (import.meta.env.DEV) {
-    const scenario = new URLSearchParams(host.location?.search ?? '').get('update-hippo');
+    const scenario = params.get('update-hippo') ?? (notes ? 'release-notes' : null);
     if (!scenario) return;
     void import('./dev-updates-mock.ts').then(({ createDevUpdatesApi }) => {
-      slot.append(createUpdateHippo(createDevUpdatesApi(scenario)).element);
+      slot.append(createUpdateHippo(createDevUpdatesApi(scenario), null, notes).element);
     });
   }
 }

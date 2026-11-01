@@ -65,11 +65,11 @@
   padding-top: 16px;
 }
 
-/* 30×14 그림을 여섯 배로. */
+/* 30×18 그림을 여섯 배로. */
 .rn-hama {
   display: block;
   width: 180px;
-  height: 84px;
+  height: 108px;
   image-rendering: pixelated;
 }
 

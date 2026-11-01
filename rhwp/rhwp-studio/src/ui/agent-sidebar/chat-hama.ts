@@ -187,27 +187,69 @@ export function createPartyHama(): HTMLCanvasElement {
 }
 
 /**
- * 릴리스 노트 카드의 하마. 막 열린 상자를 보며 입을 벌리고, 상자 위로 뚜껑이 떠오르며 반짝인다.
- * light 면 흰 반짝임을 진한 파랑, 옅은 반짝임을 하마 색으로 바꾼다.
+ * 릴리스 노트 카드의 하마. 초록 리본을 묶은 빨간 크리스마스 선물 상자 위에 입을 다물고 앉아 있고,
+ * 둘레에 눈이 내린다. light 면 흰 눈을 진한 파랑, 옅은 눈을 하마 색으로 바꾼다.
  */
 export function createReleaseHama(light: boolean): HTMLCanvasElement {
   const canvas = document.createElement('canvas');
   canvas.className = 'rn-hama';
   canvas.width = 30;
-  canvas.height = 14;
+  canvas.height = 18;
   canvas.setAttribute('aria-hidden', 'true');
-  const box = ['mmmrmmm', 'mmmrmmm', 'MMMrMMM', 'MMMrMMM', 'MMMrMMM'];
-  const lid = ['mmmmrmmmm', 'MMMMrMMMM'];
-  const palette = { ...COLORS, M: '#a3683c', ...(light ? { ...LIGHT_COLORS, h: '#62b3e2' } : {}) };
+  const lid = [
+    'EEEEEEEVVEEEEEEE',
+    'RRRRRRRVVRRRRRQQ',
+    'QQQQQQQvvQQQQQQQ',
+  ];
+  const bow = [
+    'V......V',
+    'VVVkkVVV',
+    'V..vv..V',
+  ];
+  const box = [
+    'RRRRRRVVRRRRQQ',
+    'RRRRRRVVRRRRQQ',
+    'RRRRRRVVRRRRQQ',
+    'RRRRRRVVRRRRQQ',
+    'QQQQQQvvQQQQQQ',
+  ];
+  const palette = {
+    ...COLORS,
+    R: '#d8343f', Q: '#a8242f', E: '#ec5a63', V: '#2f9e5b', v: '#22784a', k: '#6fd39a',
+    ...(light ? { ...LIGHT_COLORS, h: '#62b3e2' } : {}),
+  };
   drawLayers(canvas.getContext('2d')!, [
-    { art: OPEN_EAR, x: -1, y: 1 },
-    { art: box, x: 15, y: 4 },
-    { art: lid, x: 14, y: -1 },
-    ...sparkleAt(18, 2, 2),
-    ...sparkleAt(23, -3, 1),
-    dot(12, -2, 'h'),
+    { art: EAR, x: 5, y: -3 },
+    { art: lid, x: 3, y: 5 },
+    { art: box, x: 4, y: 8 },
+    { art: bow, x: 7, y: 5 },
+    ...sparkleAt(21, 0, 2),
+    dot(-2, -3, 'h'),
+    dot(-3, 2, 'W'),
+    dot(17, -4, 'W'),
+    dot(24, 5, 'h'),
   ], palette);
   return canvas;
+}
+
+/**
+ * 문서 홈 구석에서 릴리스 노트 클립보드의 막대를 문 하마. 36x26 칸(update-hippo.ts)에 채팅 하마
+ * 한 칸을 두 칸으로 키워 왼쪽을 보게 그린다. 주둥이가 막대에 닿고 다리가 아래 끝에 닿는다.
+ */
+export function drawCornerHama(ctx: CanvasRenderingContext2D, pose: 'stand' | 'ear', stick: boolean): void {
+  ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+  if (stick) {
+    ctx.fillStyle = '#a3683c';
+    ctx.fillRect(1, 0, 2, 18);
+  }
+  POSES[pose].forEach((row, r) => {
+    for (let c = 0; c < row.length; c++) {
+      const ch = row[c]!;
+      if (ch === '.') continue;
+      ctx.fillStyle = COLORS[ch]!;
+      ctx.fillRect(3 + (12 - c) * 2, 12 + (r - 1) * 2, 2, 2);
+    }
+  });
 }
 
 function sparkleAt(x: number, y: number, size: number): Layer[] {

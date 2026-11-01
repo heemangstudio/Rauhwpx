@@ -6,10 +6,10 @@
  */
 import type { DesktopUpdateState } from '../../desktop-integration.ts';
 
-export type UpdateSignIcon = 'download' | 'reload';
+export type UpdateSignIcon = 'download' | 'reload' | 'clipboard';
 
 export interface UpdateSignAction {
-  id: 'download' | 'restart' | 'confirm' | 'cancel' | 'check' | 'update-all' | 'later';
+  id: 'download' | 'restart' | 'confirm' | 'cancel' | 'check' | 'update-all' | 'later' | 'release-notes';
   /** 단추 이름(aria-label). 글자 단추면 보이는 글자이기도 하다. */
   label: string;
   /** 아이콘 단추. 없으면 label 을 글자로 보인다. */
@@ -30,6 +30,8 @@ export interface UpdateSign {
   detail?: string;
   /** 직접 누른 확인의 결과처럼 잠깐 보이고 내려가는 팻말이면 그 시간(ms). */
   transientMs?: number;
+  /** 귀만 내놓고 기다리다가 귀를 눌러야 올라오는 팻말이면 true. */
+  tucked?: boolean;
 }
 
 export interface UpdateSignView {

@@ -1,12 +1,15 @@
 /**
- * 새 버전의 첫 실행에 문서 홈 맨 위에 뜨는 릴리스 노트 카드(release-card.ts)의 내용과 본 기록.
- * DOM 이 없는 순수 함수라 카드와 테스트가 같이 쓴다.
+ * 업데이트 뒤 문서 홈의 하마가 드는 클립보드와 그것을 누르면 뜨는 릴리스 노트 창
+ * (release-card.ts)의 내용과 본 기록. DOM 이 없는 순수 함수라 하마·창·테스트가 같이 쓴다.
  *
  * 노트는 버전마다 여기에 적는다(package.json 버전을 올리는 PR 에서 같이). 새로 생긴 것은
- * added, 고친 문제는 fixed 에 적고, 카드는 둘을 나눠 전부 보인다. 노트가 없는 버전은 카드를
- * 띄우지 않는다. 카드가 홈에 보이면 본 것으로 적고, 닫을 때까지 그 실행 동안 남는다.
+ * added, 고친 문제는 fixed 에 적고, 창은 둘을 나눠 전부 보인다. 노트가 없는 버전은 클립보드를
+ * 들지 않는다. 창은 클립보드를 눌러야만 뜨고, 그때 본 것으로 적는다. 누르기 전까지는 실행을
+ * 넘어 클립보드가 남는다. 본 뒤에는 업데이트하고 하루가 지날 때까지 하마가 귀만 내놓고 남아,
+ * 귀를 누르면 클립보드를 다시 든다. 업데이트 팻말이 있으면 그쪽이 먼저다.
  */
 import { INITIAL_SETUP_STORAGE_KEY } from '../initial-setup/state.ts';
+import type { UpdateSign } from './update-sign.ts';
 
 export interface ReleaseNote {
   /** 새로 생긴 것. */
@@ -62,6 +65,18 @@ export function releaseNoteItems(note: ReleaseNote | undefined): readonly string
 
 /** 마지막으로 노트를 보인(또는 새로 설치해 건너뛴) 버전. */
 export const RELEASE_NOTES_STORAGE_KEY = 'rhwp-release-notes-seen';
+/** 이 버전으로 업데이트한 때. */
+export const RELEASE_NOTES_UPDATED_KEY = 'rhwp-release-notes-updated';
+/** 업데이트한 뒤 노트를 다시 부를 수 있는 시간. */
+export const RELEASE_NOTES_RECALL_MS = 24 * 60 * 60 * 1000;
+
+export interface ReleaseNotesView {
+  note: ReleaseNote;
+  /** 이 버전의 창을 이미 열었다. */
+  seen: boolean;
+  /** 본 뒤에도 이때까지 귀로 남아 있다. */
+  recallUntil: number;
+}
 
 export interface ReleaseNotesStorage {
   getItem(key: string): string | null;
@@ -84,22 +99,58 @@ export function markReleaseNotesSeen(version: string, storage: ReleaseNotesStora
   }
 }
 
+function updatedAt(version: string, storage: ReleaseNotesStorage, now: number): number | null {
+  try {
+    const record = JSON.parse(read(storage, RELEASE_NOTES_UPDATED_KEY) ?? 'null');
+    if (record?.version === version && typeof record.at === 'number') return Math.min(record.at, now);
+  } catch {
+    // 망가진 기록은 없는 것으로 친다.
+  }
+  return null;
+}
+
 /**
- * 이번 실행에 보일 노트. 이미 본 버전이거나 노트가 없으면 null 이다. 처음 설정 기록이 없는 새
- * 설치는 보이지 않고 이 버전을 본 것으로 적는다. 이 기능 전부터 쓰던 사람은 기록이 없어도
- * 처음 설정 기록이 있어 노트를 본다.
+ * 이번 실행의 릴리스 노트 상태. 보일 것이 없으면 null 이다. 이 버전을 처음 만난 때를 업데이트한
+ * 때로 적는다. 처음 설정 기록이 없는 새 설치는 보이지 않고 이 버전을 본 것으로 적는다. 이 기능
+ * 전부터 쓰던 사람은 기록이 없어도 처음 설정 기록이 있어 노트를 본다.
  */
-export function pendingReleaseNotes(
+export function releaseNotesView(
   version: string,
   storage: ReleaseNotesStorage,
+  now = Date.now(),
   notes: Readonly<Record<string, ReleaseNote>> = RELEASE_NOTES,
-): ReleaseNote | null {
-  const seen = read(storage, RELEASE_NOTES_STORAGE_KEY);
-  if (seen === version) return null;
-  if (seen === null && read(storage, INITIAL_SETUP_STORAGE_KEY) === null) {
+): ReleaseNotesView | null {
+  const lastSeen = read(storage, RELEASE_NOTES_STORAGE_KEY);
+  if (lastSeen === null && read(storage, INITIAL_SETUP_STORAGE_KEY) === null) {
     markReleaseNotesSeen(version, storage);
     return null;
   }
   const note = notes[version];
-  return releaseNoteItems(note).length ? note! : null;
+  if (!releaseNoteItems(note).length) return null;
+  const seen = lastSeen === version;
+  let at = updatedAt(version, storage, now);
+  if (at === null) {
+    if (seen) return null;
+    at = now;
+    try {
+      storage.setItem(RELEASE_NOTES_UPDATED_KEY, JSON.stringify({ version, at }));
+    } catch {
+      // 저장하지 못하면 다음 실행을 업데이트한 때로 친다.
+    }
+  }
+  const recallUntil = at + RELEASE_NOTES_RECALL_MS;
+  return seen && now >= recallUntil ? null : { note: note!, seen, recallUntil };
+}
+
+/** 하마가 드는 클립보드. 누르면 릴리스 노트 창이 뜬다. 이미 봤으면 귀만 내놓고 기다린다. */
+export function releaseNotesSign(version: string, seen = false): UpdateSign {
+  return {
+    key: `notes:${version}`,
+    tucked: seen,
+    tone: 'plain',
+    lines: [],
+    progress: null,
+    actions: [{ id: 'release-notes', label: 'Release Notes', icon: 'clipboard' }],
+    spoken: `HamaEditor ${version} 릴리스 노트가 있어요.`,
+  };
 }

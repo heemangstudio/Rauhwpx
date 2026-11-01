@@ -372,7 +372,6 @@ import {
 } from './versioning/index.ts';
 import type { AgentEditingLease, TasteHistoryLearned } from './agent/types.ts';
 import { mountUpdateHippo } from './ui/update-hippo/update-hippo.ts';
-import { showPendingReleaseNotes } from './ui/update-hippo/release-card.ts';
 import {
   contextualEditingToolbarMode,
   contextualObjectCommandEnabled,
@@ -6686,8 +6685,6 @@ function currentAgentBridge(): AgentBridge | null {
 const initPromise = initialize();
 // 실패해도 부트 화면을 걷어 오류 표시를 가리지 않는다.
 void initPromise.then(markStudioReady, markStudioReady);
-// 업데이트한 뒤 첫 실행이면 부트 화면이 걷히고 처음 설정이 닫힌 뒤 릴리스 노트를 띄운다.
-void initPromise.then(() => showPendingReleaseNotes()).catch(() => {});
 // 특별 이벤트(macOS 데스크톱만). 라이선스 확인과 편집기 준비가 끝나고 부트 화면이 걷힌 뒤 본다.
 void initPromise.then(() => {
   const gift = desktopGiftApi();

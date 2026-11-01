@@ -1,21 +1,13 @@
 /**
- * 업데이트한 뒤 첫 실행에 앱 위로 뜨는 릴리스 노트 창. 처음 설정과 같은 모양의 가운데 카드로,
- * 위에 상자를 연 픽셀 하마를 두고 아래에 버전과 노트 전부를 새 기능·고친 문제로 나눠 보인다.
+ * 하마의 릴리스 노트 클립보드를 누르면 뜨는 창. 처음 설정과 같은 모양의 가운데 카드로,
+ * 위에 선물 상자에 앉은 픽셀 하마를 두고 아래에 버전과 노트 전부를 새 기능·고친 문제로 나눠 보인다.
  *
- * 부트 화면이 걷히고 처음 설정이 닫힌 뒤에 뜨고, 뜨면 본 것으로 적는다. 확인·닫기·Esc·바깥
- * 누르기로 닫는다. 다음 실행부터는 뜨지 않는다.
+ * 확인·닫기·Esc·바깥 누르기로 닫는다.
  */
 import './release-card.css';
 import { createReleaseHama } from '../agent-sidebar/chat-hama.ts';
 import { createIcon } from '../agent-sidebar/icons.ts';
-import { afterBootScreen } from '../boot-screen.ts';
-import { isInitialSetupActive, onInitialSetupInactive } from '../initial-setup/active.ts';
-import {
-  markReleaseNotesSeen,
-  pendingReleaseNotes,
-  RELEASE_NOTES,
-  type ReleaseNote,
-} from './release-notes.ts';
+import type { ReleaseNote } from './release-notes.ts';
 
 /** 닫히는 전환(release-card.css 의 .rn-overlay)이 끝난 뒤 떼어 낸다. */
 const CLOSE_MS = 420;
@@ -42,7 +34,12 @@ export interface ReleaseNotesWindow {
   close(): void;
 }
 
-export function openReleaseNotes(version: string, note: ReleaseNote): ReleaseNotesWindow {
+export function openReleaseNotes(
+  version: string,
+  note: ReleaseNote,
+  /** 창이 닫히는 전환까지 끝난 뒤. */
+  onClosed: () => void = () => {},
+): ReleaseNotesWindow {
   const overlay = el('div', 'rn-overlay');
   const dialog = el('section', 'rn-dialog');
   dialog.setAttribute('role', 'dialog');
@@ -93,7 +90,10 @@ export function openReleaseNotes(version: string, note: ReleaseNote): ReleaseNot
     document.removeEventListener('keydown', onKeyDown, true);
     overlay.classList.remove('rn-open');
     if (lastFocus?.isConnected) lastFocus.focus({ preventScroll: true });
-    window.setTimeout(() => overlay.remove(), CLOSE_MS);
+    window.setTimeout(() => {
+      overlay.remove();
+      onClosed();
+    }, CLOSE_MS);
   }
 
   close.addEventListener('click', dismiss);
@@ -110,50 +110,4 @@ export function openReleaseNotes(version: string, note: ReleaseNote): ReleaseNot
     dialog.focus({ preventScroll: true });
   });
   return { element: overlay, close: dismiss };
-}
-
-function whenSetupInactive(): Promise<void> {
-  if (!isInitialSetupActive()) return Promise.resolve();
-  return new Promise((resolve) => {
-    const stop = onInitialSetupInactive(() => {
-      stop();
-      resolve();
-    });
-  });
-}
-
-interface ReleaseNotesHost {
-  rhwpDesktop?: unknown;
-  location?: { search: string };
-  localStorage?: Storage;
-}
-
-/**
- * 데스크톱 앱이면 이번 버전의 노트를 띄운다. Vite 개발 서버에서는 `?release-notes` 로
- * 본 기록과 상관없이 가장 최근 노트를 띄운다(`?release-notes=3.0.11` 처럼 버전을 고를 수도 있다).
- */
-export async function showPendingReleaseNotes(host: ReleaseNotesHost = window, version = __APP_VERSION__): Promise<void> {
-  let shown: string | undefined;
-  let onShown = (): void => {};
-  const forced = import.meta.env.DEV ? new URLSearchParams(host.location?.search ?? '').get('release-notes') : null;
-  if (forced !== null) {
-    shown = forced && RELEASE_NOTES[forced] ? forced : Object.keys(RELEASE_NOTES).at(-1);
-  } else {
-    if (!host.rhwpDesktop) return;
-    let storage: Storage | undefined;
-    try {
-      storage = host.localStorage;
-    } catch {
-      return;
-    }
-    if (!storage || !pendingReleaseNotes(version, storage)) return;
-    const store = storage;
-    shown = version;
-    onShown = () => markReleaseNotesSeen(version, store);
-  }
-  if (!shown) return;
-  await afterBootScreen();
-  await whenSetupInactive();
-  openReleaseNotes(shown, RELEASE_NOTES[shown]!);
-  onShown();
 }

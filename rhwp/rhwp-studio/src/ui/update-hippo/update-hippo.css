@@ -44,6 +44,19 @@
   image-rendering: pixelated;
 }
 
+/* 릴리스 노트 클립보드를 들 때는 채팅 하마를 같은 칸에 그린다. */
+.uh-chat-art {
+  position: absolute;
+  inset: 0;
+  display: none;
+  width: 100%;
+  height: 100%;
+  image-rendering: pixelated;
+}
+
+.uh[data-art='chat'] .uh-sprite { display: none; }
+.uh[data-art='chat'] .uh-chat-art { display: block; }
+
 .uh-hippo,
 .uh-ears {
   position: absolute;
@@ -68,6 +81,11 @@
   bottom: 0;
   width: 60px;
   height: 27px;
+}
+
+.uh[data-art='chat'] .uh-ears {
+  right: 45px;
+  width: 63px;
 }
 
 .uh-hippo[hidden],
@@ -105,6 +123,14 @@
 }
 
 .uh-board[data-tone='warning'] { --uh-edge: var(--uh-warning); }
+
+/* 릴리스 노트 클립보드는 팻말 전체가 픽셀 그림이라 판의 면과 테두리를 지운다. */
+.uh-board[data-sign='notes'] {
+  min-height: 0;
+  padding: 0;
+  background: none;
+  box-shadow: none;
+}
 
 .uh-board.is-stacked {
   flex-direction: column;
@@ -166,6 +192,15 @@
 }
 
 .uh-act-text:hover { background: var(--uh-press); }
+
+.uh-act-picture {
+  height: auto;
+  background: none;
+  clip-path: none;
+}
+
+.uh-act-picture:hover .uh-icon { transform: translateY(calc(-1 * var(--uh-px))); }
+.uh-act-picture:active .uh-icon { transform: none; }
 
 .uh-act:focus-visible {
   outline: 2px solid var(--dh-focus, #4b5563);
