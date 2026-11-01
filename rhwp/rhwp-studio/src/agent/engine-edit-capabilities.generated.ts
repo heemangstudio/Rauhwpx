@@ -1401,9 +1401,10 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "controlIdx",
       "cellIdx",
       "cellParaIdx",
-      "charOffset"
+      "charOffset",
+      "cells"
     ],
-    "signature": "pasteInternalInCell(sec: number, parentPara: number, controlIdx: number, cellIdx: number, cellParaIdx: number, charOffset: number)"
+    "signature": "pasteInternalInCell(sec: number, parentPara: number, controlIdx: number, cellIdx: number, cellParaIdx: number, charOffset: number, cells?: 'overwrite' | 'nest')"
   },
   {
     "method": "pasteInternalInCellByPath",
@@ -1412,9 +1413,10 @@ export const ENGINE_EDIT_CAPABILITIES = [
       "sec",
       "parentPara",
       "pathJson",
-      "charOffset"
+      "charOffset",
+      "cells"
     ],
-    "signature": "pasteInternalInCellByPath(sec: number, parentPara: number, pathJson: string, charOffset: number)"
+    "signature": "pasteInternalInCellByPath(sec: number, parentPara: number, pathJson: string, charOffset: number, cells?: 'overwrite' | 'nest')"
   },
   {
     "method": "pasteTableCellRange",

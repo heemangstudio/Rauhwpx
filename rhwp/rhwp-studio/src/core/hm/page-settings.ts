@@ -2,7 +2,7 @@ import type { Address, EditOp, PageInfo as HmPage } from '../../../vendor/hm-was
 import { pageDef } from '../heemang-format';
 import type { HmCore } from './core';
 import { unsupported } from './core';
-import { bodyList, logicalAddress } from './address';
+import { addressToPosition, bodyList, logicalAddress } from './address';
 import { extendBridge } from './api';
 import type { PageBorderFillSettings, PageDef, SectionDef } from './bridge-types';
 import type { BorderLineProps } from '../types';
@@ -106,9 +106,11 @@ export function insertPageBreak(core: HmCore, sec: number, para: number, charOff
   return JSON.stringify({ ok: true, paraIdx: para + 1, charOffset: 0 });
 }
 
+/** 한컴 단 나누기: 문단 처음·끝·빈 문단에서는 문단을 나누지 않고 표시만 한다. 캐럿은 단이 시작하는 곳이다. */
 export function insertColumnBreak(core: HmCore, sec: number, para: number, charOffset: number): string {
-  apply(core, [{ op: 'columnBreak', at: logicalAddress(core, bodyList(sec), para, charOffset) }]);
-  return JSON.stringify({ ok: true, paraIdx: para + 1, charOffset: 0 });
+  const caret = apply(core, [{ op: 'columnBreak', at: logicalAddress(core, bodyList(sec), para, charOffset) }])?.caret;
+  const position = caret ? addressToPosition(core, caret) : { paragraphIndex: para + 1, charOffset: 0 };
+  return JSON.stringify({ ok: true, paraIdx: position.paragraphIndex, charOffset: position.charOffset });
 }
 
 export function insertNewNumber(core: HmCore, sec: number, para: number, charOffset: number, startNum: number): string {

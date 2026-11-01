@@ -21,7 +21,7 @@ for (const kind of ['body', 'cell', 'nested-cell'] as const) {
       if (kind === 'nested-cell') {
         const source = wasm.createTable(0, wasm.getParagraphCount(0) - 1, 0, 1, 1);
         wasm.copyControl(0, source.paraIdx, source.controlIdx);
-        wasm.pasteInternalInCell(0, root, outer.controlIdx, 0, 0, 0);
+        wasm.pasteInternalInCell(0, root, outer.controlIdx, 0, 0, 0, 'nest');
         path.push({ controlIndex: 0, cellIndex: 0, cellParaIndex: 0 });
       }
     }

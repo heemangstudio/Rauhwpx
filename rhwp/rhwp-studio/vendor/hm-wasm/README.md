@@ -1,7 +1,8 @@
 # hm-wasm
 
-Generated browser bindings and WASM from HeemangEngine `fix/table-split-parity` at `21bc492` (2026-10-31): `rc/combined-20261028`
-at `6d33534` plus table pagination parity with Hancom Office 2022 (rows and cells split across pages, merged-cell cuts, rows
+Generated browser bindings and WASM from HeemangEngine `rc/combined-20261028` at `b3a2d0b` (2026-10-31), which merges
+engine PR #4 (`fix/editing-parity`, merge `306e4ed`: editing parity with Hancom Office 2022 from the Studio editing audit)
+and engine PR #3 (`fix/table-split-parity` at `7e09370`). `21bc492` was `6d33534` plus table pagination parity with Hancom Office 2022 (rows and cells split across pages, merged-cell cuts, rows
 taller than a page, nested-table margins at a cut, continuation spacing). `6d33534` adds the save-corruption fixes of engine PR #2 over `f7c5b55`, which merges `feat/notes-parity` at `845ba85`:
 `rc/combined-20261028` at `8d80eb0` plus footnote and endnote parity with Hancom Office 2022 (note insertion, numbering,
 note shapes, clipboard, page-local numbers, HWP/HWPX/HML round trips, and note layout and painting). `8d80eb0` changes only tests and documents
@@ -10,7 +11,7 @@ over `1a54900`, which over the
 under the r12 gate fonts), Hancom-captured table editing (`9bbcf60`: merge drops empty cells, split grids and heights,
 `copyRow`/`copyColumn`, saved laid-out table height, `moveTableCellEdge`), caret motion fixes (`054d48b`) and the
 typing performance work with its incremental-versus-fresh layout equivalence test (`1a54900`). Built with
-`CARGO_BUILD_JOBS=3 WASM_BINDGEN=<wasm-bindgen 0.2.125> crates/hm-wasm/build.sh`, no wasm-opt.
+`CARGO_BUILD_JOBS=4 WASM_BINDGEN=<wasm-bindgen 0.2.125> crates/hm-wasm/build.sh`, no wasm-opt.
 Contract and page-packet versions are both 1. The package is committed so Studio does not need the HeemangEngine
 checkout to run or build.
 
@@ -18,10 +19,10 @@ SHA-256 of the four files:
 
 | File | Bytes | SHA-256 |
 | --- | ---: | --- |
-| `hm_wasm_bg.wasm` | 7,859,014 | `056f7029c08bd40a549848be8a25ec41192cd34b518375b3a1a70616ebef0e00` |
-| `hm_wasm.js` | 73,254 | `2c860bee0d93549badb95a81433bcb8a42a8afb95e9688da018f91e3776c8110` |
-| `hm_wasm.d.ts` | 56,890 | `02a5818885f599191f88d810731085496eff3aee0bb312dbd632e4b03f2391a4` |
-| `hm_wasm_bg.wasm.d.ts` | 9,178 | `4dd860b1e9ac983d76fdad7265f36a420b0f2d07a65bebc0a16c12a6f2c77bd4` |
+| `hm_wasm_bg.wasm` | 8,076,941 | `5f99378e9d70749103c42586ad042b17657ce738d82a0553534a5874fc770efe` |
+| `hm_wasm.js` | 75,224 | `3db65c95d05ed435b11805bc34129ed9d235574d78b83b3ffadd4d45cb47a4bb` |
+| `hm_wasm.d.ts` | 66,520 | `634c301dec4743ecfbd141e8f1f0f53978e07e645b614d4bb342b5503e3c6b6a` |
+| `hm_wasm_bg.wasm.d.ts` | 9,432 | `07b5c75ac375ad462fbe491a4162bca1d5e0956c203c02a37823eceec6135c4f` |
 
 Integration `e48a461` adds, over the earlier `e2c92f9`, structural version merging and `Doc.verifyHwp`
 (`feat/studio-version-merge`, `208dbfb`), sparse host-font glyph coverage (`fix/studio-export-packaging`, `ebf68e8`)

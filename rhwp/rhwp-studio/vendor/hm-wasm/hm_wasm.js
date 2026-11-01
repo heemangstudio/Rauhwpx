@@ -691,8 +691,9 @@ export class Doc {
         return v1;
     }
     /**
-     * Pages `from..to` as one PDF for printing or export: text and rules
-     * as vectors, pictures and brushes as images at `dpi`.
+     * Pages `from..to` of the print layout as one PDF for printing or
+     * export: text and rules as vectors, pictures and brushes as images
+     * at `dpi`.
      * @param {number} from
      * @param {number} to
      * @param {number} dpi
@@ -740,6 +741,44 @@ export class Doc {
         let deferred2_1;
         try {
             const ret = wasm.doc_pictureSource(this.__wbg_ptr, i, item);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * The number of pages print and PDF give: the screen's, or fewer
+     * when the unfilled click-here guides the screen shows take lines.
+     * @returns {number}
+     */
+    printPageCount() {
+        const ret = wasm.doc_printPageCount(this.__wbg_ptr);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * [`Doc::page_svg`] of page `i` of the print layout
+     * ([`Doc::print_page_count`] pages), which leaves out the guide text of
+     * unfilled click-here fields as Hancom's print does.
+     * @param {number} i
+     * @param {number} dpi
+     * @returns {string}
+     */
+    printPageSvg(i, dpi) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.doc_printPageSvg(this.__wbg_ptr, i, dpi);
             var ptr1 = ret[0];
             var len1 = ret[1];
             if (ret[3]) {
@@ -983,6 +1022,20 @@ export class Doc {
         var v2 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
         wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
         return v2;
+    }
+    /**
+     * Keeps at most `limit` undo steps (all when absent), dropping older
+     * ones. A host that keeps its own undo passes 0: undo and redo do
+     * nothing, receipts report no steps, and checkpoints hold the document
+     * without a history, so editing and restoring stay as cheap at the end
+     * of a long session as at its start.
+     * @param {number | null} [limit]
+     */
+    setHistoryLimit(limit) {
+        const ret = wasm.doc_setHistoryLimit(this.__wbg_ptr, isLikeNone(limit) ? Number.MAX_SAFE_INTEGER : (limit) >>> 0);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
     }
     /**
      * `DocState` as JSON.
@@ -1981,6 +2034,10 @@ function getUint8ArrayMemory0() {
         cachedUint8ArrayMemory0 = new Uint8Array(wasm.memory.buffer);
     }
     return cachedUint8ArrayMemory0;
+}
+
+function isLikeNone(x) {
+    return x === undefined || x === null;
 }
 
 function passArray32ToWasm0(arg, malloc) {

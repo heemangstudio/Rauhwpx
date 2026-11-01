@@ -48,7 +48,7 @@ function fontName(core: HmCore, lang: number, id: number): string | null {
 
 /** 색 없음(형광펜 해제)은 흰색으로 들어오고, 엔진은 0xFFFFFFFF 로 적는다. */
 const NO_SHADE = 0xFFFFFFFF;
-const UNDERLINE_KINDS: Record<string, CharPatch['underlineKind']> = { None: 'none', Bottom: 'below', Top: 'above' };
+const UNDERLINE_KINDS: Record<string, CharPatch['underlineKind']> = { None: 'none', Bottom: 'below', Center: 'center', Top: 'above' };
 const BORDER_KEYS = ['borderFillId', 'borderLeft', 'borderRight', 'borderTop', 'borderBottom', 'fillType', 'fillColor', 'patternColor', 'patternType'];
 
 function colorRef(value: unknown): number {
@@ -435,10 +435,25 @@ export function applyDocumentParaSpacing(core: HmCore, spacing: { lineSpacing: n
       changed++;
     }
   }
+  const restyled = new Set<number>();
   for (const style of core.query<StyleInfo[]>({ kind: 'styles' })) {
     if (!['바탕글', '본문'].includes(style.name) || (style.paragraphs.lineSpacingKind ?? 'percent') !== 'percent') continue;
     const paragraphs: ParaPatch = { lineSpacing: spacing.lineSpacing, spaceBefore: Math.round(spacing.spacingBefore / 2), spaceAfter: Math.round(spacing.spacingAfter / 2) };
-    if (Object.entries(paragraphs).some(([key, value]) => style.paragraphs[key as keyof ParaPatch] !== value)) ops.push({ op: 'updateStyle', id: style.id, style: { paragraphs } });
+    if (!Object.entries(paragraphs).some(([key, value]) => style.paragraphs[key as keyof ParaPatch] !== value)) continue;
+    ops.push({ op: 'updateStyle', id: style.id, style: { paragraphs } });
+    restyled.add(style.id);
+  }
+  // 엔진은 한컴처럼 스타일을 고치면 그 스타일의 문단을 모두 따라 바꾼다. 간격 모음은 본문의 % 줄 간격
+  // 문단만 바꾸므로, 셀·글상자·머리말·주석과 본문의 다른 줄 간격 문단은 같은 단계에서 제 문단 모양으로 되돌린다.
+  if (restyled.size) for (const list of documentLists(core)) {
+    const count = core.paragraphCount(list);
+    if (!count) continue;
+    for (const para of core.query<ParagraphFormat[]>({ kind: 'formatRuns', list, from: 0, count })) {
+      if (!restyled.has(para.styleId)) continue;
+      if (!list.steps.length && paraProperties(para.paragraphs).lineSpacingType === 'Percent') continue;
+      const map = paraMap(core.paragraph(list, para.index));
+      ops.push({ op: 'setParaShape', from: toAddress(list, para.index, map.lead), to: toAddress(list, para.index, map.end), paraShapeId: para.paraShapeId });
+    }
   }
   core.transact(ops);
   return { ok: true, changed, pageCount: core.state().pageCount };

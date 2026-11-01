@@ -89,12 +89,12 @@ function table(wasm: Wasm, rows: number, cols: number) {
   return { ppi, ci, index, text, pos, grid, ctx: { sec: 0, ppi, ci } };
 }
 
-/** 바깥 2x2 표의 첫 셀에 안쪽 2x2 표를 붙여 넣는다. */
+/** 바깥 2x2 표의 첫 셀에 안쪽 2x2 표를 표로 넣어 붙인다(한컴 셀 붙이기의 기본은 칸 덮어쓰기다). */
 function nested(wasm: Wasm) {
   const outer = table(wasm, 2, 2);
   const source = wasm.createTableEx({ sectionIdx: 0, paraIdx: wasm.getParagraphCount(0) - 1, charOffset: 0, rowCount: 2, colCount: 2 });
   wasm.copyControl(0, source.paraIdx, source.controlIdx);
-  wasm.pasteInternalInCell(0, outer.ppi, outer.ci, 0, 0, 0);
+  wasm.pasteInternalInCell(0, outer.ppi, outer.ci, 0, 0, 0, 'nest');
   const inner = (cellIndex: number): PathEntry[] => [{ controlIndex: outer.ci, cellIndex: 0, cellParaIndex: 0 }, { controlIndex: 0, cellIndex, cellParaIndex: 0 }];
   const innerText = (cellIndex: number) => {
     const path = JSON.stringify(inner(cellIndex));
