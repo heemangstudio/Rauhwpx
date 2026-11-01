@@ -1,0 +1,382 @@
+/* 요금제 카드 · Hama. 카드 전체가 연못이다. 위는 하늘(글), 아래는 물(단추).
+   그림은 채팅 하마(chat-hama.ts)를 2배로 키운 6px 칸이다. 단추 모서리만 반 칸(3px)이다. */
+.acct-plan-card.hc {
+  --cell: 6px;
+  --hy: -1;
+  --sun-b: 5;
+  --hc-notch: polygon(3px 0, calc(100% - 3px) 0, calc(100% - 3px) 3px, 100% 3px, 100% calc(100% - 3px), calc(100% - 3px) calc(100% - 3px), calc(100% - 3px) 100%, 3px 100%, 3px calc(100% - 3px), 0 calc(100% - 3px), 0 3px, 3px 3px);
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  container-type: inline-size;
+  color: var(--hc-ink);
+  clip-path: polygon(
+    6px 0, calc(100% - 6px) 0, calc(100% - 6px) 6px, 100% 6px,
+    100% calc(100% - 6px), calc(100% - 6px) calc(100% - 6px), calc(100% - 6px) 100%,
+    6px 100%, 6px calc(100% - 6px), 0 calc(100% - 6px), 0 6px, 6px 6px
+  );
+}
+
+.hc .acct-plan-sky {
+  display: block;
+  position: relative;
+  min-height: 90px;
+  padding: 12px 15px 15px;
+  background: var(--hc-sky);
+}
+
+.hc .acct-plan-water {
+  display: block;
+  position: relative;
+  padding: 18px 15px 15px;
+  background: var(--hc-water);
+}
+
+.hc .rc-bg {
+  display: none;
+}
+
+.hc .hc-art { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+.hc-pix { position: absolute; display: block; }
+
+/* 수면: chat-hama 의 물결 점처럼 칸 하나씩 끊긴다 */
+.hc-line, .hc-ripple { position: absolute; left: 0; right: 0; height: 6px; }
+.hc-ripple { left: 198px; }
+.hc-line {
+  top: 0;
+  background:
+    repeating-linear-gradient(90deg, var(--hc-foam) 0 18px, transparent 18px 96px) right / 96px 6px,
+    var(--hc-line);
+}
+.hc-ripple.r1 {
+  top: 18px;
+  background: repeating-linear-gradient(90deg, var(--hc-ripple) 0 12px, transparent 12px 84px) right / 84px 6px;
+}
+.hc-ripple.r2 {
+  top: 36px;
+  background: repeating-linear-gradient(90deg, var(--hc-ripple) 0 6px, transparent 6px 108px) 42px 0 / 108px 6px;
+}
+.hc-dither {
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  height: 6px;
+  background: linear-gradient(90deg, var(--hc-deep) 0 6px, transparent 6px 12px) right / 12px 6px;
+}
+
+/* 하마: 하늘 칸이 수면에서 잘라 낸다. --hy 는 chat-hama 의 hy(가라앉은 칸 수)다. */
+.hc-hippo {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  transform: translateY(calc((var(--hy) - 7 - var(--oy)) * var(--cell)));
+  transition: transform 560ms steps(4);
+}
+.hc-hippo .hc-pix { position: static; }
+
+.p-o { fill: var(--c-o); } .p-s { fill: var(--c-s); } .p-h { fill: var(--c-h); } .p-W { fill: var(--c-W); }
+.p-r { fill: var(--c-r); }
+.p-m { fill: var(--hc-moon); } .p-n { fill: var(--hc-moon); }
+.p-S { fill: var(--hc-sun); } .p-T { fill: var(--hc-sun-2); }
+.p-y { fill: var(--hc-star); }
+.p-F { fill: var(--hc-peak-far); } .p-N { fill: var(--hc-peak-near); } .p-U { fill: var(--hc-peak-cap); }
+.p-R { fill: var(--hc-sun); } .p-Q { fill: var(--hc-sun-2); } .p-E { fill: var(--hc-box-top); }
+.p-V { fill: var(--hc-bow); } .p-k { fill: var(--hc-bow-2); }
+
+.f-b, .f-c, .spark-big { display: none; }
+.hc-wideonly { display: none; }
+.hc-sun, .hc-moon { transition: bottom 560ms steps(8); }
+.hc-sun { bottom: calc(var(--sun-b) * var(--cell)); }
+.hc-moon { bottom: calc((var(--sun-b) + 1) * var(--cell)); }
+.hc[data-kind='cancelled'] .rays, .hc[data-panel='confirm'] .rays { display: none; }
+
+/* 글 */
+.hc .acct-plan-copy {
+  position: relative;
+  max-width: calc(100% - 123px);
+}
+
+.hc .acct-plan-name {
+  flex-wrap: wrap;
+  gap: 2px 7px;
+  min-height: 27px;
+}
+
+.hc .acct-plan-name .acct-hama-mark {
+  display: none;
+}
+
+.acct-section .hc .acct-plan-tier {
+  color: inherit;
+  font-size: 18px;
+  font-weight: 590;
+  letter-spacing: -0.01em;
+  line-height: 27px;
+}
+
+.hc .acct-plan-cycle {
+  color: inherit;
+  font-size: 14px;
+  font-weight: 510;
+}
+
+.hc .acct-plan-name .acct-badge {
+  height: 21px;
+  border-radius: 0;
+  background: var(--hc-ink);
+  color: var(--hc-sky);
+  font-size: 12px;
+  font-weight: 590;
+  clip-path: var(--hc-notch);
+}
+
+.acct-section .hc .acct-plan-term {
+  margin: 0;
+  color: var(--hc-ink-2);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.hc .acct-alert-text {
+  margin: 3px 0 0;
+  color: var(--hc-ink);
+  font-size: 13px;
+  font-weight: 510;
+  word-break: keep-all;
+}
+
+/* 단추 */
+.hc .acct-plan-actions,
+.hc .acct-manage-actions {
+  position: relative;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.hc .acct-btn {
+  --hc-btn-bg: var(--btn-bg);
+  --hc-btn-fg: var(--btn-fg);
+  --hc-btn-shade: var(--btn-shade);
+  min-height: 0;
+  height: 33px;
+  padding: 0 12px 3px;
+  border: 0;
+  border-radius: 0;
+  background: var(--hc-btn-bg);
+  color: var(--hc-btn-fg);
+  box-shadow: inset 0 -3px 0 var(--hc-btn-shade);
+  font-size: 13px;
+  font-weight: 510;
+  clip-path: var(--hc-notch);
+}
+
+.hc .acct-btn-primary {
+  --hc-btn-bg: var(--pri-bg);
+  --hc-btn-fg: var(--pri-fg);
+  --hc-btn-shade: var(--pri-shade);
+}
+
+.hc .acct-btn-danger {
+  --hc-btn-bg: var(--dgr-bg);
+  --hc-btn-fg: var(--dgr-fg);
+  --hc-btn-shade: var(--dgr-shade);
+}
+
+.hc .acct-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--hc-btn-bg) 88%, var(--hc-btn-fg));
+  color: var(--hc-btn-fg);
+}
+
+.hc .acct-btn:active:not(:disabled),
+.hc .acct-btn[aria-expanded='true'] {
+  height: 30px;
+  margin-bottom: 3px;
+  padding-bottom: 0;
+  box-shadow: none;
+  transform: translateY(3px);
+}
+
+.hc .acct-btn:focus-visible {
+  outline: 2px solid var(--hc-btn-fg);
+  outline-offset: -5px;
+}
+
+/* 구독 관리를 열면 물이 깊어진다 */
+.hc .acct-manage {
+  position: relative;
+  margin: 0;
+  padding: 12px 15px 15px;
+  background: var(--hc-deep);
+}
+
+.hc .acct-manage-step {
+  gap: 9px;
+}
+
+.hc .acct-manage-text {
+  color: var(--hc-ink);
+  font-size: 13px;
+  word-break: keep-all;
+}
+
+.hc[data-kind='cancelled'],
+.hc[data-panel='confirm'] {
+  --hy: 3;
+  --sun-b: -4;
+}
+
+.hc[data-kind='failed'] .acct-plan-sky {
+  min-height: 108px;
+}
+
+.hc[data-kind='lifetime'] .acct-plan-sky {
+  min-height: 96px;
+}
+
+.hc[data-kind='failed'] .hc-ripple,
+.hc[data-kind='failed'] .hc-dither {
+  display: none;
+}
+
+.hc[data-kind='failed'] .hc-line {
+  background: var(--hc-line);
+}
+
+.hc[data-kind='cancelled'] .hc-ripple.r2 {
+  display: none;
+}
+
+@container (min-width: 520px) {
+  .hc-wideonly {
+    display: block;
+  }
+
+  .hc .acct-plan-copy {
+    max-width: 400px;
+  }
+
+  .hc .acct-manage-step {
+    flex-direction: row;
+    align-items: center;
+    gap: 15px;
+  }
+
+  .hc .acct-manage-text {
+    flex: 1 1 0;
+  }
+
+  .hc .acct-manage-step .acct-manage-actions {
+    flex: none;
+    flex-wrap: nowrap;
+  }
+}
+
+/* ── 움직임: chat-hama 의 박자를 칸 단위로. 동작 줄이기면 멈춘다 ── */
+@media (prefers-reduced-motion: no-preference) {
+  /* 한가할 때: think 의 귀 털기(180ms)와 SHUFFLE 의 발 옮기기(150ms 씩 세 번) */
+  .hc[data-live]:not([data-panel='confirm']) .f-a { animation: hc-idle-a 5.2s steps(1) infinite; }
+  .hc[data-live]:not([data-panel='confirm']) .f-b { display: block; animation: hc-idle-b 5.2s steps(1) infinite; }
+  .hc[data-live]:not([data-panel='confirm']) .f-c { display: block; animation: hc-idle-c 5.2s steps(1) infinite; }
+  .hc[data-live] .hc-line { animation: hc-drift 5.76s steps(16) infinite; }
+  .hc[data-live] .hc-ripple.r1 { animation: hc-drift-1 7s steps(14) infinite; }
+  .hc[data-live] .hc-ripple.r2 { animation: hc-drift-2 9s steps(18) infinite; }
+  .hc-twinkle { animation: hc-twinkle 4.4s steps(1) infinite; }
+  .hc-twinkle.t2 { animation-duration: 6.1s; animation-delay: -2s; }
+  .hc-twinkle.t3 { animation-duration: 5.2s; animation-delay: -3.7s; }
+  .rays-pulse { animation: hc-half-a 2.4s steps(1) infinite; }
+  /* error: 느낌표 900ms 중 600ms, 물방울 400ms 칸으로 떨어짐 */
+  .fx-bang { animation: hc-bang 900ms steps(1) infinite; }
+  .fx-drop { animation: hc-drop 1.6s steps(1) infinite; }
+  /* sleep: z 가 750ms 칸으로 오르며 옅어진다 */
+  .zz { animation: hc-z 3s steps(1) infinite; opacity: 0; }
+  .zz.k1 { animation-delay: -2.25s; } .zz.k2 { animation-delay: -1.5s; } .zz.k3 { animation-delay: -0.75s; }
+  /* done: 반짝임이 커졌다 사라진다 */
+  .spark-small { animation: hc-spark-small 3.84s steps(1) infinite; }
+  .spark-big { display: block; animation: hc-spark-big 3.84s steps(1) infinite; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .zz:not(.k1) { display: none; }
+}
+@keyframes hc-idle-a {
+  0%, 46% { opacity: 1; } 46.01%, 49.5% { opacity: 0; } 49.51%, 70% { opacity: 1; }
+  70.01%, 72.9% { opacity: 0; } 72.91%, 75.8% { opacity: 1; } 75.81%, 78.7% { opacity: 0; }
+  78.71%, 81.6% { opacity: 1; } 81.61%, 84.5% { opacity: 0; } 84.51%, 96.5% { opacity: 1; } 96.51%, 100% { opacity: 0; }
+}
+@keyframes hc-idle-b {
+  0%, 46% { opacity: 0; } 46.01%, 49.5% { opacity: 1; } 49.51%, 96.5% { opacity: 0; } 96.51%, 100% { opacity: 1; }
+}
+@keyframes hc-idle-c {
+  0%, 70% { opacity: 0; } 70.01%, 72.9% { opacity: 1; } 72.91%, 75.8% { opacity: 0; } 75.81%, 78.7% { opacity: 1; }
+  78.71%, 81.6% { opacity: 0; } 81.61%, 84.5% { opacity: 1; } 84.51%, 100% { opacity: 0; }
+}
+@keyframes hc-half-a { 0%, 49.9% { opacity: 1; } 50%, 100% { opacity: 0; } }
+@keyframes hc-half-b { 0%, 49.9% { opacity: 0; } 50%, 100% { opacity: 1; } }
+@keyframes hc-drift { from { background-position-x: 0, 0; } to { background-position-x: 96px, 0; } }
+@keyframes hc-drift-1 { from { background-position-x: 0; } to { background-position-x: 84px; } }
+@keyframes hc-drift-2 { from { background-position-x: 108px; } to { background-position-x: 0; } }
+@keyframes hc-twinkle { 0%, 62% { opacity: 1; } 63%, 84% { opacity: 0; } 85%, 100% { opacity: 1; } }
+@keyframes hc-bang { 0%, 66.6% { opacity: 1; } 66.7%, 100% { opacity: 0; } }
+@keyframes hc-drop {
+  0%, 24.9% { transform: translateY(0); }
+  25%, 49.9% { transform: translateY(1px); }
+  50%, 100% { transform: translateY(2px); }
+}
+@keyframes hc-z { 0%, 24.9% { opacity: 1; } 25%, 100% { opacity: 0; } }
+@keyframes hc-spark-small { 0%, 12.4%, 37.5%, 49.9% { opacity: 1; } 12.5%, 37.4%, 50%, 100% { opacity: 0; } }
+@keyframes hc-spark-big { 0%, 12.4% { opacity: 0; } 12.5%, 37.4% { opacity: 1; } 37.5%, 100% { opacity: 0; } }
+
+/* ── 토큰: chat-hama 의 COLORS / LIGHT_COLORS 에서 뽑았다 ── */
+:root[data-theme-effective='dark'] .hc {
+  --hc-ink: #e6f5ff; --hc-ink-2: #b2e2fb;
+  --c-o: #62b3e2; --c-s: #2f73a0; --c-h: #b2e2fb; --c-W: #ffffff; --c-r: #ff6b6b;
+  --pri-bg: #e6f5ff; --pri-fg: #0c2536; --pri-shade: #9dcdea;
+  --btn-bg: #0c2536; --btn-fg: #e6f5ff; --btn-shade: #06141f;
+  --dgr-bg: #ff8a80; --dgr-fg: #2a0b08; --dgr-shade: #c9544b;
+  --hc-moon: #f4fbff; --hc-star: #e6f5ff;
+  --hc-sun: #f6c667; --hc-sun-2: #e09f3e; --hc-box-top: #ffdf9a; --hc-bow: #e6f5ff; --hc-bow-2: #b2e2fb;
+
+  --hc-sky: #0c2536; --hc-water: #1d4766; --hc-line: #2f73a0; --hc-foam: #62b3e2; --hc-ripple: #2f73a0; --hc-deep: #143550;
+}
+:root[data-theme-effective='dark'] .hc[data-sky='day'] {
+  --hc-sky: #164365; --hc-water: #2f73a0; --hc-line: #62b3e2; --hc-foam: #b2e2fb; --hc-ripple: #4a95c6; --hc-deep: #245b82;
+}
+:root[data-theme-effective='dark'] .hc[data-kind='cancelled'] {
+  --hc-ink: #e8edf1; --hc-ink-2: #aab5be;
+  --hc-sky: #161b21; --hc-water: #27313a; --hc-line: #3d4a56; --hc-foam: #66757f; --hc-ripple: #333f4a; --hc-deep: #1e262e;
+  --btn-bg: #161b21; --btn-fg: #e8edf1; --btn-shade: #0c1014;
+  --hc-sun: #f0a35a; --hc-sun-2: #c97a35;
+}
+:root[data-theme-effective='dark'] .hc[data-kind='lifetime'] {
+  --hc-peak-far: #143a57; --hc-peak-near: #1a4a6e; --hc-peak-cap: #62b3e2;
+}
+:root[data-theme-effective='dark'] .hc[data-kind='failed'] {
+  --hc-water: #3a2a1d; --hc-line: #7d4a26;
+}
+
+:root:not([data-theme-effective='dark']) .hc {
+  --hc-ink: #0c2536; --hc-ink-2: #1d4766;
+  /* 밝은 면 위 3:1 을 넘기려 하마 색을 한 단 내렸다. W 는 LIGHT_COLORS 처럼 진한 파랑이다. */
+  --c-o: #3489c0; --c-s: #1d5c88; --c-h: #62b3e2; --c-W: #2f73a0; --c-r: #b92e24;
+  --pri-bg: #0c2536; --pri-fg: #ffffff; --pri-shade: #000d17;
+  --btn-bg: #f4fbff; --btn-fg: #0c2536; --btn-shade: #b2d6ec;
+  --dgr-bg: #b92e24; --dgr-fg: #ffffff; --dgr-shade: #7f1c15;
+  --hc-moon: #2f73a0; --hc-star: #3489c0;
+  --hc-sun: #f2b52c; --hc-sun-2: #bf7f0c; --hc-box-top: #f8d271; --hc-bow: #1d5c88; --hc-bow-2: #3489c0;
+
+  --hc-sky: #d5ecfb; --hc-water: #7fc6ee; --hc-line: #4f9fd0; --hc-foam: #e6f5ff; --hc-ripple: #a3d8f4; --hc-deep: #62b3e2;
+}
+:root:not([data-theme-effective='dark']) .hc[data-sky='day'] {
+  --hc-sky: #eaf6fe; --hc-water: #9fd7f5; --hc-line: #62b3e2; --hc-foam: #ffffff; --hc-ripple: #bce4f8; --hc-deep: #7fc6ee;
+}
+:root:not([data-theme-effective='dark']) .hc[data-kind='cancelled'] {
+  --hc-ink: #171b22; --hc-ink-2: #424a55;
+  --hc-sky: #eef0f3; --hc-water: #d3d9df; --hc-line: #8d97a1; --hc-foam: #f5f7f9; --hc-ripple: #c4ccd3; --hc-deep: #c0c8cf;
+  --pri-bg: #171b22; --pri-shade: #000000;
+  --btn-bg: #ffffff; --btn-fg: #171b22; --btn-shade: #c4cad3;
+  --hc-sun: #e88f3a; --hc-sun-2: #c87224;
+}
+:root:not([data-theme-effective='dark']) .hc[data-kind='lifetime'] {
+  --hc-peak-far: #b9dff6; --hc-peak-near: #a0d3f2; --hc-peak-cap: #ffffff;
+}
+:root:not([data-theme-effective='dark']) .hc[data-kind='failed'] {
+  --hc-water: #e7cda9; --hc-line: #a9683a;
+}

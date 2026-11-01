@@ -127,6 +127,19 @@ export function planCancelled(plan: AccountPlan): boolean {
   return plan.tier !== 'free' && plan.autoRenew === false && Boolean(plan.manageUrl) && !plan.paymentFailed;
 }
 
+export type PlanCardKind = 'free' | 'monthly' | 'yearly' | 'cancelled' | 'gift' | 'failed' | 'lifetime' | 'trial';
+
+/** 요금제 카드의 그림과 표면을 정하는 상태. 선물·프로모션 키는 처음부터 갱신이 없다. */
+export function planCardKind(plan: AccountPlan): PlanCardKind {
+  if (plan.tier === 'free') return 'free';
+  if (plan.paymentFailed) return 'failed';
+  if (plan.rau?.source === 'trial') return 'trial';
+  if (plan.plan === 'lifetime') return 'lifetime';
+  if (planCancelled(plan)) return 'cancelled';
+  if (plan.autoRenew === false) return 'gift';
+  return plan.plan === 'annual' ? 'yearly' : 'monthly';
+}
+
 /** 갱신일이나 끝나는 날. 평생·무료는 빈 글. */
 export function planTermLine(plan: AccountPlan): string {
   if (plan.tier === 'free' || plan.plan === 'lifetime' || !plan.expiresAt) return '';

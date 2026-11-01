@@ -1,0 +1,261 @@
+/* 요금제 카드 · Rau. 산호색 막대가 크레딧을 보이고, 자모 신경망은 카드에 잘린 옅은 무늬다.
+   상태는 글·막대·표·단추가 말한다. 무늬는 끊기거나 흩어질 뿐이다. */
+.acct-plan-card.rc {
+  --rc-accent: #bf3f33;
+  --rc-accent-text: #9e3025;
+  --rc-accent-on: #fff;
+  --rc-tint: color-mix(in srgb, #bf3f33 6%, var(--n-surface));
+  --rc-raised: #fff;
+  --rc-out: #eeeeef;
+  --rc-art: color-mix(in srgb, var(--rc-accent) 14%, var(--rc-bg));
+  --rc-art-2: color-mix(in srgb, var(--rc-accent) 9%, var(--rc-bg));
+  --rc-art-hot: color-mix(in srgb, var(--rc-accent) 20%, var(--rc-bg));
+  --rc-track: color-mix(in srgb, var(--n-ink) 12%, var(--rc-bg));
+  --rc-btn: color-mix(in srgb, var(--rc-accent) 11%, var(--rc-bg));
+  --rc-btn-hover: color-mix(in srgb, var(--rc-accent) 17%, var(--rc-bg));
+  --rc-rule: color-mix(in srgb, var(--rc-accent) 28%, var(--rc-bg));
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  column-gap: 12px;
+  overflow: hidden;
+  padding: 14px;
+  border-radius: 12px;
+  background: var(--rc-bg);
+  color: var(--n-ink);
+}
+
+:root[data-theme-effective='dark'] .acct-plan-card.rc {
+  --rc-accent: #f0776c;
+  --rc-accent-text: #f0776c;
+  --rc-accent-on: #1a0806;
+  --rc-tint: color-mix(in srgb, #f0776c 9%, var(--n-surface));
+  --rc-raised: #181818;
+  --rc-out: #1d1d1d;
+}
+
+.rc .acct-plan-sky,
+.rc .acct-plan-water {
+  display: contents;
+}
+
+.rc .hc-art {
+  display: none;
+}
+
+.rc .acct-plan-copy,
+.rc .acct-plan-actions,
+.rc .acct-manage,
+.rc .acct-rau-credits {
+  position: relative;
+  z-index: 1;
+}
+
+.rc .acct-plan-copy {
+  grid-column: 1;
+  min-width: 0;
+}
+
+.rc .acct-plan-actions {
+  grid-row: 1;
+  grid-column: 2;
+  align-self: start;
+}
+
+/* 표면 */
+.rc[data-surface='tint'] { --rc-bg: var(--rc-tint); }
+.rc[data-surface='raised'] { --rc-bg: var(--rc-raised); }
+.rc[data-surface='plain'] { --rc-bg: var(--n-surface); }
+
+.rc[data-surface='out'] {
+  --rc-bg: var(--rc-out);
+  --rc-art: color-mix(in srgb, var(--n-ink) 13%, var(--rc-bg));
+  --rc-art-2: color-mix(in srgb, var(--n-ink) 13%, var(--rc-bg));
+}
+
+/* 해지와 결제 실패는 팝업 면에 바로 놓이고, 이때만 윤곽선이 뜻을 가진다. */
+.rc[data-surface='plain'][data-end='cut'] {
+  --rc-art: color-mix(in srgb, var(--n-ink) 9%, var(--rc-bg));
+  --rc-art-2: color-mix(in srgb, var(--n-ink) 7%, var(--rc-bg));
+  outline: 1px dashed var(--n-ink-tertiary);
+  outline-offset: -1px;
+}
+
+.rc[data-end='break'] {
+  outline: 1.5px solid var(--rc-accent);
+  outline-offset: -1.5px;
+}
+
+/* 무늬: 카드에 잘리고 누를 수 없다. */
+.rc-bg {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  user-select: none;
+}
+
+.rc[data-surface='plain'] .rc-bg {
+  inset: 2px;
+  border-radius: 10px;
+}
+
+.rc-bg pre {
+  margin: 0;
+  font: 12px/12px 'Nanum Gothic Coding', monospace;
+  letter-spacing: 0;
+  white-space: pre;
+  font-kerning: none;
+  font-variant-ligatures: none;
+}
+
+.rc-bg i {
+  color: var(--c);
+  font-style: normal;
+}
+
+.rc-bg .t { --c: var(--rc-art); }
+.rc-bg .b { --c: var(--rc-art-2); }
+
+@media (prefers-reduced-motion: no-preference) {
+  .rc-bg[data-live] i {
+    animation: rc-fire var(--period) step-end infinite;
+    animation-delay: calc(var(--i) * var(--step));
+  }
+}
+
+@keyframes rc-fire {
+  0%, 5% { color: var(--rc-art-hot); }
+  5.5%, 100% { color: var(--c); }
+}
+
+/* 글 */
+.rc .acct-plan-name {
+  gap: 7px;
+  min-height: 32px;
+}
+
+.acct-section .rc .acct-plan-name .acct-rau-mark {
+  color: var(--rc-accent);
+}
+
+.acct-section .rc .acct-plan-tier {
+  color: var(--n-ink);
+  font-size: 16px;
+  font-weight: 590;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+}
+
+.rc .acct-plan-cycle {
+  color: var(--n-ink);
+  font-size: 16px;
+  font-weight: 590;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+}
+
+.rc .acct-plan-name .acct-badge {
+  height: auto;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--n-ink);
+  color: var(--n-surface);
+  font-size: 11px;
+  font-weight: 590;
+}
+
+.acct-section .rc .acct-plan-term {
+  margin: 0;
+  color: var(--n-ink-secondary);
+  font-size: 13px;
+}
+
+.rc .acct-alert-text {
+  margin: 6px 0 0;
+  color: var(--n-ink);
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+
+/* 막대: 채움만이 값을 말한다. */
+.acct-section .rc .acct-rau-credits {
+  grid-column: 1 / -1;
+  gap: 6px 12px;
+  margin-top: 14px;
+}
+
+.rc .acct-rau-meter {
+  grid-column: 1 / -1;
+  height: 6px;
+  margin: 0;
+  background: var(--rc-track);
+}
+
+.rc .acct-rau-meter .acct-meter-fill {
+  background: var(--rc-accent);
+}
+
+.rc .acct-rau-credits-value {
+  font-size: 14px;
+  font-weight: 590;
+  text-align: left;
+}
+
+.rc .acct-rau-credits-meta {
+  grid-column: 2;
+  color: var(--n-ink-secondary);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+/* 단추 */
+.rc .acct-btn {
+  background: var(--rc-btn);
+  color: var(--rc-accent-text);
+}
+
+.rc .acct-btn:hover:not(:disabled) {
+  background: var(--rc-btn-hover);
+  color: var(--rc-accent-text);
+}
+
+.rc .acct-btn-primary,
+.rc .acct-btn-danger,
+.rc[data-live]:not([data-panel]) .acct-plan-actions .acct-btn {
+  background: var(--rc-accent);
+  color: var(--rc-accent-on);
+}
+
+.rc .acct-btn-primary:hover:not(:disabled),
+.rc .acct-btn-danger:hover:not(:disabled),
+.rc[data-live]:not([data-panel]) .acct-plan-actions .acct-btn:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--rc-accent) 88%, var(--rc-accent-on));
+  color: var(--rc-accent-on);
+}
+
+/* 결제 실패: 문장이 막대 자리를 차지하고 단추가 한 줄을 채운다. */
+.rc[data-end='break'] .acct-plan-actions {
+  grid-row: auto;
+  grid-column: 1 / -1;
+  margin-top: 10px;
+}
+
+.rc[data-end='break'] .acct-plan-actions .acct-btn {
+  flex: 1 1 auto;
+}
+
+/* 구독 관리: 칸을 따로 두지 않고 줄로 나눈다. */
+.acct-section .rc .acct-manage {
+  grid-column: 1 / -1;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--rc-rule);
+}
+
+.rc .acct-manage-text {
+  color: var(--n-ink);
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}

@@ -856,11 +856,45 @@ html:is(.desktop-mac, .desktop-windows) .acct-page.acct-embedded {
 }
 
 /* 요금제 */
-.acct-plan-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+/* 무료의 판. Hama 와 Rau 는 hama-card.css, rau-card.css 가 그린다. */
+.acct-plan-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  column-gap: 12px;
+}
+
+.acct-plan-sky,
+.acct-plan-water {
+  display: contents;
+}
+
+.acct-plan-card:not(.hc):not(.rc) .hc-art,
+.acct-plan-card:not(.hc):not(.rc) .rc-bg {
+  display: none;
+}
+
+.acct-plan-card:not(.hc) .acct-plan-copy {
+  grid-column: 1;
+}
+
+.acct-plan-card:not(.hc):not(.rc) .acct-plan-actions {
+  grid-row: 1;
+  grid-column: 2;
+  align-self: start;
+}
+
+.acct-plan-card:not(.hc):not(.rc) .acct-manage {
+  grid-column: 1 / -1;
+}
+
+/* 표가 된 칸: 머리글과 테두리를 카드가 대신한다. */
+.acct-page .acct-section[data-section='plan'][data-card] {
+  padding: 0;
+  border: 0;
+}
+
+.acct-page .acct-section[data-section='plan'][data-card] > .acct-section-head {
+  display: none;
 }
 
 .acct-plan-actions {
@@ -991,16 +1025,6 @@ html:is(.desktop-mac, .desktop-windows) .acct-page.acct-embedded {
 .acct-plan-term {
   margin-top: 4px;
   font-size: var(--ag-fs-secondary);
-}
-
-.acct-alert {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  margin-top: 16px;
-  padding: 12px 12px 12px 16px;
-  border-radius: var(--ag-r-card);
-  background: color-mix(in oklab, var(--acct-err) 8%, transparent);
 }
 
 .acct-alert-text {
@@ -1397,12 +1421,6 @@ html:is(.desktop-mac, .desktop-windows) .acct-page.acct-profile-card {
 
 .acct-profile-card .acct-plan-actions:not(:has(button:not([hidden]))) {
   display: none;
-}
-
-.acct-profile-card .acct-plan-head {
-  align-items: flex-start;
-  flex-direction: column;
-  gap: 10px;
 }
 
 .acct-profile-card .acct-plan-actions {

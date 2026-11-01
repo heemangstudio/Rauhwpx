@@ -7,6 +7,8 @@ import './account-page.css';
 import loginNeurons from './login-neurons.txt?raw';
 import { createIcon } from '../agent-sidebar/icons.ts';
 import { createSheetFrame } from '../agent-sidebar/sheet.ts';
+import { hamaCardLook } from './hama-card.ts';
+import { mountRauCardArt, rauCardLook } from './rau-card.ts';
 import { createHamaMark } from '../plan/hama-mark.ts';
 import { upgradeFamilies, type PlanFamily } from '../plan/plan-offers.ts';
 import { sharedPlanStore, type PlanStore } from '../plan/plan-store.ts';
@@ -23,6 +25,7 @@ import {
   platformLabel,
   rauCredits,
   planCancelled,
+  planCardKind,
   formatAccountDate,
   rauCreditsLine,
   rauResetLine,
@@ -242,13 +245,22 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
 
   // ── 요금제 ──────────────────────────────────────────
   const planSection = section('plan', '요금제');
-  const planHead = el('div', 'acct-plan-head');
+  const planCard = el('div', 'acct-plan-card');
+  const rauArtHost = el('div', 'rc-bg');
+  rauArtHost.setAttribute('aria-hidden', 'true');
+  const rauArt = mountRauCardArt(planCard, rauArtHost);
+  const planSky = el('div', 'acct-plan-sky');
+  const skyArt = el('div', 'hc-art');
+  skyArt.setAttribute('aria-hidden', 'true');
+  const planCopy = el('div', 'acct-plan-copy');
+  const planWater = el('div', 'acct-plan-water');
+  const waterArt = el('div', 'hc-art');
+  waterArt.setAttribute('aria-hidden', 'true');
   const planName = el('p', 'acct-plan-name');
   const planActions = el('div', 'acct-plan-actions');
   const upgrade = button('acct-btn acct-btn-primary acct-upgrade', '업그레이드');
   const manage = button('acct-btn', '구독 관리');
   planActions.append(upgrade, manage);
-  planHead.append(planName, planActions);
   // 구독 관리: 해지와 결제 정보. 해지는 Groble 구매자 페이지에서 끝난다.
   const managePanel = el('div', 'acct-manage');
   managePanel.id = 'acct-manage-panel';
@@ -278,13 +290,16 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
   creditsMeter.append(creditsFill);
   const creditsMeta = el('p', 'acct-meta acct-rau-credits-meta');
   credits.append(creditsMeter, creditsValue, creditsMeta);
-  const planAlert = el('div', 'acct-alert');
   const planAlertText = el('p', 'acct-alert-text');
   planAlertText.setAttribute('role', 'alert');
   const fixPayment = button('acct-btn acct-btn-primary', '결제 수단 바꾸기');
-  planAlert.append(planAlertText, fixPayment);
   const planError = alertLine();
-  planSection.root.append(planHead, managePanel, planTerm, credits, planAlert, planError);
+  planActions.append(fixPayment);
+  planCopy.append(planName, planTerm, planAlertText);
+  planSky.append(skyArt, planCopy);
+  planWater.append(waterArt, planActions);
+  planCard.append(rauArtHost, planSky, planWater, managePanel, credits);
+  planSection.root.append(planCard, planError);
 
   // ── 사용량 ──────────────────────────────────────────
   const statsSection = section('stats', '사용량');
@@ -574,6 +589,39 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
       : `취소해도 ${planInfo.expiresAt ? formatAccountDate(planInfo.expiresAt) : '이번 기간'}까지는 사용 가능합니다`;
   }
 
+  /** 등급과 상태에 맞는 표를 입힌다. 무료는 그림 없는 판이다. */
+  let hamaArtKey = '';
+  function renderPlanCard(planInfo: AccountStatus['plan']): void {
+    const kind = planCardKind(planInfo);
+    const panel = manageStep === 'closed' ? null : manageStep === 'menu' ? 'manage' : 'confirm';
+    const look = planInfo.tier === 'rau'
+      ? rauCardLook(kind, planInfo.rau?.remainingPercent === 0, panel === 'confirm')
+      : null;
+    const hama = planInfo.tier === 'hama' ? hamaCardLook(kind) : null;
+    planCard.classList.toggle('hc', Boolean(hama));
+    planCard.classList.toggle('rc', Boolean(look));
+    if (hama || look) planSection.root.dataset.card = planInfo.tier;
+    else delete planSection.root.dataset.card;
+    for (const key of ['kind', 'sky', 'live', 'panel', 'surface', 'end']) delete planCard.dataset[key];
+    if (panel && (hama || look)) planCard.dataset.panel = panel;
+    if (hama) {
+      planCard.dataset.kind = kind;
+      planCard.dataset.sky = hama.sky;
+      if (hama.live) planCard.dataset.live = '';
+      if (hamaArtKey !== kind) {
+        hamaArtKey = kind;
+        skyArt.innerHTML = hama.skyArt;
+        waterArt.innerHTML = hama.waterArt;
+      }
+    }
+    if (look) {
+      planCard.dataset.surface = look.surface;
+      planCard.dataset.end = look.end;
+      if (look.live) planCard.dataset.live = '';
+    }
+    rauArt.update(look);
+  }
+
   function setManageStep(step: typeof manageStep, focus?: HTMLElement): void {
     manageStep = step;
     render();
@@ -587,14 +635,14 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
   /** Rau 크레딧 칸을 채운다. Rau 자격이 없으면 숨긴다. */
   function renderCredits(current: AccountStatus): void {
     const left = rauCredits(current.plan.rau);
-    credits.hidden = !left || current.plan.tier !== 'rau';
+    credits.hidden = !left || current.plan.tier !== 'rau' || current.plan.paymentFailed;
     if (!left || credits.hidden) return;
     creditsValue.textContent = rauCreditsLine(left);
     creditsMeter.setAttribute('aria-valuemax', '100');
     creditsMeter.setAttribute('aria-valuenow', String(left.remainingPercent));
     creditsMeter.setAttribute('aria-valuetext', rauCreditsLine(left));
     creditsFill.style.width = `${left.remainingPercent}%`;
-    const meta = left.trial && current.trial ? trialLine(current.trial) : rauResetLine(left);
+    const meta = left.trial ? '' : rauResetLine(left);
     creditsMeta.textContent = meta;
     creditsMeta.hidden = !meta;
     credits.dataset.source = left.trial ? 'trial' : 'plan';
@@ -702,12 +750,15 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
     renderManage(planInfo);
     // 결제가 실패한 동안은 지난 결제일 대신 안내 한 줄만 둔다.
     const trialEnded = current.trial?.state === 'ended' && planInfo.tier !== 'rau';
-    const term = planInfo.paymentFailed ? '' : trialEnded ? '무료 체험이 끝났어요' : planTermLine(planInfo);
+    const trialTerm = planInfo.rau?.source === 'trial' && current.trial ? trialLine(current.trial) : '';
+    const term = planInfo.paymentFailed ? '' : trialEnded ? '무료 체험이 끝났어요' : trialTerm || planTermLine(planInfo);
     planTerm.textContent = term;
     planTerm.hidden = !term;
-    planAlert.hidden = !planInfo.paymentFailed;
+    planAlertText.hidden = !planInfo.paymentFailed;
+    fixPayment.hidden = !planInfo.paymentFailed;
     planAlertText.textContent = planInfo.paymentFailed ? paymentFailedLine(planInfo) : '';
     renderCredits(current);
+    renderPlanCard(planInfo);
     // 결제가 실패한 동안은 결제 수단 바꾸기만 권한다. 체험 중이면 계속 쓸 Rau 를 권한다.
     const onTrial = planInfo.tier === 'rau' && planInfo.rau?.source === 'trial';
     const families: PlanFamily[] = plan?.api && !planInfo.paymentFailed
@@ -956,6 +1007,7 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
     document.removeEventListener('pointerdown', onPointerDown, true);
     window.removeEventListener('resize', positionCard);
     window.removeEventListener('focus', refreshAfterCancel);
+    rauArt.dispose();
     if (!embedded) openPage = null;
     page.classList.remove('acct-page-open');
     const remove = (): void => { layer.remove(); };
