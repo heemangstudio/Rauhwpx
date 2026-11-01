@@ -59,13 +59,14 @@ export async function webAssistantsAvailable(request: BrowserSettingsRequest, ti
   }
 }
 
+/** 카드 아래 한 줄. 할 일이 없으면(처음) 비우고, 확인되면 체크 표시가 말하므로 계정만 둔다. */
 export function assistantCardDetail(state: AssistantCardState, account: string | null): string {
   switch (state) {
-    case 'idle': return '눌러서 연결';
-    case 'checking': return '확인 중…';
+    case 'idle': return '';
+    case 'checking':
+    case 'verifying': return '확인 중…';
     case 'signing-in': return '로그인 창에서 로그인하세요';
-    case 'verifying': return '질문을 보내 확인하는 중…';
-    case 'verified': return account ? `작동 확인됨 · ${account}` : '작동 확인됨';
+    case 'verified': return account ?? '';
     case 'signed-out': return '로그인 필요 · 다시 누르기';
     case 'challenge': return '사람 확인 필요 · 눌러서 열기';
     case 'failed': return '확인하지 못함 · 다시 시도';
@@ -87,7 +88,7 @@ export function createWebAssistantStep(deps: WebAssistantStepDeps): WebAssistant
   panel.dataset.step = 'assistants';
   const grid = el('div', 'rhwp-setup-grid rhwp-setup-assistant-grid');
   grid.setAttribute('role', 'list');
-  panel.append(grid, el('p', 'rhwp-setup-hint', '확인 질문은 HamaEditor 프로젝트의 채팅 하나에 남아요.'));
+  panel.append(grid);
 
   const cards = new Map<WebAssistant, {
     root: HTMLElement; action: HTMLButtonElement; detail: HTMLElement; answer: HTMLElement;
@@ -122,8 +123,11 @@ export function createWebAssistantStep(deps: WebAssistantStepDeps): WebAssistant
     card.root.dataset.state = card.state;
     card.root.dataset.configured = card.state === 'verified' ? 'true' : 'false';
     card.action.setAttribute('aria-busy', isBusy(card.state) ? 'true' : 'false');
-    card.action.setAttribute('aria-label', `${WEB_ASSISTANTS[service].name} ${assistantCardDetail(card.state, card.account)}`);
-    card.detail.textContent = assistantCardDetail(card.state, card.account);
+    const detail = assistantCardDetail(card.state, card.account);
+    const name = WEB_ASSISTANTS[service].name;
+    card.action.setAttribute('aria-label', card.state === 'idle' ? `${name} 연결` : card.state === 'verified' ? `${name} 작동 확인됨` : `${name} ${detail}`);
+    card.detail.textContent = detail;
+    card.detail.hidden = !detail;
     card.answer.hidden = card.state !== 'verified' || !card.answer.textContent;
     if (notify) deps.onStateChange();
   }

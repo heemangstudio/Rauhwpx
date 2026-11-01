@@ -78,7 +78,7 @@ test('setup gates provider connection by account and plan, and resumes after che
     await page.click('.rhwp-setup-assistant[data-service="chatgpt"] .rhwp-setup-card-action');
     await page.waitForSelector('.rhwp-setup-assistant[data-service="chatgpt"][data-state="verifying"]');
     await page.waitForSelector('.rhwp-setup-assistant[data-service="chatgpt"][data-state="verified"]');
-    assert.equal(await page.$eval('.rhwp-setup-assistant[data-service="chatgpt"] .rhwp-setup-assistant-detail', (node) => node.textContent), '작동 확인됨 · user@example.com');
+    assert.equal(await page.$eval('.rhwp-setup-assistant[data-service="chatgpt"] .rhwp-setup-assistant-detail', (node) => node.textContent), 'user@example.com');
     assert.equal(await page.$eval('.rhwp-setup-assistant[data-service="chatgpt"] .rhwp-setup-assistant-answer', (node) => node.textContent), '“연결됐어요”');
     await page.click('.rhwp-setup-assistant[data-service="claude"] .rhwp-setup-card-action');
     await page.waitForSelector('.rhwp-setup-assistant[data-service="claude"][data-state="failed"]');
