@@ -138,7 +138,7 @@ export const defaultShortcuts: [ShortcutDef, string][] = [
   // 표
   [{ key: 'enter', alt: true }, 'table:insert-row-col'],
   [{ key: 'delete', alt: true }, 'table:delete-row-col'],
-  [{ key: 's', ctrl: true, shift: true }, 'table:block-sum'],
+  // Ctrl+Shift+S 는 다른 이름으로 저장이 먼저 가져가므로 블록 합계에는 키가 없다.
   [{ key: 'a', ctrl: true, shift: true }, 'table:block-avg'],
   [{ key: 'p', ctrl: true, shift: true }, 'table:block-product'],
 ];
@@ -149,7 +149,7 @@ export const defaultShortcuts: [ShortcutDef, string][] = [
  */
 export function matchShortcut(
   e: KeyboardEvent,
-  shortcuts: [ShortcutDef, string][],
+  shortcuts: readonly (readonly [ShortcutDef, string])[],
   platform: PlatformKind = detectPlatformKind(),
 ): string | null {
   if (e.getModifierState?.('AltGraph')) return null;
@@ -166,12 +166,15 @@ export function matchShortcut(
     if (eventKey === def.key) return cmdId;
   }
   // 문자 키 매칭을 우선해 영문 대체 배열을 보존하고, 한글 IME·Option 변환은 물리 키로 복원한다.
+  // 영문 글자가 들어온 키는 물리 키로 다시 맞추지 않는다 — Dvorak Ctrl+V(code Period)나
+  // AZERTY Ctrl+M(code Semicolon)이 US 자리 code 를 지닌 부호 행에 걸리지 않게. Alt 는 예외다
+  // (Option 변환, 기본 표의 Alt 행은 모두 Alt 를 함께 누른다).
   for (const [def, cmdId] of shortcuts) {
     if (def.platform && def.platform !== platform) continue;
     if (!!def.ctrl !== ctrlOrMeta || !!def.shift !== e.shiftKey || !!def.alt !== e.altKey) continue;
     const code = def.code ?? (/^[a-z]$/.test(def.key) ? `Key${def.key.toUpperCase()}` : undefined);
     if (code && eventCode === code.toLowerCase()
-      && (def.code || !/^[a-z]$/.test(eventKey) || e.altKey)) return cmdId;
+      && (!/^[a-z]$/.test(eventKey) || e.altKey)) return cmdId;
   }
   return null;
 }

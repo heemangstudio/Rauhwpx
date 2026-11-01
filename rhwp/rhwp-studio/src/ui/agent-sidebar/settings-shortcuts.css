@@ -1,0 +1,340 @@
+/* 설정 → 단축키. 줄·카드·버튼·입력칸은 설정 공통 클래스(.ag-settings-*)를 그대로 쓰고,
+   여기서는 검색 줄, 키 칩, 기록 칸, 줄 안내만 맞춘다. 색은 잉크·면 토큰만 써서 밝게·어둡게 모두 따른다. */
+
+.ag-shortcuts-content {
+  position: relative;
+}
+
+/* ── 머리: 검색 칸 하나와 더 보기 메뉴 ── */
+.ag-shortcuts-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 4px;
+}
+
+.ag-shortcuts-search-field {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--ag-border);
+  border-radius: 999px;
+  color: var(--n-ink-secondary);
+  background: var(--n-ink-fill-soft);
+  cursor: text;
+  transition: var(--ag-transition-color);
+}
+
+.ag-shortcuts-search-field:focus-within {
+  border-color: var(--ag-focus-ring-color);
+  color: var(--n-ink);
+}
+
+.ag-shortcuts-search-icon {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+}
+
+.ag-shortcuts-search {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  color: var(--n-ink);
+  background: transparent;
+  font: inherit;
+  font-size: var(--ag-fs-secondary);
+}
+
+.ag-shortcuts-search::placeholder {
+  color: var(--n-ink-tertiary, var(--ag-text-muted));
+}
+
+.ag-shortcuts-search::-webkit-search-cancel-button {
+  display: none;
+}
+
+.ag-shortcuts-more {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  color: var(--n-ink);
+  background: var(--n-ink-fill-soft);
+  transition: var(--ag-transition-color);
+}
+
+.ag-shortcuts-more:hover:not(:disabled) {
+  background: var(--n-ink-fill-hover);
+}
+
+.ag-shortcuts-more:focus-visible {
+  outline: 2px solid var(--ag-focus-ring-color);
+  outline-offset: 1px;
+}
+
+.ag-shortcuts-more:disabled {
+  color: var(--n-ink-quaternary, var(--ag-text-muted));
+}
+
+.ag-shortcuts-status {
+  margin: 8px 0 0;
+  padding: 0 4px;
+  color: var(--n-ink-secondary);
+  font-size: var(--ag-fs-secondary);
+  line-height: var(--ag-lh-secondary, 1.45);
+}
+
+/* 비었을 때도 접근성 트리에 남겨 둔다 — 글과 함께 나타나는 live region 은 화면 낭독기가 자주 놓친다. */
+.ag-shortcuts-status:empty {
+  margin: 0;
+  padding: 0;
+}
+
+.ag-shortcuts-readonly {
+  margin: 0 0 12px;
+}
+
+.ag-shortcuts-content .ag-shortcuts-header {
+  padding-bottom: 20px;
+}
+
+/* ── 명령 줄 ── */
+.ag-settings-page .ag-settings-group-body > .ag-settings-control-row.ag-shortcuts-row {
+  flex-wrap: wrap;
+  min-height: 44px;
+  padding-block: 8px;
+  column-gap: 12px;
+  row-gap: 6px;
+}
+
+.ag-shortcuts-row > .ag-settings-control-copy {
+  flex: 1 1 160px;
+}
+
+.ag-shortcuts-name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.ag-shortcuts-badge {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: var(--ag-r-chip);
+  background: var(--n-ink-fill-soft);
+  color: var(--n-ink-secondary);
+  font-size: var(--ag-micro);
+  font-weight: var(--ag-fw-medium);
+  line-height: 16px;
+}
+
+.ag-shortcuts-badge[hidden] {
+  display: none;
+}
+
+.ag-shortcuts-badge-overlap {
+  background: color-mix(in srgb, var(--ui-warning-text) 16%, transparent);
+  color: var(--ui-warning-text);
+}
+
+.ag-shortcuts-keys {
+  display: flex;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  min-width: 0;
+}
+
+/* 칩은 설정 검색의 / 글쇠(.ag-settings-search-key)와 같은 면·반경·글자 크기다. */
+.ag-shortcut-binding,
+.ag-shortcut-chip-static,
+.ag-shortcut-chip-fixed {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  box-sizing: border-box;
+  border-radius: var(--ag-r-chip);
+  background: var(--n-ink-fill-hover);
+  color: var(--n-ink-secondary);
+  font-size: var(--ag-fs-meta);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.ag-shortcut-binding[hidden] {
+  display: none;
+}
+
+.ag-shortcut-chip-static,
+.ag-shortcut-chip-fixed {
+  padding: 0 8px;
+  cursor: default;
+}
+
+/* 바꿀 수 없는 연속 키는 테두리만 그어 누를 수 있는 칩과 구분한다. */
+.ag-shortcut-chip-fixed {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--n-ink-hairline-strong);
+}
+
+.ag-shortcut-binding[data-source='user'] {
+  background: var(--n-fill-selected);
+  color: var(--n-ink);
+}
+
+.ag-shortcut-binding > .ag-shortcut-chip {
+  height: 24px;
+  padding: 0 4px 0 8px;
+  border: 0;
+  border-radius: var(--ag-r-chip) 0 0 var(--ag-r-chip);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: default;
+  transition: var(--ag-transition-color);
+}
+
+.ag-shortcut-remove,
+.ag-shortcut-add {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--n-ink-tertiary, var(--ag-text-muted));
+  font: inherit;
+  cursor: default;
+  transition: var(--ag-transition-color);
+}
+
+.ag-shortcut-remove {
+  width: 20px;
+  height: 24px;
+  border-radius: 0 var(--ag-r-chip) var(--ag-r-chip) 0;
+}
+
+.ag-shortcut-remove .ag-icon {
+  width: 10px;
+  height: 10px;
+}
+
+.ag-shortcut-add {
+  width: 24px;
+  height: 24px;
+  border-radius: var(--ag-r-chip);
+}
+
+/* inline-flex 가 기본 [hidden] 을 덮어써서, 기록 중 숨긴 + 는 따로 눌러 준다. */
+.ag-shortcut-add[hidden] {
+  display: none;
+}
+
+.ag-shortcut-binding > .ag-shortcut-chip:hover:not(:disabled),
+.ag-shortcut-remove:hover:not(:disabled),
+.ag-shortcut-add:hover:not(:disabled) {
+  background: var(--n-ink-fill-pressed);
+  color: var(--n-ink);
+}
+
+.ag-shortcut-binding > .ag-shortcut-chip:disabled,
+.ag-shortcut-remove:disabled,
+.ag-shortcut-add:disabled {
+  color: var(--n-ink-quaternary, var(--ag-text-muted));
+}
+
+.ag-shortcut-binding > .ag-shortcut-chip:focus-visible,
+.ag-shortcut-remove:focus-visible,
+.ag-shortcut-add:focus-visible {
+  position: relative;
+  outline: var(--ag-focus-ring);
+  outline-offset: -1px;
+}
+
+.ag-shortcuts-none {
+  padding: 0 4px;
+  color: var(--n-ink-tertiary, var(--ag-text-muted));
+  font-size: var(--ag-fs-meta);
+}
+
+/* 기록 칸 — 칩 자리에 같은 높이로 선다. */
+.ag-shortcut-capture {
+  width: 132px;
+  height: 24px;
+  box-sizing: border-box;
+  padding: 0 8px;
+  border: 1px solid var(--ag-focus-ring-color);
+  border-radius: var(--ag-r-chip);
+  background: var(--ag-input-bg);
+  color: var(--n-ink);
+  font: inherit;
+  font-size: var(--ag-fs-meta);
+  font-variant-numeric: tabular-nums;
+  caret-color: transparent;
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ag-focus-ring-color) 24%, transparent);
+}
+
+.ag-shortcut-capture::placeholder {
+  color: var(--n-ink-tertiary, var(--ag-text-muted));
+}
+
+/* 줄 안내: 기록 오류와 바꾸기·취소 묻기. 줄 아래로 한 줄을 다 쓴다. */
+.ag-shortcuts-row-message {
+  flex: 1 0 100%;
+  box-sizing: border-box;
+  color: color-mix(in srgb, var(--ag-err) 80%, var(--n-ink));
+  font-size: var(--ag-fs-secondary);
+  line-height: var(--ag-lh-secondary, 1.45);
+}
+
+.ag-shortcuts-row-message[hidden] {
+  display: none;
+}
+
+.ag-shortcuts-row-message.ag-shortcuts-row-prompt {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  padding: 8px 10px;
+  border-radius: var(--ag-r-row);
+  background: color-mix(in srgb, var(--ui-warning-text) 10%, transparent);
+  color: var(--n-ink);
+}
+
+.ag-shortcuts-row-actions {
+  flex: 0 0 auto;
+}
+
+.ag-root .ag-settings-page .ag-shortcuts-row-actions :is(.ag-settings-btn, .ag-settings-primary) {
+  height: 28px;
+  padding: 0 12px;
+}
+
+.ag-shortcuts-empty {
+  padding: 24px 4px;
+  text-align: center;
+}
+
+.ag-shortcuts-empty[hidden],
+.ag-shortcuts-group[hidden] {
+  display: none;
+}

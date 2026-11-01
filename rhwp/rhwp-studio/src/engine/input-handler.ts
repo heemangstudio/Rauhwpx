@@ -29,7 +29,6 @@ import type {
 } from '@/core/types';
 import type { CommandDispatcher } from '@/command/dispatcher';
 import type { EditorEditMode } from '@/command/types';
-import { matchShortcut, defaultShortcuts } from '@/command/shortcut-map';
 import type { ContextMenu, ContextMenuItem } from '@/ui/context-menu';
 import type { CommandPalette } from '@/ui/command-palette';
 import type { CellSelectionRenderer } from './cell-selection-renderer';
@@ -2078,6 +2077,11 @@ export class InputHandler {
   }
 
   /** 특수 키 처리 (Backspace, Enter, 화살표, Ctrl+Z/Y) */
+  /** 사용자 연속 키가 다음 키를 가져갔으니 기본 연속 키 대기를 푼다. */
+  clearPendingChords(): void {
+    _keyboard.clearPendingChords.call(this);
+  }
+
   private onKeyDown(e: KeyboardEvent): void {
     _keyboard.onKeyDown.call(this, e);
   }

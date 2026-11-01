@@ -10,6 +10,7 @@
 import type { EventBus } from '@/core/event-bus';
 import type { CommandDispatcher } from '@/command/dispatcher';
 import type { CommandRegistry } from '@/command/registry';
+import { shortcutLabelFor } from './command/effective-shortcuts.ts';
 
 export type NativeMenuEntry =
   | { type: 'separator' }
@@ -62,6 +63,7 @@ const STATE_EVENTS = [
   'field-info-changed',
   'grid-view-changed',
   'theme-changed',
+  'shortcuts-changed',
 ];
 const SYNC_DELAY_MS = 150;
 
@@ -86,6 +88,7 @@ const NAMED_KEYS: Record<string, string> = {
   enter: 'Enter',
   delete: 'Delete',
   del: 'Delete',
+  insert: 'Insert',
   backspace: 'Backspace',
   tab: 'Tab',
   space: 'Space',
@@ -184,8 +187,9 @@ export function serializeMenuBar(
         const cmd = child.dataset.cmd;
         const label = nativeLabel(child.querySelector('.md-label')?.textContent);
         if (!label) continue;
-        const shortcut = registry.get(cmd)?.shortcutLabel
-          ?? child.querySelector('.md-shortcut')?.textContent;
+        // 사용자 지정 단축키를 따른다. null 은 "단축키 없음", undefined 는 HTML 표시를 쓴다.
+        const own = shortcutLabelFor(cmd, registry.get(cmd));
+        const shortcut = own === undefined ? child.querySelector('.md-shortcut')?.textContent : own;
         const checked = child.classList.contains('active') || child.getAttribute('aria-checked') === 'true';
         const accelerator = shortcutToAccelerator(shortcut);
         out.push({

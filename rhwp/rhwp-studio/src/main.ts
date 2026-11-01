@@ -41,7 +41,15 @@ import { loadWebFonts, resolveCanvasKitFontPlan } from '@/core/font-loader';
 import { withCanvasKitSurfaceBlockers } from '@/core/canvaskit-document-preflight';
 import { CommandRegistry } from '@/command/registry';
 import { CommandDispatcher } from '@/command/dispatcher';
-import { defaultShortcuts, matchShortcut } from '@/command/shortcut-map';
+import { isShortcutRecording, matchEffectiveShortcut, shortcuts, shortcutSequences } from '@/command/effective-shortcuts';
+import { syncToolbarShortcutTitles } from '@/ui/toolbar-shortcut-titles';
+import {
+  configurableCommandIds,
+  LOCKED_SHORTCUT_COMMANDS,
+  shortcutCategoryOf,
+  type ShortcutCommandInfo,
+} from '@/command/shortcut-bindings';
+import { chordLabelsFor } from '@/command/chord-map';
 import { detectPlatformKind } from '@/engine/navigation-keymap';
 import { allowsDocumentShortcut, isEditorInput, ownsTextInput } from '@/command/shortcut-target';
 import type { EditorContext, CommandServices, EditorEditMode } from '@/command/types';
@@ -753,6 +761,27 @@ function createActiveDocumentId(): string {
 // ─── 커맨드 시스템 ─────────────────────────────
 const registry = new CommandRegistry();
 
+// 사용자 지정 단축키가 바뀌면(이 창 또는 다른 창) 메뉴·도구 막대 표시와 네이티브 메뉴를 다시 맞춘다.
+shortcuts.subscribe(() => {
+  eventBus.emit('shortcuts-changed');
+  eventBus.emit('command-state-changed');
+});
+
+/**
+ * 설정 → 단축키에 보일 명령. 이름은 레지스트리에서 읽어 겹쳐 적지 않는다.
+ * 고정 명령 가운데 표에 키가 없는 것(오려 두기·복사하기·붙이기·버그 제보)은 자기 처리기의 키를 고정 칩으로 보인다.
+ */
+function shortcutSettingsCatalog(): ShortcutCommandInfo[] {
+  return configurableCommandIds().flatMap((id) => {
+    const def = registry.get(id);
+    if (!def) return [];
+    const locked = LOCKED_SHORTCUT_COMMANDS.get(id);
+    const fixed = chordLabelsFor(id);
+    if (locked && def.shortcutLabel && shortcuts.bindings(id).length === 0) fixed.push(def.shortcutLabel);
+    return [{ id, label: def.label, category: shortcutCategoryOf(id), locked, fixed }];
+  });
+}
+
 function getContext(): EditorContext {
   // 엔진이 멈춘 뒤에는 엔진을 부르지 않는다. 명령 상태를 갱신할 때마다 EngineTrappedError 가
   // 나지 않도록, 복구(문서 복구)까지는 문서가 없는 읽기 전용 상태로 둔다.
@@ -1046,6 +1075,8 @@ function installIssueReport(): void {
   document.addEventListener('keydown', (event) => {
     if (!(event.ctrlKey || event.metaKey) || !event.shiftKey || event.altKey || event.isComposing) return;
     if (event.code !== 'Slash' && event.key !== '?' && event.key !== '/') return;
+    // 물리 / 키가 아닌데 글리프만 / 인 배열(독일어 Shift+7 등)에서는 사용자가 그 키에 건 단축키를 먼저 둔다.
+    if (event.code !== 'Slash' && matchEffectiveShortcut(event)) return;
     event.preventDefault();
     event.stopPropagation();
     dispatcher.dispatch(REPORT_ISSUE_COMMAND);
@@ -1653,6 +1684,8 @@ async function initialize(): Promise<void> {
       menuBar: document.getElementById('menu-bar')!, dispatcher, registry, eventBus,
       beforeSync: () => syncSpacingPresetMenus(wasm),
     });
+    syncToolbarShortcutTitles(document, registry);
+    eventBus.on('shortcuts-changed', () => syncToolbarShortcutTitles(document, registry));
 
     // 툴바 내 data-cmd 버튼 클릭 → 커맨드 디스패치
     // (.tb-btn + 서식바 접기 버튼 .sb-collapse-btn)
@@ -2326,6 +2359,7 @@ function installChatAgent(
       preview: applyEditorSettingsPreview,
       committed: commitEditorSettingsRuntime,
     },
+    shortcutSettings: { service: shortcuts, catalog: shortcutSettingsCatalog },
     versionController: versions,
     getAgentUndoEntry: () => (shown() ? editor.getAgentUndoEntry() : null),
     undoAgentTurn: (entry) => (shown() ? editor.undoAgentTurn(entry) : false),
@@ -3833,6 +3867,8 @@ let documentSwitcherPopup: DocumentSwitcherPopup | null = null;
  */
 window.addEventListener('keydown', (event) => {
   if (event.key !== 'Tab' || !event.ctrlKey || event.metaKey || event.altKey || event.isComposing) return;
+  // 설정 → 단축키가 키를 기록하는 중이면 그 키는 기록기 몫이다.
+  if (isShortcutRecording()) return;
   if (documentSwitcherPopup?.isOpen()) return;
   if (inputHandler?.ownsCtrlTab(event.target)) return;
   if (anotherModalOpen(null) || commandPalette?.isOpen()) return;
@@ -4417,6 +4453,25 @@ async function commitBeforeLibraryMove(versions: DocumentVersionController): Pro
  * 예: 문서 미로드 상태에서도 Alt+N(새 문서), Ctrl+O(열기) 등.
  */
 function setupGlobalShortcuts(): void {
+  // 사용자 연속 키. 이어지는 글자 키가 문서에 들어가지 않게 입력 처리기보다 먼저 받는다.
+  document.addEventListener('keydown', (e) => {
+    if (e.defaultPrevented || isShortcutRecording()) return;
+    const target = e.target instanceof Element ? e.target : null;
+    if (commandPalette?.isOpen() || !(documentHome?.visible || allowsDocumentShortcut(target))) {
+      shortcutSequences.reset();
+      return;
+    }
+    const step = shortcutSequences.feed(e);
+    if (step.kind === 'none' || (step.kind === 'pending' && !step.consume)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    inputHandler?.clearPendingChords();
+    if (step.kind !== 'match') return;
+    const editing = !documentHome?.visible && inputHandler?.isActive();
+    if (!editing && !['file:new-doc', 'file:open'].includes(step.commandId)) return;
+    if (editing) inputHandler?.focus();
+    dispatcher.dispatch(step.commandId);
+  }, true);
   document.addEventListener('keydown', (e) => {
     if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey
       || e.key !== '/'
@@ -4432,7 +4487,7 @@ function setupGlobalShortcuts(): void {
     if (e.defaultPrevented || e.isComposing) return;
     // 문서 홈이 떠 있으면 새 문서·열기만 받는다. 가린 문서를 고치거나 그쪽으로 초점을 옮기지 않는다.
     if (documentHome?.visible) {
-      const commandId = matchShortcut(e, defaultShortcuts);
+      const commandId = matchEffectiveShortcut(e);
       if (commandId !== 'file:new-doc' && commandId !== 'file:open') return;
       e.preventDefault();
       dispatcher.dispatch(commandId);
@@ -4441,7 +4496,7 @@ function setupGlobalShortcuts(): void {
     if (!allowsDocumentShortcut(target)) return;
     // 문서 입력은 모드별 처리가 있으므로 같은 키를 두 번 실행하지 않는다.
     if (isEditorInput(target) && inputHandler?.isActive()) return;
-    const commandId = matchShortcut(e, defaultShortcuts);
+    const commandId = matchEffectiveShortcut(e);
     if (!commandId) return;
     if (!inputHandler?.isActive() && !['file:new-doc', 'file:open'].includes(commandId)) return;
     e.preventDefault();
