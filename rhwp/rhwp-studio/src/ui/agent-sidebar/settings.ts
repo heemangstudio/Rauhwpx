@@ -665,20 +665,16 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
 
   // ── 1. 연결 ────────────────────────────────────────────
   const connection = createSection('연결');
-  const hubRow = el('div', 'ag-settings-row ag-settings-hub-row');
-  const hubDot = el('span', 'ag-settings-dot');
-  hubDot.setAttribute('aria-hidden', 'true');
-  const hubText = el('div', 'ag-settings-row-text');
-  const hubName = el('span', 'ag-settings-row-name', '에이전트 허브');
-  const hubLabel = el('span', 'ag-settings-row-detail', CONN_LABEL[connectionState]);
-  hubText.append(hubName, hubLabel);
+  // 허브는 거의 늘 연결되어 있으므로 제목 옆 점으로만 보이고, 끊겼을 때만 다시 연결 단추가 나온다.
+  const hubDot = el('span', 'ag-settings-dot ag-settings-hub-dot');
+  hubDot.setAttribute('role', 'img');
   const hubReconnect = el('button', 'ag-settings-btn', '다시 연결');
   hubReconnect.type = 'button';
   hubReconnect.addEventListener('click', () => {
     void bridge.reconnectNow();
     renderConnection();
   });
-  hubRow.append(hubText, hubDot, hubReconnect);
+  connection.head.append(hubDot, hubReconnect);
 
   const providerRows = new Map<
     AgentName,
@@ -734,7 +730,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     ...(deps.openSignInWindow ? { openSignInWindow: deps.openSignInWindow } : {}),
     isConnected: () => connectionState === 'connected',
   }));
-  connection.body.append(providerList, ...assistantRows.map(row => row.root), hubRow);
+  connection.body.append(providerList, ...assistantRows.map(row => row.root));
 
   // ── Pi 모달 흐름 ──────────────────────────────────────
   // 설치 → 로그인 → 모델 → 요약으로 모습을 바꾸며, 설정 페이지에는 직접 붙지 않는다.
@@ -2295,8 +2291,10 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   }
 
   function renderConnection(): void {
-    hubDot.dataset.state = connectionState;
-    hubLabel.textContent = CONN_LABEL[connectionState];
+    hubDot.dataset.state = connectionState === 'connected' ? 'connected' : 'disconnected';
+    const hubStatus = `에이전트 허브: ${CONN_LABEL[connectionState]}`;
+    hubDot.title = hubStatus;
+    hubDot.setAttribute('aria-label', hubStatus);
     hubReconnect.hidden = connectionState === 'connected';
     hubReconnect.disabled = connectionState === 'connected';
     const online = connectionState === 'connected';

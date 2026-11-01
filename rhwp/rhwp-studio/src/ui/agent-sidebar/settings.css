@@ -58,27 +58,28 @@
   gap: 4px;
 }
 
-.ag-settings-provider-row,
-.ag-settings-hub-row {
+.ag-settings-provider-row {
   min-height: 32px;
   padding: 4px 8px;
 }
 
-.ag-settings-provider-row .ag-settings-row-text,
-.ag-settings-hub-row .ag-settings-row-text {
+.ag-settings-provider-row .ag-settings-row-text {
   flex-direction: row;
   align-items: center;
   gap: 8px;
 }
 
-.ag-settings-provider-row .ag-settings-row-name,
-.ag-settings-hub-row .ag-settings-row-name {
+.ag-settings-provider-row .ag-settings-row-name {
   flex-shrink: 0;
 }
 
-.ag-settings-provider-row .ag-settings-row-detail,
-.ag-settings-hub-row .ag-settings-row-detail {
+.ag-settings-provider-row .ag-settings-row-detail {
   min-width: 0;
+}
+
+/* 제목 바로 오른쪽에 붙이고, 뒤따르는 단추는 줄 끝으로 민다. */
+.ag-settings-hub-dot {
+  margin-right: auto;
 }
 
 @container settings-hub (max-width: 420px) {
@@ -2170,17 +2171,6 @@
   .ag-settings-provider-panel .ag-provider-setup-btn,
   .ag-settings-quota-refresh { transition: none; }
 }
-
-/* 허브 행은 프로바이더 행과 같은 줄 모양: 이름 · 상태 · 점 · 동작. */
-.ag-settings-hub-row .ag-settings-row-text {
-  flex-direction: row;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-.ag-settings-hub-row .ag-settings-row-name { flex-shrink: 0; }
-.ag-settings-hub-row .ag-settings-row-detail { min-width: 0; text-align: right; }
-.ag-settings-hub-row > .ag-settings-btn { flex: 0 0 auto; }
 
 .ag-settings-balance-amount {
   display: flex;
