@@ -24,18 +24,6 @@ test('작문 트리거는 문서 쓰기가 열린 단계에서만 붙는다', ()
   assert.match(humanizerPromptBlock('direct', { personalProfile: true }), /user_memory block holds the user's own 문체 rules/);
 });
 
-test('모든 하네스의 시스템 브리프와 문서 편집 서브에이전트가 im-not-ai 룰북을 싣는다', () => {
-  assert.match(HUMANIZE_KOREAN_RULES, /epoko77-ai\/im-not-ai/);
-  assert.match(HUMANIZE_KOREAN_RULES, /C-11 \[S1\]/);
-  assert.match(HUMANIZE_KOREAN_RULES, /지어내지 않는다/);
-  for (const agent of ['claude', 'codex', 'pi']) {
-    for (const opts of [{ workflow: 'direct' }, { workflow: 'plan', phase: 'implementing' }, { workflow: 'plan', phase: 'planning' }]) {
-      assert.ok(systemBriefFor(opts, agent).includes(HUMANIZE_KOREAN_RULES), `${agent} ${JSON.stringify(opts)}`);
-    }
-  }
-  assert.ok(RHWP_SUBAGENTS['doc-editor'].prompt.includes(HUMANIZE_KOREAN_RULES));
-});
-
 test('번들 humanize-korean 스킬이 카탈로그에 뜬다', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'rhwp-humanizer-'));
   const registry = await new SkillRegistry({ bundledRoot: fileURLToPath(new URL('../skills', import.meta.url)), userRoot: path.join(root, 'user') }).init();

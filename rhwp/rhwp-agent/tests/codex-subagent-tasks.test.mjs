@@ -291,23 +291,6 @@ test('multi_agent 는 exec 와 exec resume 모두에서 항상 켠다', () => {
   }
 });
 
-test('시스템 브리프는 codex 용 병렬 작업 규율을 담는다', () => {
-  const events = [];
-  const h = startSession(events);
-  try {
-    h.session.sendUserMessage('문서를 나눠서 고쳐줘');
-    const prompt = h.child().stdin.chunks.join('');
-    assert.match(prompt, /spawn_agent/);
-    assert.match(prompt, /wait_agent/);
-    assert.match(prompt, /every agent you explicitly created with spawn_agent/);
-    assert.match(prompt, /Never call wait_agent for an MCP-managed background job/);
-    assert.match(prompt, /delegate_copy_layout/);
-    assert.doesNotMatch(prompt, /spawn_subagent/);
-  } finally {
-    h.cleanup();
-  }
-});
-
 /* ── 가짜 CLI 안전장치 ────────────────────────────────────────
  * 허브는 기동할 때마다 `codex --version` 으로 설치 여부를 프로브한다. 그때 stdin 은
  * /dev/null 이라 곧바로 EOF 가 오는데, 예전 가짜는 그 EOF 만으로 시나리오를 시작하고

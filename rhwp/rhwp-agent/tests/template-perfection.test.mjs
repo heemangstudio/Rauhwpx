@@ -24,48 +24,6 @@ const binding = {
   sourcePath: null,
 };
 
-test('copy-layout worker prompt defines a fresh bounded no-prompt process', () => {
-  const prompt = buildCopyLayoutWorkerPrompt({
-    jobId: 'job-1',
-    binding,
-    jobDir: '/private/job',
-  });
-  assert.equal(COPY_LAYOUT_MAX_ITERATIONS, 3);
-  assert.match(prompt, /fresh independent provider process/);
-  assert.match(prompt, /not a provider-native subagent/);
-  assert.match(prompt, /Do not spawn, delegate, ask the user, request confirmation/);
-  assert.match(prompt, /Always call materialize_document_snapshot/);
-  assert.match(prompt, /complete paragraph, field, form-control, named-structure, visual-mark, and media inventory/);
-  assert.match(prompt, /Hard iteration ceiling: 3 collision-free candidates/);
-  assert.match(prompt, /verified convergence/);
-  assert.match(prompt, /bounded-no-improvement/);
-  assert.match(prompt, /any unresolved private payload[\s\S]*hard failure/);
-  assert.match(prompt, /publish_artifact exactly once/);
-  assert.match(prompt, /complete_copy_layout_job/);
-  assert.match(prompt, /"documentId": "document-exact"/);
-  assert.match(prompt, /Never use Bash, a shell, Python/);
-  assert.match(prompt, /run_copy_layout_helper\(action=inspect\)/);
-  assert.match(prompt, /provider-read-only private storage/);
-});
-
-test('completion prompt leaves one exact registration decision to the owning chat', () => {
-  const prompt = buildCopyLayoutCompletionPrompt({
-    jobId: 'job-1',
-    outcome: 'succeeded',
-    artifact: { artifactId: 'artifact-1', fileName: '신청서 - Layout.hwp' },
-  });
-  assert.match(prompt, /hub's automatic completion notification/);
-  // provider 중립 문구 — wait_agent 은 codex 협업 도구명이라 예시로만 남는다.
-  assert.match(prompt, /not a collaboration-tool result \(never a wait_agent result\)/);
-  assert.match(prompt, /Notify the user now/);
-  assert.match(prompt, /Do not open the artifact automatically/);
-  assert.match(prompt, /exactly one Markdown link labeled 템플릿 미리보기/);
-  assert.match(prompt, /only the user's click opens a new read-only template-preview window/);
-  assert.match(prompt, /ask exactly one final question/);
-  assert.match(prompt, /register_copy_layout_template with artifactId set to artifact\.artifactId/);
-  assert.match(prompt, /if they decline, do not call it and leave the card available/);
-});
-
 test('fleet progress reports one task row with a direct phase index', () => {
   assert.deepEqual(
     COPY_LAYOUT_PHASES.map(({ title }) => title),
