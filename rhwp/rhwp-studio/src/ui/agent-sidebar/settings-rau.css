@@ -13,15 +13,9 @@
   --rau-accent: #dd5967;
 }
 
-.ag-root .ag-settings-page #ag-settings-tab-rau:not(.ag-settings-rau-locked) {
-  color: var(--rau-accent);
-}
-
-.ag-root .ag-settings-page #ag-settings-tab-rau.ag-active {
-  background: color-mix(in oklab, var(--rau-accent) 10%, transparent);
-}
-
 .ag-rau-pane {
+  isolation: isolate;
+  overflow-x: clip;
   --rau-water: var(--rau-accent);
   --ag-primary-bg: var(--rau-button);
   --ag-primary-fg: #fff;
@@ -170,28 +164,26 @@
 
 .ag-rau-hero {
   position: relative;
-  isolation: isolate;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
-  border-radius: calc(var(--ag-set-radius) + 4px);
   background: transparent;
 }
 
+/* 머리 칸에 잘리지 않고 탭 바탕으로 번진다. 마스크가 먼저 사라져 가장자리가 보이지 않는다. */
 .ag-rau-hero-neurons {
   position: absolute;
   z-index: -1;
-  top: -130px;
-  right: -80px;
+  top: 71px;
+  right: -130px;
   width: max-content;
   margin: 0;
   color: var(--rau-accent);
   font: 6px/6px 'Nanum Gothic Coding', monospace;
   white-space: pre;
   opacity: 0.24;
-  transform: rotate(-12deg);
+  transform: translateY(-50%) rotate(-12deg);
   transform-origin: center;
-  mask-image: linear-gradient(to left, #000, transparent 85%);
+  mask-image: radial-gradient(ellipse 39% 20% at 42% 50%, #000, rgb(0 0 0 / 0.7) 30%, rgb(0 0 0 / 0.22) 62%, transparent);
   pointer-events: none;
   user-select: none;
 }
@@ -1035,39 +1027,6 @@
 .ag-rau-rule-leaving {
   opacity: 0.4;
   transition: opacity var(--ag-dur-base) var(--ag-ease-out);
-}
-
-.ag-rau-rule-editing {
-  align-items: flex-start;
-  background: var(--n-ink-fill-soft);
-}
-
-.ag-rau-rule-editor {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  width: 100%;
-}
-
-.ag-settings-page .ag-rau-rule-input {
-  width: 100%;
-  max-width: none;
-  min-height: 52px;
-  height: auto;
-  padding: 7px 9px;
-  resize: vertical;
-  font-size: var(--ag-fs-secondary);
-  line-height: 1.45;
-}
-
-.ag-rau-rule-editor-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.ag-rau-rule-editor-actions .ag-rau-kind {
-  margin-right: auto;
 }
 
 .ag-rau-kind {

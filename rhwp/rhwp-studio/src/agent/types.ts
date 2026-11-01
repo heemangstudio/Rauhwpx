@@ -537,7 +537,6 @@ export interface UserMemorySnapshot {
 export type UserMemoryOp =
   | { op: 'list' }
   | { op: 'add'; rule: { kind: AccountRuleKind; text: string } }
-  | { op: 'edit'; id: string; text: string; kind?: AccountRuleKind }
   | { op: 'delete'; id: string }
   | { op: 'restore'; id: string }
   | { op: 'undo'; eventId: string };

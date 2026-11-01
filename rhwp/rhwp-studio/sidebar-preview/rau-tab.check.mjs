@@ -1,6 +1,6 @@
 // 설정 → Rau 탭: 계정의 기억(Rau-0.1)과 문체 학습. 미리보기의 모의 허브(mock-user-memory.ts)에 실제 UI 로 말을 건다.
 //  - 잠금: Free·Hama 는 자물쇠와 요금제 카드(Rau 칸), 요금제 API 가 없으면 열려 있고 잔잔한 안내.
-//  - 기억: 문체·용어 묶음과 강도 그릇, 고치기·지우기·더하기, 물러난 기억 되살리기, 최근 변화 되돌리기.
+//  - 기억: 문체·용어 묶음과 강도 그릇, 지우기·더하기(있는 규칙은 고칠 수 없음), 물러난 기억 되살리기, 최근 변화 되돌리기.
 //  - 문체 학습: 도는 카드(파일별 진행, 찾는 규칙이 쌓임) → 결과 카드, 멈추기, 실패, 직접 올리기, 입력창 알약.
 //  - 입력창: 권유 칩, 이전 원고 칩, /문체학습.
 //  - 채팅 구분선: item.change 의 표, 강도, 계정 줄 되돌리기, 모두 보기 → Rau 탭.
@@ -82,21 +82,21 @@ async function checkLocked({ page, open, screenshot }) {
 }
 
 async function checkNoPlanApi({ page, open }) {
-  // 요금제 API 가 없으면(웹 Studio) 잠그지 않고, 허브는 unavailable 로 답한다: 기억은 보고 고칠 수 있고 배우기는 막힌다.
+  // 요금제 API 가 없으면(웹 Studio) 잠그지 않고, 허브는 unavailable 로 답한다: 기억은 보고 지울 수 있고 배우기는 막힌다.
   await openRau(page, open, 'reset=1&page=settings&destination=rau&userMemory=sample');
   assert.equal(await page.$eval('#ag-settings-tab-rau', (tab) => tab.classList.contains('ag-settings-rau-locked')), false);
   await page.waitForFunction(() => document.querySelector('.ag-rau-pane')?.dataset.availability === 'unavailable');
   assert.equal(await shown(page, '.ag-rau-notice'), true, 'a calm notice');
   assert.equal(await page.$eval('.ag-rau-drop', (button) => button.disabled), true, 'learning is closed');
   assert.equal((await ruleTexts(page)).length, 9, 'the memory is still shown');
-  assert.equal(await page.$eval('.ag-rau-rule-edit', (button) => button.disabled), false, 'and editable');
+  assert.equal(await page.$eval('.ag-rau-rule-delete', (button) => button.disabled), false, 'and can be deleted');
 }
 
 async function checkExhausted({ page, open, workdir }) {
   await openRau(page, open, `${RAU}&availability=exhausted`);
   assert.equal(await shown(page, '.ag-rau-notice'), true);
   assert.equal(await page.$eval('.ag-rau-notice', (node) => node.dataset.tone), 'warn');
-  assert.equal(await page.$eval('.ag-rau-rule-delete', (button) => button.disabled), false, 'the memory stays editable');
+  assert.equal(await page.$eval('.ag-rau-rule-delete', (button) => button.disabled), false, 'rules can still be deleted');
   // 올려 보면 허브가 크레딧 소진으로 거절하고, 기억은 그대로다.
   const file = join(workdir, '칼럼.txt');
   await writeFile(file, '문장은 짧게 쓴다. 본문은 한다체로 쓴다.');
@@ -129,6 +129,8 @@ async function checkOpen({ page, open, screenshot }) {
   assert(grouped[0].rules.some((rule) => rule.text === '본문 종결은 한다체로 쓴다'));
   assert(grouped[1].rules.some((rule) => rule.text === "'고객' 대신 '이용자'로 쓴다"));
   assert.equal(await page.$$eval('.ag-rau-rule-meta', (nodes) => nodes.some((node) => node.textContent === '직접')), true, 'the source of a rule is shown');
+  // 있는 규칙은 고칠 수 없다. 줄에는 지우기 하나뿐이고 입력칸도 열리지 않는다.
+  assert.deepEqual(await page.$eval('.ag-rau-rule', (row) => [row.querySelectorAll('button').length, row.querySelector('.ag-rau-rule-delete') !== null, row.querySelector('textarea, input') === null]), [1, true, true]);
 
   // 최근 변화(되돌릴 수 있는 것과 없는 것)와 접힌 물러난 기억.
   const events = await page.$$eval('.ag-rau-event', (nodes) => nodes.map((row) => ({
@@ -146,41 +148,6 @@ async function checkOpen({ page, open, screenshot }) {
 
   await page.$eval('.ag-rau-memory', (node) => node.scrollIntoView({ block: 'start' }));
   await screenshot('rau-tab-memory');
-}
-
-async function checkEdit({ page }) {
-  // 고치기: 두 번째 규칙을 고쳐 Enter. 허브에는 직접 쓴 규칙으로 남고 최근 변화에 고침이 뜬다.
-  const id = 'rule_sample000003';
-  await (await page.$(`.ag-rau-rule[data-rule-id="${id}"] .ag-rau-rule-edit`)).click();
-  await page.waitForSelector(`.ag-rau-rule[data-rule-id="${id}"] textarea`, { visible: true });
-  await page.waitForFunction(() => document.activeElement?.tagName === 'TEXTAREA', { timeout: 5000 });
-  // Esc 는 고치기만 접는다.
-  await page.keyboard.type(' (임시)');
-  await page.keyboard.press('Escape');
-  await page.waitForFunction((rule) => !document.querySelector(`.ag-rau-rule[data-rule-id="${rule}"] textarea`), {}, id);
-  assert.equal(await page.$eval(`.ag-rau-rule[data-rule-id="${id}"] .ag-rau-rule-text`, (node) => node.textContent), '긴 문장은 짧게 끊어 쓴다');
-  assert.equal(await shown(page, PANE), true, 'Esc does not close settings');
-
-  await (await page.$(`.ag-rau-rule[data-rule-id="${id}"] .ag-rau-rule-edit`)).click();
-  const input = await page.waitForSelector(`.ag-rau-rule[data-rule-id="${id}"] textarea`, { visible: true });
-  await page.waitForFunction(() => document.activeElement?.tagName === 'TEXTAREA', { timeout: 5000 });
-  await input.evaluate((node) => { node.select(); });
-  await page.keyboard.type('긴 문장은 두 문장으로 끊어 쓴다');
-  await page.keyboard.press('Enter');
-  await page.waitForFunction((rule) => document.querySelector(`.ag-rau-rule[data-rule-id="${rule}"] .ag-rau-rule-text`)?.textContent === '긴 문장은 두 문장으로 끊어 쓴다', {}, id);
-  const saved = (await memory(page)).rules.find((rule) => rule.id === id);
-  assert.equal(saved.text, '긴 문장은 두 문장으로 끊어 쓴다');
-  assert.equal(saved.origin, 'user');
-  await page.waitForFunction(() => document.querySelector('.ag-rau-event')?.dataset.kind === 'edited');
-  assert.match(await text(page, '.ag-rau-event .ag-rau-event-text'), /긴 문장은 짧게 끊어 쓴다.*→.*두 문장으로/s, 'the old text is shown struck');
-
-  // 종류를 바꿔 고치면 다른 묶음으로 옮겨 간다.
-  await (await page.$(`.ag-rau-rule[data-rule-id="${id}"] .ag-rau-rule-edit`)).click();
-  await page.waitForSelector(`.ag-rau-rule[data-rule-id="${id}"] .ag-rau-kind-option[data-kind="term"]`, { visible: true });
-  await page.click(`.ag-rau-rule[data-rule-id="${id}"] .ag-rau-kind-option[data-kind="term"]`);
-  await page.click(`.ag-rau-rule[data-rule-id="${id}"] .ag-settings-primary`);
-  await page.waitForFunction((rule) => document.querySelector(`.ag-rau-group[data-kind="term"] .ag-rau-rule[data-rule-id="${rule}"]`), {}, id);
-  assert.equal((await memory(page)).rules.find((rule) => rule.id === id).kind, 'term');
 }
 
 async function checkAddDeleteRestore({ page }) {
@@ -652,7 +619,6 @@ export async function checkRauTab(harness) {
     await checkNoPlanApi(h);
     await checkExhausted(h);
     await checkOpen(h);
-    await checkEdit(h);
     await checkAddDeleteRestore(h);
     await checkUndo(h);
     await checkLearningToggle(h);

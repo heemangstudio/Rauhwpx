@@ -2,7 +2,7 @@
  * 설정 → Rau. 계정의 장기기억(Rau-0.1)과 문체 학습 — Rau 요금제(체험 포함)에서만 열린다.
  *
  * 위에서부터: 하마가 선 물가와 상태 줄·학습 스위치, 문체 학습(올리기 → 도는 카드 → 결과 카드),
- * 장기기억(문체·용어, 강도, 고치기·지우기·더하기), 최근 변화(되돌리기), 물러난 장기기억(되살리기).
+ * 장기기억(문체·용어, 강도, 지우기·더하기), 최근 변화(되돌리기), 물러난 장기기억(되살리기).
  * 정본은 허브에 있다. 이 화면은 창 하나가 함께 보는 sharedRauMemoryStore 를 그리고, 바꾸는 요청만 보낸다.
  * 학습은 팝업 없이 이 탭 안의 카드에서 돈다 — 다른 창에서 올린 학습도 같은 카드로 보인다.
  */
@@ -221,7 +221,6 @@ export function createRauSettingsPane(deps: RauSettingsPaneDeps): RauSettingsPan
   let busyOps = 0;
   let messageTimer = 0;
   let addKind: AccountRuleKind = 'style';
-  let editing: { id: string; text: string; kind: AccountRuleKind } | null = null;
   let uploadsExpanded = false;
   let legacyBusy = false;
   /** 결과 카드로 바뀌기 전에 하마가 재주를 부리는 동안의 학습. */
@@ -557,67 +556,11 @@ export function createRauSettingsPane(deps: RauSettingsPaneDeps): RauSettingsPan
     const meta = el('p', 'ag-rau-rule-meta');
     body.append(text, meta);
     const actions = el('div', 'ag-rau-rule-actions');
-    const edit = iconButton('ag-rau-rule-edit', 'pencil', '고치기');
     const remove = iconButton('ag-rau-rule-delete', 'trash', '지우기');
-    actions.append(edit, remove);
+    actions.append(remove);
     row.append(gauge.root, body, actions);
     let current = rule;
 
-    function showEditor(): void {
-      const form = el('form', 'ag-rau-rule-editor');
-      const kind = kindSwitch(editing?.kind ?? current.kind, (value) => { if (editing) editing.kind = value; });
-      const input = el('textarea', 'ag-settings-input ag-rau-rule-input');
-      input.rows = 2;
-      input.maxLength = ACCOUNT_RULE_TEXT_MAX;
-      input.value = editing?.text ?? current.text;
-      input.setAttribute('aria-label', '장기기억 고치기');
-      const save = el('button', 'ag-settings-primary', '저장');
-      save.type = 'submit';
-      const cancel = button('ag-settings-btn', '취소');
-      const buttons = el('div', 'ag-rau-rule-editor-actions');
-      buttons.append(kind.root, cancel, save);
-      form.append(input, buttons);
-      body.replaceChildren(form);
-      actions.hidden = true;
-      row.classList.add('ag-rau-rule-editing');
-      input.addEventListener('input', () => { if (editing) editing.text = input.value; });
-      input.addEventListener('keydown', (event) => {
-        if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeEditor(); }
-        if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); form.requestSubmit(); }
-      });
-      cancel.addEventListener('click', () => closeEditor());
-      form.addEventListener('submit', (event) => {
-        event.preventDefault();
-        const next = input.value.replace(/\s+/g, ' ').trim();
-        const nextKind = editing?.kind ?? current.kind;
-        if (!next) return;
-        if (next === current.text && nextKind === current.kind) { closeEditor(); return; }
-        save.disabled = true;
-        void send({ op: 'edit', id: current.id, text: next, ...(nextKind !== current.kind ? { kind: nextKind } : {}) }).then((ok) => {
-          save.disabled = false;
-          if (ok) closeEditor();
-        });
-      });
-      requestAnimationFrame(() => {
-        input.focus();
-        input.setSelectionRange(input.value.length, input.value.length);
-      });
-    }
-
-    function closeEditor(): void {
-      editing = null;
-      row.classList.remove('ag-rau-rule-editing');
-      body.replaceChildren(text, meta);
-      actions.hidden = false;
-      // 고치는 사이 종류가 바뀌었으면 다른 무리로 옮긴다.
-      render();
-      edit.focus({ preventScroll: true });
-    }
-
-    edit.addEventListener('click', () => {
-      editing = { id: current.id, text: current.text, kind: current.kind };
-      showEditor();
-    });
     remove.addEventListener('click', () => {
       row.classList.add('ag-rau-rule-leaving');
       void send({ op: 'delete', id: current.id }).then((ok) => {
@@ -634,7 +577,6 @@ export function createRauSettingsPane(deps: RauSettingsPaneDeps): RauSettingsPan
       meta.textContent = ruleSourceLabel(next);
       if (gauge.value !== next.strength) gauge.set(next.strength, { animate });
       remove.disabled = busyOps > 0;
-      edit.disabled = busyOps > 0;
     }
     update(rule, false);
     return { root: row, gauge, update };
@@ -647,7 +589,7 @@ export function createRauSettingsPane(deps: RauSettingsPaneDeps): RauSettingsPan
       const mine = rules.filter((rule) => rule.kind === kind);
       const keep = new Set(mine.map((rule) => rule.id));
       for (const [id, row] of group.rows) {
-        if (!keep.has(id) && editing?.id !== id) {
+        if (!keep.has(id)) {
           row.root.remove();
           group.rows.delete(id);
         }
@@ -659,7 +601,7 @@ export function createRauSettingsPane(deps: RauSettingsPaneDeps): RauSettingsPan
           row = buildRuleRow({ ...rule, strength: lastStrength.get(rule.id) ?? (animate ? 0 : rule.strength) });
           group.rows.set(rule.id, row);
         }
-        if (editing?.id !== rule.id) row.update(rule, animate);
+        row.update(rule, animate);
         if (fresh && animate && !lastStrength.has(rule.id)) {
           row.root.classList.add('ag-rau-rule-new');
           row.root.addEventListener('animationend', () => row!.root.classList.remove('ag-rau-rule-new'), { once: true });
@@ -956,20 +898,20 @@ export function createRauSettingsPane(deps: RauSettingsPaneDeps): RauSettingsPan
     const parts: string[] = [];
     if (memory) {
       parts.push(memory.rules.length ? `장기기억 ${memory.rules.length}개` : '아직 장기기억 없음');
-      if (memory.lastLearnedAt) parts.push(`마지막 학습 ${relative(memory.lastLearnedAt)}`);
+      if (memory.lastLearnedAt) parts.push(relative(memory.lastLearnedAt));
     } else {
       parts.push(connected ? '장기기억을 불러오는 중' : '허브에 연결되면 장기기억을 불러와요');
     }
     if (state.run) parts.push('문체 학습 중');
-    heroStatus.textContent = parts.join(' ');
+    heroStatus.textContent = parts.join(' / ');
     let text = '';
     let action = false;
     let tone = 'info';
     const availability = memory?.availability ?? null;
     // 요금제 API 가 있으면 탭이 열린 것이 곧 Rau 요금제다 — unavailable 은 Rau 에 닿지 않는다는 뜻이다.
     const unreachable = availability === 'unavailable' && deps.hasPlanApi === true;
-    if (unreachable) text = '지금 Rau 에 닿지 않아요. 장기기억은 그대로 보고 고칠 수 있어요.';
-    else if (memory && memory.availability === 'unavailable') text = '데스크톱 앱의 Rau 요금제에서 배워요. 지금은 장기기억을 보고 고칠 수만 있어요.';
+    if (unreachable) text = '지금 Rau 에 닿지 않아요. 장기기억은 그대로 보고 더하거나 지울 수 있어요.';
+    else if (memory && memory.availability === 'unavailable') text = '데스크톱 앱의 Rau 요금제에서 배워요. 지금은 장기기억을 보고 더하거나 지울 수만 있어요.';
     else if (memory && memory.availability === 'not_eligible') { text = 'Rau 요금제에서 배우고 장기기억을 써요.'; action = Boolean(deps.openPlans); }
     else if (memory && memory.availability === 'exhausted') { text = '이번 달 Rau 크레딧을 다 썼어요. 장기기억은 그대로 쓰고, 문체 학습은 크레딧이 채워지면 다시 돼요.'; tone = 'warn'; }
     notice.hidden = !text;
