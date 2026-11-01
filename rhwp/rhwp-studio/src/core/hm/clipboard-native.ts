@@ -115,10 +115,16 @@ function pasteResult(core: HmCore, at: Address): string {
   return JSON.stringify({ ok: true, paraIdx: at.para, cellParaIdx: at.para, charOffset: position.charOffset });
 }
 
-function paste(core: HmCore, at: Address): string {
+/**
+ * 셀 안 캐럿에 복사한 표 하나를 붙이면 엔진은 한컴 셀 붙이기의 기본처럼 그 셀부터 칸을 덮어쓴다.
+ * `cells: 'nest'` 는 표를 셀 안에 표로 넣는다.
+ */
+export type CellPaste = 'overwrite' | 'nest';
+
+function paste(core: HmCore, at: Address, cells?: CellPaste): string {
   const held = clipboard(core);
   if (held?.dropped) throw unsupported('개체 붙여넣기');
-  const receipt = core.mutate(doc => doc.paste(JSON.stringify({ at })));
+  const receipt = core.mutate(doc => doc.paste(JSON.stringify(cells ? { at, cells } : { at })));
   return pasteResult(core, receipt?.caret ?? at);
 }
 
@@ -127,13 +133,13 @@ export function pasteInternal(core: HmCore, sec: number, para: number, charOffse
 }
 export const pasteControl = pasteInternal;
 
-export function pasteInternalInCell(core: HmCore, sec: number, parentPara: number, controlIdx: number, cellIdx: number, cellParaIdx: number, charOffset: number): string {
-  return paste(core, logicalAddress(core, cellList(sec, parentPara, controlIdx, cellIdx), cellParaIdx, charOffset));
+export function pasteInternalInCell(core: HmCore, sec: number, parentPara: number, controlIdx: number, cellIdx: number, cellParaIdx: number, charOffset: number, cells?: CellPaste): string {
+  return paste(core, logicalAddress(core, cellList(sec, parentPara, controlIdx, cellIdx), cellParaIdx, charOffset), cells);
 }
 
-export function pasteInternalInCellByPath(core: HmCore, sec: number, parentPara: number, pathJson: string, charOffset: number): string {
+export function pasteInternalInCellByPath(core: HmCore, sec: number, parentPara: number, pathJson: string, charOffset: number, cells?: CellPaste): string {
   const { list, para } = pathTarget(sec, parentPara, pathJson);
-  return paste(core, logicalAddress(core, list, para, charOffset));
+  return paste(core, logicalAddress(core, list, para, charOffset), cells);
 }
 
 function controlRange(core: HmCore, sec: number, para: number, ci: number, cellPathJson: string): { from: Address; to: Address } {

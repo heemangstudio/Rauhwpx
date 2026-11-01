@@ -610,7 +610,7 @@ export class CharShapeDialog {
     this.ulPosSelect = document.createElement('select');
     this.ulPosSelect.className = 'dialog-select';
     this.ulPosSelect.style.width = '68px';
-    for (const [val, lbl] of [['None', '없음'], ['Bottom', '아래'], ['Top', '위']] as const) {
+    for (const [val, lbl] of [['None', '없음'], ['Bottom', '아래'], ['Center', '가운데'], ['Top', '위']] as const) {
       const o = document.createElement('option');
       o.value = val; o.textContent = lbl;
       this.ulPosSelect.appendChild(o);

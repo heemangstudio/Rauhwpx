@@ -1225,7 +1225,10 @@ async function writeNativeFileWithHelpers(
         .catch((error) => { throw windowsSharingError(error, platform); });
       await temporaryFile.truncate(0);
     } else {
-      temporaryFile = await openImpl(temporaryPath, 'wx');
+      // A new document in a folder Windows will not let us write (Program Files,
+      // another user's folder) fails here, on the temp name.
+      temporaryFile = await openImpl(temporaryPath, 'wx')
+        .catch((error) => { throw windowsSharingError(error, platform); });
     }
     await temporaryFile.writeFile(bytes);
 

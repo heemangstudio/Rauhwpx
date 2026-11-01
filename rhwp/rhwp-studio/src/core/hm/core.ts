@@ -173,7 +173,7 @@ export class HmCore {
 
   state(): DocState {
     // 조판·글꼴 변경은 매번 엔진에서 확인하고, 같은 응답의 JSON 해석만 재사용한다.
-    const raw = this.call(doc => doc.state());
+    const raw = this.call(() => this.adapter.hmStateJson());
     if (this.stateSnapshot?.raw !== raw) this.stateSnapshot = { raw, value: JSON.parse(raw) };
     return { ...this.stateSnapshot!.value };
   }

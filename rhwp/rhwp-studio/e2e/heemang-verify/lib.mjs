@@ -105,27 +105,51 @@ export async function loadApp(page, url) {
   return Date.now() - t0;
 }
 
-/** 파일 열기와 같은 open-document-bytes 경로로 문서를 연다. 첫 캔버스가 그려질 때까지의 ms 를 돌려준다. */
+/**
+ * 파일 열기와 같은 open-document-bytes 경로로 문서를 연다. 열기가 끝나고(버전 기록 준비까지) 첫 캔버스가
+ * 그려질 때까지 기다리고, 열기 요청부터 첫 캔버스가 그려질 때까지의 ms 를 돌려준다. 바이트 전송은 재지 않는다.
+ */
 export async function openDocumentFile(page, filePath, { minInk = 30 } = {}) {
-  const bytes = [...fs.readFileSync(filePath)];
+  const base64 = fs.readFileSync(filePath).toString('base64');
   const fileName = path.basename(filePath);
-  const t0 = Date.now();
-  await page.evaluate(async (data, name) => {
+  const firstInkMs = await page.evaluate(async (data, name, min, inkSource) => {
+    const binary = atob(data);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+    const inked = new Function('min', `return (${inkSource})(min);`);
     const requestId = crypto.randomUUID();
-    await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('open-document-bytes timed out')), 45000);
-      const off = window.__eventBus.on('open-document-bytes:done', (payload) => {
-        if (payload?.requestId !== requestId) return;
-        off(); clearTimeout(timer);
-        if (payload.ok) resolve(); else reject(new Error(payload.error || 'open failed'));
-      });
-      window.__eventBus.emit('open-document-bytes', {
-        bytes: new Uint8Array(data), fileName: name, requestId, suppressDialogs: true, skipUnsavedGuard: true,
-      });
+    const startedAt = performance.now();
+    let firstInk = null;
+    let poll = 0;
+    const firstPaint = new Promise((resolve, reject) => {
+      const deadline = startedAt + 45000;
+      const check = () => {
+        if (inked(min)) { firstInk = performance.now() - startedAt; resolve(); return; }
+        if (performance.now() > deadline) { reject(new Error('timed out waiting for first page painted')); return; }
+        poll = setTimeout(check, 50);
+      };
+      check();
     });
-  }, bytes, fileName);
-  await waitFor(page, 'first page painted', inkPredicate, { timeout: 45000, args: [minInk] });
-  return Date.now() - t0;
+    firstPaint.catch(() => {}); // 열기 실패가 먼저 오면 그 오류를 던진다.
+    try {
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('open-document-bytes timed out')), 45000);
+        const off = window.__eventBus.on('open-document-bytes:done', (payload) => {
+          if (payload?.requestId !== requestId) return;
+          off(); clearTimeout(timer);
+          if (payload.ok) resolve(); else reject(new Error(payload.error || 'open failed'));
+        });
+        window.__eventBus.emit('open-document-bytes', {
+          bytes, fileName: name, requestId, suppressDialogs: true, skipUnsavedGuard: true,
+        });
+      });
+      await firstPaint;
+    } finally {
+      clearTimeout(poll);
+    }
+    return Math.round(firstInk);
+  }, base64, fileName, minInk, inkPredicate.toString());
+  return firstInkMs;
 }
 
 /** 첫 문서 캔버스에 어두운 픽셀이 min 개 이상 있는지. */

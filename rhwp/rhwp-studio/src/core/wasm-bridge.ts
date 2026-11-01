@@ -1283,12 +1283,13 @@ export class WasmBridge {
     return api.pasteDocumentBlock(this.core, sourceBytes, sourceSection, startPara, endPara, targetSection, targetPara, targetCharOffset);
   }
 
-  pasteInternalInCell(sec: number, parentPara: number, controlIdx: number, cellIdx: number, cellParaIdx: number, charOffset: number): string {
-    return api.pasteInternalInCell(this.core, sec, parentPara, controlIdx, cellIdx, cellParaIdx, charOffset);
+  /** 복사한 표 하나는 셀부터 칸을 덮어쓴다(한컴 셀 붙이기). `cells: 'nest'` 면 셀 안에 표로 넣는다. */
+  pasteInternalInCell(sec: number, parentPara: number, controlIdx: number, cellIdx: number, cellParaIdx: number, charOffset: number, cells?: 'overwrite' | 'nest'): string {
+    return api.pasteInternalInCell(this.core, sec, parentPara, controlIdx, cellIdx, cellParaIdx, charOffset, cells);
   }
 
-  pasteInternalInCellByPath(sec: number, parentPara: number, pathJson: string, charOffset: number): string {
-    return api.pasteInternalInCellByPath(this.core, sec, parentPara, pathJson, charOffset);
+  pasteInternalInCellByPath(sec: number, parentPara: number, pathJson: string, charOffset: number, cells?: 'overwrite' | 'nest'): string {
+    return api.pasteInternalInCellByPath(this.core, sec, parentPara, pathJson, charOffset, cells);
   }
 
   hasInternalClipboard(): boolean {

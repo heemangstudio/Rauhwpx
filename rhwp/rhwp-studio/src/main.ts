@@ -21,6 +21,7 @@ import {
 } from '@/core/document-input-limits';
 import { prepareDocumentImage } from '@/core/document-image';
 import { CanvasView } from '@/view/canvas-view';
+import { FIRST_LAYOUT_PAGES, continueLayout, progressiveLayoutEnabled } from '@/view/progressive-layout';
 import {
   assertEncodedImageDecodeDimensions,
   assertImageDecodeDimensions,
@@ -787,7 +788,9 @@ function getContext(): EditorContext {
   // 나지 않도록, 복구(문서 복구)까지는 문서가 없는 읽기 전용 상태로 둔다.
   if (engineTrap()) return trappedEditorContext();
   const hasDoc = wasm.pageCount > 0;
-  const canEditFormField = inputHandler?.canEditCurrentFormField() ?? false;
+  // 캐럿을 놓기 전(문서를 여는 중)에는 지난 커서 위치로 엔진을 묻지 않는다. 큰 문서의 남은 조판을 끝내게 만든다.
+  const caretActive = inputHandler?.isActive() ?? false;
+  const canEditFormField = caretActive && (inputHandler?.canEditCurrentFormField() ?? false);
   const isFormMode = editMode === 'form';
   const selectedObject = inputHandler?.getSelectedPictureRef() ?? null;
   const selectedObjects = inputHandler?.getSelectedPictureRefs() ?? [];
@@ -804,7 +807,7 @@ function getContext(): EditorContext {
     canArrangeSelectedObject: !!selectedObject && isTopLevelLayerOrderTarget(selectedObject),
     canGroupSelectedObjects: canGroupTopLevelBodyObjects(selectedObjects),
     canUngroupSelectedObject: canUngroupTopLevelBodyObject(selectedObject),
-    inField: inputHandler?.isInField() ?? false,
+    inField: caretActive && (inputHandler?.isInField() ?? false),
     inNote: inputHandler?.isInFootnoteMode() ?? false,
     inHeaderFooter: inputHandler?.isInHeaderFooterMode() ?? false,
     isEditable: !sessionReadOnly() && !agentEditingLease.active && (!isFormMode || canEditFormField),
@@ -1682,7 +1685,7 @@ async function initialize(): Promise<void> {
     });
     installDesktopNativeMenu({
       menuBar: document.getElementById('menu-bar')!, dispatcher, registry, eventBus,
-      beforeSync: () => syncSpacingPresetMenus(wasm),
+      beforeSync: () => syncSpacingPresetMenus(wasm, document, { layoutPending: wasm.viewer.layoutPending }),
     });
     syncToolbarShortcutTitles(document, registry);
     eventBus.on('shortcuts-changed', () => syncToolbarShortcutTitles(document, registry));
@@ -5037,6 +5040,51 @@ function showOpenedDocumentInSidebar(): void {
   for (const chat of allChats()) chat.sidebar.exitFullscreen();
 }
 
+/**
+ * 편집기가 연 문서를 앞쪽 몇 쪽만 조판한다. 글꼴 준비와 첫 화면까지 쪽·상태를 읽어도 문서 전체를 조판하지 않는다.
+ * 앞쪽 조판으로 다 조판되는 작은 문서이거나 엔진이 지원하지 않으면 false.
+ */
+function beginFirstPageLayout(): boolean {
+  if (!progressiveLayoutEnabled()) return false;
+  try {
+    return wasm.viewer.beginFirstPages(FIRST_LAYOUT_PAGES);
+  } catch (error) {
+    // 처음부터 끝까지 조판하는 기존 경로로 연다. 엔진 오류는 그 경로가 알린다.
+    console.warn('[progressive-layout] 앞쪽 조판 실패:', error);
+    return false;
+  }
+}
+
+/**
+ * 앞쪽만 조판해 그린 문서의 나머지 쪽을 쉬는 시간에 조판하며 쪽 목록을 늘리고, 다 조판하면 풀린다.
+ * 그동안에도 그린 쪽을 스크롤해 볼 수 있다. 문서를 누르거나 키를 치면 남은 조판을 바로 끝낸다.
+ */
+async function layOutRemainingPages(): Promise<void> {
+  const adapter = wasm.viewer;
+  const instance = adapter.documentInstance;
+  const view = canvasView;
+  let complete = true;
+  // 그림 읽기처럼 문서 전체를 조판하게 하는 호출이 먼저 와서 이미 다 조판했을 수도 있다.
+  if (adapter.finishFirstPages()) {
+    const run = continueLayout(
+      pages => (adapter.documentInstance === instance ? adapter.layoutMore(pages) : null),
+      changed => view?.applyLayoutProgress(changed),
+      wasm.pageCount,
+    );
+    const finishNow = () => run.finish();
+    window.addEventListener('pointerdown', finishNow, true);
+    window.addEventListener('keydown', finishNow, true);
+    try {
+      complete = await run.done;
+    } finally {
+      window.removeEventListener('pointerdown', finishNow, true);
+      window.removeEventListener('keydown', finishNow, true);
+    }
+  }
+  // 여는 동안 미룬, 나머지 쪽이 찾은 대체 글꼴과 글꼴 윤곽선을 마저 연결한다.
+  if (complete && await adapter.completeFonts() && adapter.documentInstance === instance) view?.refreshPages();
+}
+
 async function initializeDocument(
   docInfo: DocumentInfo,
   options: {
@@ -5048,6 +5096,7 @@ async function initializeDocument(
 ): Promise<void> {
   const msg = sbMessage();
   try {
+    const progressive = beginFirstPageLayout();
     await updateLoadProgress(55, '폰트 준비 중...');
     setActiveDocumentFonts(docInfo.fontsUsed ?? []);
     const desktopFontsStartedAt = performance.now();
@@ -5104,6 +5153,18 @@ async function initializeDocument(
     applySavedTextMarkSettings();
     await updateLoadProgress(82, '페이지 렌더 준비 중...');
     await canvasView?.loadDocument();
+    documentHome?.hide();
+    if (documentOpenIntentAt && performance.now() - documentOpenIntentAt < DOCUMENT_OPEN_INTENT_MS) {
+      showOpenedDocumentInSidebar();
+    }
+    if (progressive) {
+      // 첫 쪽을 보여 준 뒤 나머지 쪽을 조판한다. 아래 단계(캐럿·검증·버전 기록)는 문서 전체를 읽으므로 그 뒤에 한다.
+      await updateLoadProgress(86, '나머지 쪽 계산 중...', { paint: true });
+      await layOutRemainingPages();
+      docInfo = wasm.getDocumentInfo();
+      totalSections = docInfo.sectionCount ?? 1;
+      setStatusLabel(sbSection(), `구역: ${statusSectionIndex + 1} / ${totalSections}`);
+    }
     prepareCanvasKitLocalFonts(docInfo.fontsUsed);
     prepareLocalFontRepairs(docInfo.fontsUsed);
     await updateLoadProgress(90, '도구 모음 준비 중...');
@@ -5111,10 +5172,6 @@ async function initializeDocument(
     toolbar?.initFontDropdown(docInfo.fontsUsed);
     toolbar?.initStyleDropdown();
     await updateLoadProgress(94, '문서 검증 및 글꼴 확인 중...');
-    documentHome?.hide();
-    if (documentOpenIntentAt && performance.now() - documentOpenIntentAt < DOCUMENT_OPEN_INTENT_MS) {
-      showOpenedDocumentInSidebar();
-    }
 
     // #177: HWPX 비표준 lineseg 감지 (진단 로그).
     // #2527: 자동 보정(reflowLinesegs)이 빈-lineseg 문서에서 글리프 좌표를 붕괴시켜
@@ -5510,6 +5567,8 @@ async function loadBytesNow(
       : consumeExactLocalFileRead(data, fileHandle)
         ? wasm.loadTrustedLocalFileOnce(data, fileName)
         : wasm.loadDocument(data, fileName);
+    // 열기 단계의 쪽 수·상태 읽기가 글꼴도 준비하지 않은 채 문서 전체를 조판하지 않게 한다.
+    beginFirstPageLayout();
     target.replacingDocument = null;
     if (options.diskBytes) {
       // 화면에는 자동 저장본을 열었지만 파일은 디스크 내용 그대로다. 원본 digest 를 기준으로 삼고,

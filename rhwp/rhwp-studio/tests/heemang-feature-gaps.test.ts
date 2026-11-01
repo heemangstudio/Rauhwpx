@@ -118,30 +118,56 @@ test('표 캡션의 위치·세로 정렬을 적용하고 지운다', async t =>
   assert.equal(wasm.getTableProperties(0, table.paraIdx, table.controlIdx).hasCaption, false);
 });
 
-test('개요와 일반 문단의 세션 번호 다시 시작은 되돌릴 수 있고 파일에는 남지 않는다', async t => {
-  const { wasm, adapter } = await openHeemangAgent(t, FIXTURES.blankHwpx);
-  wasm.insertText(0, 0, 0, '첫째');
-  wasm.splitParagraph(0, 0, 2);
-  wasm.insertText(0, 1, 0, '둘째');
-  const id = wasm.ensureDefaultNumbering();
-  for (const headType of ['Outline', 'None', 'Number']) {
-    wasm.applyParaFormat(0, 1, JSON.stringify({ headType, numberingId: id }));
+// 개요와 번호 없는 문단의 번호 다시 시작은 편집 세션 값이다. 번호 문단의 새 번호 시작은 한컴처럼
+// 번호 정의를 새 시작 번호로 복사하므로 파일에 남는다. 번호는 복사한 글이 문단 머리에 싣는 번호로 본다.
+for (const kind of ['Outline', 'None', 'Number'] as const) {
+  test(`번호 다시 시작은 한 번에 되돌리고, 세션 값은 파일에 남지 않는다: ${kind}`, async t => {
+    const { wasm, adapter } = await openHeemangAgent(t, FIXTURES.blankHwpx);
+    ['첫째', '둘째', '셋째'].forEach((text, p) => {
+      if (p) wasm.splitParagraph(0, p - 1, 2);
+      wasm.insertText(0, p, 0, text);
+    });
+    const id = wasm.ensureDefaultNumbering();
+    for (const p of [0, 1, 2]) wasm.applyParaFormat(0, p, JSON.stringify({ headType: kind === 'None' && p !== 1 ? 'Number' : kind, numberingId: id }));
+    const heads = () => [0, 1, 2].map(p => { wasm.copySelection(0, p, 0, p, 2); return wasm.getClipboardText(); });
+    const original = heads();
+    const restarted = kind === 'None' ? original : ['1. 첫째', '7. 둘째', '8. 셋째'];
     const before = adapter.state().undo;
     wasm.setNumberingRestart(0, 1, 2, 7);
     assert.equal(adapter.state().undo, before + 1);
-    assert.equal(wasm.getParaPropertiesAt(0, 1).numberingStartNum, 7);
+    assert.deepEqual(heads(), restarted);
+    if (kind !== 'Number') assert.equal(wasm.getParaPropertiesAt(0, 1).numberingStartNum, 7);
     adapter.hmDoc().undo();
     wasm.refreshLayout();
+    assert.deepEqual(heads(), original);
     assert.equal(wasm.getParaPropertiesAt(0, 1).numberingRestartMode, 0);
     adapter.hmDoc().redo();
     wasm.refreshLayout();
-    if (headType === 'None') wasm.applyParaFormat(0, 1, JSON.stringify({ headType: 'Number', numberingId: id }));
-    assert.equal(wasm.getParaPropertiesAt(0, 1).numberingStartNum, 7);
-    const original = wasm.exportHwpx();
-    for (const [bytes, name] of [[wasm.exportHwp(), 'saved.hwp'], [original, 'saved.hwpx']] as const) {
-      wasm.loadDocument(bytes, name);
-      assert.equal(wasm.getParaPropertiesAt(0, 1).numberingRestartMode, 0);
+    assert.deepEqual(heads(), restarted);
+    if (kind === 'None') {
+      // 세션 값은 문단에 번호를 매기면 그 번호에 쓰인다.
+      wasm.applyParaFormat(0, 1, JSON.stringify({ headType: 'Number', numberingId: id }));
+      assert.deepEqual(heads(), ['1. 첫째', '7. 둘째', '8. 셋째']);
     }
+    for (const [bytes, name] of [[wasm.exportHwp(), 'saved.hwp'], [wasm.exportHwpx(), 'saved.hwpx']] as const) {
+      wasm.loadDocument(bytes, name);
+      adapter.refreshLayout();
+      assert.equal(wasm.getParaPropertiesAt(0, 1).numberingRestartMode, 0, name);
+      assert.deepEqual(heads(), kind === 'Number' ? restarted : ['1. 첫째', '2. 둘째', '3. 셋째'], name);
+    }
+  });
+}
+
+test('단 나누기는 한컴처럼 문단 가운데에서만 나누고 캐럿을 단이 시작하는 문단에 둔다', async t => {
+  const cases = [[1, 0, 1, 4], [1, 1, 2, 5], [1, 2, 2, 4], [3, 0, 3, 4]] as const;
+  for (const [para, offset, caretPara, count] of cases) {
+    const { wasm } = await openHeemangAgent(t, FIXTURES.blankHwpx);
+    ['가나', '다라', '마바', ''].forEach((text, p) => {
+      if (p) wasm.splitParagraph(0, p - 1, wasm.getParagraphLength(0, p - 1));
+      if (text) wasm.insertText(0, p, 0, text);
+    });
+    const result = JSON.parse(wasm.insertColumnBreak(0, para, offset));
+    assert.deepEqual([result.paraIdx, result.charOffset, wasm.getParagraphCount(0)], [caretPara, 0, count], `${para}:${offset}`);
   }
 });
 

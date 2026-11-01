@@ -390,6 +390,60 @@ export class Doc {
         return ret[0] !== 0;
     }
     /**
+     * Lays out only the first pages of a document not laid out yet, so a
+     * host can show them before the rest: stops once more than `pages`
+     * pages are laid out, at a page start the layout can go on from.
+     * `LayoutProgress` as JSON. Until the layout is complete, the page
+     * list, page packets, patches, pictures and state serve the pages laid
+     * out so far; every other request completes the layout first.
+     * @param {number} pages
+     * @returns {string}
+     */
+    layoutFirst(pages) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.doc_layoutFirst(this.__wbg_ptr, pages);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Lays out about `pages` more pages after `layoutFirst`, or the rest
+     * with 0. `LayoutProgress` as JSON, naming the pages to paint again:
+     * the new ones, and earlier ones whose page number, header, footer or
+     * total page count changed.
+     * @param {number} pages
+     * @returns {string}
+     */
+    layoutMore(pages) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.doc_layoutMore(this.__wbg_ptr, pages);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
      * Paragraphs the last layout reused and formatted.
      * @returns {Float64Array}
      */
@@ -691,8 +745,9 @@ export class Doc {
         return v1;
     }
     /**
-     * Pages `from..to` as one PDF for printing or export: text and rules
-     * as vectors, pictures and brushes as images at `dpi`.
+     * Pages `from..to` of the print layout as one PDF for printing or
+     * export: text and rules as vectors, pictures and brushes as images
+     * at `dpi`.
      * @param {number} from
      * @param {number} to
      * @param {number} dpi
@@ -740,6 +795,44 @@ export class Doc {
         let deferred2_1;
         try {
             const ret = wasm.doc_pictureSource(this.__wbg_ptr, i, item);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * The number of pages print and PDF give: the screen's, or fewer
+     * when the unfilled click-here guides the screen shows take lines.
+     * @returns {number}
+     */
+    printPageCount() {
+        const ret = wasm.doc_printPageCount(this.__wbg_ptr);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * [`Doc::page_svg`] of page `i` of the print layout
+     * ([`Doc::print_page_count`] pages), which leaves out the guide text of
+     * unfilled click-here fields as Hancom's print does.
+     * @param {number} i
+     * @param {number} dpi
+     * @returns {string}
+     */
+    printPageSvg(i, dpi) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.doc_printPageSvg(this.__wbg_ptr, i, dpi);
             var ptr1 = ret[0];
             var len1 = ret[1];
             if (ret[3]) {
@@ -983,6 +1076,20 @@ export class Doc {
         var v2 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
         wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
         return v2;
+    }
+    /**
+     * Keeps at most `limit` undo steps (all when absent), dropping older
+     * ones. A host that keeps its own undo passes 0: undo and redo do
+     * nothing, receipts report no steps, and checkpoints hold the document
+     * without a history, so editing and restoring stay as cheap at the end
+     * of a long session as at its start.
+     * @param {number | null} [limit]
+     */
+    setHistoryLimit(limit) {
+        const ret = wasm.doc_setHistoryLimit(this.__wbg_ptr, isLikeNone(limit) ? Number.MAX_SAFE_INTEGER : (limit) >>> 0);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
     }
     /**
      * `DocState` as JSON.
@@ -1239,6 +1346,18 @@ export class Engine {
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.engine_addFontFile(this.__wbg_ptr, ptr0, len0, file);
         return ret >>> 0;
+    }
+    /**
+     * Registers Hancom's font information table (`fontinfo.dat`), whose
+     * substitution rows choose the face for characters a face lacks.
+     * @param {Uint8Array} bytes
+     * @returns {boolean}
+     */
+    addFontInfo(bytes) {
+        const ptr0 = passArray8ToWasm0(bytes, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.engine_addFontInfo(this.__wbg_ptr, ptr0, len0);
+        return ret !== 0;
     }
     /**
      * Registers Hancom's font mapping table (`FontMap.dat`).
@@ -1981,6 +2100,10 @@ function getUint8ArrayMemory0() {
         cachedUint8ArrayMemory0 = new Uint8Array(wasm.memory.buffer);
     }
     return cachedUint8ArrayMemory0;
+}
+
+function isLikeNone(x) {
+    return x === undefined || x === null;
 }
 
 function passArray32ToWasm0(arg, malloc) {

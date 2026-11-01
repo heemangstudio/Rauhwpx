@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
+  NATIVE_FILE_ACCESS_DENIED_CODE,
   NATIVE_FILE_CONFLICT_CODE,
   NATIVE_FILE_IN_USE_CODE,
   NATIVE_FILE_READ_ONLY_CODE,
@@ -158,6 +159,27 @@ test('a sharing violation that outlasts the retries names the cause, not the tem
     );
     assert.deepEqual(new Uint8Array(await readFile(target)), cfbBytes(1));
     assert.deepEqual(await readdir(directory), ['report.hwp']);
+  });
+});
+
+test('saving a new document into a folder Windows refuses names the cause, not the temp file', async (t) => {
+  await withDirectory(t, async (directory) => {
+    const target = join(directory, '새 문서.hwp');
+    await assert.rejects(
+      writeNativeFileAtomically(target, cfbBytes(2), {
+        platform: 'win32',
+        windowsSystemRoot: 'C:\\Windows',
+        runCommandImpl: async () => {},
+        openImpl: async () => { throw errorWithCode('EPERM'); },
+        sleep: async () => {},
+      }),
+      (error) => {
+        assert.equal(error.code, NATIVE_FILE_ACCESS_DENIED_CODE);
+        assert.doesNotMatch(error.message, /\.tmp/);
+        return true;
+      },
+    );
+    assert.deepEqual(await readdir(directory), []);
   });
 });
 

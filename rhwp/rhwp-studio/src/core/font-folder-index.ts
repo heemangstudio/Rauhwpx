@@ -13,15 +13,17 @@ import {
   SYSTEM_FONT_INDEX_VERSION,
   assembleFontIndex,
   blobSource,
+  hancomEngineTableKind,
   parseFontSource,
   posixPath,
   standaloneFaceBytes,
   streamWebFontDecoders,
   type FontIndexFile,
+  type HancomEngineTableKind,
   type ParsedFontFileResult,
 } from '../../../rhwp-shared/fonts/font-index-core.mjs';
 import type { FontFolderCache } from './font-folder-store.ts';
-import type { SystemFontIndex } from './desktop-fonts.ts';
+import type { HancomEngineTable, SystemFontIndex } from './desktop-fonts.ts';
 
 // 3: 가변 글꼴의 이름 붙은 인스턴스를 face 로 펼친다. 4: WOFF/WOFF2 를 색인한다.
 const CACHE_FORMAT = 4;
@@ -59,6 +61,8 @@ interface Collected {
   root: string;
   files: FolderFile[];
   mapFiles: Map<string, () => Promise<File>>;
+  /** 한컴 엔진 표 후보 (경로 순) */
+  tableFiles: Array<{ path: string; kind: HancomEngineTableKind; open: () => Promise<File> }>;
   errors: Array<{ path: string; message: string }>;
 }
 
@@ -80,7 +84,7 @@ function folderFile(path: string, file: File, open: () => Promise<File>): Folder
 }
 
 async function collectFromHandle(handle: FolderDirectoryHandleLike): Promise<Collected> {
-  const collected: Collected = { root: handle.name, files: [], mapFiles: new Map(), errors: [] };
+  const collected: Collected = { root: handle.name, files: [], mapFiles: new Map(), tableFiles: [], errors: [] };
   const { maxDepth, maxFiles, maxDirs } = FONT_SCAN_LIMITS;
   let dirs = 0;
   let capped = false;
@@ -102,6 +106,8 @@ async function collectFromHandle(handle: FolderDirectoryHandleLike): Promise<Col
         await walk(child, childPath, depth + 1);
         continue;
       }
+      const table = hancomEngineTableKind(child.name);
+      if (table) collected.tableFiles.push({ path: childPath, kind: table, open: () => child.getFile() });
       const isMap = HANCOM_MAP_FILE.test(child.name);
       if (!isMap && !FONT_EXTENSIONS.has(extension(child.name))) continue;
       if (isMap) {
@@ -126,7 +132,7 @@ async function collectFromHandle(handle: FolderDirectoryHandleLike): Promise<Col
 }
 
 function collectFromFiles(name: string, files: readonly File[]): Collected {
-  const collected: Collected = { root: name, files: [], mapFiles: new Map(), errors: [] };
+  const collected: Collected = { root: name, files: [], mapFiles: new Map(), tableFiles: [], errors: [] };
   const { maxDepth, maxFiles } = FONT_SCAN_LIMITS;
   const entries = files
     .map(file => ({ file, path: (file as File & { webkitRelativePath?: string }).webkitRelativePath || `${name}/${file.name}` }))
@@ -134,6 +140,8 @@ function collectFromFiles(name: string, files: readonly File[]): Collected {
   for (const { file, path } of entries) {
     // 폴더 이름/…/파일 : 깊이는 중간 폴더 수
     if (path.split('/').length - 2 > maxDepth) continue;
+    const table = hancomEngineTableKind(file.name);
+    if (table) collected.tableFiles.push({ path, kind: table, open: async () => file });
     if (HANCOM_MAP_FILE.test(file.name)) {
       collected.mapFiles.set(path, async () => file);
       continue;
@@ -146,6 +154,34 @@ function collectFromFiles(name: string, files: readonly File[]): Collected {
     collected.files.push(folderFile(path, file, async () => file));
   }
   return collected;
+}
+
+interface FolderTable { file: FolderFile; entry: HancomEngineTable }
+
+/**
+ * 고른 폴더 안의 엔진 표. 한 설치본으로 보고 FontMap·hftinfo 는 경로 순 첫 파일,
+ * 코드 표는 이름마다 첫 파일을 쓴다.
+ */
+async function folderTables(collected: Collected): Promise<FolderTable[]> {
+  const picked: Collected['tableFiles'] = [];
+  const names = new Set<string>();
+  for (const table of collected.tableFiles) {
+    const key = table.kind === 'code' ? posixPath.basename(table.path).toLowerCase() : table.kind;
+    if (names.has(key)) continue;
+    names.add(key);
+    picked.push(table);
+  }
+  const tables: FolderTable[] = [];
+  for (const table of picked) {
+    try {
+      const file = folderFile(table.path, await table.open(), table.open);
+      const id = folderFaceId(`table\u0000${table.path}`, 0, file.size, file.lastModified);
+      tables.push({ file, entry: { id, kind: table.kind, path: table.path, size: file.size } });
+    } catch (error) {
+      collected.errors.push({ path: table.path, message: errorText(error) });
+    }
+  }
+  return tables;
 }
 
 /** 목록 파일이나 HFT가 있으면 한컴 설치 폴더로 본다. 한컴 이름 대응은 한컴 face에만 붙는다. */
@@ -209,7 +245,12 @@ export function createFontFolderIndexer(options: { cache?: FontFolderCache | nul
   const cache = options.cache ?? null;
   // WOFF 는 DecompressionStream('deflate') 로 푼다. 'brotli' 를 모르는 브라우저는 WOFF2 를 오류로 남긴다.
   const decompress = streamWebFontDecoders();
-  let current: { input: FontFolderInput; index: SystemFontIndex; byId: Map<string, { face: SystemFontIndex['faces'][number]; file: FolderFile }> } | null = null;
+  let current: {
+    input: FontFolderInput;
+    index: SystemFontIndex;
+    byId: Map<string, { face: SystemFontIndex['faces'][number]; file: FolderFile }>;
+    tables: Map<string, FolderFile>;
+  } | null = null;
   let pending: Promise<SystemFontIndex> | null = null;
 
   async function scan(input: FontFolderInput): Promise<SystemFontIndex> {
@@ -219,6 +260,7 @@ export function createFontFolderIndexer(options: { cache?: FontFolderCache | nul
       : collectFromFiles(input.name, input.files);
     const kind = folderKind(collected);
     for (const file of collected.files) file.kind = kind;
+    const tables = await folderTables(collected);
     const errors = [...collected.errors];
     const cacheKey = `folder:${collected.root}`;
     const stored = await cache?.load(cacheKey);
@@ -268,9 +310,10 @@ export function createFontFolderIndexer(options: { cache?: FontFolderCache | nul
       roots: [{ path: collected.root, kind, exists: true, fileCount: collected.files.length }],
       faces: assembled.faces,
       hancomFaceMap: assembled.hancomFaceMap,
+      engineTables: tables.map(table => table.entry),
       errors,
     };
-    current = { input, index, byId: assembled.byId };
+    current = { input, index, byId: assembled.byId, tables: new Map(tables.map(table => [table.entry.id, table.file])) };
     return index;
   }
 
@@ -286,6 +329,16 @@ export function createFontFolderIndexer(options: { cache?: FontFolderCache | nul
     },
     async read(id) {
       if (!/^[0-9a-f]{16}$/.test(id)) throw new Error('invalid font id');
+      const table = current?.tables.get(id);
+      if (table) {
+        const blob = await table.open().catch((error: unknown) => {
+          throw staleError(id, `engine table is gone (${errorText(error)})`);
+        });
+        if (blob.size !== table.size || blob.lastModified !== table.lastModified) {
+          throw staleError(id, 'engine table changed since the index was built');
+        }
+        return new Uint8Array(await blob.arrayBuffer());
+      }
       const entry = current?.byId.get(id);
       if (!entry) throw new Error(`unknown font id ${id}`);
       const { face, file } = entry;

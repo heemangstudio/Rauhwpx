@@ -6,7 +6,7 @@ import { getSystemFontHost, loadDesktopFontIndex, getDesktopFontLookup, matchDes
 import { blake3Hex, setBlake3WasmApi } from './content-hash';
 import { EngineNotSupportedError, nextDocumentGeneration, nextDocumentInstance, receiveEngineFonts, type EngineFontReader } from './engine-support';
 import { resolveCanvasKitFontPlan, type WebFontLoadOptions } from './font-loader';
-import { decodeWebFont, streamWebFontDecoders } from '../../../rhwp-shared/fonts/font-index-core.mjs';
+import { HANCOM_ENGINE_TABLE_ORDER, decodeWebFont, hancomEngineTableKind, streamWebFontDecoders, type HancomEngineTableKind } from '../../../rhwp-shared/fonts/font-index-core.mjs';
 import { readResponseBytesWithLimit } from './document-input-limits';
 import { Pictures, Player, decodePacket, patchImage, type Box, type PagePacket, type PaintRecord, type PatchState, type Picture } from '../view/heemang-player';
 import { guardHeemangEngineCalls } from './engine-trap';
@@ -14,10 +14,19 @@ import { detectDocumentByteKind } from './document-signature';
 import { readHmlSourceMetadata } from './hm/hml-source';
 import type { HmlOpenMetadata } from './hm/bridge-types';
 import { fontGlyphCoverage } from './heemang-font-coverage';
+import { isHftBytes } from './hft-glyphs';
 
 export type { Address, Affinity, Caret, CharPatch, Copied, Located, LocateRequest, Match, Motion, NavigateRequest, ParagraphInfo, ParaPatch, Receipt, Rect, SearchResult, Selected, SelectRequest, Step } from '../../vendor/hm-wasm/hm_wasm';
 export type { TextSelection, CellSelection, EditingSelection } from './heemang-editing';
 export type DocState = Omit<HmDocState, 'format'> & { format: 'hwp5' | 'hwpx' | 'hwp3' | 'hml' };
+/** layoutFirst·layoutMore 가 조판한 결과: 지금까지의 쪽 수, 다 조판했는지, 조판 순번, 다시 그릴 쪽(새 쪽 포함). */
+export interface LayoutProgress { pageCount: number; complete: boolean; layoutEpoch: number; changedPages: number[] }
+/** 앞쪽부터 나눠 조판하는 hm-wasm 문서. 예전 vendor 패키지에는 없으므로 있는지 보고 쓴다. */
+type ProgressiveDoc = Doc & { layoutFirst(pages: number): string; layoutMore(pages: number): string };
+const progressiveDoc = (doc: Doc | null): ProgressiveDoc | null => {
+  const d = doc as Partial<ProgressiveDoc> | null;
+  return typeof d?.layoutFirst === 'function' && typeof d.layoutMore === 'function' ? d as ProgressiveDoc : null;
+};
 export interface EditResult { caret: Located; anchor?: Located | null; receipt: Receipt; selection?: EditingSelection }
 export interface CutResult { clipboard: Copied; edit: EditResult | null }
 export interface ReplaceAllResult { count: number; edit: EditResult | null }
@@ -30,6 +39,8 @@ let runtime: Promise<Awaited<ReturnType<typeof initializeRuntime>>> | undefined;
 // 편집 경로의 WASM 함수는 처음 불릴 때 컴파일되므로, 문서를 연 뒤 첫 입력이 그 컴파일만큼 늦다.
 // 엔진(모듈)마다 한 번, 첫 쪽을 그린 뒤 쉬는 시간에 빈 문서 사본을 편집해 미리 컴파일해 둔다.
 let editWarmup: 'pending' | 'scheduled' | 'done' = 'pending';
+let openWarmup: 'pending' | 'scheduled' | 'done' = 'pending';
+let cancelOpenWarmupRun: (() => void) | null = null;
 // native clipboard는 같은 Engine의 문서들이 공유한다.
 let internalClipboard: { engine: Engine; text: string } | null = null;
 
@@ -52,9 +63,41 @@ async function initializeRuntime() {
   let faces = 0;
   const families = new Set<string>();
   const coverage = new Map<string, Uint8Array>();
+  // 한컴 엔진 표(FontMap·hftinfo·코드 표)는 엔진마다 한 번, 첫 HFT 등록 전에만 넣는다.
+  // 표 없이 HFT 가 먼저 들어가면 그 뒤에는 넣지 않는다.
+  let tablesClosed = false;
+  let tablesLoad: Promise<void> | null = null;
+  const isHft = (name: string, bytes: Uint8Array) => /\.hft$/i.test(name) || isHftBytes(bytes);
+  const addTables = (tables: { kind: HancomEngineTableKind; bytes: Uint8Array }[]) => {
+    const order = (kind: HancomEngineTableKind) => HANCOM_ENGINE_TABLE_ORDER.indexOf(kind);
+    let added = 0;
+    for (const { kind, bytes } of [...tables].sort((a, b) => order(a.kind) - order(b.kind))) {
+      const ok = kind === 'fontmap' ? engine.addFontMap(bytes) : kind === 'hftinfo' ? engine.addHftInfo(bytes) : engine.addCodeTable(bytes);
+      if (ok) added++;
+    }
+    tablesClosed = true;
+    return added;
+  };
+  // 호스트 색인(데스크톱·허브·글꼴 폴더)이 알려 준 한 설치본의 표를 읽어 등록한다.
+  const prepareTables = (): Promise<void> => {
+    if (tablesClosed) return Promise.resolve();
+    const host = getSystemFontHost();
+    if (!host) return Promise.resolve();
+    return tablesLoad ??= (async () => {
+      const list = (await loadDesktopFontIndex()).engineTables ?? [];
+      if (!list.length || tablesClosed) return;
+      const tables = await Promise.all(list.map(async table => ({ kind: table.kind, bytes: new Uint8Array(await readDesktopFace(host, table.id)) })));
+      if (tablesClosed) return;
+      // 엔진은 쓰는 코드 표만 받고 나머지에는 false 를 돌려준다.
+      const added = addTables(tables);
+      console.info(`[Heemang] 한컴 엔진 표 ${tables.length}개 중 ${added}개 사용`);
+    })().catch(error => { console.warn('[Heemang] 한컴 엔진 표를 읽지 못했습니다:', error); })
+      .finally(() => { tablesLoad = null; });
+  };
   const register = (label: string, bytes: Uint8Array, names?: string[], name = label, refill = false) => {
     const key = copyKey(name, bytes.length);
     if (!refill && registered.has(key)) return;
+    if (!tablesClosed && isHft(name, bytes)) tablesClosed = true;
     const included = fontGlyphCoverage(bytes);
     if (included) coverage.set(label, included); else coverage.delete(label);
     const file = fontFile(bytes);
@@ -87,8 +130,14 @@ async function initializeRuntime() {
     const identity = sourceUrl ?? label;
     if (read) sources.set(identity, read);
     if (sourceUrl && loadedAssets.has(sourceUrl)) return;
-    register(identity, bytes, undefined, label);
-    if (sourceUrl) loadedAssets.add(sourceUrl);
+    const deliver = () => {
+      if (sourceUrl && loadedAssets.has(sourceUrl)) return;
+      register(identity, bytes, undefined, label);
+      if (sourceUrl) loadedAssets.add(sourceUrl);
+    };
+    // HFT 는 엔진 표를 먼저 넣은 뒤 등록한다.
+    if (!tablesClosed && isHft(label, bytes) && getSystemFontHost()) void prepareTables().then(deliver);
+    else deliver();
   });
   // 배포에 한컴 자산을 넣지 않는다. 명시적으로 설정한 개발용 파일만 받는다.
   if (import.meta.env.DEV && import.meta.env.VITE_HEEMANG_FONT_ASSETS === '1') {
@@ -96,17 +145,18 @@ async function initializeRuntime() {
     if (!response.ok) throw new Error(`Heemang 글꼴 목록 오류: ${response.status}`);
     for (const asset of await response.json() as FontAsset[]) addAsset(asset);
     for (const asset of assets) sources.set(asset.url, () => readAsset(asset));
-    for (const asset of assets.filter(a => /\.dat$/i.test(a.name))) {
-      const bytes = await readAsset(asset);
-      if (/^fontmap\.dat$/i.test(asset.name)) engine.addFontMap(bytes);
-      else if (/^hftinfo\.dat$/i.test(asset.name)) engine.addHftInfo(bytes);
-      else engine.addCodeTable(bytes);
+    const tables = assets.filter(a => /\.dat$/i.test(a.name));
+    if (tables.length) {
+      addTables(await Promise.all(tables.map(async asset => ({
+        kind: hancomEngineTableKind(asset.name) ?? 'code', bytes: await readAsset(asset),
+      }))));
     }
   }
   const hasFamily = (name: string) => families.has(normalize(name));
   const hasAvailableFamily = (name: string) => hasFamily(name) || assetsByFamily.has(normalize(name));
   const loadFonts = async (requests: FontRequests) => {
     const before = loadedAssets.size;
+    await prepareTables();
     // 일반 실행에서도 호스트 색인에서 엔진이 고른 대체 서체를 직접 연결한다.
     const host = getSystemFontHost();
     if (host) {
@@ -237,6 +287,10 @@ export class HeemangAdapter {
   });
   private readonly webFonts = new Map<string, Promise<void>>();
   private doc: Doc | null = null;
+  /** 앞쪽만 조판해 여는 동안 상태·쪽 읽기가 조판할 쪽 수(layoutFirst). 0이면 엔진대로 문서 전체를 조판한다. */
+  private firstPages = 0;
+  /** 나머지 쪽을 조판하는 중에 쪽 packet 과 쪽 목록이 따르는 조판 순번. 다 조판했으면 null. */
+  private partialLayoutEpoch: number | null = null;
   private packets = new Map<number, PagePacket>();
   private furniturePreview: { key: string; doc: Doc; list: { section: number; steps: { para: number; control: number; index: number }[] } } | null = null;
   private pageMetadata: { doc: Doc; layoutEpoch: number; fontGeneration: number; pages: HmPage[] } | null = null;
@@ -316,15 +370,19 @@ export class HeemangAdapter {
       if (!current()) return;
     }
     if (!this.fontCount()) throw new EngineNotSupportedError('글꼴 파일이 필요합니다. 로컬 TTF·OTF·TTC·HFT 글꼴을 연결해 주세요.');
-    const pageCount = (JSON.parse(doc.state()) as DocState).pageCount;
+    // 첫 조판이 찾은 대체 글꼴도 연결한다. 앞쪽만 조판하는 문서는 그 쪽들의 글꼴만 찾고, 나머지는 completeFonts 가 맡는다.
+    const pageCount = this.state().pageCount;
     while (await this.loadFonts(requests())) {
       if (!current()) return;
     }
     if (!current()) return;
-    await this.prepareOutlines(doc);
+    // 윤곽선 요청은 문서 전체를 조판해 모든 쪽을 만든다. 앞쪽만 조판하는 동안에는 completeFonts 로 미룬다.
+    if (!this.firstPages) await this.prepareOutlines(doc);
     if (!current()) return;
     this.refreshLayout();
     if (pageCount > 0) {
+      // 그사이 글꼴이 바뀌었으면 쪽을 읽기 전에 앞쪽만 다시 조판한다.
+      if (this.firstPages) progressiveDoc(doc)?.layoutFirst(this.firstPages);
       const packet = decodePacket(doc.page(0).slice());
       // 첫 쪽의 그림도 준비한 뒤 문서를 화면에 공개한다.
       await this.pictures.prepare(doc, 0, packet.ops.flatMap(op => op.op === 'patch' ? [op.item] : []));
@@ -345,7 +403,7 @@ export class HeemangAdapter {
   adoptSourceDigest(digest: string): void { if (this.doc) this._digest = digest; }
   hasLoadedDocument(): boolean { return this.doc !== null; }
   get pageCount(): number { return this.doc && this.fontsPrepared ? this.state().pageCount : 0; }
-  state(): DocState { return JSON.parse(this.document().state()); }
+  state(): DocState { return JSON.parse(this.hmStateJson()); }
   get wasmMemoryBytes(): number { return this.memory.buffer.byteLength; }
 
   releaseDocument(): void {
@@ -359,6 +417,8 @@ export class HeemangAdapter {
     this.doc?.free();
     this.doc = null;
     this.fontsPrepared = false;
+    this.firstPages = 0;
+    this.partialLayoutEpoch = null;
     this.packets.clear();
     this.pageMetadata = null;
     this.pageList = null;
@@ -376,6 +436,7 @@ export class HeemangAdapter {
 
   loadDocument(bytes: Uint8Array, name = ''): DocumentInfo {
     // 잘못된 입력은 현재 문서를 닫지 않는다.
+    this.cancelOpenWarmup();
     const next = this.engine.open(bytes);
     this.releaseDocument();
     this.doc = next;
@@ -433,8 +494,88 @@ export class HeemangAdapter {
   }
   refreshLayout(): void { this.packets.clear(); this.pageMetadata = null; }
 
+  // ─── 점진 조판: 큰 문서의 앞쪽을 먼저 보여 준다 ───────────────
+
+  /** 엔진 상태 JSON. 앞쪽만 조판해 여는 동안에는 글꼴이 바뀌어도 앞쪽만 다시 조판한다. */
+  hmStateJson(): string {
+    const doc = this.document();
+    if (this.firstPages) progressiveDoc(doc)?.layoutFirst(this.firstPages);
+    return doc.state();
+  }
+
+  /**
+   * 편집기가 문서를 열 때 부른다. 엔진이 지원하면 finishFirstPages 까지 상태·쪽 읽기가 문서 전체가 아니라
+   * 앞쪽 pages 쪽만 조판한다. 앞쪽 조판으로 다 조판되는 문서이거나 엔진이 지원하지 않으면 false.
+   */
+  beginFirstPages(pages: number): boolean {
+    const doc = progressiveDoc(this.doc);
+    if (!doc) return false;
+    const progress = JSON.parse(doc.layoutFirst(Math.max(1, pages))) as LayoutProgress;
+    this.firstPages = progress.complete ? 0 : Math.max(1, pages);
+    return !progress.complete;
+  }
+
+  /** 앞쪽만 조판해 연 문서의 나머지 쪽이 아직 남았는지. 쪽 읽기 밖의 엔진 호출은 남은 조판을 한 번에 끝낸다. */
+  get layoutPending(): boolean { return this.firstPages > 0 || this.partialLayoutEpoch !== null; }
+
+  /** 앞쪽만 조판하던 여는 단계를 끝낸다. 남은 쪽이 있으면 true — 호출자가 layoutMore 로 마저 조판한다. */
+  finishFirstPages(): boolean {
+    this.firstPages = 0;
+    const doc = progressiveDoc(this.doc);
+    if (!doc) return false;
+    const state = JSON.parse(doc.state()) as DocState & { layoutComplete?: boolean };
+    this.partialLayoutEpoch = state.layoutComplete === false ? state.layoutEpoch : null;
+    return this.partialLayoutEpoch !== null;
+  }
+
+  /**
+   * 남은 쪽을 pages 쪽쯤 더 조판한다(0이면 끝까지). 다시 그릴 쪽의 packet 만 버린다.
+   * 그사이 다른 호출이 조판했으면(엔진은 다른 요청 전에 남은 조판을 끝낸다) 모든 쪽을 다시 그릴 쪽으로 돌려준다.
+   */
+  layoutMore(pages: number): LayoutProgress | null {
+    const doc = progressiveDoc(this.doc);
+    if (!doc) return null;
+    const seen = this.partialLayoutEpoch;
+    const before = (JSON.parse(doc.state()) as DocState).layoutEpoch;
+    const progress = JSON.parse(doc.layoutMore(Math.max(0, pages))) as LayoutProgress;
+    this.pageMetadata = null;
+    if (seen === null || before !== seen) {
+      this.packets.clear();
+      progress.changedPages = Array.from({ length: progress.pageCount }, (_, index) => index);
+    } else if (progress.layoutEpoch !== seen) {
+      for (const index of progress.changedPages) this.packets.delete(index);
+      for (const packet of this.packets.values()) packet.layoutEpoch = progress.layoutEpoch;
+    }
+    this.partialLayoutEpoch = progress.complete ? null : progress.layoutEpoch;
+    return progress;
+  }
+
+  /**
+   * 앞쪽만 조판해 연 문서의 조판이 끝난 뒤 부른다. 나머지 쪽이 찾은 대체 글꼴과 글꼴 윤곽선을 마저 연결한다.
+   * 연결한 것이 있으면 true — 조판이나 글자 모양이 바뀌었을 수 있으므로 호출자가 쪽을 다시 그린다.
+   */
+  async completeFonts(): Promise<boolean> {
+    const doc = this.doc;
+    if (!doc) return false;
+    let changed = false;
+    while (await this.loadFonts(JSON.parse(doc.fontRequests()) as FontRequests)) {
+      if (this.doc !== doc) return false;
+      changed = true;
+    }
+    if (this.doc !== doc) return false;
+    if (await this.prepareOutlines(doc)) changed = true;
+    if (this.doc !== doc) return false;
+    if (changed) this.refreshLayout();
+    return changed;
+  }
+
   private invalidate(receipt: Receipt): void {
-    if (receipt.changedPages === null) { this.packets.clear(); return; }
+    // 나머지 쪽을 조판하는 중에 편집하면 엔진이 조판을 먼저 끝낸다. 영수증은 그 뒤만 비교하므로 모두 버린다.
+    if (receipt.changedPages === null || this.partialLayoutEpoch !== null) {
+      this.partialLayoutEpoch = null;
+      this.packets.clear();
+      return;
+    }
     for (const index of receipt.changedPages) this.packets.delete(index);
     // 전역 epoch가 바뀌어도 엔진이 보장한 나머지 쪽의 packet은 재사용한다.
     for (const packet of this.packets.values()) {
@@ -532,6 +673,52 @@ export class HeemangAdapter {
       if (!refilled || this.doc !== doc || this.canvasPaints.get(canvas) !== paint || !canvas.isConnected) return;
       this.redrawPage(canvas, paint, false);
     }).catch(error => console.warn('[Heemang] 글꼴 윤곽선 연결 실패:', error));
+  }
+
+  /**
+   * 엔진을 읽은 뒤 쉬는 시간에 빈 문서 사본을 한 번 조판해 첫 쪽까지 만들고 닫는다. 엔진 모듈은 처음 부르는
+   * 함수를 그때 컴파일하므로, 첫 문서를 열 때 조판·쪽 그리기 코드를 컴파일하는 시간이 들지 않는다.
+   * 그 전에 문서를 열었으면 그 문서가 이미 컴파일했으므로 하지 않는다. 열린 문서·글꼴 상태는 건드리지 않는다.
+   */
+  scheduleOpenWarmup(): void {
+    const template = this.editWarmupTemplate;
+    if (openWarmup !== 'pending' || !template) return;
+    openWarmup = 'scheduled';
+    const run = () => {
+      openWarmup = 'done';
+      cancelOpenWarmupRun = null;
+      // 비교 측정용: window.__rhwpOpenWarmup = false 이면 예열하지 않고, 예열하면 걸린 시간(ms)을 남긴다.
+      const flags = globalThis as { __rhwpOpenWarmup?: boolean | number };
+      if (this.doc || flags.__rhwpOpenWarmup === false) return;
+      let scratch: Doc | null = null;
+      const startedAt = performance.now();
+      try {
+        scratch = this.engine.open(template);
+        scratch.state();
+        scratch.page(0);
+        flags.__rhwpOpenWarmup = performance.now() - startedAt;
+      } catch (error) {
+        console.warn('[Heemang] 첫 문서 조판 예열 실패:', error);
+      } finally {
+        scratch?.close();
+        scratch?.free();
+      }
+    };
+    if (typeof requestIdleCallback === 'function') {
+      const id = requestIdleCallback(run, { timeout: 2000 });
+      cancelOpenWarmupRun = () => cancelIdleCallback(id);
+    } else {
+      const id = setTimeout(run, 0);
+      cancelOpenWarmupRun = () => clearTimeout(id);
+    }
+  }
+
+  /** 문서를 열기 시작하면 아직 돌지 않은 첫 문서 예열을 거둔다. 여는 문서가 같은 코드를 컴파일한다. */
+  cancelOpenWarmup(): void {
+    if (openWarmup !== 'scheduled') return;
+    openWarmup = 'done';
+    cancelOpenWarmupRun?.();
+    cancelOpenWarmupRun = null;
   }
 
   /**
@@ -968,6 +1155,8 @@ export class HeemangAdapter {
     const doc = this.document();
     // adopt 는 성공하든 실패하든 next 를 가져가 닫는다.
     doc.adopt(this.engine.open(bytes));
+    this.firstPages = 0;
+    this.partialLayoutEpoch = null;
     if (this.pictureFrame) cancelAnimationFrame(this.pictureFrame);
     this.pictureFrame = 0;
     this.pictures.clear();

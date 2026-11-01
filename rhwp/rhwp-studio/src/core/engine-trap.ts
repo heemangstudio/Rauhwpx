@@ -128,6 +128,7 @@ const HEEMANG_READ_CALLS: ReadonlySet<string> = new Set([
   'state', 'pages', 'pageInfo', 'page', 'patch', 'pictureSource', 'pictureBytes', 'pageSvg', 'pdf', 'pagePng',
   'locate', 'objects', 'pageObjects', 'select', 'selectRange', 'navigate', 'query', 'search', 'layoutStats',
   'substitutions', 'fontRequests', 'glyphRequests', 'fontNames', 'copy', 'hasTableTransposeClipboard', 'checkpoint',
+  'layoutFirst', 'layoutMore',
   'releaseCheckpoint', 'serialize', 'serializeAs', 'exportHwpx', 'verifyHwp',
 ]);
 /** 멈춘 뒤에도 복구본 저장이 쓰는 읽기. */

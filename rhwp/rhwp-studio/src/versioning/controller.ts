@@ -603,7 +603,11 @@ export class DocumentVersionController implements VersionManagerController {
     await this.#enqueue(() => this.#enableVersioning());
   }
 
-  async #enableVersioning(): Promise<void> {
+  /**
+   * structuralManifest 가 false 면 첫 커밋에 구조 병합 manifest 를 만들지 않고 비교 스냅샷 manifest 를 붙인다.
+   * 병합과 다음 커밋이 필요할 때 만든다(#ensureFullMergeManifest).
+   */
+  async #enableVersioning({ structuralManifest = true }: { structuralManifest?: boolean } = {}): Promise<void> {
       this.#guardSaved();
       await this.#guardMutation();
       const baseline = this.#savedBaseline?.documentId === this.#getDocumentId() ? this.#savedBaseline.content : null;
@@ -626,7 +630,9 @@ export class DocumentVersionController implements VersionManagerController {
         ? await this.#captureSavedContent(baseline)
         : this.#snapshotCache.capture(this.#wasm, this.#getDocumentId(), this.#editorRevision);
       this.#assertWorkspaceToken(workspace, { editor: false });
-      const mergeManifestEntries = await this.#mergeWorker.buildDocumentManifest(capture.bytes);
+      const mergeManifestEntries = structuralManifest
+        ? await this.#mergeWorker.buildDocumentManifest(capture.bytes)
+        : undefined;
       this.#assertWorkspaceToken(workspace, { editor: false });
       const analysis = analyzeVersionDiff(null, capture.compareSnapshot);
       const createdAt = Date.now();
@@ -3032,7 +3038,9 @@ export class DocumentVersionController implements VersionManagerController {
     if (!repository && this.#autoEnable() && this.#autoEnableBlockedFor !== id
       && (!this.#documentState.isDirty() || this.#savedBaseline?.documentId === id)
       && !this.#agentBridge.isTurnRunning()) {
-      await this.#enableVersioning();
+      // 자동으로 켜는 기록(대개 문서를 열 때)은 구조 병합 manifest 를 기다리지 않는다. 큰 문서는 새 worker 에서
+      // 그것만 수십 초가 걸려(415쪽 HWP 30초 이상) 그동안 문서 열기 완료·다른 문서 열기·커밋이 이 큐에서 기다린다.
+      await this.#enableVersioning({ structuralManifest: false });
       return;
     }
     if (!repository) {

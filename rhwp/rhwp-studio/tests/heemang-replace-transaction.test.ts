@@ -27,7 +27,7 @@ type Container = 'body' | 'cell';
 function open(t: test.TestContext, container: Container) {
   const engine = new Engine(), doc = engine.open(new Uint8Array(readFileSync(new URL('../src/core/hm/blank.hwpx', import.meta.url))));
   t.after(() => { doc.free(); engine.free(); });
-  const adapter = { documentInstance: 1, hmDoc: () => doc, hasLoadedDocument: () => true,
+  const adapter = { documentInstance: 1, hmDoc: () => doc, hmStateJson() { return this.hmDoc().state(); }, hasLoadedDocument: () => true,
     applyReceipt: () => {}, refreshLayout: () => {} } as unknown as HeemangAdapter;
   const core = new HmCore(adapter);
   let list = bodyList(0), control = 0;

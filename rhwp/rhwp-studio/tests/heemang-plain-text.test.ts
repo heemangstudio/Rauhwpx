@@ -27,7 +27,7 @@ const clipboard = await import('../src/core/hm/clipboard-native.ts');
 function open(t: test.TestContext, bytes = new Uint8Array(readFileSync(new URL('../src/core/hm/blank.hwpx', import.meta.url)))) {
   const engine = new Engine(), doc = engine.open(bytes);
   t.after(() => { doc.free(); engine.free(); });
-  const adapter = { documentInstance: 1, hmDoc: () => doc, hmEngine: () => engine, hasLoadedDocument: () => true,
+  const adapter = { documentInstance: 1, hmDoc: () => doc, hmStateJson() { return this.hmDoc().state(); }, hmEngine: () => engine, hasLoadedDocument: () => true,
     applyReceipt: () => {}, refreshLayout: () => {} } as unknown as HeemangAdapter;
   return { core: new HmCore(adapter), doc };
 }

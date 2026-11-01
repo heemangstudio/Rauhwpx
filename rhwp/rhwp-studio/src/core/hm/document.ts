@@ -15,6 +15,7 @@ const NO_DOCUMENT = '문서가 로드되지 않았습니다';
 export async function initialize(core: HmCore): Promise<void> {
   const [, template] = await Promise.all([core.adapter.initialize(), preloadBlankTemplate()]);
   core.adapter.editWarmupTemplate = template;
+  core.adapter.scheduleOpenWarmup();
 }
 
 export function getRuntimeFontMetricsApi(core: HmCore): RuntimeFontMetricsApi | null {
@@ -94,6 +95,7 @@ export function prepareDocument(
 ): PreparedWasmDocument {
   const name = fileName ?? FALLBACK_DOCUMENT_FILE_NAME;
   let probe;
+  core.adapter.cancelOpenWarmup();
   try {
     probe = core.adapter.hmEngine().open(data);
   } catch (error) {

@@ -23,6 +23,7 @@ import {
   decodeNameRecord,
   extractCollectionFace as extractCollectionFaceBytes,
   faceOffsets,
+  hancomEngineTableKind,
   isFontSignature,
   parseFontSource,
   parseHancomFontList,
@@ -247,6 +248,65 @@ async function discoverHancomFontDirs(base, pathApi) {
   }
   await walk(base, 0);
   return found.sort();
+}
+
+/** dir 아래 segments 폴더를 이름 대소문자와 상관없이 찾는다. */
+async function childDirCaseless(dir, segments) {
+  let current = dir;
+  for (const segment of segments) {
+    const wanted = segment.toLowerCase();
+    const match = (await listDir(current)).find((entry) => entry.name.toLowerCase() === wanted
+      && (entry.isDirectory() || entry.isSymbolicLink()));
+    if (!match) return null;
+    current = path.join(current, match.name);
+  }
+  return current;
+}
+
+async function tableFiles(dir, kind) {
+  if (!dir) return [];
+  const found = [];
+  for (const entry of (await listDir(dir)).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
+    if (hancomEngineTableKind(entry.name) !== kind) continue;
+    const filePath = path.join(dir, entry.name);
+    try {
+      const info = await fs.stat(filePath);
+      if (info.isFile()) found.push({ kind, path: filePath, size: info.size, mtimeMs: info.mtimeMs });
+    } catch {
+      // 사라졌거나 읽을 수 없는 표는 건너뛴다.
+    }
+  }
+  return found;
+}
+
+/**
+ * 한컴 HFT 폴더(<X>/Shared/Fonts) 옆의 엔진 표를 찾는다. FontMap.dat 는 HFT 옆에, hftinfo.dat 는
+ * HFT 옆(macOS)이나 <X>/Bin/FontDB(Windows), 코드 표는 <X>/Bin/Code/u300_*.dat 에 있다.
+ * 표는 설치본끼리 섞지 않는다. installs 순서(먼저 오는 설치 루트가 우선)에서 표가 가장 많이 갖춰진
+ * 폴더 하나를 고르고, 같은 루트의 여러 판(HOffice110, HOffice120 …)은 번호가 큰 판을 쓴다.
+ * @param {Array<{ install: string, dirs: string[] }>} installs 설치 루트별 HFT 폴더
+ * @returns {Promise<{ dir: string, tables: Array<{ kind: 'fontmap'|'hftinfo'|'code', path: string, size: number, mtimeMs: number }> } | null>}
+ */
+export async function locateHancomEngineTables(installs) {
+  const candidates = [];
+  for (const [rank, { dirs }] of installs.entries()) {
+    for (const dir of dirs) {
+      const parent = path.dirname(dir);
+      const base = /^shared$/i.test(path.basename(parent)) ? path.dirname(parent) : null;
+      const [fontmap] = await tableFiles(dir, 'fontmap');
+      let [hftinfo] = await tableFiles(dir, 'hftinfo');
+      if (!hftinfo && base) [hftinfo] = await tableFiles(await childDirCaseless(base, ['Bin', 'FontDB']), 'hftinfo');
+      if (!hftinfo && base) [hftinfo] = await tableFiles(await childDirCaseless(base, ['Bin', 'Shared', 'Fonts']), 'hftinfo');
+      const code = base ? await tableFiles(await childDirCaseless(base, ['Bin', 'Code']), 'code') : [];
+      if (!fontmap && !hftinfo && !code.length) continue;
+      const score = (fontmap ? 4 : 0) + (hftinfo ? 2 : 0) + (code.length ? 1 : 0);
+      candidates.push({ rank, score, dir, tables: [fontmap, hftinfo, ...code].filter(Boolean) });
+    }
+  }
+  candidates.sort((a, b) => a.rank - b.rank || b.score - a.score
+    || b.dir.localeCompare(a.dir, 'en', { numeric: true, sensitivity: 'base' }));
+  const best = candidates[0];
+  return best ? { dir: best.dir, tables: best.tables } : null;
 }
 
 export async function discoverApplicationFontDirs(bases, {
@@ -561,6 +621,8 @@ export function createSystemFontService(options = {}) {
   const cachePath = options.cacheDir ? path.join(options.cacheDir, CACHE_FILE) : null;
   let index = null;
   let facesById = new Map();
+  /** 한컴 엔진 표 id → { path, size, mtimeMs }. 글꼴 해석 없이 원본 바이트를 내준다. */
+  let tablesById = new Map();
   let pending = null;
   let queued = null;
   /** @type {Promise<object|null> | null} 저장된 캐시 파일. 처음 한 번만 읽는다. */
@@ -618,15 +680,23 @@ export function createSystemFontService(options = {}) {
     const saved = (await loadPersisted())?.index;
     if (index || pending) return;
     if (saved?.version !== SYSTEM_FONT_INDEX_VERSION || (saved.key ?? null) !== savedIndexKey
-      || !Array.isArray(saved.index?.faces) || !saved.mtimes || typeof saved.mtimes !== 'object') return;
+      || !Array.isArray(saved.index?.faces) || !Array.isArray(saved.index.engineTables)
+      || !saved.mtimes || typeof saved.mtimes !== 'object') return;
     const byId = new Map();
     for (const face of saved.index.faces) {
       const mtimeMs = saved.mtimes[face?.id];
       if (typeof mtimeMs !== 'number' || typeof face.path !== 'string' || typeof face.size !== 'number') return;
       byId.set(face.id, { face, file: { path: face.path, size: face.size, mtimeMs } });
     }
+    const tables = new Map();
+    for (const table of saved.index.engineTables) {
+      const mtimeMs = saved.mtimes[table?.id];
+      if (typeof mtimeMs !== 'number' || typeof table.path !== 'string' || typeof table.size !== 'number') return;
+      tables.set(table.id, { path: table.path, size: table.size, mtimeMs });
+    }
     index = { ...saved.index, fromCache: true, durationMs: Math.round(performance.now() - started) };
     facesById = byId;
+    tablesById = tables;
     indexFingerprint = saved.fingerprint ?? null;
     log(`restored ${index.faces.length} faces from the saved index in ${index.durationMs}ms; `
       + `rescanning in the background in ${revalidateAfterMs}ms`);
@@ -654,7 +724,7 @@ export function createSystemFontService(options = {}) {
 
   function fingerprintOf(result) {
     return createHash('sha256')
-      .update(JSON.stringify([result.faces, result.hancomFaceMap, result.roots]))
+      .update(JSON.stringify([result.faces, result.hancomFaceMap, result.engineTables, result.roots]))
       .digest('hex');
   }
 
@@ -693,6 +763,7 @@ export function createSystemFontService(options = {}) {
     const { roots: baseRoots, hancomInstalls, discoveryErrors = [] } = await resolveRoots();
     const roots = [];
     const installReports = [];
+    const hancomDirs = [];
     for (const install of hancomInstalls) {
       if (!(await isDirectory(install))) continue;
       const dirs = await discoverHancomFontDirs(install, pathApi);
@@ -700,6 +771,15 @@ export function createSystemFontService(options = {}) {
         installReports.push({ path: install, kind: 'hancom', exists: true, fileCount: 0, faceCount: 0, error: 'no Fonts/TTF/HFT folder found' });
       }
       for (const dir of dirs) roots.push({ path: dir, kind: 'hancom', label: 'Hancom Office' });
+      hancomDirs.push({ install, dirs });
+    }
+    const located = await locateHancomEngineTables(hancomDirs);
+    const tables = new Map();
+    const engineTables = [];
+    for (const table of located?.tables ?? []) {
+      const id = faceId(`table\u0000${table.path}`, 0, table.size, table.mtimeMs);
+      tables.set(id, { path: table.path, size: table.size, mtimeMs: table.mtimeMs });
+      engineTables.push({ id, kind: table.kind, path: table.path, size: table.size });
     }
     roots.push(...baseRoots);
     const added = (await resolveAddedFolders()).map((folder) => ({ path: folder, kind: 'user', label: ADDED_FOLDER_LABEL }));
@@ -756,6 +836,7 @@ export function createSystemFontService(options = {}) {
       roots: [...collected.roots, ...installReports],
       faces,
       hancomFaceMap,
+      engineTables,
       errors,
       stats: {
         files: collected.files.length,
@@ -778,7 +859,7 @@ export function createSystemFontService(options = {}) {
         ...(savedIndexKey !== null ? { key: savedIndexKey } : {}),
         fingerprint: indexFingerprint,
         index: next,
-        mtimes: Object.fromEntries([...byId].map(([id, entry]) => [id, entry.file.mtimeMs])),
+        mtimes: Object.fromEntries([...byId, ...tables].map(([id, entry]) => [id, entry.file?.mtimeMs ?? entry.mtimeMs])),
       });
     } else if (savedIndex?.index) {
       // 저장본과 같으면 쓰지 않는다. 되살린 face 목록은 새 색인이 대신하니 비교에 쓸 지문만 남겨
@@ -787,8 +868,14 @@ export function createSystemFontService(options = {}) {
     }
     index = next;
     facesById = byId;
+    tablesById = tables;
     for (const id of collectionPlans.keys()) if (!byId.has(id)) collectionPlans.delete(id);
     logSummary(next, mapStats);
+    if (located) {
+      const codes = located.tables.filter((table) => table.kind === 'code').length;
+      log(`  hancom engine tables from ${located.dir}: `
+        + `${located.tables.filter((table) => table.kind !== 'code').map((table) => table.kind).join(', ') || 'no maps'}, ${codes} code tables`);
+    }
     return next;
   }
 
@@ -850,6 +937,8 @@ export function createSystemFontService(options = {}) {
     const started = performance.now();
     if (typeof id !== 'string' || !/^[0-9a-f]{16}$/.test(id)) throw new Error('invalid font id');
     if (!index) await list();
+    const table = tablesById.get(id);
+    if (table) return openTable(id, table, started);
     const entry = facesById.get(id);
     if (!entry) throw new Error(`unknown font id ${id}`);
     const { face, file } = entry;
@@ -896,6 +985,34 @@ export function createSystemFontService(options = {}) {
       }
     }
     return { size: plan ? plan.size : file.size, chunks };
+  }
+
+  /** 한컴 엔진 표는 글꼴이 아니므로 파일 바이트를 그대로 흘려보낸다. */
+  async function openTable(id, table, started) {
+    async function* chunks() {
+      const handle = await fs.open(table.path, 'r');
+      try {
+        const now = await handle.stat();
+        if (now.size !== table.size || now.mtimeMs !== table.mtimeMs) {
+          throw stale(id, 'engine table changed since the index was built');
+        }
+        yield* readChunks(handle, 0, table.size);
+        log(`read ${id} ${table.path} ${table.size} bytes ${Math.round(performance.now() - started)}ms`);
+      } finally {
+        await handle.close();
+      }
+    }
+    let info;
+    try {
+      info = await fs.stat(table.path);
+    } catch (error) {
+      throw stale(id, `engine table is gone (${error.code ?? error.message})`);
+    }
+    if (info.size !== table.size || info.mtimeMs !== table.mtimeMs) {
+      throw stale(id, 'engine table changed since the index was built');
+    }
+    if (table.size > MAX_FACE_BYTES) throw new Error(`too-large: ${table.size} bytes (cap ${MAX_FACE_BYTES})`);
+    return { size: table.size, chunks };
   }
 
   /**

@@ -37,7 +37,7 @@ export function charProperties(characters: CharPatch): CharProperties {
   if (characters.ratios) props.ratios = characters.ratios.map(value => value ?? 100);
   if (characters.color !== undefined) props.textColor = colorRefToHex(characters.color);
   if (characters.shadeColor !== undefined) props.shadeColor = colorRefToHex(characters.shadeColor);
-  if (characters.underlineKind !== undefined) props.underlineType = { none: 'None', below: 'Bottom', above: 'Top' }[characters.underlineKind];
+  if (characters.underlineKind !== undefined) props.underlineType = { none: 'None', below: 'Bottom', center: 'Center', above: 'Top' }[characters.underlineKind];
   if (characters.underlineShape !== undefined) props.underlineShape = characters.underlineShape;
   if (characters.underlineColor !== undefined) props.underlineColor = colorRefToHex(characters.underlineColor);
   if (characters.strikeShape !== undefined) props.strikeShape = characters.strikeShape;

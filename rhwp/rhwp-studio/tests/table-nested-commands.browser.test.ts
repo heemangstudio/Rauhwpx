@@ -53,13 +53,13 @@ test('중첩 표 안의 표 명령은 바깥 표를 고치지 않고 안쪽 표�
       wasm.createNewDocument();
       wasm.insertText(0, 0, 0, 'A');
       wasm.splitParagraph(0, 0, 1);
-      // 바깥 2x2 표의 첫 셀에 안쪽 2x2 표를 붙여 넣는다.
+      // 바깥 2x2 표의 첫 셀에 안쪽 2x2 표를 표로 넣어 붙인다.
       const outer = wasm.createTableEx({ sectionIdx: 0, paraIdx: 0, charOffset: 1, rowCount: 2, colCount: 2 });
       const source = wasm.createTableEx({
         sectionIdx: 0, paraIdx: wasm.getParagraphCount(0) - 1, charOffset: 0, rowCount: 2, colCount: 2,
       });
       wasm.copyControl(0, source.paraIdx, source.controlIdx);
-      wasm.pasteInternalInCell(0, outer.paraIdx, outer.controlIdx, 0, 0, 0);
+      wasm.pasteInternalInCell(0, outer.paraIdx, outer.controlIdx, 0, 0, 0, 'nest');
       const ppi = outer.paraIdx;
       const ci = outer.controlIdx;
       const innerPath = (cellIndex: number) => [

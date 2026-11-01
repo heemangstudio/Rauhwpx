@@ -51,12 +51,32 @@ export interface CharPatch {
     bold?: boolean; italic?: boolean; underline?: boolean; strike?: boolean; size?: number; color?: number;
     fontFace?: string; fontFaces?: (string | null)[]; charSpacing?: number; spacings?: (number | null)[]; ratios?: (number | null)[];
     relSizes?: (number | null)[]; offsets?: (number | null)[]; superscript?: boolean; subscript?: boolean; emboss?: boolean; engrave?: boolean;
-    kerning?: boolean; underlineKind?: "none" | "below" | "above"; underlineShape?: number; underlineColor?: number; strikeShape?: number;
+    kerning?: boolean; useFontSpace?: boolean; underlineKind?: "none" | "below" | "center" | "above"; underlineShape?: number; underlineColor?: number; strikeShape?: number;
     strikeColor?: number; outline?: number; shadow?: number; shadowColor?: number; shadowOffset?: [number, number]; emphasis?: number;
     shadeColor?: number; borderFillId?: number; borderFill?: BorderFillPatch;
 }
 export type Align = "justify" | "left" | "right" | "center" | "distribute" | "divide";
-export interface ParaPatch { align?: Align; spaceBefore?: number; spaceAfter?: number; left?: number; right?: number; indent?: number; lineSpacing?: number; lineSpacingKind?: "percent" | "fixed" | "added" | "atLeast"; tabStops?:{position:number;type:number;fill:number}[] }
+/**
+ * Paragraph shape fields; unknown keys are rejected. Distances are HU within the
+ * document's largest page side; \`lineSpacing\` is 0 to 500 percent, or HU up to that side.
+ * The flags and codes are the paragraph shape's own (HWPX names): \`breakLatinWord\` 0 keep
+ * words, 1 hyphenate, 2 break words; \`breakNonLatinWord\` 0 by word (어절, HWPX BREAK_WORD),
+ * 1 by syllable (글자, HWPX KEEP_WORD, Hancom's default); \`condense\` (minimum space) 0 to 75
+ * percent; \`verticalAlign\` 0 baseline, 1 top, 2 center, 3 bottom; \`lineWrap\` 0 break,
+ * 1 squeeze, 2 keep on one line; \`eAsianEng\` and \`eAsianNum\` space Korean from Latin letters and digits. \`borderFillId\` is the paragraph
+ * border fill (0 none), \`borderOffsets\` [left, right, top, bottom] HU. \`autoTabLeft\` and
+ * \`autoTabRight\` are the tab definition's automatic tabs, kept when only \`tabStops\` change.
+ */
+export interface ParaPatch {
+    align?: Align; spaceBefore?: number; spaceAfter?: number; left?: number; right?: number; indent?: number; lineSpacing?: number;
+    lineSpacingKind?: "percent" | "fixed" | "added" | "atLeast"; tabStops?:{position:number;type:number;fill:number}[];
+    keepWithNext?: boolean; keepLines?: boolean; widowOrphan?: boolean; pageBreakBefore?: boolean; breakLatinWord?: number;
+    breakNonLatinWord?: number; snapToGrid?: boolean; condense?: number; fontLineHeight?: boolean; verticalAlign?: number;
+    lineWrap?: number; eAsianEng?: boolean; eAsianNum?: boolean; borderFillId?: number; borderOffsets?: [number, number, number, number];
+    borderConnect?: boolean; borderIgnoreMargin?: boolean; autoTabLeft?: boolean; autoTabRight?: boolean;
+    /** The paragraph head the shape carries (a style's 문단 종류): definition id 1-based, 0 with an outline for the section's; level 0 to 6. `none` keeps the id and level (up to 7) it is sent, so a reported head goes back unchanged. */
+    heading?: { kind: "none" | "outline" | "numbering" | "bullet"; id?: number; level?: number };
+}
 export interface StylePatch { characters?: CharPatch; paragraphs?: ParaPatch; name?: string; englishName?: string; kind?: "paragraph" | "character"; next?: number; charShapeId?: number; paraShapeId?: number }
 export type ListDefinition = { kind: "bullet"; bullet: string } | { kind: "numbering"; start?: number; levels: { format: string; numberKind?: number; start?: number }[] };
 export interface FontFace { id: number; name: string }
@@ -86,7 +106,15 @@ export interface ColumnSettingsPatch { count?: number; kind?: number; direction?
  * superscript, numbering) in the same transaction.
  */
 export interface NoteShapePatch { attr?: number; userChar?: number; prefix?: number; suffix?: number; start?: number; separatorLength?: number; spaceAbove?: number; spaceBelow?: number; spaceBetween?: number; lineKind?: number; lineWidth?: number; lineColor?: number }
-export interface FieldPatch { command?: string; name?: string; editable?: boolean; value?: string }
+/**
+ * `value` replaces the field's text, in the shape of the text it replaces, and marks the field
+ * changed (`dirty`) unless `dirty` says otherwise; other changes leave the mark. An unfilled
+ * click-here field (not dirty, its text its guide) shows the guide on the editing screen and not
+ * in print: typing into it deletes the guide, inserts the text and sets `{dirty: true}` (the text
+ * takes the shape before the field); rewriting its guide is `{command, value: guide, dirty: false}`,
+ * as Hancom does.
+ */
+export interface FieldPatch { command?: string; name?: string; editable?: boolean; value?: string; dirty?: boolean }
 export interface DocumentPropertiesPatch { pageStart?: number; footnoteStart?: number; endnoteStart?: number; figureStart?: number; tableStart?: number; equationStart?: number; caretList?: number; caretPara?: number; caretPos?: number }
 export interface BorderLineSpec { kind: number; width: number; color: number }
 export type PageFill = { kind: "none" } | { kind: "solid"; color: number; patternColor?: number; pattern?: number } | { kind: "gradient" | "image" };
@@ -94,12 +122,12 @@ export type PageFill = { kind: "none" } | { kind: "solid"; color: number; patter
 export interface PageBorderPatch { attr?: number; offsets?: [number, number, number, number]; borderFill?: number; lines?: [BorderLineSpec, BorderLineSpec, BorderLineSpec, BorderLineSpec]; fill?: PageFill }
 export type Side = "both" | "even" | "odd";
 export type NoteKind = "footnote" | "endnote";
-export type FieldKind = "clickHere" | "hyperlink" | "bookmark" | "date" | "time" | "fileName" | "title" | "pageNumber" | "pageCount";
+export type FieldKind = "clickHere" | "hyperlink" | "bookmark" | "date" | "time" | "fileName" | "title" | "pageNumber" | "pageCount" | "formula";
 export type ControlAddress = TableAddress;
 export interface SectionSettings {section:number;page:PageSettingsPatch|null;settings:SectionSettingsPatch|null;columns:ColumnSettingsPatch|null;noteShapes:{footnote:NoteShapePatch|null;endnote:NoteShapePatch|null};pageBorders:PageBorderPatch[]}
 /** A form object's state. `value` is a check box or radio button's 0 off, 1 on, 2 indeterminate; `text` an edit or combo box's entry. `properties` flattens every property set, first name wins. */
 export interface FormRecord {formType:"PushButton"|"CheckBox"|"RadioButton"|"ComboBox"|"ListBox"|"Edit"|"ScrollBar"|"Unknown";name:string;value:number;text:string;caption:string;enabled:boolean;width:number;height:number;foreColor:number;backColor:number;properties:Record<string,string>;items:string[]}
-export interface ControlRecord {target:ControlAddress;offset:number;kind:string;lists:ListAddress[];side?:Side;number?:number;userChar?:number;prefix?:number;suffix?:number;noteFlag?:number;flags?:number;fieldId?:number;fieldKind?:FieldKind;name?:string;command?:string;guide?:string;editable?:boolean;value?:string;end?:Address;form?:FormRecord}
+export interface ControlRecord {target:ControlAddress;offset:number;kind:string;lists:ListAddress[];side?:Side;number?:number;numberKind?:"page"|"footnote"|"endnote"|"figure"|"table"|"equation"|"other";userChar?:number;prefix?:number;suffix?:number;noteFlag?:number;flags?:number;fieldId?:number;fieldKind?:FieldKind;name?:string;command?:string;guide?:string;editable?:boolean;dirty?:boolean;value?:string;end?:Address;form?:FormRecord;formula?:string;resultFormat?:string;position?:number;format?:number;sideChar?:number}
 /** HU throughout, including natural image dimensions. Patches reject unknown fields. */
 export interface ObjectPatch {
     width?:number; height?:number; horzOffset?:number; vertOffset?:number; treatAsChar?:boolean;
@@ -123,8 +151,9 @@ export interface BorderFillPatch {
     left?:LinePatch; right?:LinePatch; top?:LinePatch; bottom?:LinePatch; diagonal?:LinePatch;
     slash?:number; backslash?:number; centerLine?:"none"|"horizontal"|"vertical"|"cross"; fill?:FillPatch;
 }
-export interface TablePatch { repeatHeader?:boolean; split?:"none"|"row"|"cell"; spacing?:number; padding?:[number,number,number,number]; borderFill?:BorderFillPatch; borderFillId?:number }
-export interface CellPatch { width?:number; height?:number; padding?:[number,number,number,number]; verticalAlign?:"top"|"center"|"bottom"; ownPadding?:boolean; protected?:boolean; header?:boolean; textDirection?:number; editableInForm?:boolean; borderFill?:BorderFillPatch; borderFillId?:number;fieldName?:string }
+/** `lock` 개체 보호하기, `sizeProtect` 크기 고정. */
+export interface TablePatch { lock?:boolean; sizeProtect?:boolean; repeatHeader?:boolean; split?:"none"|"row"|"cell"; spacing?:number; padding?:[number,number,number,number]; borderFill?:BorderFillPatch; borderFillId?:number }
+export interface CellPatch { width?:number; height?:number; padding?:[number,number,number,number]; verticalAlign?:"top"|"center"|"bottom"; ownPadding?:boolean; protected?:boolean; header?:boolean; textDirection?:number; editableInForm?:boolean; lineWrap?:"break"|"squeeze"|"keep"; borderFill?:BorderFillPatch; borderFillId?:number;fieldName?:string }
 export interface ObjectProperties extends Omit<ObjectPatch,"fill"|"caption"> {
     kind:string; text?:string; size?:[number,number]; pictureMargins?:[number,number,number,number];
     brightness?:number; contrast?:number; effect?:number; transparency?:number; naturalWidth?:number; naturalHeight?:number;
@@ -148,8 +177,10 @@ export type EditOp =
 | { op: "setCharShape"; from: Address; to: Address; charShapeId: number }
 | { op: "setParaShape"; from: Address; to: Address; paraShapeId: number }
 | { op: "createStyle"; style: StylePatch }
+/** Paragraphs in a paragraph style follow its new shapes attribute by attribute in the same step; what they set themselves stays. */
 | { op: "updateStyle"; id: number; style: StylePatch }
-| { op: "deleteStyle"; id: number }
+/** Paragraphs in the style take `replacement` (an id before the deletion), following it attribute by attribute; a style in use needs one. Styles naming the deleted one as next name themselves. */
+| { op: "deleteStyle"; id: number; replacement?: number }
 | { op: "ensureList"; definition: ListDefinition }
 | {op:"setPageSettings";section:number;patch:PageSettingsPatch}
 | {op:"setSectionSettings";section:number;patch:SectionSettingsPatch}
@@ -157,24 +188,52 @@ export type EditOp =
 | {op:"setNoteShape";section:number;kind:NoteKind;patch:NoteShapePatch}
 | {op:"setPageBorder";section:number;side:Side;patch:PageBorderPatch}
 | {op:"setPageHide";at:Address;flags:number}
-| {op:"createHeaderFooter";section:number;kind:"header"|"footer";side:Side}
+/**
+ * A header or footer for `side` pages, or the one the section already has. A new one goes in the
+ * body paragraph of `at` (the caret's, so it starts on the caret's page; default the section's
+ * first paragraph), after the header and footer controls already there, as Hancom orders them.
+ * Its paragraph takes the document's 머리말 style, as Hancom gives headers and footers.
+ */
+| {op:"createHeaderFooter";section:number;kind:"header"|"footer";side:Side;at?:Address}
 /** A note at `at` (body, cell or text box; not inside a note): one paragraph holding the note's own number and a space, in the 각주/미주 style's shapes (the shapes at the mark when the document lacks the style). The receipt caret is after the space (offset 9). */
 | {op:"insertNote";at:Address;kind:NoteKind}
 /** Gives every note the number and mirrored note shape Hancom shows. Runs on its own after edits that add, remove, paste or restart notes or change a note shape. */
 | {op:"renumberNotes"}
-| {op:"insertField";at:Address;kind:FieldKind;to?:Address;command?:string;name?:string;editable?:boolean;text?:string}
+/**
+ * A field around `text` (or the text up to `to`). A `formula` field (표 계산식) takes the formula
+ * as `command` (`=SUM(ABOVE)`), its result as `text` and the result format as `resultFormat`
+ * (default `%g,`); it stores Hancom's command `formula??format;;result`. Recalculating is
+ * `updateField` with the new result as `value` (and `dirty: false`), which rewrites the stored
+ * result too.
+ */
+| {op:"insertField";at:Address;kind:FieldKind;to?:Address;command?:string;name?:string;editable?:boolean;text?:string;resultFormat?:string}
 | {op:"updateField";target:ControlAddress;patch:FieldPatch}
 | {op:"insertBookmark";at:Address;name:string}
 | {op:"renameBookmark";target:ControlAddress;name:string}
 | {op:"deleteControl";target:ControlAddress}
 | {op:"setFormValue";target:ControlAddress;value?:number;text?:string}
 | {op:"setDocumentProperties";patch:DocumentPropertiesPatch}
-| {op:"columnBreak";at:Address}
-| {op:"insertNewNumber";at:Address;number:number}
+/** Hancom's 단 나누기: at a paragraph's start or in an empty paragraph it starts the column there, at its end the next paragraph does, and only in the middle (or at the end of the last paragraph) is the paragraph split; the caret goes to where the column starts. `on:false` takes away the page or column break the paragraph starts with, like `pageBreak` `on:false`. */
+| {op:"columnBreak";at:Address;on?:boolean}
+/** 새 번호로 시작: the counter of `kind` (page by default) goes on from `number` after `at`. */
+| {op:"insertNewNumber";at:Address;number:number;kind?:"page"|"footnote"|"endnote"|"figure"|"table"|"equation"}
+/**
+ * 쪽 번호 매기기: where page numbers print (0 none, 1 top left, 2 top center, 3 top right,
+ * 4 bottom left, 5 bottom center, 6 bottom right, 7 outside top, 8 outside bottom, 9 inside top,
+ * 10 inside bottom), their number shape (`NoteShapePatch` format codes, default 0 = 1,2,3) and the
+ * side character around them (a UTF-16 code unit, 0 none; Hancom's 줄표 `-`, 45, by default).
+ * Replaces the section's page number position, or adds one to its first paragraph as Hancom
+ * does; `controls` reports it as `pageNumber` with `position`, `format` and `sideChar`.
+ */
+| {op:"setPageNumberPos";section:number;position:number;format?:number;sideChar?:number}
 | { op:"createTable"; at:Address; rows:number; columns:number; columnWidths?:number[]; rowHeights?:number[]; inline?:boolean }
+/** Numbered as a picture, drawn above the section's objects; in the text it keeps the text above and below it and flows with it. */
 | { op:"insertPicture"; at:Address; bytes:number[]; extension:string; description?:string; width:number; height:number; naturalWidth?:number; naturalHeight?:number; inline?:boolean; horzOffset?:number; vertOffset?:number }
 | { op:"assignPictureImage"; object:ObjectAddress; bytes:number[]; extension:string; naturalWidth:number; naturalHeight:number }
+/** Hancom's new drawing: in front of the text, overlap allowed, drawn above the section's objects, a 0.12 mm black line with flat ends, a white fill (not lines), its kind's description ("사각형입니다." ...), text inside 1 mm margins centred vertically. A line may have no extent across it. */
 | { op:"createShape"; at:Address; kind:"rect"|"ellipse"|"line"|"textbox"|"polygon"|"arc"; connector?:ConnectorSpec; width:number; height:number; points?:[number,number][]; text?:string; inline?:boolean; horzOffset?:number; vertOffset?:number }
+/** Gives a rectangle, ellipse, polygon, arc or curve without text Hancom's empty text part (1 mm margins, centred); the receipt caret is at the start of that text. A drawing with text is left as it is (no history step); lines, pictures, groups and other objects are rejected. */
+| { op:"ensureShapeText"; object:ObjectAddress }
 | { op:"deleteObject"; object:ObjectAddress }
 | { op:"relocateObject"; object:ObjectAddress; at:Address }
 | { op:"setLineEnds"; object:ObjectAddress; start:[number,number]; end:[number,number] }
@@ -192,10 +251,13 @@ export type EditOp =
 | { op: "setObjectCaption"; object: ObjectAddress; text: string; withNumber?: boolean }
 | { op: "insertText"; at: Address; text: string; format?: CharPatch }
 | { op: "delete"; from: Address; to: Address }
-| { op: "split"; at: Address; pageBreak?: boolean }
+/** Breaks the paragraph (Enter). The line left above keeps the shape before the cut for its end mark. At the end of a paragraph whose style names another next style, the new paragraph takes that style and its shapes, as in Hancom; `nextStyle:false` keeps the style (to restore a merged paragraph). */
+| { op: "split"; at: Address; pageBreak?: boolean; nextStyle?: boolean }
 | { op: "formatChars"; from: Address; to: Address; patch: CharPatch }
 | { op: "formatParas"; from: Address; to: Address; patch: ParaPatch }
+/** Sets the page break before the paragraph at `at`; `on:false` takes away the page or column break it starts with. */
 | { op: "pageBreak"; at: Address; on: boolean }
+/** A paragraph style over a range replaces the paragraphs' shapes and characters with the style's; at a caret (`from` equal to `to`) the paragraph follows the style attribute by attribute and keeps what it sets itself, as in Hancom. A character style formats a range and does nothing at a caret. */
 | { op: "applyStyle"; from: Address; to: Address; styleId: number }
 | { op: "insertTableRows"; table: TableAddress; beforeRow: number; count: number; copyRow?: number }
 | { op: "deleteTableRows"; table: TableAddress; startRow: number; count: number }
@@ -252,6 +314,13 @@ export interface TableInfo { table: TableAddress; rows: number; columns: number;
 export interface DocState {
     instance: number; contentEpoch: number; layoutEpoch: number; fontGeneration: number;
     format: "hwp5" | "hwpx" | "hwp3" | "hml"; pageCount: number; dirty: boolean; undo: number; redo: number;
+    /** False while `layoutFirst`/`layoutMore` have laid out only the first `pageCount` pages. */
+    layoutComplete: boolean;
+}
+/** What `layoutFirst` and `layoutMore` laid out: the pages so far, whether that is all of them, the
+ *  layout epoch, and the pages to paint again since the last call (new ones included). */
+export interface LayoutProgress {
+    pageCount: number; complete: boolean; layoutEpoch: number; changedPages: number[];
 }
 export interface Area { x: number; y: number; width: number; height: number }
 /** A picture to decode with the browser and draw in place of a patch. */
@@ -267,7 +336,21 @@ export interface PageInfo {
 }
 export interface Capabilities {
     contract: number; packet: number; pageInfo: boolean; equationScripts: boolean; paragraphCaptures: boolean; tableTranspose: boolean; connectors: boolean; open: string[]; serialize: string[];
+    /** `printPageCount`, `printPageSvg` and `pdf` give Hancom's print layout; the pages are the editing screen's. */
+    printLayout?: boolean;
     scopes: string[]; ops: string[]; paste: string[]; locate: string[]; motions: string[]; query: string[]; missing: string[];
+    /**
+     * Paragraph edits that follow Hancom:
+     * \`emptyMergeKeepsLower\`: deleting across paragraphs from one keeping no characters keeps the last one's style and shapes in the first one's place (its breaks and definitions).
+     * \`columnBreakRule\`: \`columnBreak\` marks rather than splits at a paragraph's start or end or in an empty one; \`on:false\` (also \`pageBreak\`) takes away either break.
+     * \`styleFollow\`: \`updateStyle\` restyles the paragraphs in the style and \`applyStyle\` at a caret follows the style, attribute by attribute; \`deleteStyle\` takes \`replacement\`.
+     * \`paraFlags\`: \`ParaPatch\` flags, break units, borders and automatic tabs.
+     * \`splitShape\`: the line \`split\` leaves keeps the shape before the cut.
+     * \`nextStyle\`: \`split\` at a paragraph's end starts its style's next style.
+     * \`newNumberKinds\`: \`insertNewNumber\` takes \`kind\`.
+     * \`paraHeading\`: \`ParaPatch.heading\`.
+     */
+    paragraphRules?: string[];
 }
 export interface ListAddress { section: number; steps?: Step[] }
 export type QueryRequest =
@@ -341,7 +424,7 @@ export interface ControlInfo {
 }
 export interface ParagraphInfo {
     index: number;
-    /** Characters, tabs, line breaks (\n) and the two fixed spaces (U+00A0, U+2007). */
+    /** Characters, tabs, line breaks (\n), the two fixed spaces (U+00A0, U+2007) and soft hyphens (U+00AD). */
     text: string;
     /** The wire offset of each UTF-16 unit of `text`, then the end mark's. */
     offsets: number[];
@@ -353,6 +436,12 @@ export interface SearchRequest {
     from?: Address; backward?: boolean;
     /** Match text as if controls (notes, fields, objects) were absent; a match may then span them. */
     acrossControls?: boolean;
+    /** Let a match start inside the previous one, as Hancom's find next/previous do ('aa' 3 times in 'aaaa'). Replace all takes matches without overlap. */
+    overlapping?: boolean;
+    /** Hancom's special codes: ^t tab, ^l line break, ^s fixed-width space, ^n paragraph end, at the end of the text only (the match then ends at the next paragraph's start); other ^ pairs are text. */
+    codes?: boolean;
+    /** 자소 단위 찾기: a lone initial consonant (ㄱ..ㅎ) also finds the syllables that start with it. */
+    jamo?: boolean;
 }
 export interface Match { from: Address; to: Address }
 export interface SearchResult { contentEpoch: number; matches: Match[] }
@@ -373,10 +462,11 @@ export interface TableTransposeResult { ok:boolean; sourceRows:number; sourceCol
 export interface CopyRequest { from: Address; to: Address }
 /** `objects`: tables and objects carried; they paste back only into the document copied from. */
 export interface Copied { text: string; html: string; objects: number }
-/** Exactly one of `at` and `replace`. */
+/** Exactly one of `at` and `replace`. A lone copied table pasted at a caret in a table cell fills the cells from there, the part past the table's edge left out, as Hancom's 셀 붙이기 덮어쓰기; `cells: "nest"` puts it into the cell as a table. */
 export interface PasteRequest {
     at?: Address; replace?: { from: Address; to: Address };
     text?: string; expectedEpoch?: number; selection?: Selection; afterSelection?: Selection;
+    cells?: "overwrite" | "nest";
 }
 export type ErrorCode =
 | "MALFORMED_INPUT" | "UNSUPPORTED_FORMAT" | "BAD_REQUEST" | "BAD_ADDRESS"
@@ -498,6 +588,22 @@ export class Doc {
     glyphRequests(): string;
     hasTableTransposeClipboard(): boolean;
     /**
+     * Lays out only the first pages of a document not laid out yet, so a
+     * host can show them before the rest: stops once more than `pages`
+     * pages are laid out, at a page start the layout can go on from.
+     * `LayoutProgress` as JSON. Until the layout is complete, the page
+     * list, page packets, patches, pictures and state serve the pages laid
+     * out so far; every other request completes the layout first.
+     */
+    layoutFirst(pages: number): string;
+    /**
+     * Lays out about `pages` more pages after `layoutFirst`, or the rest
+     * with 0. `LayoutProgress` as JSON, naming the pages to paint again:
+     * the new ones, and earlier ones whose page number, header, footer or
+     * total page count changed.
+     */
+    layoutMore(pages: number): string;
+    /**
      * Paragraphs the last layout reused and formatted.
      */
     layoutStats(): Float64Array;
@@ -567,8 +673,9 @@ export class Doc {
      */
     patch(i: number, item: number, dpi: number): Uint8Array;
     /**
-     * Pages `from..to` as one PDF for printing or export: text and rules
-     * as vectors, pictures and brushes as images at `dpi`.
+     * Pages `from..to` of the print layout as one PDF for printing or
+     * export: text and rules as vectors, pictures and brushes as images
+     * at `dpi`.
      */
     pdf(from: number, to: number, dpi: number): Uint8Array;
     /**
@@ -586,6 +693,17 @@ export class Doc {
      * resample them.
      */
     pictureSource(i: number, item: number): string;
+    /**
+     * The number of pages print and PDF give: the screen's, or fewer
+     * when the unfilled click-here guides the screen shows take lines.
+     */
+    printPageCount(): number;
+    /**
+     * [`Doc::page_svg`] of page `i` of the print layout
+     * ([`Doc::print_page_count`] pages), which leaves out the guide text of
+     * unfilled click-here fields as Hancom's print does.
+     */
+    printPageSvg(i: number, dpi: number): string;
     /**
      * Bounded reads of the document (`QueryRequest`), as JSON:
      * `paragraphs` gives `ParagraphInfo[]` for a list, `formatContext` a
@@ -643,6 +761,14 @@ export class Doc {
      * `markSaved` clears the dirty state.
      */
     serializeAs(format: string, mark_saved: boolean): Uint8Array;
+    /**
+     * Keeps at most `limit` undo steps (all when absent), dropping older
+     * ones. A host that keeps its own undo passes 0: undo and redo do
+     * nothing, receipts report no steps, and checkpoints hold the document
+     * without a history, so editing and restoring stay as cheap at the end
+     * of a long session as at its start.
+     */
+    setHistoryLimit(limit?: number | null): void;
     /**
      * `DocState` as JSON.
      */
@@ -713,6 +839,11 @@ export class Engine {
      * their supplied outlines as described above.
      */
     addFontFile(label: string, file: FontFileSource): number;
+    /**
+     * Registers Hancom's font information table (`fontinfo.dat`), whose
+     * substitution rows choose the face for characters a face lacks.
+     */
+    addFontInfo(bytes: Uint8Array): boolean;
     /**
      * Registers Hancom's font mapping table (`FontMap.dat`).
      */
@@ -852,6 +983,8 @@ export interface InitOutput {
     readonly doc_furniturePreview: (a: number, b: number, c: number) => [number, number, number];
     readonly doc_glyphRequests: (a: number) => [number, number, number, number];
     readonly doc_hasTableTransposeClipboard: (a: number) => [number, number, number];
+    readonly doc_layoutFirst: (a: number, b: number) => [number, number, number, number];
+    readonly doc_layoutMore: (a: number, b: number) => [number, number, number, number];
     readonly doc_layoutStats: (a: number) => [number, number, number, number];
     readonly doc_locate: (a: number, b: number, c: number) => [number, number, number, number];
     readonly doc_markSaved: (a: number, b: number) => [number, number];
@@ -869,6 +1002,8 @@ export interface InitOutput {
     readonly doc_pdf: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly doc_pictureBytes: (a: number, b: number, c: number) => [number, number, number, number];
     readonly doc_pictureSource: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly doc_printPageCount: (a: number) => [number, number, number];
+    readonly doc_printPageSvg: (a: number, b: number, c: number) => [number, number, number, number];
     readonly doc_query: (a: number, b: number, c: number) => [number, number, number, number];
     readonly doc_redo: (a: number) => [number, number, number, number];
     readonly doc_releaseCheckpoint: (a: number, b: number) => [number, number, number];
@@ -879,6 +1014,7 @@ export interface InitOutput {
     readonly doc_selectRange: (a: number, b: number, c: number) => [number, number, number, number];
     readonly doc_serialize: (a: number, b: number) => [number, number, number, number];
     readonly doc_serializeAs: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+    readonly doc_setHistoryLimit: (a: number, b: number) => [number, number];
     readonly doc_state: (a: number) => [number, number, number, number];
     readonly doc_substitutions: (a: number) => [number, number, number, number];
     readonly doc_swapObjectTransform: (a: number, b: number) => [number, number, number, number];
@@ -890,6 +1026,7 @@ export interface InitOutput {
     readonly engine_addCodeTable: (a: number, b: number, c: number) => number;
     readonly engine_addFont: (a: number, b: number, c: number, d: number, e: number) => number;
     readonly engine_addFontFile: (a: number, b: number, c: number, d: any) => number;
+    readonly engine_addFontInfo: (a: number, b: number, c: number) => number;
     readonly engine_addFontMap: (a: number, b: number, c: number) => number;
     readonly engine_addHftInfo: (a: number, b: number, c: number) => number;
     readonly engine_create: (a: number, b: number, c: number) => [number, number, number];

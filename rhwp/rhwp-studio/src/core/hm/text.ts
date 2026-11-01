@@ -74,8 +74,9 @@ interface MergedParagraphShape { styleId: number; paragraphs: object }
 function splitIn(core: HmCore, list: ListAddress, para: number, offset: number, logical = true, meta?: RemovedParaMeta): string {
   const map = paraMap(core.paragraph(list, para));
   const at = logical ? logicalToWire(map, offset) : textToWire(map, offset);
-  const ops: EditOp[] = [{ op: 'split', at: toAddress(list, para, at) }];
   const restored = meta?.heemang as MergedParagraphShape | undefined;
+  // 병합을 되돌리는 나누기는 문단 끝에서도 스타일의 다음 스타일로 넘어가지 않는다.
+  const ops: EditOp[] = [{ op: 'split', at: toAddress(list, para, at), ...(restored ? { nextStyle: false } : {}) }];
   if (restored) {
     // 나눈 뒤 새 문단은 para + 1 이고 lead 위치에서 시작한다. 끝은 나누기 전 문단 끝을 옮긴 자리다.
     const from = toAddress(list, para + 1, 0);

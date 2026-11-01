@@ -147,6 +147,7 @@ import { createPlanManager } from './plan-manager.mjs';
 import { installPlanHost } from './plan-host.mjs';
 import { createSystemFontService } from './system-fonts.mjs';
 import { createFontFolderStore } from './font-folders.mjs';
+import { installJavaScriptDialogs } from './js-dialogs.mjs';
 import {
   nativeExtractorFileName,
   sourceStagedNativeExtractorPath,
@@ -1600,6 +1601,7 @@ const licenseManager = createLicenseManager({
     void accountManager.licenseChanged().catch((error) => console.warn('[hamaeditor] license key link failed:', error));
   },
 });
+installJavaScriptDialogs({ ipcMain, dialog, BrowserWindow, title: PRODUCT_NAME });
 const licenseHost = installLicenseHost({
   ipcMain,
   BrowserWindow,

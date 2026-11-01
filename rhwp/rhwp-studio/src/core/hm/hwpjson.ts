@@ -179,7 +179,8 @@ function pasteAt(core: HmCore, at: Address, json: string): string {
   let nextControl = core.paragraph({ section: at.section, steps: at.steps ?? [] }, at.para).controls.filter(c => c.offset < at.offset).length;
   const emit = (paras: Para[]) => paras.forEach((para, k) => {
     if (k > 0) {
-      ops.push({ op: 'split', at: { ...cursor } });
+      // 붙인 문단은 제 모양을 받으므로 Enter 처럼 다음 스타일로 넘어가지 않는다.
+      ops.push({ op: 'split', at: { ...cursor }, nextStyle: false });
       cursor = { ...cursor, para: cursor.para + 1, offset: 0 }; nextControl = 0;
       if (para.shape && Object.keys(para.shape).length) ops.push({ op: 'formatParas', from: { ...cursor }, to: { ...cursor }, patch: para.shape });
     }

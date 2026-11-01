@@ -27,11 +27,11 @@ export function pasteDocumentBlock(core: HmCore, sourceBytes: Uint8Array, source
   throw unsupported('pasteDocumentBlock');
 }
 
-export function pasteInternalInCell(core: HmCore, sec: number, parentPara: number, controlIdx: number, cellIdx: number, cellParaIdx: number, charOffset: number): string {
+export function pasteInternalInCell(core: HmCore, sec: number, parentPara: number, controlIdx: number, cellIdx: number, cellParaIdx: number, charOffset: number, cells?: 'overwrite' | 'nest'): string {
   throw unsupported('pasteInternalInCell');
 }
 
-export function pasteInternalInCellByPath(core: HmCore, sec: number, parentPara: number, pathJson: string, charOffset: number): string {
+export function pasteInternalInCellByPath(core: HmCore, sec: number, parentPara: number, pathJson: string, charOffset: number, cells?: 'overwrite' | 'nest'): string {
   throw unsupported('pasteInternalInCellByPath');
 }
 

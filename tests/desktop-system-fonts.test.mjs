@@ -335,6 +335,84 @@ test('indexes roots, caches parses, maps Hancom names and guards reads', async (
   assert.ok(!refreshed.faces.some((face) => face.id === korean.id));
 });
 
+/** 서비스가 색인한 한컴 엔진 표를 앱 프로토콜로 읽어 { 이름: 바이트 } 로 돌려준다. */
+async function servedEngineTables(service, index) {
+  const key = 'c'.repeat(64);
+  const served = {};
+  for (const table of index.engineTables) {
+    const response = await serveSystemFont(new Request(`${systemFontBaseUrl(key)}${table.id}`), { fonts: service, key });
+    assert.equal(response.status, 200);
+    const bytes = Buffer.from(await response.arrayBuffer());
+    assert.equal(bytes.length, table.size);
+    served[`${table.kind}:${path.basename(table.path)}`] = bytes.toString('latin1');
+  }
+  return served;
+}
+
+async function writeTree(base, files) {
+  for (const [relative, content] of Object.entries(files)) {
+    const target = path.join(base, ...relative.split('/'));
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, content, 'latin1');
+  }
+}
+
+const HFT_BYTES = 'Han Unified Font File 1.0\x1a\x04\x03';
+
+test('finds Hancom engine tables beside the HFT folder of a macOS install', async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'rhwp-hancom-tables-mac-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const hnc = path.join(dir, 'Hancom Office HWP.app', 'Contents', 'Resources', 'Hnc');
+  await writeTree(hnc, {
+    'Shared/Fonts/FontMap.dat': 'fontmap-mac',
+    'Shared/Fonts/hftinfo.dat': 'hftinfo-mac',
+    'Shared/Fonts/HGSMJ.HFT': HFT_BYTES,
+    'Bin/Code/u300_949.dat': 'code-949',
+    'Bin/Code/u300_kor.dat': 'code-kor',
+    'Bin/Code/u320_hnc.dat': 'not-a-u300-table',
+  });
+  const service = createSystemFontService({ roots: [], hancomInstalls: [path.join(hnc, 'Shared')] });
+  const index = await service.list();
+  assert.deepEqual(await servedEngineTables(service, index), {
+    'fontmap:FontMap.dat': 'fontmap-mac',
+    'hftinfo:hftinfo.dat': 'hftinfo-mac',
+    'code:u300_949.dat': 'code-949',
+    'code:u300_kor.dat': 'code-kor',
+  });
+  // 색인 뒤 바뀐 표는 409 로 알려 Studio 가 색인을 다시 받게 한다.
+  await writeFile(path.join(hnc, 'Bin', 'Code', 'u300_kor.dat'), 'changed');
+  const changed = index.engineTables.find((table) => table.path.endsWith('u300_kor.dat'));
+  await assert.rejects(service.openFace(changed.id), /^Error: stale/);
+});
+
+test('finds Hancom engine tables of the newest Windows install without mixing installs', async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'rhwp-hancom-tables-win-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const hnc = path.join(dir, 'HNC');
+  await writeTree(hnc, {
+    'Office 2020/HOffice110/Shared/Fonts/FontMap.dat': 'fontmap-2020',
+    'Office 2020/HOffice110/Shared/Fonts/HGSMJ.HFT': HFT_BYTES,
+    'Office 2020/HOffice110/Bin/FontDB/hftinfo.dat': 'hftinfo-2020',
+    'Office 2020/HOffice110/Bin/Code/u300_949.dat': 'code-2020',
+    'Office 2022/HOffice120/Shared/Fonts/FontMap.dat': 'fontmap-2022',
+    'Office 2022/HOffice120/Shared/Fonts/HGSMJ.HFT': HFT_BYTES,
+    'Office 2022/HOffice120/Bin/FontDB/HFTInfo.dat': 'hftinfo-2022',
+    'Office 2022/HOffice120/Bin/Shared/Fonts/HFTInfo.dat': 'hftinfo-2022',
+    'Office 2022/HOffice120/Bin/Code/U300_949.DAT': 'code-949-2022',
+    'Office 2022/HOffice120/Bin/Code/u300_jpn.dat': 'code-jpn-2022',
+  });
+  const service = createSystemFontService({ roots: [], hancomInstalls: [hnc] });
+  const index = await service.list();
+  assert.deepEqual(await servedEngineTables(service, index), {
+    'fontmap:FontMap.dat': 'fontmap-2022',
+    'hftinfo:HFTInfo.dat': 'hftinfo-2022',
+    'code:U300_949.DAT': 'code-949-2022',
+    'code:u300_jpn.dat': 'code-jpn-2022',
+  });
+  assert.ok(index.engineTables.every((table) => table.path.includes('HOffice120')));
+  assert.ok(index.engineTables.some((table) => table.path.includes(path.join('Bin', 'FontDB'))));
+});
+
 /** fs.promises 의 함수 호출 수를 센다. system-fonts.mjs 는 같은 객체를 부른다. */
 function countFsCalls(t, names) {
   const counts = Object.fromEntries(names.map((name) => [name, 0]));

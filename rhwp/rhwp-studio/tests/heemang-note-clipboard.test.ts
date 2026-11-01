@@ -35,7 +35,7 @@ function open(t: test.TestContext) {
   const engine = new wasm.Engine();
   const doc = engine.open(new Uint8Array(readFileSync(new URL('../src/core/hm/blank.hwpx', import.meta.url))));
   t.after(() => { doc.free(); engine.free(); });
-  const adapter = { documentInstance: 1, hmDoc: () => doc, hmEngine: () => engine, hasLoadedDocument: () => true,
+  const adapter = { documentInstance: 1, hmDoc: () => doc, hmStateJson() { return this.hmDoc().state(); }, hmEngine: () => engine, hasLoadedDocument: () => true,
     applyReceipt: () => {}, refreshLayout: () => {} } as unknown as HeemangAdapter;
   const core = new HmCore(adapter);
   text.insertText(core, 0, 0, 0, 'abcdef', true);

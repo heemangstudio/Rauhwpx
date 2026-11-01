@@ -437,7 +437,7 @@ export interface CharProperties {
   fontId?: number;
   fontIds?: number[];       // 언어별 개별 글꼴 ID (7개)
   // 확장 속성
-  underlineType?: string;  // 'None' | 'Bottom' | 'Top'
+  underlineType?: string;  // 'None' | 'Bottom' | 'Center' | 'Top'
   underlineColor?: string;
   outlineType?: number;    // 0-6
   shadowType?: number;     // 0=없음, 1=비연속, 2=연속
