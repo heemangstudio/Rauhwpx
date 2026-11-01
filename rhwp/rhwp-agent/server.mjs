@@ -162,6 +162,7 @@ import {
 } from './chat-permissions.mjs';
 import { chatgptError, createChatgptDriver, createChatgptStore } from './chatgpt-web.mjs';
 import { claudeError, createClaudeDriver, createClaudeStore } from './claude-web.mjs';
+import { verifyWebAssistant } from './web-assistant-store.mjs';
 import { ChatContinuationQueue, ChatRequestRegistry } from './chat-requests.mjs';
 import {
   createUserSecretStore,
@@ -1350,6 +1351,13 @@ async function handleBrowserRequest(record, sock, msg) {
         if (typeof args.enabled !== 'boolean') throw workflowError('INVALID_ARGS', `Choose whether ${assistant.name} is on`);
         await assistant.store.setEnabled(args.enabled);
         result = await assistant.driver.status();
+        break;
+      }
+      // 처음 설정의 작동 확인: 보이지 않는 탭으로 짧은 질문을 실제로 보내고 답을 받는다.
+      case 'chatgpt.verify':
+      case 'claude.verify': {
+        const assistant = WEB_ASSISTANTS[String(msg.action).split('.')[0]];
+        result = await verifyWebAssistant(assistant.driver, { sessionId: record.sessionId, code: assistant.code });
         break;
       }
       case 'permissions.revoke': result = { always: await revokeAlwaysChatPermission(args.capability) }; break;

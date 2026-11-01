@@ -63,8 +63,8 @@ export function createPreviewBrowser(emit: (event: BrowserEvent) => void, getThr
     });
   };
   const configuration: Record<string, unknown> = { profileId: 'shared', downloads: { maxFileBytes: 64 * 1024 * 1024, autoImport: true }, preview: { mode: 'docked', reducedMotion: false }, security: { privateNetworkAccess: false }, googleSignIn: { supported: null, status: 'not-verified' } };
-  // ?chatgpt=on|signed-out|web, ?claude=on|signed-out|web 으로 켜짐·로그인 필요·데스크톱 밖을 고른다.
-  const assistantState = (mode: string | null) => ({ enabled: mode === 'on' || mode === 'signed-out', available: mode !== 'web', signedIn: mode !== 'signed-out' });
+  // ?chatgpt=on|signed-out|web|broken, ?claude=… 으로 켜짐·로그인 필요·데스크톱 밖·확인 질문 실패를 고른다.
+  const assistantState = (mode: string | null) => ({ enabled: mode === 'on' || mode === 'signed-out' || mode === 'broken', available: mode !== 'web', signedIn: mode !== 'signed-out', broken: mode === 'broken' });
   const query = new URLSearchParams(globalThis.location?.search ?? '');
   const assistants: Record<string, ReturnType<typeof assistantState>> = { chatgpt: assistantState(query.get('chatgpt')), claude: assistantState(query.get('claude')) };
   let faviconRequests = 0;
@@ -166,6 +166,17 @@ export function createPreviewBrowser(emit: (event: BrowserEvent) => void, getThr
       return { enabled: assistant.enabled, available: assistant.available, projectUrl: null,
         signedIn: args.check === true && assistant.enabled && assistant.available ? assistant.signedIn : null,
         ...(args.check === true && assistant.signedIn && assistant.enabled ? { account: 'user@example.com' } : {}) };
+    }
+    // 처음 설정의 작동 확인 — 허브처럼 켜짐·사용 가능·로그인을 차례로 본다.
+    if (assistant && verb === 'verify') {
+      const code = service!.toUpperCase();
+      const fail = (suffix: string) => Object.assign(new Error(`${service} ${suffix}`), { code: `${code}_${suffix}` });
+      if (!assistant.enabled) throw fail('DISABLED');
+      if (!assistant.available) throw fail('UNAVAILABLE');
+      if (!assistant.signedIn) throw fail('SIGNED_OUT');
+      if (assistant.broken) throw fail('UI_CHANGED');
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      return { verified: true, chatUrl: service === 'chatgpt' ? 'https://chatgpt.com/c/preview' : 'https://claude.ai/chat/preview', answer: '연결됐어요' };
     }
     if (action === 'configuration.get') return structuredClone(configuration);
     if (action === 'configuration.update') { Object.assign(configuration, structuredClone(args)); return structuredClone(configuration); }

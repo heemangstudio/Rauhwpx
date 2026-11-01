@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { HUB_TOKEN, connect, startLiveHub } from './live-hub-fixture.mjs';
+import { WEB_ASSISTANT_VERIFY_CHAT_KEY, verifyWebAssistant } from '../web-assistant-store.mjs';
 
 async function holdTurn(t, hub, started) {
   hub.message('HOLD');
@@ -33,6 +34,8 @@ for (const [service, tool, code] of [['chatgpt', 'ask_chatgpt', 'CHATGPT'], ['cl
   const { call } = await holdTurn(t, hub, started);
 
   assert.deepEqual(await browserRequest(hub, `${service}.status`), { enabled: false, available: false, projectUrl: null, signedIn: null });
+  // 처음 설정의 작동 확인도 같은 게이트를 지난다.
+  await assert.rejects(browserRequest(hub, `${service}.verify`), { code: `${code}_DISABLED` });
   const off = await call(tool, { question: '내가 좋아하는 말투는?' });
   assert.equal(off.error.code, `${code}_DISABLED`);
   // 도구 카드는 허브가 보낸 결과(여기서는 오류)를 그린다.
@@ -43,6 +46,7 @@ for (const [service, tool, code] of [['chatgpt', 'ask_chatgpt', 'CHATGPT'], ['cl
   assert.equal((await browserRequest(hub, `${service}.configure`, { enabled: true })).enabled, true);
   // 켜도 이 허브는 앱 안 네이티브 브라우저가 없다(웹 개발·관리형 브라우저).
   assert.equal((await call(tool, { question: 'q' })).error.code, `${code}_UNAVAILABLE`);
+  await assert.rejects(browserRequest(hub, `${service}.verify`), { code: `${code}_UNAVAILABLE` });
 
   // 채팅 권한은 허브만 확인하므로 턴 중에도 바로 부여된다. 하위 작업은 쓸 수 없다.
   assert.equal((await call('request_permission', { capability: service, reason: 'Check the preferred tone.' })).result.status, 'pending');
@@ -58,4 +62,15 @@ for (const [service, tool, code] of [['chatgpt', 'ask_chatgpt', 'CHATGPT'], ['cl
 
   assert.equal((await browserRequest(hub, `${service}.configure`, { enabled: false })).enabled, false);
   assert.equal((await call(tool, { question: 'q' })).error.code, `${code}_DISABLED`);
+});
+
+test('the setup check asks one fixed chat and fails on an empty answer', async () => {
+  const asked = [];
+  const driver = (answer) => ({ ask: async (input) => { asked.push(input); return { chatUrl: 'https://chatgpt.com/c/1', answer }; } });
+  const ok = await verifyWebAssistant(driver(`  연결됐어요\n\n${'가'.repeat(400)}`), { sessionId: 's1', code: 'CHATGPT' });
+  assert.equal(ok.verified, true);
+  assert.equal(ok.chatUrl, 'https://chatgpt.com/c/1');
+  assert.ok(ok.answer.startsWith('연결됐어요 가') && ok.answer.length === 200);
+  await assert.rejects(verifyWebAssistant(driver('  \n '), { code: 'CLAUDE' }), { code: 'CLAUDE_UI_CHANGED' });
+  assert.deepEqual(asked.map((input) => [input.chatKey, input.sessionId]), [[WEB_ASSISTANT_VERIFY_CHAT_KEY, 's1'], [WEB_ASSISTANT_VERIFY_CHAT_KEY, null]]);
 });
