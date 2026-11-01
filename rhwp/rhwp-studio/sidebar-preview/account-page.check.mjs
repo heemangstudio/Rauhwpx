@@ -11,6 +11,18 @@ const openFromButton = async (page) => {
   await page.waitForSelector('.acct-page.acct-page-open', { visible: true });
   await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
 };
+// 이름·사진·사용량·프로모션 코드·계정 삭제는 설정의 계정 탭에만 있다.
+const openSettingsAccount = async (page) => {
+  await page.evaluate(() => {
+    const { eventBus, home } = window.sidebarPreview;
+    eventBus.emit('settings:open', {
+      destination: 'account',
+      ...(home ? { fullscreen: true, from: 'home', onOpen: () => home.hide() } : {}),
+    });
+  });
+  await page.waitForSelector('#ag-settings-pane-account .acct-embedded .acct-profile', { visible: true });
+  await page.waitForFunction(() => !document.documentElement.classList.contains('document-home-open'));
+};
 const sectionError = (page, section) =>
   page.$eval(`[data-section="${section}"]`, (node) => [...node.querySelectorAll('.acct-error')].find((line) => !line.hidden)?.textContent ?? '');
 
@@ -96,6 +108,10 @@ export async function checkAccountPage({ page, open, screenshot }) {
   await open('reset=1&home=1&account=hama');
   await openFromButton(page);
   await screenshot('account-page-hama');
+  assert.equal(await page.$('.acct-name-edit'), null, 'the popup only shows the name');
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => !document.querySelector('.acct-page'));
+  await openSettingsAccount(page);
   await page.click('.acct-name-edit');
   await page.$eval('.acct-name-input', (input) => { input.value = '   '; });
   await page.click('.acct-name-form button[type="submit"]');
@@ -106,14 +122,12 @@ export async function checkAccountPage({ page, open, screenshot }) {
   await page.keyboard.press('Enter');
   await page.waitForFunction(() => document.querySelector('.acct-name')?.textContent === '새 이름' && !document.querySelector('.acct-name-form')?.checkVisibility());
   await page.waitForFunction(() => document.querySelector('.acct-button-label')?.textContent === '새 이름');
-  // 긴 이름은 단추에서 말줄임표로 끊기고, 온전한 이름은 title 에 남는다.
+  // 온전한 긴 이름은 단추의 title 에 남는다.
   await page.click('.acct-name-edit');
   await page.$eval('.acct-name-input', (input) => { input.value = ''; });
   await page.type('.acct-name-input', '아주아주긴이름을가진사람의계정이름입니다정말로');
   await page.keyboard.press('Enter');
   await page.waitForFunction(() => document.querySelector('.acct-button')?.title.startsWith('아주아주긴이름을가진사람의계정이름입니다정말로 · '));
-  const label = await page.$eval('.acct-button-label', (node) => ({ width: node.getBoundingClientRect().width, clipped: node.scrollWidth > node.clientWidth }));
-  assert.ok(label.width <= 141 && label.clipped, `long names are truncated (${JSON.stringify(label)})`);
 
   // 사진: 고른 그림의 가운데를 512px 로 줄여 1 MiB 안으로 올린다.
   await page.evaluate(async () => {
@@ -167,6 +181,12 @@ export async function checkAccountPage({ page, open, screenshot }) {
   await page.waitForFunction(() => !document.querySelector('.acct-delete-sheet'));
   assert.ok(await page.$('.acct-page'), 'the page stays open under the sheet');
 
+  // 홈으로 돌아오면 긴 이름은 단추에서 말줄임표로 끊긴다.
+  await page.evaluate(() => window.sidebarPreview.home.show({ focus: false, instant: true }));
+  await page.waitForSelector('#document-home .acct-button-label', { visible: true });
+  const label = await page.$eval('.acct-button-label', (node) => ({ width: node.getBoundingClientRect().width, clipped: node.scrollWidth > node.clientWidth }));
+  assert.ok(label.width <= 141 && label.clipped, `long names are truncated (${JSON.stringify(label)})`);
+
   // 로그아웃 상태의 결제: 카드가 닫히고 로그인으로 간 뒤, 로그인하면 같은 칸의 카드로 돌아온다.
   await open('reset=1&home=1&account=signed-out');
   await page.evaluate(() => window.dispatchEvent(new CustomEvent('rhwp:open-plan-card', { detail: { focus: 'hama' } })));
@@ -199,12 +219,11 @@ export async function checkAccountPage({ page, open, screenshot }) {
   await page.click('.ag-pricing-close');
   await page.waitForFunction(() => !document.querySelector('.ag-pricing-card'));
 
-  // 무료 계정도 단추 하나만 둔다. 사용량에는 Rau 크레딧이 없다.
+  // 무료 계정도 단추 하나만 둔다. Rau 크레딧은 없다.
   await open('reset=1&home=1&account=free');
   await openFromButton(page);
   await page.waitForSelector('.acct-upgrade', { visible: true });
   assert.equal(await page.$eval('.acct-rau-credits', (node) => node.hidden), true);
-  assert.deepEqual(await page.$$eval('.acct-stat', (nodes) => nodes.map((node) => node.dataset.stat)), ['sessions', 'documents']);
   assert.doesNotMatch(await page.$eval('.acct-section[data-section="plan"]', (node) => node.textContent), /Haiku|Claude|DeepSeek|Codex|OpenRouter/);
   await screenshot('account-plan-comparison');
   // 카드에서 체험을 시작하면 계정 페이지가 Rau 체험 중이 되고, 업그레이드 단추는 그대로 남는다.
@@ -249,11 +268,12 @@ export async function checkAccountPage({ page, open, screenshot }) {
 
   // 설정의 계정 탭은 요약 단추 대신 전체 계정 화면을 안에 붙인다.
   await open('reset=1&fullscreen=1&account=free&checkoutHold=1');
-  await page.evaluate(() => window.sidebarPreview.eventBus.emit('settings:open', { destination: 'account' }));
-  await page.waitForSelector('#ag-settings-pane-account .acct-embedded .acct-profile', { visible: true });
+  await openSettingsAccount(page);
   assert.equal(await page.$('.acct-page:not(.acct-embedded)'), null, 'settings never opens a standalone account overlay');
   assert.equal(await page.$eval('#ag-settings-pane-account .acct-upgrade', (node) => node.hidden), false);
   assert.equal(await page.$eval('.ag-settings-nav', node => node.checkVisibility()), true);
+  // 무료 계정의 사용량에는 Rau 크레딧 칸이 없다.
+  assert.deepEqual(await page.$$eval('#ag-settings-pane-account .acct-stat', (nodes) => nodes.map((node) => node.dataset.stat)), ['sessions', 'documents']);
   await page.click('#ag-settings-pane-account .acct-name-edit');
   await page.$eval('#ag-settings-pane-account .acct-name-input', node => { node.value = ''; });
   await page.type('#ag-settings-pane-account .acct-name-input', '설정 사용자');
@@ -277,12 +297,17 @@ export async function checkAccountPage({ page, open, screenshot }) {
   await screenshot('settings-account-signed-out');
   await page.click('button[aria-label="설정 닫기"]');
   await page.waitForFunction(() => !document.querySelector('.acct-embedded'));
-  // 전체 계정 페이지에서 나가도 작은 로그인 팝업으로 줄어들지 않는다.
+  // 계정 카드에서 나가도 같은 자리, 같은 너비의 카드에서 로그인 판으로 바뀐다.
   await open('reset=1&account=free&open=account');
+  const cardBox = () => page.$eval('.acct-page', (node) => {
+    const { left, top, width } = node.getBoundingClientRect();
+    return { left, top, width };
+  });
+  await page.waitForSelector('.acct-page.acct-page-open', { visible: true });
+  const signedInCard = await cardBox();
   await page.click('.acct-exit .acct-btn');
   await page.waitForSelector('.acct-page[data-state="signed_out"]');
-  assert.equal(await page.$eval('.acct-page', (node) => node.getBoundingClientRect().width >= window.innerWidth * 0.9), true,
-    'the signed-out account page keeps its full-width layout');
+  assert.deepEqual(await cardBox(), signedInCard, 'signing out keeps the card in place');
   assert.equal(await page.$eval('.acct-signin', (node) => node.checkVisibility()), true);
   await screenshot('account-page-signed-out');
 }
