@@ -1,6 +1,6 @@
 # hm-wasm
 
-Generated browser bindings and WASM from HeemangEngine `rc/combined-20261028` at `5d474bf` (2026-11-01). Over `b3a2d0b`
+Generated browser bindings and WASM from HeemangEngine `rc/combined-20261028` at `f250292` (2026-11-02). Over `b3a2d0b`
 (editing parity #4 and table splits #3) it merges: #6 and #9 (a missing Hancom face draws with the closest OS face but
 lays out with the Hancom face's own widths, from committed width tables), #5, #7, #13 and #14 (Hancom pagination rules:
 held tables whose first row misses the page, bottom-caption reservation, footnotes inside split tables, merged-cell
@@ -10,7 +10,10 @@ conversion keeps stored lines and no longer refuses edited documents; fixes for 
 pagination, `layoutFirst`/`layoutMore` progressive first pages and faster cold layout). After `c4fbb80` it adds #15, #18,
 #20, #21 and #23 (merged cells carried and re-cut across pages, nested-table header repetition), #17 and #25 (table
 placement and overfull-cell alignment), #19 (HWP 3 replays its stored lines), #22 (round-trip round 2: typed tabs,
-incomplete HWPX headers), #24 (merge manifest 60x faster, caret lookup index) and #16 (test fixes). Built with
+incomplete HWPX headers), #24 (merge manifest 60x faster, caret lookup index) and #16 (test fixes). After `5d474bf` it adds #26, #30 and #33
+(round trip: unedited conversions keep every page, tab-ended aligned lines replay like Hancom, page setup edits re-lay text,
+tabs save their kind and leader), #27, #29, #31 and #32 (centered merged-cell splits, objects moving with their line,
+cell pictures moving to the next cell part, deferred table spacing) and #28 (rounded corners, body-kept front tables). Built with
 `CARGO_BUILD_JOBS=3 WASM_BINDGEN=<wasm-bindgen 0.2.125> crates/hm-wasm/build.sh`, no wasm-opt.
 Contract and page-packet versions are both 1. The package is committed so Studio does not need the HeemangEngine
 checkout to run or build.
@@ -19,7 +22,7 @@ SHA-256 of the four files:
 
 | File | Bytes | SHA-256 |
 | --- | ---: | --- |
-| `hm_wasm_bg.wasm` | 8,522,427 | `5f11e1bc7ff5fbbbc3b213b81222b5ad83f7eed18deeef78b7439138442dd3c6` |
+| `hm_wasm_bg.wasm` | 8,545,677 | `82c8cc1da70deac8a8737ddf52dd9d1d9b2d3653399ac019200651d15d59341e` |
 | `hm_wasm.js` | 77,636 | `1e1a9f8ea520d241f8c15a690785afd92ac7017fd1d1c6c43669fbdc5a72806a` |
 | `hm_wasm.d.ts` | 68,221 | `fb0bb83bf4e8091c419d2b6d93e00e588ea3813e80100f5dc74b072ab1e460dd` |
 | `hm_wasm_bg.wasm.d.ts` | 9,689 | `c76607cfd0f7ad53a8cde07d0e06bbaf102a42994b9cf87e5bc70a125bd609c9` |
