@@ -3,8 +3,7 @@
 //
 // 규칙
 // - 요금제는 계정에서 정한다(라이선스 관리자는 더 이상 정하지 않는다). 확인한 계정 lease 가 있으면 그
-//   tier('free'·'hama'·'rau'), 로그인하지 않았으면 free. 로그아웃하면 어느 빌드에서든 에이전트가 잠긴다. 라이선스를 보지 않는
-//   개발 빌드(enforce 끔)는 로그인한 무료 계정에도 에이전트를 연다.
+//   tier('free'·'hama'·'rau'), 로그인하지 않았으면 free. 무료 요금제는 어느 빌드에서든 에이전트가 잠긴다.
 // - 오프라인 캐시: lease 로 정한 요금제를 그 계정 id 와 함께 userData/plan.json 에 적어 두고, 로그인한 채 lease 를
 //   확인할 수 없을 때만(오프라인으로 lease 가 끝남 등) 마지막 확인에서 7일까지 그 요금제를 보여 준다. 화면 표시용일
 //   뿐이고 호스팅 AI 는 서버가 늘 따로 확인한다. 로그아웃·무료 lease·다른 계정이면 캐시를 지운다. 시계를 되돌려
@@ -102,7 +101,6 @@ function sanitizeState(raw) {
 
 export function createPlanManager({
   accountManager,
-  enforce = true,
   fetchImpl = globalThis.fetch,
   apiBase = DEFAULT_LICENSE_API_BASE,
   userDataDir,
@@ -202,7 +200,7 @@ export function createPlanManager({
     return {
       tier,
       signedIn,
-      agentUnlocked: tier !== 'free' || (signedIn && !enforce),
+      agentUnlocked: tier !== 'free',
       source,
       cachedUntil,
       checkout: checkoutView(),

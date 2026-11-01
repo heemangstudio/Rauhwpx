@@ -14,7 +14,7 @@ export interface PlanCheckoutOption {
 
 export interface PlanStatus {
   tier: PlanTier;
-  /** tier !== 'free' 이거나 라이선스를 강제하지 않는 개발 빌드. */
+  /** tier !== 'free'. */
   agentUnlocked: boolean;
   source: 'live' | 'cached' | 'none';
   /** source 가 cached 일 때 verifiedAt + 7일. */
