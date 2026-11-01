@@ -4,6 +4,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('hamaLicense', {
   getStatus: () => ipcRenderer.invoke('license:status'),
   activate: (key) => ipcRenderer.invoke('license:activate', String(key ?? '')),
+  signIn: () => ipcRenderer.invoke('license:sign-in'),
   deactivate: () => ipcRenderer.invoke('license:deactivate'),
   checkNow: () => ipcRenderer.invoke('license:check'),
   openPricing: () => ipcRenderer.invoke('license:open-pricing'),

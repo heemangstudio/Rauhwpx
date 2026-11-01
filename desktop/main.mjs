@@ -1606,6 +1606,12 @@ const licenseHost = installLicenseHost({
   shell,
   clipboard,
   manager: licenseManager,
+  // accountManager 는 아래에서 만든다. 핸들러는 앱이 뜬 뒤에만 불린다.
+  redeemGift: (code) => accountManager.redeem(code),
+  signIn: async () => {
+    const providers = (await accountManager.getStatus()).providers ?? [];
+    return accountManager.signIn(providers.includes('email') ? 'email' : providers[0] ?? 'email');
+  },
   isTrustedStudioEvent,
   studioWebContents,
   parentWindow: () => BrowserWindow.getFocusedWindow() ?? sessions.windows().at(-1) ?? null,
