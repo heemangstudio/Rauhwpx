@@ -110,8 +110,6 @@ Run from the Studio repository root. For engine-backed tests against an unbundle
 ```sh
 npm --prefix rhwp/rhwp-studio exec -- tsc --noEmit -p rhwp/rhwp-studio
 node --test rhwp/rhwp-studio/tests/heemang-<area>.test.ts
-node rhwp/rhwp-studio/e2e/heemang-verify/design-diff.mjs versions-changes
-node rhwp/rhwp-studio/e2e/heemang-verify/functional.mjs footnote-01
 ```
 
 Use the existing headless harness for real Studio interactions, with fake-provider checks labeled as such. Assign a separate port per lane and stop servers after checks. After integration run full Studio/hub suites, engine tests, `design-diff.mjs`, `functional.mjs` and `mcp-parity.mjs`; update `heemang-cleanroom/STATE.md` after merges with concise results.
