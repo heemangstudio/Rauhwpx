@@ -304,9 +304,11 @@ test('finishing first-run setup with only Codex connected makes Codex the provid
     type: 'agent-setup-status',
     statuses: { claude: status('claude'), codex: status('codex', { available: true, installed: true, authenticated: true, connected: true }), pi: status('pi') },
   } as never);
-  // 테마 → AI 경로 → 선택적 연결 → 홈.
+  // 안내 → 테마 → AI 경로 → 선택적 연결 → 홈.
   const primary = ui.element.querySelector('.rhwp-setup-primary');
   assert.ok(primary);
+  primary.click();
+  await tick();
   primary.click();
   await tick();
   ui.element.querySelectorAll('.rhwp-setup-path')[1]!.click();
@@ -327,19 +329,22 @@ test('finishing first-run setup with only Codex connected makes Codex the provid
 });
 
 
-test('Rau subscribers who skip provider connection start with the hosted agent', async () => {
+test('Rau subscribers who skip provider connection see the Rau introduction and keep the regular default agent', async () => {
   const { ui, storage, finished } = await openWizard('rau');
   const primary = ui.element.querySelector('.rhwp-setup-primary')!;
   primary.click();
   await tick();
-  ui.element.querySelectorAll('.rhwp-setup-path')[1]!.click();
-  await tick();
   primary.click();
+  await tick();
+  ui.element.querySelectorAll('.rhwp-setup-path')[1]!.click();
   await tick();
   assert.equal(ui.element.querySelector('.rhwp-setup-dialog')!.dataset.step, 'rau');
   primary.click();
   await tick();
+  assert.equal(ui.element.querySelector('.rhwp-setup-dialog')!.dataset.step, 'models');
+  primary.click();
+  await tick();
   assert.equal(finished(), 1);
-  assert.equal(loadAgentPrefs(storage).defaultAgent, 'rau');
+  assert.equal(loadAgentPrefs(storage).defaultAgent, 'claude');
   ui.dispose();
 });

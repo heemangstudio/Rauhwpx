@@ -73,10 +73,60 @@
 /* Hama 칸은 앱 하마의 파랑을 마크와 짚은 테두리에만 쓴다. Rau 칸은 잉크색 Rau 마크만 둔다. */
 .ag-pricing-col[data-plan='hama'] {
   --plan-hama: #3d9bd1;
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--plan-hama) 60%, transparent);
 }
 
 :root[data-theme-effective='dark'] .ag-pricing-col[data-plan='hama'] {
   --plan-hama: #62b3e2;
+}
+
+.ag-pricing-col[data-plan='rau'] {
+  --plan-rau: #a81e2a;
+  --plan-rau-hot: #d92d3a;
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--plan-rau) 60%, transparent);
+}
+
+:root[data-theme-effective='dark'] .ag-pricing-col[data-plan='rau'] {
+  --plan-rau: #c2303b;
+  --plan-rau-hot: #ff8a8f;
+}
+
+.ag-pricing-col[data-plan='rau'][data-focus='true'] {
+  box-shadow: inset 0 0 0 1.5px var(--plan-rau);
+}
+
+/* 사이트의 한글 자모 그림. 물결은 rau-art.ts 가 캔버스에 그린다. */
+.ag-pricing-art {
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  color: var(--plan-rau);
+  pointer-events: none;
+}
+
+/* Rau 칸 안에서 자모 가지가 뻗는다(rau-art.ts). 글자와 단추 뒤에 깔린다. */
+.ag-pricing-stretch {
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+.ag-pricing-card {
+  position: relative;
+  isolation: isolate;
+}
+
+.ag-pricing-col[data-plan='rau'] .ag-pricing-mark-rau {
+  color: var(--plan-rau);
 }
 
 .ag-pricing-col[data-plan='hama'][data-focus='true'] {
@@ -93,15 +143,6 @@
 
 .ag-pricing-mark-hama {
   color: var(--plan-hama);
-}
-
-.ag-pricing-mark-rau {
-  width: 16px;
-  height: 16px;
-  vertical-align: -3px;
-  background-color: currentColor;
-  -webkit-mask: url('/icons/rau.png') center / contain no-repeat;
-  mask: url('/icons/rau.png') center / contain no-repeat;
 }
 
 .ag-pricing-name {
@@ -265,21 +306,17 @@
   min-width: 88px;
 }
 
-.ag-pricing-done-mark {
+.ag-pricing-btn-success:disabled {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
-  margin-bottom: 4px;
-  border-radius: var(--ag-r-pill);
-  background: color-mix(in oklab, var(--ag-ok, #2f7d4f) 16%, transparent);
-  color: var(--ag-ok, #2f7d4f);
+  background: var(--ag-primary-bg);
+  color: var(--ag-primary-fg);
 }
 
-.ag-pricing-done-mark .ag-icon {
-  width: 14px;
-  height: 14px;
+.ag-pricing-btn-success .ag-icon {
+  width: 16px;
+  height: 16px;
 }
 
 @media (max-width: 560px) {

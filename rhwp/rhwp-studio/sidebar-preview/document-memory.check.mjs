@@ -31,6 +31,7 @@ async function waitForRows(page, predicate, label) {
 }
 
 export async function checkDocumentMemory({ page, open, screenshot }) {
+  await checkMemoryKeyboard({ page, open });
   // taste=sample: 시트 뒤에 이 문서의 채팅이 보인다 — 기록에서 배운 구분선이 그 끝에 남는다.
   await open('reset=1&memory=sample&taste=sample');
   await page.waitForSelector('.ag-memory-sheet', { visible: true });
@@ -42,7 +43,7 @@ export async function checkDocumentMemory({ page, open, screenshot }) {
   if (screenshot) await screenshot('document-memory-sheet');
 
   // 고치기: 눌러서 열고 Enter 로 저장한다. 허브에는 사용자가 고친 기억으로 남는다.
-  await (await rowHandle(page, '본문은 한다체 사용')).$eval('.ag-memory-text', (node) => node.click());
+  await (await rowHandle(page, '본문 종결은 한다체로 쓴다')).$eval('.ag-memory-text', (node) => node.click());
   await page.waitForSelector('.ag-memory-edit');
   await page.$eval('.ag-memory-edit', (area) => area.select());
   await page.keyboard.type('본문은 합니다체 사용');
@@ -62,7 +63,7 @@ export async function checkDocumentMemory({ page, open, screenshot }) {
   assert((await stored(page)).some((entry) => entry.text === '예산표는 분기별로 나눔'), 'a cancelled edit is not saved');
 
   // 지우기: 한 번 누르면 묻지 않고 지운다.
-  await (await rowHandle(page, "'고객' 대신 '이용자'로 통일")).$eval('.ag-memory-remove', (node) => node.click());
+  await (await rowHandle(page, "'고객' 대신 '이용자'로 쓴다")).$eval('.ag-memory-remove', (node) => node.click());
   await waitForRows(page, () => document.querySelectorAll('.ag-memory-row').length === 3
     && !document.querySelector('.ag-memory-group[data-kind="term"]'), 'entry removed');
   assert(!(await stored(page)).some((entry) => entry.kind === 'term'), 'the hub no longer has the entry');
@@ -70,7 +71,7 @@ export async function checkDocumentMemory({ page, open, screenshot }) {
   // 더하기: 종류를 고르고 Enter.
   await page.click('.ag-memory-kind-btn');
   const factItem = await page.waitForFunction(() => [...document.querySelectorAll('.context-menu .md-item')]
-    .find((item) => item.textContent?.includes('사실')));
+    .find((item) => item.textContent?.includes('FACT')));
   await factItem.asElement().click();
   await page.waitForFunction(() => document.activeElement?.classList.contains('ag-memory-add-input'));
   await page.keyboard.type('제출 마감은 11월 3일');
@@ -166,4 +167,65 @@ export async function checkDocumentMemory({ page, open, screenshot }) {
   await page.waitForFunction(() => document.querySelector('.ag-memory-note')?.textContent === '배울 기록이 없습니다.'
     && !document.querySelector('.ag-memory-note').hidden, { timeout: 5_000 });
   assert.equal(await page.$$eval('.ag-taste[data-learn-id^="learn-history-"]', (nodes) => nodes.length), 1, 'nothing learned adds no divider');
+}
+
+
+export async function checkMemoryKeyboard({ page, open }) {
+  await open('reset=1&memory=sample');
+  await page.waitForFunction(() => document.querySelector('.ag-memory-sheet')?.dataset.loading === undefined
+    && document.querySelector('.ag-memory-add-input') === document.activeElement);
+  await page.keyboard.type('Keyboard memory');
+  for (const kind of ['WORDING', 'DECISION', 'PROTECT', 'FACT', 'STYLE']) {
+    await page.keyboard.down('Shift');
+    await page.keyboard.press('Tab');
+    await page.keyboard.up('Shift');
+    assert.equal(await page.$eval('.ag-memory-kind-label', (node) => node.textContent), kind);
+    assert.equal(await page.$eval('.ag-memory-add-input', (node) => node.value), 'Keyboard memory');
+  }
+  await page.$eval('.ag-memory-sheet', (node) => node.focus());
+  await page.keyboard.type(' typed');
+  assert.equal(await page.$eval('.ag-memory-add-input', (node) => node.value), 'Keyboard memory typed');
+  await page.$eval('.ag-memory-sheet', (node) => node.focus());
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => [...document.querySelectorAll('.ag-memory-text')]
+    .some((node) => node.textContent === 'Keyboard memory typed'));
+  assert((await stored(page)).some((entry) => entry.kind === 'style' && entry.text === 'Keyboard memory typed'));
+  await (await rowHandle(page, 'Keyboard memory typed')).$eval('.ag-memory-text', (node) => node.click());
+  await page.waitForSelector('.ag-memory-edit');
+  await page.keyboard.type(' edited');
+  assert.equal(await page.$eval('.ag-memory-add-input', (node) => node.value), '');
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => [...document.querySelectorAll('.ag-memory-text')]
+    .some((node) => node.textContent === 'Keyboard memory typed edited'));
+
+  // 초점이 간 단추는 Enter·Space 로 제 동작을 한다. 초안을 더하지도, 글자를 치지도 않는다.
+  await page.$eval('.ag-memory-add-input', (input) => input.focus());
+  await page.keyboard.type('Held draft');
+  const removeWith = async (text, key) => {
+    await page.waitForFunction(() => !document.querySelector('.ag-memory-row[data-pending]'));
+    const count = await page.$$eval('.ag-memory-row', (nodes) => nodes.length);
+    await (await rowHandle(page, text)).$eval('.ag-memory-remove', (node) => node.focus());
+    await page.keyboard.press(key);
+    await page.waitForFunction((expected) => document.querySelectorAll('.ag-memory-row').length === expected, {}, count - 1);
+  };
+  await removeWith('Keyboard memory typed edited', 'Enter');
+  await removeWith('예산표는 분기별로 나눔', 'Space');
+  assert.equal(await page.$eval('.ag-memory-add-input', (node) => node.value), 'Held draft');
+  assert(!(await stored(page)).some((entry) => entry.text === 'Held draft'));
+
+  // 목록에서 Shift+Tab 은 초점을 뒤로 옮기고, 줄을 고치는 동안에는 종류를 바꾸지 않는다.
+  const kind = () => page.$eval('.ag-memory-kind-label', (node) => node.textContent);
+  const shiftTab = async () => {
+    await page.keyboard.down('Shift');
+    await page.keyboard.press('Tab');
+    await page.keyboard.up('Shift');
+  };
+  const before = await kind();
+  await page.$eval('.ag-memory-remove', (node) => node.focus());
+  await shiftTab();
+  assert.equal(await kind(), before, 'Shift+Tab in the list moves focus');
+  await page.$eval('.ag-memory-text', (node) => node.click());
+  await page.waitForSelector('.ag-memory-edit');
+  await shiftTab();
+  assert.equal(await kind(), before, 'Shift+Tab while editing a row does not change the add kind');
 }

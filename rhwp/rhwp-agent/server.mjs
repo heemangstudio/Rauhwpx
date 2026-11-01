@@ -21,7 +21,6 @@ import {
 } from './agents/codex.mjs';
 import { IDLE_PROCESS_RELEASE_MS, redactDiagnosticText } from './agents/backend.mjs';
 import { canResumePiSession, createPiSession } from './agents/pi.mjs';
-import { canResumeRauSession, createRauSession } from './agents/rau.mjs';
 import { canResumeCodexThread } from './agents/codex-app-server.mjs';
 import {
   detachCompactionNeeded,
@@ -40,13 +39,14 @@ import {
   resolveCheckpointTitleCliRoute,
 } from './agents/checkpoint-title.mjs';
 import { SkillRegistry } from './skills.mjs';
-import { WritingStyleStore, assertWritingStyleAppendCompatible } from './writing-style.mjs';
 import { importRebrandedHubData } from './rebrand-import.mjs';
 import { AgentInstructionsStore } from './agent-instructions.mjs';
 import { DocumentMemoryStore } from './document-memory-store.mjs';
 import { createDocumentMemoryHub, newSessionDocumentMemory } from './document-memory-hub.mjs';
-import { calibrateWritingStyle } from './style-calibrator.mjs';
-import { buildWritingStyleCatalog, resolveWritingStyleSelection } from './writing-style-catalog.mjs';
+import { UserMemoryStore } from './user-memory-store.mjs';
+import { createUserMemoryHub, newSessionUserMemory } from './user-memory-hub.mjs';
+import { createStyleLearner } from './style-learning.mjs';
+import { defaultWritingStyleRoot, migrateLegacyWritingStyle, readLegacySources, removeLegacyWritingStyle } from './writing-style-legacy.mjs';
 import {
   assertCellArgsPlacement, documentIdArgError, filterToolDefinitions, FOREIGN_READ_TOOL_NAMES, LIVE_UNTRACKED_READ_TOOL_NAMES,
   TOOL_DEFINITIONS,
@@ -113,8 +113,6 @@ import { createCodexModelCatalog, createCodexModelResolver, createCodexModelStor
 import { createOpenRouter } from './openrouter.mjs';
 import { createIpcSecretStore } from './secret-store.mjs';
 import { createIpcGiftSource } from './gift-source.mjs';
-import { RAU_AGENT_UNAVAILABLE_MESSAGE } from './rau-agent.mjs';
-import { createIpcRauAgentSource, createRauAgentHarness } from './rau-agent-hosted.mjs';
 import { tasteLearningAllowed } from './byok-taste.mjs';
 import { createHostedRau, createIpcRauSource } from './rau-hosted.mjs';
 import { handlePiToolDefinitions } from './pi/tool-schema.mjs';
@@ -136,7 +134,6 @@ import {
   RAU_TASTE_NAME,
   TASTE_CLOSE_GRACE_MS,
   TasteSettingsStore,
-  appendRauInstruction,
   createTasteLearner,
   newTasteTurn,
   noteTasteTurnEvent,
@@ -373,7 +370,6 @@ if (process.env.NODE_ENV !== 'test' || process.env.RHWP_REBRAND_IMPORT === '1') 
     log(`2.0.11 data import failed: ${error?.message ?? error}`);
   });
 }
-const writingStyleStore = await new WritingStyleStore().init();
 const agentInstructionsStore = await new AgentInstructionsStore().init();
 // 문서 기억은 문서마다 따로 둔다 (RHWP_DOCUMENT_MEMORY_DIR). 읽는 문서만 메모리에 올린다.
 const documentMemoryHub = createDocumentMemoryHub({
@@ -383,7 +379,7 @@ const documentMemoryHub = createDocumentMemoryHub({
 });
 // 대화에서 배우기 설정 (Settings → AI → Rau-0.1). 문서 기억 폴더에 둔다.
 const tasteSettings = await new TasteSettingsStore({ dir: documentMemoryHub.store.dir }).init();
-const skillRegistry = await new SkillRegistry({ bundledRoot: BUNDLED_SKILLS, writingStyleStore }).init();
+const skillRegistry = await new SkillRegistry({ bundledRoot: BUNDLED_SKILLS }).init();
 const PI_ROOT = defaultPiRoot();
 const openRouter = createOpenRouter({ cacheDir: PI_ROOT });
 const secretStore = createIpcSecretStore();
@@ -396,21 +392,49 @@ if (process.env.RHWP_AGENT_MODE === 'production' && !secretStore.available) {
 const giftSource = createIpcGiftSource();
 // 호스팅 Rau-0.1(Pro): 데스크톱 main 이 라이선스 lease 로 대신 묻는다. 브라우저 Studio 에서는 쓸 수 없다.
 const hostedRau = createHostedRau({ source: createIpcRauSource() });
+// 기억(계정 단계) — 문서 기억 폴더의 user-memory.json 하나. Rau 요금제·체험일 때만 턴에 싣는다.
+const userMemoryStore = new UserMemoryStore({ dir: documentMemoryHub.store.dir });
+// 예전 말투 맞추기 폴더. 지침은 AGENTS.md 로 옮기고, 남은 원고는 Rau 탭이 문체 학습으로 가져올지 묻는다.
+// 테스트 허브는 RHWP_WRITING_STYLE_DIR 로 고른 폴더만 옮긴다 — 사용자의 실제 폴더를 지우지 않게.
+const WRITING_STYLE_LEGACY_ROOT = process.env.NODE_ENV === 'test' && !process.env.RHWP_WRITING_STYLE_DIR
+  ? null
+  : defaultWritingStyleRoot();
+let writingStyleLegacy = null;
+if (WRITING_STYLE_LEGACY_ROOT) {
+  try {
+    writingStyleLegacy = await migrateLegacyWritingStyle({
+      root: WRITING_STYLE_LEGACY_ROOT, instructions: agentInstructionsStore, userMemory: userMemoryStore, log,
+    });
+  } catch (error) {
+    log(`writing-style migration failed: ${error?.message ?? error}`);
+  }
+}
+const userMemoryHub = createUserMemoryHub({
+  store: userMemoryStore,
+  hosted: hostedRau,
+  documentStore: documentMemoryHub.store,
+  legacy: () => writingStyleLegacy,
+  changed: (documentId, key, revision) => documentMemoryHub.changed(documentId, key, revision),
+  broadcast: (frame) => broadcastToStudios(frame),
+  log,
+});
+// 문체 학습 — 진행·결과·오류는 모든 창에 보낸다(다른 창에서 올린 학습도 Rau 탭에 보인다).
+const styleLearner = createStyleLearner({
+  hosted: hostedRau,
+  userMemory: userMemoryStore,
+  projectRoot: ROOT,
+  emit: (frame) => {
+    broadcastToStudios(frame);
+    if (frame.type === 'style-learn-result') void userMemoryHub.publish();
+  },
+  memorySnapshot: () => userMemoryHub.snapshot(),
+  log,
+});
 const piManager = createPiManager({
   rootDir: PI_ROOT, openRouter, secretStore, giftSource, routingSort: process.env.RHWP_PI_ROUTING_SORT,
 });
 /** 보조 작업이 쓰는 OpenRouter 라우터 — 리스는 선물 프록시로, 내 키는 openrouter.ai 로만 보낸다. */
 const piRouter = piManager.router;
-/**
- * Rau 하네스 (Rau 플랜·Rau 체험). 데스크톱이 자격과 lease 를 준다. BYOK(pi) 의 키·모델과 섞지 않는다.
- * Pi 런타임과 세션 폴더는 같이 쓰고, 홈은 `<piRoot>/agent-rau` 다.
- */
-const rauAgentSource = createIpcRauAgentSource();
-const rauAgentHarness = createRauAgentHarness({
-  piRoot: PI_ROOT,
-  source: rauAgentSource,
-  isPiInstalled: () => piStatus.installed === true,
-});
 const authRuns = new AuthRunRegistry();
 let npmPrefixMutationQueue = Promise.resolve();
 function mutateSharedNpmPrefix(operation) {
@@ -494,7 +518,6 @@ function ensureBootWork() {
     piStatus = await piManager.status();
     // 선물 자격은 데스크톱 서버 응답을 기다릴 수 있다 — 기동을 막지 않고 끝나면 알린다.
     if (giftSource.available) void refreshGiftAndBroadcast(false);
-    if (rauAgentSource.available) void refreshRauAgentAndBroadcast();
     await Promise.all([
       // 저장된 Claude 토큰이 아직 받아들여지는지 한 번 확인한다. 네트워크가 없으면 그대로 둔다.
       cliSetup.verifyAuth('claude')
@@ -592,6 +615,7 @@ const TASTE_LEARNER_AVAILABLE = process.env.RHWP_TASTE_LEARNER === '1'
   || (process.env.RHWP_TASTE_LEARNER !== '0' && process.env.NODE_ENV !== 'test');
 const tasteLearner = createTasteLearner({
   store: documentMemoryHub.store,
+  userMemory: userMemoryStore,
   signals: tasteSignals,
   settings: () => (TASTE_LEARNER_AVAILABLE ? tasteSettings.get() : { enabled: false }),
   routes: (context) => tasteLearnerRoutes(context),
@@ -601,7 +625,7 @@ const tasteLearner = createTasteLearner({
   )),
   emit: (frame) => sendTasteFrame(frame),
   changed: (documentId, key, revision) => documentMemoryHub.changed(documentId, key, revision),
-  promote: (proposal) => proposeRauInstruction(proposal),
+  accountChanged: () => { void userMemoryHub.publish(); },
   log,
 });
 tasteSignals.onReviewSignals((documentId, info) => {
@@ -668,7 +692,6 @@ const projectTrashTimer = setInterval(() => {
 }, 6 * 60 * 60 * 1000);
 projectTrashTimer.unref?.();
 void projectStore.purgeExpired().catch((error) => log(`project trash purge failed: ${error?.message ?? error}`));
-let writingStyleCalibrationOwner = null;
 // If a bounded provider cleanup cannot prove tree exit, retain the backend
 // object (and therefore its exact child/process-group identity) until this hub
 // exits. A replacement provider must never share the same work/home paths.
@@ -744,8 +767,6 @@ const sessions = new HubSessionRegistry({
       missedTurnEnd: null,
       // 기록 전달이 불확실해진 네이티브 세션 (`${agent}:${sessionId}`) — 다시 이어 받지 않는다.
       untrustedNativeSessions: new Set(),
-      styleCalibration: null,
-      pendingInstructionDraft: null,
       // documentId → Studio 가 알린 원본 digest·파일 이름. 다시 발급된 documentId 를 같은 문서 기억에 묶는다.
       documentSources: new Map(),
       auxiliaryProcesses: new Set(),
@@ -990,7 +1011,7 @@ async function browserActorForMcp(record, sock, tool, args) {
     .filter(({ scope }) => scope.generation === generation && scope.turnId === turnId
       && scope.agent === sock.agentLabel && scope.tool === tool && scope.fingerprint === fingerprint);
   let matches = find();
-  if (!PI_RUNTIME_AGENTS.has(sock.agentLabel) && matches.length === 0) {
+  if (sock.agentLabel !== 'pi' && matches.length === 0) {
     const deadline = Date.now() + USER_QUESTION_SCOPE_WAIT_MS;
     while (!matches.length && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 20));
@@ -998,7 +1019,7 @@ async function browserActorForMcp(record, sock, tool, args) {
       matches = find();
     }
   }
-  if (matches.length > 1 || (!PI_RUNTIME_AGENTS.has(sock.agentLabel) && matches.length !== 1)) {
+  if (matches.length > 1 || (sock.agentLabel !== 'pi' && matches.length !== 1)) {
     throw workflowError('CALLER_SCOPE_UNKNOWN', 'The provider did not establish a unique browser call identity');
   }
   const scope = matches.length ? record.pendingBrowserScopes.splice(matches[0].index, 1)[0] : null;
@@ -1215,7 +1236,7 @@ function drainChatContinuation(record) {
   // 사용자 메시지가 아니므로 다른 요청과 사용자가 잡고 있는 탭은 그대로 둔다.
   beginAgentTurn(record, activeSession, { userTurn: false });
   try {
-    activeSession.backend.sendUserMessage(addAgentInstructionsContext(taken.text, documentMemoryHub.takeBlock(activeSession)));
+    activeSession.backend.sendUserMessage(addAgentInstructionsContext(taken.text, memoryBlocks(activeSession)));
   } catch (error) {
     failPendingProviderCallsForTurn(record, activeSession, activeSession.turnId);
     activeSession.status = 'idle';
@@ -1607,87 +1628,7 @@ function publishedSkillOutcome(outcome) {
 }
 
 function broadcastAgentInstructions(status, changedBy) {
-  for (const record of sessions.values()) {
-    const draft = record.pendingInstructionDraft;
-    if (!draft || draft.expectedRevision === status.revision) continue;
-    if (typeof draft.rauLine === 'string') {
-      rebaseRauInstructionDraft(record, draft, status);
-      continue;
-    }
-    clearInstructionDraft(record, 'stale');
-  }
   broadcastToStudios({ v: 1, type: 'agent-instructions', status, changedBy });
-}
-
-function instructionDraftFrame(draft) {
-  return {
-    id: draft.id,
-    content: draft.content,
-    expectedRevision: draft.expectedRevision,
-    reason: draft.reason,
-    requestedBy: draft.requestedBy,
-    createdAt: new Date(draft.createdAt).toISOString(),
-    expiresAt: new Date(draft.expiresAt).toISOString(),
-    confirmationToken: draft.confirmationToken,
-    threadId: draft.threadId ?? null,
-    origin: typeof draft.rauLine === 'string' ? 'rau' : 'agent',
-  };
-}
-
-function clearInstructionDraft(record, outcome) {
-  const draft = record.pendingInstructionDraft;
-  if (!draft) return null;
-  record.pendingInstructionDraft = null;
-  if (draft.expiryTimer) clearTimeout(draft.expiryTimer);
-  sendJson(record.studioSocket, {
-    v: 1,
-    type: 'agent-instructions-draft-cleared',
-    draftId: draft.id,
-    outcome,
-  });
-  return draft;
-}
-
-function currentInstructionDraft(record) {
-  const draft = record.pendingInstructionDraft;
-  if (!draft) return null;
-  if (draft.expiresAt <= Date.now()) {
-    clearInstructionDraft(record, 'expired');
-    return null;
-  }
-  return draft;
-}
-
-function sendInstructionDraft(record, sock = record.studioSocket) {
-  const draft = currentInstructionDraft(record);
-  if (!draft) return false;
-  return sendJson(sock, {
-    v: 1,
-    type: 'agent-instructions-draft',
-    draft: instructionDraftFrame(draft),
-  });
-}
-
-function authorizedInstructionDraft(record, msg) {
-  const draft = currentInstructionDraft(record);
-  if (!draft
-    || typeof msg.draftId !== 'string'
-    || msg.draftId !== draft.id
-    || typeof msg.confirmationToken !== 'string'
-    || !timingSafeTextEqual(msg.confirmationToken, draft.confirmationToken)) {
-    throw workflowError(
-      'INSTRUCTIONS_CONFIRMATION_INVALID',
-      'The instruction proposal is missing, expired, or no longer authorized.',
-    );
-  }
-  return draft;
-}
-
-function consumeAuthorizedInstructionDraft(record, msg) {
-  const draft = authorizedInstructionDraft(record, msg);
-  record.pendingInstructionDraft = null;
-  if (draft.expiryTimer) clearTimeout(draft.expiryTimer);
-  return draft;
 }
 
 /**
@@ -1744,17 +1685,7 @@ function flushProviderCredentialHomes(homes) {
 
 /** CLI 설치·인증을 cli-setup-manager 가 관리하는 에이전트들. */
 const CLI_SETUP_AGENTS = ['claude', 'codex'];
-const KNOWN_AGENTS = new Set([...CLI_SETUP_AGENTS, 'pi', 'rau']);
-/** Pi 런타임을 쓰는 하네스 — BYOK(pi) 와 Rau(rau). MCP 도구 신뢰 규칙이 같다. */
-const PI_RUNTIME_AGENTS = new Set(['pi', 'rau']);
-/** 예전 이름. 개발 중 저장된 'hama'(호스팅 하네스) 채팅은 Rau 로 읽는다. */
-const AGENT_ALIASES = Object.freeze({ hama: 'rau' });
-function agentNameFrom(value) {
-  return typeof value === 'string' && Object.hasOwn(AGENT_ALIASES, value) ? AGENT_ALIASES[value] : value;
-}
-const AGENT_INSTRUCTION_DRAFT_TTL_MS = 5 * 60 * 1000;
-// 학습기의 제안은 사용자가 설정을 열 때까지 기다린다.
-const RAU_INSTRUCTION_DRAFT_TTL_MS = 24 * 60 * 60 * 1000;
+const KNOWN_AGENTS = new Set([...CLI_SETUP_AGENTS, 'pi']);
 
 const CLAUDE_MODELS = new Set(['opus', 'fable', 'sonnet', 'haiku']);
 const CODEX_LINEUPS = new Set(['astra', 'sol', 'luna', 'terra']);
@@ -1777,7 +1708,6 @@ const SESSION_FACTORIES = {
   claude: createClaudeSession,
   codex: createCodexSession,
   pi: createPiSession,
-  rau: createRauSession,
 };
 
 /**
@@ -1788,7 +1718,6 @@ const SESSION_RESUME_PROBES = {
   claude: canResumeClaudeSession,
   codex: canResumeCodexThread,
   pi: canResumePiSession,
-  rau: canResumeRauSession,
 };
 
 function unknownAgentError(agent) {
@@ -1836,8 +1765,7 @@ function refreshGiftAndBroadcast(refresh = true) {
  */
 let giftPiInstallAttempted = false;
 function installPiForGift(status) {
-  const hosted = status?.credential === 'gift' || status?.rauActive === true;
-  if (giftPiInstallAttempted || !hosted || status.installed || status.installing) return;
+  if (giftPiInstallAttempted || status?.credential !== 'gift' || status.installed || status.installing) return;
   giftPiInstallAttempted = true;
   log('gift claimed without Pi: installing Pi in the background');
   const installing = mutateSharedNpmPrefix(() => {
@@ -1855,54 +1783,6 @@ function installPiForGift(status) {
 }
 
 giftSource.onChange(() => { void refreshGiftAndBroadcast(true); });
-
-/** 바뀐 Rau 자격·크레딧을 모든 Studio 탭에 보낸다. 설정 연결 상태(rau.connected)도 따라 바뀐다. */
-function broadcastRauAgentStatus() {
-  const status = rauAgentHarness.snapshot();
-  broadcastToStudios({ v: 1, type: 'rau-agent-status', status });
-  void broadcastFreshAgentSetupStatuses().catch(() => {});
-  return status;
-}
-
-function refreshRauAgentAndBroadcast() {
-  return rauAgentHarness.refresh()
-    .then(() => {
-      const status = broadcastRauAgentStatus();
-      // Rau 를 쓸 수 있는데 Pi 런타임이 없으면 뒤에서 설치한다 (선물과 같은 길).
-      if (status.availability === 'active') installPiForGift({ ...piStatus, rauActive: true });
-    })
-    .catch((error) => log(`rau agent refresh failed: ${error?.message ?? error}`));
-}
-
-// 계정·라이선스가 바뀌면 데스크톱이 알린다.
-rauAgentSource.onChange(() => { void refreshRauAgentAndBroadcast(); });
-
-/** Rau 스폰마다 Rau 자격만 고른다. 크레딧 꼬리표가 오면 다 쓴 상태를 바로 알린다. */
-function rauSpawnHooks() {
-  return {
-    resolvePiAccess: () => rauAgentHarness.resolveSpawn(),
-    onAccessRejected: () => { void refreshRauAgentAndBroadcast(); },
-    onRauCredits: (info) => {
-      void rauAgentHarness.noteCreditsExhausted(info)
-        .then(() => broadcastRauAgentStatus())
-        .catch((error) => log(`rau credits update failed: ${error?.message ?? error}`));
-    },
-  };
-}
-
-/** Pi 런타임 하네스(BYOK·Rau)의 스폰 훅. 다른 에이전트는 없다. */
-function piRuntimeSpawnHooks(agent) {
-  if (agent === 'pi') return piSpawnHooks();
-  if (agent === 'rau') return rauSpawnHooks();
-  return {};
-}
-
-/** Pi 런타임 하네스의 모델 설정 (BYOK 는 내 모델, Rau 는 'rau' 하나). */
-function piRuntimeModelConfig(agent, id) {
-  if (agent === 'pi') return piModelConfig(id);
-  if (agent === 'rau') return rauAgentHarness.modelConfig(id);
-  return null;
-}
 
 /** Pi 스폰마다 자격을 새로 고르고, 선물 크레딧이 떨어지면 내 키로 넘긴다. 채팅과 레이아웃 작업이 함께 쓴다. */
 function piSpawnHooks() {
@@ -1940,28 +1820,6 @@ function piAgentSetupStatus() {
   };
 }
 
-
-/** Rau 하네스의 연결 상태. 서버가 Rau 를 쓸 수 있다고 답했고 Pi 런타임이 있을 때만 연결이다. */
-function rauAgentSetupStatus() {
-  const snapshot = rauAgentHarness.snapshot();
-  const active = snapshot.availability === 'active';
-  return {
-    agent: 'rau',
-    installed: piStatus.installed,
-    available: piStatus.installed,
-    installing: piStatus.installing,
-    version: piStatus.version,
-    authenticated: active,
-    authMethod: null,
-    keyTail: null,
-    authenticating: false,
-    setupComplete: active && piStatus.installed,
-    connected: active && piStatus.installed,
-    latestVersion: piStatus.latestVersion ?? null,
-    updateRequired: piStatus.updateRequired === true,
-    error: null,
-  };
-}
 
 function withAuthRunStatus(statuses, ownerSessionId = null) {
   return Object.fromEntries(Object.entries(statuses).map(([agent, status]) => {
@@ -2013,7 +1871,7 @@ async function agentSetupStatuses(ownerSessionId = null, refresh = false) {
   const codex = withDetectedHarness(codexSetup, health.codex);
   cliSetupStatus = { claude, codex };
   return withAuthRunStatus(
-    { claude, codex, pi: piAgentSetupStatus(), rau: rauAgentSetupStatus() },
+    { claude, codex, pi: piAgentSetupStatus() },
     typeof ownerSessionId === 'string' ? ownerSessionId : null,
   );
 }
@@ -2240,10 +2098,6 @@ async function modelCatalog(agent, record, { refresh = false } = {}) {
 }
 
 function resolveModel(agent, requested, record = null) {
-  if (agent === 'rau') {
-    // Rau 모델은 'rau' 하나뿐이다. 무엇을 골라도 그것으로 돈다.
-    return rauAgentHarness.defaultModelId();
-  }
   if (agent === 'pi') {
     if (typeof requested === 'string' && piModelConfig(requested)) return requested;
     if (piStatus.defaultModelId && piModelConfig(piStatus.defaultModelId)) return piStatus.defaultModelId;
@@ -2285,9 +2139,9 @@ function resolveModel(agent, requested, record = null) {
 }
 
 function resolveEffort(agent, model, requested, record = null) {
-  if (PI_RUNTIME_AGENTS.has(agent)) {
+  if (agent === 'pi') {
     // 추론을 지원하지 않는 모델은 effort 자체가 없다 — 붙이면 요청이 거부된다.
-    const config = piRuntimeModelConfig(agent, model);
+    const config = piModelConfig(model);
     const efforts = config?.efforts ?? [];
     if (efforts.length === 0) return null;
     if (typeof requested === 'string' && efforts.includes(requested)) return requested;
@@ -3026,34 +2880,6 @@ function broadcastTemplateCatalog(change = null) {
   }
 }
 
-function writingStyleCatalog(record) {
-  const activeSession = record.agentSession;
-  return buildWritingStyleCatalog({
-    health: providerHealth.cached(),
-    piStatus,
-    codexModels: record.modelCatalogs?.codex,
-    claudeModels: record.modelCatalogs?.claude,
-    currentSelection: activeSession ? { agent: activeSession.agent, model: activeSession.model, effort: activeSession.effort } : null,
-  });
-}
-
-function sendStyleProgress(record, event) {
-  const calibration = record.styleCalibration;
-  if (!calibration) return;
-  const snapshot = {
-    v: 1,
-    type: 'writing-style-progress',
-    requestId: calibration.requestId,
-    jobId: calibration.jobId,
-    startedAt: calibration.startedAt,
-    agent: calibration.agent,
-    model: calibration.model,
-    ...event,
-  };
-  calibration.progress = snapshot;
-  sendJson(record.studioSocket, snapshot);
-}
-
 // 비동기 응답이 도착할 때쯤 스튜디오 탭이 교체되었을 수 있다 — 현재 소켓에만 보낸다.
 function replyToStudio(record, sock, obj) {
   if (sock !== record.studioSocket) return;
@@ -3492,7 +3318,7 @@ function drainTemplateCompletion(record) {
   try {
     activeSession.backend.sendUserMessage(addAgentInstructionsContext(
       buildCopyLayoutCompletionPrompt(entry.result),
-      documentMemoryHub.takeBlock(activeSession),
+      memoryBlocks(activeSession),
     ));
   } catch (error) {
     failPendingProviderCallsForTurn(record, activeSession, activeSession.turnId);
@@ -3559,7 +3385,7 @@ function drainPlanningDocumentSaved(record) {
     activeSession.backend.sendUserMessage(addAgentInstructionsContext(addActiveDocumentContext(
       activeSession,
       addTemplateContext(record, activeSession, prompt),
-    ), documentMemoryHub.takeBlock(activeSession)));
+    ), memoryBlocks(activeSession)));
   } catch (error) {
     failPendingProviderCallsForTurn(record, activeSession, activeSession.turnId);
     activeSession.status = 'idle';
@@ -3753,8 +3579,6 @@ async function launchTemplateJob(record, job) {
     piManager,
     piModelConfig,
     piSpawnHooks,
-    piRuntimeSpawnHooks,
-    piRuntimeModelConfig,
     SESSION_FACTORIES,
     unknownAgentError
   });
@@ -3835,7 +3659,7 @@ const TRACED_PROVIDER_EVENTS = new Set(['turn-start', 'turn-end', 'tool-call', '
 
 /** 실패 문구에서 지울 이 세션의 비밀 값: MCP 세션 토큰, OpenRouter 키, CLI 설정 키. */
 function providerFailureSecrets(opts) {
-  const values = [opts.token, opts.openRouterApiKey, piManager.apiKey(), piManager.ownApiKey(), rauAgentHarness.secret()];
+  const values = [opts.token, opts.openRouterApiKey, piManager.apiKey(), piManager.ownApiKey()];
   for (const [name, value] of Object.entries(opts.providerEnv ?? {})) {
     if (/KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL/i.test(name)) values.push(value);
   }
@@ -3961,7 +3785,10 @@ function sendCompactionEvents(record, events, turnId) {
     // 압축 전 사용량을 재접속 스냅샷과 다음 압축의 beforeTokens 로 다시 쓰지 않는다.
     // Claude 의 post_tokens 는 시스템 프롬프트·도구 정의를 빼고 세므로 다음 호출을 기다린다.
     // 압축된 기록에는 앞서 실은 문서 기억이 남지 않을 수 있다 — 다음 턴에 다시 싣는다.
-    if (event.phase === 'completed') documentMemoryHub.forgetDelivery(activeSession);
+    if (event.phase === 'completed') {
+      documentMemoryHub.forgetDelivery(activeSession);
+      userMemoryHub.forgetDelivery(activeSession);
+    }
     if (event.phase === 'completed' && activeSession?.contextUsage) {
       activeSession.contextUsage = activeSession.agent !== 'claude' && event.afterTokens !== undefined
         ? { ...activeSession.contextUsage, usedTokens: event.afterTokens }
@@ -4145,8 +3972,10 @@ function makeBackendEventHandler(record, generation) {
         if (!succeeded) activeSession.bootstrapHistory = activeSession.fallbackHistory;
         // 이어 받지 못한 세션은 앞서 실은 기억을 모른다 — 이번 글이 실었는지도 확신할 수 없어 다음 턴에 다시 싣는다.
         documentMemoryHub.forgetDelivery(activeSession);
+        userMemoryHub.forgetDelivery(activeSession);
       }
       documentMemoryHub.settleDelivery(activeSession, succeeded);
+      userMemoryHub.settleDelivery(activeSession, succeeded);
       // 기록을 실은 턴이 성공하지 못했고 공급자가 그 턴을 받았을 수 있다 → 전달 불확실.
       const carried = delivery && (delivery.primary || (evt.resumeLost && delivery.fallback));
       if (!succeeded && carried && (activeSession.providerTurnStarted || evt.handoffUncertain === true)) {
@@ -4331,7 +4160,7 @@ function handoffPayload(delivery, plainText) {
 function applyHandoffContext(session, { model, providerContextUsage, resumed }) {
   const usage = providerContextUsage && typeof providerContextUsage === 'object' ? providerContextUsage : {};
   session.contextWindow = resolveContextWindow(session.agent, {
-    modelContextLength: piRuntimeModelConfig(session.agent, model)?.contextLength ?? undefined,
+    modelContextLength: session.agent === 'pi' ? piModelConfig(model)?.contextLength : undefined,
     reportedMaxTokens: usage.maxTokens,
   });
   const used = Number(usage.usedTokens);
@@ -4772,7 +4601,7 @@ async function linkChatDocument(record, sock, msg) {
   linked();
   await sendProjectBound(record);
   resumeLibrarianFor(projectId);
-  await documentMemoryHub.prepare(record, activeSession);
+  await prepareMemory(record, activeSession);
 }
 
 /**
@@ -4846,7 +4675,7 @@ async function detachChatDocument(record, sock, msg) {
   }
   sendJson(sock, { v: 1, type: 'chat-document-detached', ...(requestId ? { requestId } : {}), threadId, documentId });
   await sendProjectBound(record);
-  await documentMemoryHub.prepare(record, activeSession);
+  await prepareMemory(record, activeSession);
 }
 
 /** 맡아 둔 detach_document 의 답을 보낸다 — 새 브리지가 붙었거나, 기다릴 만큼 기다렸거나, 떼지 못하고 되돌아왔다. */
@@ -5006,97 +4835,74 @@ function sendTasteFrame(frame) {
   if (!record || !sendJson(record.studioSocket, frame)) log(`${RAU_TASTE_NAME}: no Studio window for ${frame.learnId ?? frame.type}`);
 }
 
+/** 문체 학습을 시작한다. 검사에 걸리면 그 창에만 style-learn-error 를 보낸다. 진행·결과는 모든 창에 간다. */
+function startStyleLearning(sock, requestId, files, { onSuccess } = {}) {
+  let started;
+  try {
+    started = styleLearner.start({ requestId, files, onSuccess });
+  } catch (error) {
+    sendJson(sock, { v: 1, type: 'style-learn-error', requestId, code: error?.code ?? 'STYLE_LEARN_FAILED', message: String(error?.message ?? error) });
+    return false;
+  }
+  log(`style learning ${started.jobId} started (${Array.isArray(files) ? files.length : 0} files)`);
+  broadcastToStudios({ v: 1, type: 'style-learn-status', job: styleLearner.status() });
+  void started.done.finally(() => broadcastToStudios({ v: 1, type: 'style-learn-status', job: styleLearner.status() }));
+  return true;
+}
+
+/** 예전 말투 맞추기 원고 — 받아들이면 그 원고로 문체 학습을 돌리고 성공한 뒤 폴더를 지운다. 거절하면 곧바로 지운다. */
+async function answerStyleLegacy(sock, requestId, accept) {
+  const fail = (code, message) => sendJson(sock, { v: 1, type: 'style-learn-error', requestId, code, message });
+  if (!writingStyleLegacy) {
+    fail('INVALID_FILES', 'There are no earlier writing samples to learn from.');
+    return;
+  }
+  const forget = async () => {
+    await removeLegacyWritingStyle(WRITING_STYLE_LEGACY_ROOT);
+    writingStyleLegacy = null;
+    log('removed the earlier writing-style folder');
+  };
+  if (!accept) {
+    await forget().catch((error) => log(`writing-style folder removal failed: ${error?.message ?? error}`));
+    await userMemoryHub.publish();
+    return;
+  }
+  let files;
+  try {
+    files = await readLegacySources(WRITING_STYLE_LEGACY_ROOT);
+  } catch (error) {
+    fail(error?.code ?? 'INVALID_FILES', String(error?.message ?? error));
+    return;
+  }
+  if (files.length === 0) {
+    await forget().catch(() => {});
+    await userMemoryHub.publish();
+    fail('NO_TEXT', 'The earlier writing samples could not be read.');
+    return;
+  }
+  startStyleLearning(sock, requestId, files, { onSuccess: forget });
+}
+
 function sendTasteSettings(sock, requestId, extra = {}) {
   sendJson(sock, { v: 1, type: 'taste-settings', ...(requestId ? { requestId } : {}), ok: true, settings: tasteSettings.get(), ...extra });
 }
 
 /**
- * 여러 문서에서 배운 사용자 취향을 AGENTS.md 의 `## Rau-0.1` 아래 한 줄로 제안한다(설정의 확인 카드).
- * 모든 창을 통틀어 Rau-0.1 제안은 하나만 두고, 다른 제안이 기다리는 창은 건드리지 않는다.
- * 확인할 때 그때의 AGENTS.md 에 다시 붙이므로(rauLine) 기다리는 동안 사용자가 고쳐도 낡지 않는다.
- * @returns {{ draftId: string } | { exists: true } | null} 만든 제안, 이미 있는 줄, 또는 자리 없음
+ * 턴 앞에 싣는 글: AGENTS.md(<app_agents_md>) → 기억(<user_memory>) → 문서 기억(<document_memory>) → 요청.
+ * 앞의 것이 이긴다. memoryBlock 은 memoryBlocks() 가 만든 두 기억 블록이다.
  */
-function proposeRauInstruction({ line, documents, refs, threadId, documentId }) {
-  const status = agentInstructionsStore.snapshot();
-  const content = appendRauInstruction(status.content, line);
-  if (content === null) return { exists: true };
-  const live = [...sessions.values()].filter((record) => !record.disposed);
-  if (live.some((record) => currentInstructionDraft(record)?.requestedBy === RAU_TASTE_NAME)) return null;
-  const record = tasteRecord({ threadId, documentId }, { socket: true });
-  if (!record || currentInstructionDraft(record)) return null;
-  let prepared;
-  try {
-    prepared = agentInstructionsStore.prepareUpdate(content, { expectedRevision: status.revision });
-  } catch (error) {
-    log(`${RAU_TASTE_NAME}: instruction proposal skipped: ${error?.code ?? error?.message ?? error}`);
-    return null;
-  }
-  const createdAt = Date.now();
-  const draft = {
-    id: crypto.randomUUID(),
-    confirmationToken: crypto.randomUUID(),
-    content: prepared.content,
-    expectedRevision: prepared.expectedRevision,
-    reason: `${documents}개 문서에서 같은 취향을 배웠습니다.`,
-    requestedBy: RAU_TASTE_NAME,
-    createdAt,
-    expiresAt: createdAt + RAU_INSTRUCTION_DRAFT_TTL_MS,
-    rauRefs: refs,
-    rauLine: line,
-  };
-  record.pendingInstructionDraft = draft;
-  draft.expiryTimer = setTimeout(() => {
-    if (record.pendingInstructionDraft?.id === draft.id) clearInstructionDraft(record, 'expired');
-  }, RAU_INSTRUCTION_DRAFT_TTL_MS);
-  draft.expiryTimer.unref?.();
-  if (!sendInstructionDraft(record)) {
-    clearTimeout(draft.expiryTimer);
-    record.pendingInstructionDraft = null;
-    return null;
-  }
-  log(`${RAU_TASTE_NAME}: proposed an AGENTS.md line learned in ${documents} documents`);
-  return { draftId: draft.id };
+function addAgentInstructionsContext(prompt, memoryBlock = '') {
+  return [agentInstructionsStore.promptBlock(), memoryBlock, prompt].filter(Boolean).join('\n\n');
 }
 
-/**
- * Rau-0.1 변경안은 AGENTS.md 가 바뀌어도 낡지 않는다 — 그 줄을 새 내용에 다시 붙여 보낸다. 사용자가 그 줄을
- * 직접 넣었으면 변경안을 거두고 그 취향을 올린 것으로 적는다.
- */
-function rebaseRauInstructionDraft(record, draft, status) {
-  const content = appendRauInstruction(status.content, draft.rauLine);
-  if (content === null) {
-    clearInstructionDraft(record, 'stale');
-    void tasteLearner.promotionSettled(draft.rauRefs, 'confirmed', { text: draft.rauLine }).catch(() => {});
-    return;
-  }
-  try {
-    const prepared = agentInstructionsStore.prepareUpdate(content, { expectedRevision: status.revision });
-    draft.content = prepared.content;
-    draft.expectedRevision = prepared.expectedRevision;
-  } catch (error) {
-    log(`${RAU_TASTE_NAME}: instruction proposal dropped: ${error?.code ?? error?.message ?? error}`);
-    clearInstructionDraft(record, 'stale');
-    return;
-  }
-  sendInstructionDraft(record);
+/** 이번 턴에 실을 기억 블록 — 기억(계정 단계)이 먼저, 문서 기억이 다음. 받은 것과 같으면 싣지 않는다. */
+function memoryBlocks(session, options = {}) {
+  return [userMemoryHub.takeBlock(session, options), documentMemoryHub.takeBlock(session, options)].filter(Boolean).join('\n\n');
 }
 
-/**
- * 확인한 변경안을 쓴다. Rau-0.1 변경안은 지금의 AGENTS.md 에 그 줄을 다시 붙인다 — 이미 있으면 그대로 둔다.
- * 확인 토큰은 consumeAuthorizedInstructionDraft 가 이미 검사했다.
- */
-function writeConfirmedInstructionDraft(draft) {
-  if (typeof draft.rauLine !== 'string') {
-    return agentInstructionsStore.update(draft.content, { expectedRevision: draft.expectedRevision });
-  }
-  const status = agentInstructionsStore.snapshot();
-  const content = appendRauInstruction(status.content, draft.rauLine);
-  if (content === null) return Promise.resolve(status);
-  return agentInstructionsStore.update(content, { expectedRevision: status.revision });
-}
-
-function addAgentInstructionsContext(prompt, documentMemoryBlock = '') {
-  return [agentInstructionsStore.promptBlock(), documentMemoryBlock, prompt].filter(Boolean).join('\n\n');
+/** 턴을 열기 전에 두 기억을 읽어 둔다 (자격 확인은 길어야 잠깐). */
+async function prepareMemory(record, session) {
+  await Promise.all([documentMemoryHub.prepare(record, session), userMemoryHub.prepare()]);
 }
 
 /**
@@ -5315,10 +5121,14 @@ function dispatchUserMessage(record, sock, msg, activeSession, messageAttachment
   const liveDocument = normalizeDocumentSnapshot(msg.documentSnapshot);
   void Promise.resolve()
     .then(() => requireAgentAuthenticated(activeSession.agent))
+    .then(() => tasteLearningAllowed(activeSession.agent)
+      ? tasteLearner.flushCorrections({ documentId: activeSession.documentId, threadId: activeSession.threadId }).catch(error => log(`Rau correction flush failed: ${error?.message ?? error}`))
+      : undefined)
     .then(() => skillRegistry.promptContext(msg.text, typeof msg.skillName === 'string' ? msg.skillName : undefined, {
       phase: activeSession.planning.snapshot().phase,
       agent: activeSession.agent,
       requestContext: liveDocumentBlock(liveDocument),
+      personalProfile: userMemoryHub.personalProfile(),
     }))
     .then(async (prompt) => {
       // Skill context is loaded asynchronously. An interrupt can settle this
@@ -5333,7 +5143,7 @@ function dispatchUserMessage(record, sock, msg, activeSession, messageAttachment
         prompt = `The current plan remains open for review. Answer questions and research normally. If this message requests concrete changes to the plan, revise it directly with present_implementation_plan; do not ask the user to request a draft again. Never treat discussion as approval to edit the document.\n\nCurrent plan:\n${JSON.stringify(activeSession.planning.latestPlan.plan)}\n\n${prompt}`;
       }
       // 프로젝트 요약은 메모·발췌를 읽느라 비동기다 — 기다린 뒤 턴이 여전히 이 턴인지 다시 본다.
-      await documentMemoryHub.prepare(record, activeSession);
+      await prepareMemory(record, activeSession);
       const referencedPrompt = await addReferenceContext(activeSession, msg.text, prompt, messageAttachments, normalizeMentions(msg.mentions), {
         required: msg.requireAcceptance === true,
         documentMentions: normalizeDocumentMentions(msg.documentMentions),
@@ -5355,7 +5165,7 @@ function dispatchUserMessage(record, sock, msg, activeSession, messageAttachment
       );
       const replaceSession = activeSession.replaceSessionPending === true;
       // 새 공급자 세션은 앞서 실은 기억을 모른다 — 세션 교체와 재개 실패 대체 글에는 늘 싣는다.
-      const memoryBlock = documentMemoryHub.takeBlock(activeSession, { force: replaceSession });
+      const memoryBlock = memoryBlocks(activeSession, { force: replaceSession });
       // 기록 예산은 기록을 뺀 이번 프롬프트를 기준으로 턴마다 계산한다.
       const plainText = addAgentInstructionsContext(turnPrompt, memoryBlock);
       const resumedNative = activeSession.resumed && !replaceSession;
@@ -5374,7 +5184,7 @@ function dispatchUserMessage(record, sock, msg, activeSession, messageAttachment
       const options = {
         ...(primary ? { handoff: handoffPayload(primary, plainText) } : {}),
         ...(withResumeFallback ? {
-          resumeFallbackText: handoffPromptText(full, turnPrompt, documentMemoryHub.takeBlock(activeSession, { force: true })),
+          resumeFallbackText: handoffPromptText(full, turnPrompt, memoryBlocks(activeSession, { force: true })),
         } : {}),
         ...(withResumeFallback && full ? { resumeFallbackHandoff: handoffPayload(full, plainText) } : {}),
         ...(replaceSession ? { replaceSession: true } : {}),
@@ -5784,15 +5594,13 @@ async function startSession(
     piBin: piManager.piBin,
     piRoot: piManager.rootDir,
     openRouterApiKey: agent === 'pi' ? piManager.apiKey() ?? undefined : undefined,
-    reasoning: Boolean(piRuntimeModelConfig(agent, model)?.reasoning),
-    ...piRuntimeSpawnHooks(agent),
+    reasoning: agent === 'pi' ? Boolean(piModelConfig(model)?.reasoning) : false,
+    ...(agent === 'pi' ? piSpawnHooks() : {}),
     // 문서 없이 시작한 세션만 문서 연결 도구를 받는다. 연결한 뒤 다시 뜬 공급자는 받지 않는다.
     projectToolGates: () => ({ ...projectToolGates(), requestable: true, documentLink: true, askChatgpt: webAssistantGate('chatgpt'), askClaude: webAssistantGate('claude') }),
     // 기록(RHWP_PROVIDER_TRANSCRIPT_DIR)의 meta.cli 에 남길 CLI 버전.
-    providerCliVersion: (PI_RUNTIME_AGENTS.has(agent) ? piStatus.version : cliSetupStatus[agent]?.version) ?? null,
-    ...(piRuntimeModelConfig(agent, model)?.contextLength
-      ? { contextWindow: piRuntimeModelConfig(agent, model).contextLength }
-      : {}),
+    providerCliVersion: (agent === 'pi' ? piStatus.version : cliSetupStatus[agent]?.version) ?? null,
+    ...(agent === 'pi' && piModelConfig(model)?.contextLength ? { contextWindow: piModelConfig(model).contextLength } : {}),
   };
   const createBackend = SESSION_FACTORIES[agent];
   if (!createBackend) throw unknownAgentError(agent);
@@ -5859,6 +5667,7 @@ async function startSession(
     replaceSessionPending: false,
     reportResumeLost: untrustedCursor,
     documentMemory: newSessionDocumentMemory(),
+    userMemory: newSessionUserMemory(),
     contextUsage: resumed && continuing && currentSession.agent === agent ? currentSession.contextUsage ?? null : null,
     compaction: null,
     manualCompaction: null,
@@ -6023,7 +5832,7 @@ async function approveImplementationPlan(record, sock, msg) {
       record,
       activeSession,
       addEditReportContext(record, activeSession, approvedPrompt),
-    ), documentMemoryHub.takeBlock(activeSession)));
+    ), memoryBlocks(activeSession)));
   } catch (error) {
     if (record.agentSession === activeSession) {
       if (activeSession.planning.phase === 'switching') {
@@ -6080,7 +5889,7 @@ async function requestImplementationPlanChanges(record, sock, msg, {
         record,
         activeSession,
         referenced,
-      ), documentMemoryHub.takeBlock(activeSession)));
+      ), memoryBlocks(activeSession)));
       return;
     }
     if (feedback) {
@@ -6098,7 +5907,7 @@ async function requestImplementationPlanChanges(record, sock, msg, {
         record,
         activeSession,
         referenced,
-      ), documentMemoryHub.takeBlock(activeSession)));
+      ), memoryBlocks(activeSession)));
     }
   } catch (error) {
     if (record.agentSession === activeSession) {
@@ -6180,7 +5989,6 @@ async function setChatWorkflow(record, sock, msg) {
 }
 
 async function handleStudioMessage(record, sock, msg) {
-  if (msg && typeof msg === 'object' && Object.hasOwn(AGENT_ALIASES, msg.agent)) msg.agent = agentNameFrom(msg.agent);
   switch (msg.type) {
     case 'reference-stage-bind': {
       // 첨부 초안은 이전 채팅의 provider 가 살아 있어도 만들 수 있다. 이 묶기는
@@ -6220,17 +6028,6 @@ async function handleStudioMessage(record, sock, msg) {
           ? piManager.ensureGiftFresh({ timeoutMs: 3_000 })
           : piManager.refreshGift();
         await wait.then(() => refreshPiStatus()).catch(() => {});
-      }
-      // Rau 는 서버가 쓸 수 있다고 답했을 때만 연다. 요금제 이름으로 짐작하지 않는다.
-      if (agent === 'rau') {
-        await rauAgentHarness.ensureFresh({ timeoutMs: 3_000 }).catch(() => {});
-        if (!rauAgentHarness.active() || !piStatus.installed) {
-          rejectStart(Object.assign(
-            new Error(RAU_AGENT_UNAVAILABLE_MESSAGE),
-            { code: 'RAU_AGENT_NOT_ACTIVE' },
-          ));
-          return;
-        }
       }
       // 설정이 끝나지 않은 pi 로는 세션을 열지 않는다 — 살아 있는 세션도 건드리지 않는다.
       if (agent === 'pi' && !piStatus.setupComplete) {
@@ -6305,7 +6102,7 @@ async function handleStudioMessage(record, sock, msg) {
         });
         await sendProjectBound(record);
         resumeLibrarianFor(record.boundProjectId);
-        void documentMemoryHub.prepare(record, s);
+        void prepareMemory(record, s);
       } catch (e) {
         // 시작하지 못한 채팅의 작업 공간은 지금 세션의 표시에 쓰지 않는다.
         if (!record.agentSession || record.agentSession.documentId !== msg.documentId) record.projectRepository = previousRepository;
@@ -6590,7 +6387,29 @@ async function handleStudioMessage(record, sock, msg) {
         status: agentInstructionsStore.snapshot(),
         changedBy: 'system',
       });
-      sendInstructionDraft(record, sock);
+      return;
+    }
+    case 'user-memory-request': {
+      if (typeof msg.requestId !== 'string' || !msg.requestId || msg.requestId.length > 256) return;
+      void userMemoryHub.studioRequest(msg)
+        .then((reply) => sendJson(sock, { v: 1, type: 'user-memory-result', requestId: msg.requestId, ...reply }));
+      return;
+    }
+    case 'style-learn-start': {
+      startStyleLearning(sock, typeof msg.requestId === 'string' ? msg.requestId : null, msg.files);
+      if (Array.isArray(msg.files)) msg.files.length = 0;
+      return;
+    }
+    case 'style-learn-cancel': {
+      styleLearner.cancel(typeof msg.jobId === 'string' ? msg.jobId : undefined);
+      return;
+    }
+    case 'style-learn-status-request': {
+      sendJson(sock, { v: 1, type: 'style-learn-status', requestId: typeof msg.requestId === 'string' ? msg.requestId : undefined, job: styleLearner.status() });
+      return;
+    }
+    case 'style-learn-legacy': {
+      void answerStyleLegacy(sock, typeof msg.requestId === 'string' ? msg.requestId : null, msg.accept === true);
       return;
     }
     case 'taste-settings-request': {
@@ -6635,6 +6454,7 @@ async function handleStudioMessage(record, sock, msg) {
           learnIds: Array.isArray(msg.learnIds) ? msg.learnIds.slice(0, 64) : [],
           changes: msg.changes,
           entryId: msg.entryId,
+          ...(msg.eventIds !== undefined ? { eventIds: msg.eventIds } : {}),
         });
       })().then((result) => sendJson(sock, { v: 1, type: 'taste-undo-result', requestId, ok: true, learnId, ...result }))
         .catch((error) => sendJson(sock, {
@@ -6663,82 +6483,6 @@ async function handleStudioMessage(record, sock, msg) {
         message: String(error?.message ?? error),
         status: agentInstructionsStore.snapshot(),
       }));
-      return;
-    }
-    case 'agent-instructions-draft-confirm': {
-      let draft;
-      try {
-        draft = consumeAuthorizedInstructionDraft(record, msg);
-        // Consume the one-use capability before the asynchronous write.
-      } catch (error) {
-        sendJson(sock, {
-          v: 1,
-          type: 'agent-instructions-error',
-          requestId: msg.requestId ?? null,
-          code: error?.code ?? 'INSTRUCTIONS_CONFIRMATION_INVALID',
-          message: String(error?.message ?? error),
-          status: agentInstructionsStore.snapshot(),
-        });
-        return;
-      }
-      void writeConfirmedInstructionDraft(draft).then((status) => {
-        sendJson(sock, {
-          v: 1,
-          type: 'agent-instructions',
-          requestId: msg.requestId ?? null,
-          status,
-          changedBy: `agent-confirmed:${draft.requestedBy}`,
-        });
-        sendJson(sock, {
-          v: 1,
-          type: 'agent-instructions-draft-cleared',
-          draftId: draft.id,
-          outcome: 'confirmed',
-        });
-        broadcastAgentInstructions(status, `agent-confirmed:${draft.requestedBy}`);
-        if (draft.rauRefs) void tasteLearner.promotionSettled(draft.rauRefs, 'confirmed', { text: draft.rauLine }).catch(() => {});
-      }).catch((error) => {
-        sendJson(sock, {
-          v: 1,
-          type: 'agent-instructions-draft-cleared',
-          draftId: draft.id,
-          outcome: 'stale',
-        });
-        sendJson(sock, {
-          v: 1,
-          type: 'agent-instructions-error',
-          requestId: msg.requestId ?? null,
-          code: error?.code ?? 'INSTRUCTIONS_SAVE_FAILED',
-          message: String(error?.message ?? error),
-          status: agentInstructionsStore.snapshot(),
-        });
-      });
-      return;
-    }
-    case 'agent-instructions-draft-reject': {
-      let draft;
-      try {
-        draft = consumeAuthorizedInstructionDraft(record, msg);
-      } catch (error) {
-        sendJson(sock, {
-          v: 1,
-          type: 'agent-instructions-error',
-          requestId: msg.requestId ?? null,
-          code: error?.code ?? 'INSTRUCTIONS_CONFIRMATION_INVALID',
-          message: String(error?.message ?? error),
-          status: agentInstructionsStore.snapshot(),
-        });
-        return;
-      }
-      sendJson(sock, {
-        v: 1,
-        type: 'agent-instructions-draft-cleared',
-        requestId: msg.requestId ?? null,
-        draftId: draft.id,
-        outcome: 'rejected',
-      });
-      // 거절한 취향은 다시 제안하지 않는다.
-      if (draft.rauRefs) void tasteLearner.promotionSettled(draft.rauRefs, 'rejected', { text: draft.rauLine }).catch(() => {});
       return;
     }
     case 'chat-permission-set': {
@@ -6961,7 +6705,7 @@ async function handleStudioMessage(record, sock, msg) {
         ...(Number.isFinite(entry.receivedBytes) ? { receivedBytes: entry.receivedBytes } : {}),
         ...(Number.isFinite(entry.totalBytes) ? { totalBytes: entry.totalBytes } : {}),
       });
-      const installing = PI_RUNTIME_AGENTS.has(agent)
+      const installing = agent === 'pi'
         ? mutateSharedNpmPrefix(() => piManager.install(progress)).then(async (status) => {
           piStatus = status;
         })
@@ -6987,8 +6731,7 @@ async function handleStudioMessage(record, sock, msg) {
       const requestId = typeof msg.requestId === 'string' ? msg.requestId : null;
       const agent = msg.agent;
       const method = msg.method;
-      // Rau 는 로그인하지 않는다 — 계정 lease 로 서버가 정한다.
-      if (!KNOWN_AGENTS.has(agent) || agent === 'rau' || (method !== 'oauth' && method !== 'api-key')) {
+      if (!KNOWN_AGENTS.has(agent) || (method !== 'oauth' && method !== 'api-key')) {
         sendAgentSetupError(record, sock, requestId, null, new Error('로그인 요청을 확인하지 못했어요.'));
         return;
       }
@@ -6997,7 +6740,7 @@ async function handleStudioMessage(record, sock, msg) {
       let credentialsCommitted = false;
       const cancelProvider = () => {
         abort.abort();
-        if (PI_RUNTIME_AGENTS.has(agent)) void piManager.cancelSetup();
+        if (agent === 'pi') void piManager.cancelSetup();
         else if (CLI_SETUP_AGENTS.includes(agent)) void cliSetup.cancel(agent);
       };
       // 같은 세션이 다시 로그인을 시작하면 남아 있던 이전 시도를 취소하고 처음부터 시작한다.
@@ -7264,14 +7007,6 @@ async function handleStudioMessage(record, sock, msg) {
       void handleSecretSubmit(record, sock, msg);
       return;
     }
-    case 'rau-agent-status-request': {
-      const requestId = typeof msg.requestId === 'string' ? msg.requestId : null;
-      const read = msg.refresh === true ? rauAgentHarness.refresh() : rauAgentHarness.ensureFresh();
-      void read
-        .catch(() => {})
-        .then(() => replyToStudio(record, sock, { v: 1, type: 'rau-agent-status', requestId, status: rauAgentHarness.snapshot() }));
-      return;
-    }
     case 'pi-status-request': {
       const requestId = typeof msg.requestId === 'string' ? msg.requestId : null;
       void refreshPiStatus()
@@ -7359,144 +7094,6 @@ async function handleStudioMessage(record, sock, msg) {
           replyToStudio(record, sock, { v: 1, type: 'pi-status', requestId, status });
         })
         .catch((e) => sendPiError(record, sock, requestId, e, 'PI_MODELS_INVALID'));
-      return;
-    }
-    case 'writing-style-status-request': {
-      void writingStyleStore.status()
-        .then((status) => sendJson(sock, { v: 1, type: 'writing-style-status', requestId: msg.requestId ?? null, status }))
-        .catch((e) => sendJson(sock, { v: 1, type: 'writing-style-error', requestId: msg.requestId ?? null, code: 'STYLE_STATUS_FAILED', message: String(e?.message ?? e) }));
-      return;
-    }
-    case 'writing-style-catalog-request': {
-      const requestId = msg.requestId ?? null;
-      const refresh = msg.refresh === true;
-      void Promise.all([
-        providerHealth.check(refresh),
-        refresh ? refreshPiStatus() : Promise.resolve(piStatus),
-      ])
-        .then(() => sendJson(sock, {
-          v: 1, type: 'writing-style-catalog', requestId, ...writingStyleCatalog(record),
-        }))
-        .catch((e) => sendJson(sock, {
-          v: 1, type: 'writing-style-error', requestId,
-          code: e?.code ?? 'STYLE_CATALOG_FAILED', message: String(e?.message ?? e),
-        }));
-      return;
-    }
-    case 'writing-style-calibrate': {
-      const requestId = msg.requestId ?? null;
-      if (record.styleCalibration || writingStyleCalibrationOwner !== null) {
-        sendJson(sock, { v: 1, type: 'writing-style-error', requestId, code: 'CALIBRATION_BUSY', message: 'A writing-style calibration is already running.' });
-        return;
-      }
-      let selection;
-      try {
-        selection = resolveWritingStyleSelection(
-          { agent: msg.agent, model: msg.model, effort: msg.effort },
-          {
-            health: providerHealth.cached(),
-            piStatus,
-            codexModels: record.modelCatalogs?.codex,
-            claudeModels: record.modelCatalogs?.claude,
-            currentSelection: record.agentSession ? { agent: record.agentSession.agent, model: record.agentSession.model, effort: record.agentSession.effort } : null,
-          },
-        );
-      } catch (e) {
-        sendJson(sock, {
-          v: 1, type: 'writing-style-error', requestId,
-          code: e?.code ?? 'INVALID_CALIBRATION_SELECTION', message: String(e?.message ?? e),
-        });
-        return;
-      }
-      const jobId = crypto.randomUUID();
-      writingStyleCalibrationOwner = record;
-      record.styleCalibration = {
-        requestId, jobId, startedAt: new Date().toISOString(),
-        agent: selection.agent, model: selection.model, progress: null,
-      };
-      sendStyleProgress(record, {
-        state: 'preparing', phase: 'preparing', activity: 'collecting-samples',
-        detail: msg.append === true ? 'Combining saved and new writing samples' : 'Preparing writing samples',
-        completed: 0, total: 1,
-      });
-      let calibrationSources = null;
-      void Promise.resolve()
-        .then(async () => {
-          if (msg.append === true) {
-            const current = await writingStyleStore.status();
-            assertWritingStyleAppendCompatible(current, {
-              language: msg.language,
-              baseRevision: typeof msg.baseRevision === 'string' ? msg.baseRevision : null,
-            });
-          }
-          calibrationSources = await writingStyleStore.calibrationSources(msg.files, { append: msg.append === true });
-          if (Array.isArray(msg.files)) msg.files.length = 0;
-          return calibrateWritingStyle(
-            {
-              language: msg.language,
-              files: calibrationSources,
-              agent: selection.agent,
-              model: await resolveModel(selection.agent, selection.model, record),
-              effort: selection.effort,
-            },
-            {
-              useOpenRouter: selection.agent === 'pi',
-              piManager,
-              openRouter: piRouter,
-              projectRoot: ROOT,
-              workDir: record.workDir,
-              isolatedHome: record.isolatedHome,
-              sessionId: record.sessionId,
-              providerEnvs: { claude: claudeRuntimeEnv(record.isolatedHome) },
-              spawnProcess: (command, args, options) => auxSpawnProcess(record, command, args, options),
-              terminateProcess: terminateProcessTree,
-              cleanupProcessOutcome: (child) => beginAuxiliaryProcessCleanupOutcome(record, child),
-              onProgress: (event) => {
-                if (record.styleCalibration?.jobId === jobId) sendStyleProgress(record, event);
-              },
-            },
-          );
-        })
-        .then(async (profile) => {
-          if (record.styleCalibration?.jobId === jobId) sendStyleProgress(record, {
-            state: 'saving', phase: 'saving', activity: 'saving-profile',
-            detail: 'Saving the profile and its source samples', completed: 0, total: 1,
-          });
-          const status = await writingStyleStore.save(profile, { sources: calibrationSources });
-          if (record.styleCalibration?.jobId === jobId) sendStyleProgress(record, {
-            state: 'saving', phase: 'saving', activity: 'saving-profile',
-            detail: 'Saved the calibrated writing profile', completed: 1, total: 1,
-          });
-          sendJson(record.studioSocket, { v: 1, type: 'writing-style-result', requestId, jobId, status });
-          sendJson(record.studioSocket, { v: 1, type: 'writing-style-status', requestId, status });
-        })
-        .catch((e) => sendJson(record.studioSocket, {
-          v: 1,
-          type: 'writing-style-error',
-          requestId,
-          jobId,
-          code: e?.code ?? 'CALIBRATION_FAILED',
-          message: String(e?.message ?? e),
-        }))
-        .finally(() => {
-          if (record.styleCalibration?.jobId === jobId) record.styleCalibration = null;
-          if (writingStyleCalibrationOwner === record) writingStyleCalibrationOwner = null;
-        });
-      return;
-    }
-    case 'writing-style-instruction-set': {
-      const requestId = msg.requestId ?? null;
-      void writingStyleStore.setAdditionalInstruction(msg.instruction)
-        .then((status) => sendJson(record.studioSocket, {
-          v: 1, type: 'writing-style-status', requestId, status,
-        }))
-        .catch((e) => sendJson(record.studioSocket, {
-          v: 1,
-          type: 'writing-style-error',
-          requestId,
-          code: 'STYLE_INSTRUCTION_FAILED',
-          message: String(e?.message ?? e),
-        }));
       return;
     }
     case 'chat-steer': {
@@ -7961,7 +7558,7 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
       if (tool === 'request_permission') {
         const generation = record.agentSession.generation;
         void (async () => {
-          if (!PI_RUNTIME_AGENTS.has(sock.agentLabel)) await consumeChatPermissionScope(record, sock.agentLabel, args, generation);
+          if (sock.agentLabel !== 'pi') await consumeChatPermissionScope(record, sock.agentLabel, args, generation);
           return requestChatPermission(record, args, generation);
         })().then(sendResult).catch((error) => sendError(error, 'CHAT_PERMISSION_FAILED'));
         return;
@@ -7999,7 +7596,7 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
           // Pi에는 위임 에이전트 질문 경로가 없어 MCP 프로세스 자체가 루트다.
           // 다른 레거시 전송은 별도 프로바이더 스트림의 정확한 일회용 범위 티켓을
           // 기다린 뒤 소비해, 상속된 환경 변수만으로 루트를 사칭하지 못하게 한다.
-          if (!PI_RUNTIME_AGENTS.has(sock.agentLabel)) {
+          if (sock.agentLabel !== 'pi') {
             const matchingScopes = await waitForUserQuestionScopes(
               record,
               sock.agentLabel,
@@ -8267,66 +7864,9 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
         return;
       }
       if (tool === 'read_document_memory') {
-        void documentMemoryHub.runTool(record, record.agentSession)
-          .then(sendResult)
+        void Promise.all([documentMemoryHub.runTool(record, record.agentSession), userMemoryHub.toolAccount()])
+          .then(([memory, account]) => sendResult({ ...memory, ...(account ? { account } : {}) }))
           .catch((error) => sendError(error, 'DOCUMENT_MEMORY_FAILED'));
-        return;
-      }
-      if (tool === 'update_agent_instructions') {
-        try {
-          const status = agentInstructionsStore.snapshot();
-          const prepared = agentInstructionsStore.prepareUpdate(args.content, {
-            expectedRevision: args.expectedRevision,
-          });
-          if (prepared.content === status.content) {
-            sendResult({ ...status, changed: false, pendingConfirmation: false });
-            return;
-          }
-          if (!record.studioSocket || record.studioSocket.readyState !== record.studioSocket.OPEN) {
-            throw workflowError(
-              'INSTRUCTIONS_CONFIRMATION_UNAVAILABLE',
-              'HamaEditor Studio must be connected so the user can confirm the instruction proposal.',
-            );
-          }
-          if (record.pendingInstructionDraft) clearInstructionDraft(record, 'replaced');
-          const requestedBy = sock.agentLabel ?? record.agentSession?.agent ?? 'unknown';
-          const createdAt = Date.now();
-          const draft = {
-            id: crypto.randomUUID(),
-            confirmationToken: crypto.randomUUID(),
-            content: prepared.content,
-            expectedRevision: prepared.expectedRevision,
-            reason: typeof args.reason === 'string' ? args.reason : null,
-            requestedBy,
-            threadId: record.agentSession?.threadId ?? null,
-            createdAt,
-            expiresAt: createdAt + AGENT_INSTRUCTION_DRAFT_TTL_MS,
-          };
-          record.pendingInstructionDraft = draft;
-          draft.expiryTimer = setTimeout(() => {
-            if (record.pendingInstructionDraft?.id === draft.id) {
-              clearInstructionDraft(record, 'expired');
-            }
-          }, AGENT_INSTRUCTION_DRAFT_TTL_MS);
-          draft.expiryTimer.unref?.();
-          if (!sendInstructionDraft(record)) {
-            record.pendingInstructionDraft = null;
-            throw workflowError(
-              'INSTRUCTIONS_CONFIRMATION_UNAVAILABLE',
-              'HamaEditor Studio disconnected before the instruction proposal could be shown.',
-            );
-          }
-          sendResult({
-            ...status,
-            changed: false,
-            pendingConfirmation: true,
-            draftId: draft.id,
-            expiresAt: new Date(draft.expiresAt).toISOString(),
-            ...(draft.reason ? { reason: draft.reason } : {}),
-          });
-        } catch (error) {
-          sendError(error, 'INSTRUCTIONS_DRAFT_FAILED');
-        }
         return;
       }
       if (definition.category === 'project-read' || definition.category === 'project-write' || definition.category === 'project-ingest') {
@@ -8363,7 +7903,7 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
       if (tool === 'list_documents' && args.path !== undefined) {
         void (async () => {
           const root = !workerJob && !sock.piSubagentId && sock.agentRole === 'chat' && !msg.parentTaskId
-            && (PI_RUNTIME_AGENTS.has(sock.agentLabel) || await documentPathCallerIsRoot(record, sock.agentLabel, tool, args));
+            && (sock.agentLabel === 'pi' || await documentPathCallerIsRoot(record, sock.agentLabel, tool, args));
           return listDocumentByPath(record, { root, path: args.path });
         })().then(sendResult).catch((error) => sendError(error, 'PATH_REJECTED'));
         return;
@@ -8790,7 +8330,7 @@ function handleMcpMessage(record, sock, msg, traceIn = 0, frameBytes = 0) {
         void (async () => {
           checkAttachment();
           const root = !sock.piSubagentId && sock.agentRole === 'chat' && !msg.parentTaskId
-            && (PI_RUNTIME_AGENTS.has(sock.agentLabel) || await documentPathCallerIsRoot(record, sock.agentLabel, tool, args));
+            && (sock.agentLabel === 'pi' || await documentPathCallerIsRoot(record, sock.agentLabel, tool, args));
           if (!root) throw workflowError('ROOT_INTERACTION_REQUIRED', 'Only the root conversation may attach or detach a document');
           checkAttachment();
           if (session.documentLinkCall) throw workflowError('DOCUMENT_LINK_PENDING', 'Another document attach or detach is already in progress in this chat');
@@ -9885,7 +9425,10 @@ httpServer.on('upgrade', (req, socket, head) => {
         status: agentInstructionsStore.snapshot(),
         changedBy: 'system',
       });
-      sendInstructionDraft(record, ws);
+      void userMemoryHub.snapshot()
+        .then((memory) => replyToStudio(record, ws, { v: 1, type: 'user-memory', memory }))
+        .catch((e) => log(`user memory on connect failed: ${e?.message ?? e}`));
+      sendJson(ws, { v: 1, type: 'style-learn-status', job: styleLearner.status() });
       // 대화에서 배우기 — Studio 는 이 값을 들은 뒤에만 기록에서 배우기의 출처 기록을 남긴다.
       sendJson(ws, { v: 1, type: 'taste-settings', ok: true, settings: tasteSettings.get() });
       const activeSession = record.agentSession;
@@ -9918,21 +9461,6 @@ httpServer.on('upgrade', (req, socket, head) => {
       void skillRegistry.catalog()
         .then((catalog) => sendJson(ws, { v: 1, type: 'skills-catalog', catalog }))
         .catch((e) => log(`skills catalog on connect failed: ${e?.message ?? e}`));
-      void writingStyleStore.status()
-        .then((status) => sendJson(ws, { v: 1, type: 'writing-style-status', status }))
-        .catch((e) => sendJson(ws, {
-          v: 1, type: 'writing-style-error', code: e?.code ?? 'STYLE_STATUS_FAILED', message: String(e?.message ?? e),
-        }));
-      const calibration = record.styleCalibration;
-      if (calibration) {
-        sendJson(ws, calibration.progress ?? {
-          v: 1, type: 'writing-style-progress',
-          requestId: calibration.requestId, jobId: calibration.jobId,
-          startedAt: calibration.startedAt, agent: calibration.agent, model: calibration.model,
-          state: 'preparing', phase: 'preparing', activity: 'collecting-samples',
-          detail: 'Preparing writing samples', completed: 0, total: 1,
-        });
-      }
       for (const job of record.templateJobs.values()) {
         if (job.status === 'running') {
           sendTemplateJobEvent(record, {
@@ -9949,11 +9477,9 @@ httpServer.on('upgrade', (req, socket, head) => {
         if (providers !== cachedProviders) replyToStudio(record, ws, { v: 1, type: 'provider-status', providers });
       }).catch((e) => log(`provider health on connect failed: ${e?.message ?? e}`));
       sendJson(ws, { v: 1, type: 'pi-status', status: piStatus });
-      sendJson(ws, { v: 1, type: 'rau-agent-status', status: rauAgentHarness.snapshot() });
       void agentSetupStatuses(record.sessionId).then((statuses) => {
         replyToStudio(record, ws, { v: 1, type: 'agent-setup-status', statuses });
       }).catch((e) => log(`agent setup status on connect failed: ${e?.message ?? e}`));
-      sendJson(ws, { v: 1, type: 'writing-style-catalog', ...writingStyleCatalog(record) });
       sendJson(ws, { v: 1, type: 'templates-catalog', ...templateStore.list() });
       sendJson(ws, { v: 1, type: 'usage-report', usage: usageSnapshot() });
       if (piStatus.keyConfigured && !openRouterCredits) {
@@ -9978,6 +9504,8 @@ httpServer.listen(REQUESTED_PORT, '127.0.0.1', () => {
   hubPort = address.port;
   process.stdout.write(`RHWP_HUB_READY ${JSON.stringify({ port: hubPort, pid: process.pid, launchId: LAUNCH_ID })}\n`);
   log(`rhwp-agent hub listening on ws://127.0.0.1:${hubPort} (protocol v${PROTOCOL_VERSION})`);
+  // 기억(계정 단계)의 자격은 첫 턴 전에 미리 묻는다 — 턴은 길어야 잠깐만 기다린다.
+  void hostedRau.eligibility({ waitMs: 0 });
   log('claude/codex/pi can be installed and authenticated from Studio settings');
   if (TOOL_TRACE_PATH) log(`tool trace enabled: ${TOOL_TRACE_PATH}`);
   void ensureBootWork();
@@ -10008,10 +9536,6 @@ async function disposeRecord(record, reason) {
   record.disposed = true;
   authRuns.cancelForSession(record.sessionId, reason);
   cancelCheckpointTitleJobs(record);
-  if (record.pendingInstructionDraft?.expiryTimer) {
-    clearTimeout(record.pendingInstructionDraft.expiryTimer);
-  }
-  record.pendingInstructionDraft = null;
   clearStudioReattachGrace(record);
   clearStudioReattachFlush(record);
   settleUserQuestion(record, { status: 'expired', reason: 'hub-restarted' });

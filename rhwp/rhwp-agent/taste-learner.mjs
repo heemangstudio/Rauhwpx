@@ -1,4 +1,4 @@
-// 취향 학습기 (Rau-0.1) — 턴과 사용자의 검토 신호를 문서 기억으로 바꾼다.
+// 취향 학습기 (Rau-0.1) — 턴과 사용자의 검토 신호를 문서 기억과 기억(계정 단계)으로 바꾼다.
 //
 // 성공한 턴이 끝나면, 그리고 턴이 돌지 않을 때 검토 신호가 오면(5초 모아서) 문서 기억 키마다 한 번에
 // 하나씩 도구 없는 한 번짜리 LLM 호출을 돌린다. 도는 중에 온 요청은 채팅마다 하나만 남겨(가장 새것) 끝난 뒤
@@ -7,9 +7,12 @@
 // 입력은 사용자 메시지, 에이전트의 마지막 답, 검토 신호, 지금 기억뿐이다 — 문서 본문·도구 결과·웹 글은
 // 넣지 않는다(주입된 글이 기억이 되지 않게). 모델 출력은 정해진 JSON ops 로만 반영한다.
 //
-// 문서 기억은 Rau-0.1 만 쓴다 (에이전트는 읽기만, 사용자는 문서 기억 시트에서). 한 턴의 학습 결과는
-// taste-learned 프레임 하나로 채팅의 "Rau-0.1 N가지 배움" 표시가 된다. 표시는 store 의 changes 를 품어 허브가 다시 떠도 되돌린다.
-// 여러 문서에서 같은 주제의 사용자 취향 후보가 생기면 AGENTS.md 한 줄을 제안한다(확인 카드).
+// 기억은 Rau-0.1 만 쓴다 (에이전트는 읽기만, 사용자는 문서 기억 시트와 Rau 탭에서). AGENTS.md 는 사용자만 고친다.
+// - 문서 메모(mem_…)는 더하고 고치고 보강·감쇄한다. 계정 규칙(rule_…)은 보강·감쇄만 한다.
+// - 기억 승격: 사용자 취향 후보(문체·용어)가 두 문서 이상에서 같은 습관으로 보이면 계정 규칙이 되고 문서 메모는
+//   규칙으로 접힌다. 규칙과 다른 습관이 문서마다 거듭 보이면 규칙이 깎이고, 0 이 되면 그 습관이 자리를 잇는다.
+// 한 턴의 학습 결과는 taste-learned 프레임 하나로 채팅의 "Rau-0.1 N가지 배움" 표시가 된다. 표시는 store 의 changes 와
+// 기억 사건 id 를 품어 허브가 다시 떠도 되돌린다.
 //
 // 학습은 호스팅 Rau 만 쓴다. 자격·한도·연결 문제로 쓸 수 없으면 이번 학습을 건너뛴다.
 import crypto from 'node:crypto';
@@ -23,10 +26,12 @@ import {
   MAX_SUBJECT_CHARS,
   canonicalSubject,
   preferenceText,
-  promotionState,
+  wasPromoted,
 } from './document-memory-store.mjs';
 import { recoverInterruptedFileReplacement, replaceFileAtomically } from './harness-update.mjs';
 import { TOOL_CLASSIFICATIONS } from './tools.mjs';
+import { restoreFoldedEntries } from './user-memory-hub.mjs';
+import { USER_MEMORY_KINDS } from './user-memory-store.mjs';
 
 export const RAU_TASTE_NAME = 'Rau-0.1';
 export const TASTE_SIGNAL_DEBOUNCE_MS = 5_000;
@@ -40,15 +45,34 @@ export const TASTE_CLOSE_GRACE_MS = 2_000;
 export const TASTE_MAX_OPS = 5;
 /** 턴에서 모으는 에이전트 답의 상한 (문자). */
 export const TASTE_ANSWER_CHARS = 8_000;
-const PROMPT_ANSWER_CHARS = 4_000;
-const PROMPT_USER_TEXT_CHARS = 4_000;
+/**
+ * 호스팅 학습 프롬프트의 UTF-8 상한. 서버(site-api/rau.mjs MAX_RAU_PROMPT_BYTES)는 48 KiB 를 받는다 — 한글은
+ * 글자마다 3바이트라 여유를 두고 이 안에 맞춘다.
+ */
+export const TASTE_PROMPT_MAX_BYTES = 46 * 1024;
+/** 프롬프트에 싣는 계정 규칙의 양 (JSON 글자 수). */
+const PROMPT_ACCOUNT_RULE_CHARS = 1_500;
 const PROMPT_SIGNALS = 20;
 const MAX_UNDO_CHANGES = 160;
+const MAX_UNDO_EVENTS = 64;
 const MAX_UNDO_LOG = 200;
 const MAX_EARLIER_TURNS = 3;
-const PROMPT_EARLIER_CHARS = 1_500;
 const KEY_PATTERN = /^dm_[a-z0-9]{16}$/;
 const ENTRY_ID_PATTERN = /^mem_[a-z0-9]{12}$/;
+const RULE_ID_PATTERN = /^rule_[a-z0-9]{12}$/;
+const EVENT_ID_PATTERN = /^evt_[a-z0-9]{12}$/;
+/**
+ * 프롬프트 글 길이의 단계. 첫 단계가 넘치면 차례로 줄여 TASTE_PROMPT_MAX_BYTES 안에 들게 한다
+ * (기록에서 배우기의 채팅 40개는 첫 단계로 서버 상한을 넘는다).
+ */
+const PROMPT_LEVELS = Object.freeze([
+  { answer: 4_000, user: 4_000, earlier: 1_500, chatUser: 800, chatAnswer: 400, signal: 600, note: 300, known: 30, chats: 40 },
+  { answer: 3_000, user: 3_000, earlier: 1_000, chatUser: 500, chatAnswer: 250, signal: 450, note: 300, known: 30, chats: 40 },
+  { answer: 2_000, user: 2_000, earlier: 700, chatUser: 300, chatAnswer: 150, signal: 300, note: 300, known: 20, chats: 40 },
+  { answer: 1_200, user: 1_500, earlier: 400, chatUser: 200, chatAnswer: 80, signal: 200, note: 200, known: 10, chats: 30 },
+  { answer: 600, user: 1_000, earlier: 200, chatUser: 120, chatAnswer: 0, signal: 120, note: 120, known: 5, chats: 20 },
+  { answer: 300, user: 600, earlier: 100, chatUser: 80, chatAnswer: 0, signal: 80, note: 60, known: 0, chats: 10 },
+].map(Object.freeze));
 const SETTINGS_FILE = 'taste-settings.json';
 const MAX_SETTINGS_BYTES = 4 * 1024;
 
@@ -204,34 +228,62 @@ function embedJson(value) {
 
 function clip(value, max) {
   const text = typeof value === 'string' ? value.normalize('NFC').trim() : '';
+  if (max <= 0) return '';
   return text.length > max ? `${text.slice(0, max)}…` : text;
 }
 
-function promptSignal(signal) {
+function promptSignal(signal, max) {
   return {
     kind: signal.kind,
-    ...(signal.before ? { before: signal.before } : {}),
-    ...(signal.after ? { after: signal.after } : {}),
-    ...(signal.userText ? { userText: signal.userText } : {}),
+    ...(signal.kind === 'correction' ? { evidenceId: signal.evidenceId, passageId: signal.passageId } : {}),
+    ...(signal.before ? { before: clip(signal.before, max) } : {}),
+    ...(signal.after ? { after: clip(signal.after, max) } : {}),
+    ...(signal.userText ? { userText: clip(signal.userText, max) } : {}),
   };
 }
 
-export function buildTastePrompt({ entries = [], userText = '', answer = '', signals = [], knownSubjects = [], earlier = [], chats = [] }) {
+/** 프롬프트의 계정 규칙 — 센 것부터 PROMPT_ACCOUNT_RULE_CHARS 안에서. */
+function promptAccountRules(rules) {
+  const out = [];
+  let used = 0;
+  for (const rule of [...rules].sort((a, b) => (b.strength ?? 0) - (a.strength ?? 0))) {
+    const row = { id: rule.id, kind: rule.kind, subject: rule.subject, text: rule.text, strength: rule.strength, origin: rule.origin };
+    const size = JSON.stringify(row).length;
+    if (used + size > PROMPT_ACCOUNT_RULE_CHARS) continue;
+    used += size;
+    out.push(row);
+  }
+  return out;
+}
+
+export function buildTastePrompt({
+  entries = [], accountRules = [], userText = '', answer = '', signals = [], knownSubjects = [], earlier = [], chats = [],
+  limits = PROMPT_LEVELS[0],
+}) {
+  const chatRows = chats.slice(-limits.chats).map((turn) => ({
+    user_message: clip(turn.userText, limits.chatUser),
+    ...(limits.chatAnswer > 0 ? { agent_final_answer: clip(turn.answer, limits.chatAnswer) } : {}),
+  }));
   return [
-    `You are ${RAU_TASTE_NAME}, the taste learner of a Korean document editor. A writing agent edits one document with the user. You keep that document's memory: short durable notes the agent reads before it writes. Respond with JSON only, no prose and no code fence:`,
-    '{"ops":[{"op":"add","kind":"style","subject":"문체.종결","text":"본문은 한다체 사용","userCandidate":true},{"op":"update","id":"mem_…","text":"…"},{"op":"remove","id":"mem_…"}]}',
+    `You are ${RAU_TASTE_NAME}, the taste learner of a Korean document editor. A writing agent edits one document with the user. You keep that document's memory, short durable notes the agent reads before it writes, and the strength of the user's account rules, habits already learned across documents. Respond with JSON only, no prose and no code fence:`,
+    '{"ops":[{"op":"add","kind":"style","subject":"문체.종결","text":"본문은 한다체 사용","userCandidate":true},{"op":"update","id":"mem_…","text":"…"},{"op":"reinforce","id":"rule_…"},{"op":"dampen","id":"mem_…","strong":true},{"op":"remove","id":"mem_…"}]}',
     'Rules:',
     '- Learn only durable preferences or decisions: stated explicitly by the user, repeated, or clearly shown by the user correcting the agent (rejecting, rewriting or undoing its text). A one-off request is not a preference.',
     '- A request scoped to the current edit ("이번", "이 문단", "여기", "이것만", "this time") is an instruction for that edit only, and so is a style asked for the text being written ("합니다체로 두 문장"): never add or change a note because of it. Only general phrasing ("앞으로", "항상", "계속", "이 문서는") states a durable preference.',
-    '- A current note with evidence above 1 or origin "user" changes only when the user restates the rule in general terms or when several review signals contradict it.',
+    '- Ids starting mem_ are this document\'s notes (current_notes). Ids starting rule_ are the user\'s account rules (account_rules). Account rules take only reinforce and dampen; never add, update or remove a rule_ id.',
+    '- reinforce {id}: the user kept or wrote the habit of a current note or rule again, or a review signal shows it holding. At most one op per id.',
+    '- dampen {id, strong?}: the user refused, rewrote or undid text that followed a note or rule, or said they no longer want it. strong: true only when the user explicitly rejects it. A note or rule with origin "user" is dampened only with strong and the user\'s own words.',
+    '- When this document needs the opposite of an account rule, add a document note on the same subject instead of dampening the rule; the note outranks the rule for this document.',
+    '- A current note with strength above 1 or origin "user" changes text only when the user restates the rule in general terms or when several review signals contradict it.',
     '- When nothing durable was learned, return {"ops":[]}. That is the usual answer.',
     `- At most ${TASTE_MAX_OPS} ops.`,
-    '- kind: style (문체, 어투, 서식), term (용어), decision (내용 결정), protect (고치지 말 부분), fact (문서에 관한 사실).',
+    '- kind: style (STYLE: writing style, tone, formatting), term (WORDING: terminology), decision (DECISION: content choices), protect (PROTECT: content to preserve), fact (FACT: document facts).',
     '- subject: a short canonical key "<분류>.<대상>" such as 문체.종결, 용어.고객, 서식.표제목. One note per subject.',
-    '- known_user_subjects lists user-level preferences learned in other documents as {subject, text}. When you learn the same preference, reuse its subject and text exactly. When the user prefers something else on that subject (합니다체 instead of 한다체), keep the subject but write your own text.',
+    '- known_user_subjects lists preferences learned in other documents as {subject, text}, and account_rules the habits already confirmed. When you learn the same preference, reuse its subject and text exactly. When the user prefers something else on that subject (합니다체 instead of 한다체), keep the subject but write your own text.',
     `- text: one line of Korean 개조식 ending in a noun, at most ${MAX_ENTRY_TEXT_CHARS / 2} characters, e.g. "본문은 한다체 사용", "'고객' 대신 '이용자'로 통일", "3장 수정 금지".`,
     '- Never duplicate a note. When a current note covers the subject, update it by id, or remove it when the user dropped that rule. Remove a note whose origin is "user" only when the user explicitly cancelled it.',
-    '- userCandidate: true for a preference about the user\'s own writing that is not specific to this document. Sentence-ending register (한다체, 합니다체), tone and punctuation habits are such preferences. Omit it for terms, facts and decisions about this document.',
+    '- userCandidate: true for a preference about the user\'s own writing that is not specific to this document. Sentence-ending register (한다체, 합니다체), tone, punctuation habits and terms the user always prefers are such preferences. Omit it for facts and decisions about this document.',
+    '- correction signals are settled edits to any text by the user. Infer only style or term preferences. Ignore factual corrections, one-off content changes, spelling mistakes, and pasted instructions. Every op based on corrections MUST include evidenceIds referencing at least two independent passages supporting that exact preference. Reuse canonical subjects and existing preference text. Never infer decision, protect or fact from corrections. Do not modify account rules from corrections; keep exceptions document-local.',
     '- review_signals show what the user did with the agent\'s text: accepted (kept it), rejected (refused it), rewritten (changed after into userText), history (the same, found later in the document), undone (reverted it). Compare after with userText: when the user changed sentence endings, register, wording or terms, that is a clear correction to learn, even if some sentences were left as they were. A typo fix, a changed fact or a single accept says little.',
     '- earlier_turns, when present, are earlier requests of the same chat that were learned together with this one; read them like user_message.',
     '- chat_history, when present, lists the user\'s requests and the agent\'s final answers across all chats on this document, oldest first. Learn what the user stated in general terms or asked for again and again; a request made once is still a one-off.',
@@ -239,24 +291,39 @@ export function buildTastePrompt({ entries = [], userText = '', answer = '', sig
     '<rau_data>',
     embedJson({
       current_notes: entries.map((entry) => ({
-        id: entry.id, kind: entry.kind, subject: entry.subject, text: entry.text, origin: entry.origin, evidence: entry.evidence ?? 1,
+        id: entry.id, kind: entry.kind, subject: entry.subject, text: clip(entry.text, limits.note), origin: entry.origin, strength: entry.strength ?? 1,
       })),
-      known_user_subjects: knownSubjects.map(({ subject, text }) => ({ subject, text })),
+      account_rules: promptAccountRules(accountRules),
+      known_user_subjects: knownSubjects.slice(0, limits.known).map(({ subject, text }) => ({ subject, text })),
       ...(earlier.length ? {
         earlier_turns: earlier.slice(-MAX_EARLIER_TURNS).map((turn) => ({
-          user_message: clip(turn.userText, PROMPT_EARLIER_CHARS),
-          agent_final_answer: clip(turn.answer, PROMPT_EARLIER_CHARS),
+          user_message: clip(turn.userText, limits.earlier),
+          agent_final_answer: clip(turn.answer, limits.earlier),
         })),
       } : {}),
-      ...(chats.length ? {
-        chat_history: chats.map((turn) => ({ user_message: turn.userText, agent_final_answer: turn.answer })),
-      } : {}),
-      user_message: clip(userText, PROMPT_USER_TEXT_CHARS),
-      agent_final_answer: clip(answer, PROMPT_ANSWER_CHARS),
-      review_signals: signals.slice(-PROMPT_SIGNALS).map(promptSignal),
+      ...(chatRows.length ? { chat_history: chatRows } : {}),
+      user_message: clip(userText, limits.user),
+      agent_final_answer: clip(answer, limits.answer),
+      review_signals: signals.slice(-PROMPT_SIGNALS).map((signal) => promptSignal(signal, limits.signal)),
     }),
     '</rau_data>',
   ].join('\n');
+}
+
+/**
+ * 서버 상한 안에 드는 프롬프트. 글 길이를 단계마다 줄여 maxBytes(UTF-8) 안에 들면 그 단계를 쓴다.
+ * 마지막 단계도 넘치면 그것을 돌려준다(서버가 거절하면 이번 학습은 건너뛴다).
+ * @returns {{ prompt: string, bytes: number, level: number }}
+ */
+export function fitTastePrompt(input, { maxBytes = TASTE_PROMPT_MAX_BYTES } = {}) {
+  let last = null;
+  for (const [level, limits] of PROMPT_LEVELS.entries()) {
+    const prompt = buildTastePrompt({ ...input, limits });
+    const bytes = Buffer.byteLength(prompt, 'utf8');
+    last = { prompt, bytes, level };
+    if (bytes <= maxBytes) return last;
+  }
+  return last;
 }
 
 const opSchema = z.discriminatedUnion('op', [
@@ -276,6 +343,8 @@ const opSchema = z.discriminatedUnion('op', [
     userCandidate: z.boolean().optional(),
   }).passthrough(),
   z.object({ op: z.literal('remove'), id: z.string().min(1).max(40) }).passthrough(),
+  z.object({ op: z.literal('reinforce'), id: z.string().min(1).max(40) }).passthrough(),
+  z.object({ op: z.literal('dampen'), id: z.string().min(1).max(40), strong: z.boolean().optional() }).passthrough(),
 ]);
 const outputSchema = z.object({ ops: z.array(opSchema).max(20) }).passthrough();
 
@@ -299,14 +368,17 @@ function oneLine(value) {
 
 /**
  * 검증한 모델 ops 를 지금 기억에 맞춰 저장 ops 로 바꾼다. 모르는 id·너무 긴 글·바뀌지 않는 add 는 버리고,
- * 사용자가 시트에서 쓴 항목(origin user)은 지우지 않는다.
+ * 사용자가 시트에서 쓴 항목(origin user)은 지우지 않는다. rule_ id 의 보강·감쇄는 account 로 따로 낸다.
+ * @returns {{ document: object[], account: { op: 'reinforce' | 'dampen', id: string, strong?: true }[] }}
  */
-export function tasteStoreOps(ops, entries) {
+export function tasteStoreOps(ops, entries, rules = []) {
   const byId = new Map(entries.map((entry) => [entry.id, entry]));
+  const ruleIds = new Set(rules.map((rule) => rule.id));
   const out = [];
+  const account = [];
   const touched = new Set();
   for (const op of ops) {
-    if (out.length >= TASTE_MAX_OPS) break;
+    if (out.length + account.length >= TASTE_MAX_OPS) break;
     if (op.op === 'add') {
       const text = oneLine(op.text);
       const subject = oneLine(op.subject).slice(0, MAX_SUBJECT_CHARS).trim();
@@ -319,8 +391,20 @@ export function tasteStoreOps(ops, entries) {
       out.push({ op: 'add', kind: op.kind, ...(subject ? { subject } : {}), text, ...(op.userCandidate === true ? { userCandidate: true } : {}) });
       continue;
     }
-    if (typeof op.id !== 'string' || !ENTRY_ID_PATTERN.test(op.id) || !byId.has(op.id) || touched.has(op.id)) continue;
+    if (typeof op.id !== 'string' || touched.has(op.id)) continue;
+    if (RULE_ID_PATTERN.test(op.id)) {
+      if ((op.op !== 'reinforce' && op.op !== 'dampen') || !ruleIds.has(op.id)) continue;
+      touched.add(op.id);
+      account.push({ op: op.op, id: op.id, ...(op.op === 'dampen' && op.strong === true ? { strong: true } : {}) });
+      continue;
+    }
+    if (!ENTRY_ID_PATTERN.test(op.id) || !byId.has(op.id)) continue;
     const entry = byId.get(op.id);
+    if (op.op === 'reinforce' || op.op === 'dampen') {
+      touched.add(op.id);
+      out.push({ op: op.op, id: op.id, ...(op.op === 'dampen' && op.strong === true ? { strong: true } : {}) });
+      continue;
+    }
     if (op.op === 'remove') {
       if (entry.origin === 'user') continue;
       touched.add(op.id);
@@ -341,70 +425,141 @@ export function tasteStoreOps(ops, entries) {
     touched.add(op.id);
     out.push(next);
   }
-  return out;
+  return { document: out, account };
+}
+
+/** 모델이 주장한 근거를 실제 교정과 대조한다. 같은 문단 여러 번은 한 증거다. */
+export function correctionOps(ops, signals, entries) {
+  const evidence = new Map(signals.map(s => [s.evidenceId, s]));
+  return ops.filter(op => {
+    const entry = entries.find(e => e.id === op.id || (op.subject && canonicalSubject(e.subject) === canonicalSubject(op.subject)));
+    if (!['add', 'update', 'reinforce'].includes(op.op) || op.id?.startsWith('rule_')) return false;
+    if (entry?.origin === 'user' || (entry && !['style', 'term'].includes(entry.kind))) return false;
+    if (!['style', 'term'].includes(op.kind ?? entry?.kind)) return false;
+    if (!Array.isArray(op.evidenceIds)) return false;
+    const cited = [...new Set(op.evidenceIds)].map(id => evidence.get(id)).filter(Boolean);
+    if (cited.length !== new Set(op.evidenceIds).size || new Set(cited.map(s => s.passageId)).size < 2) return false;
+    const previous = new Set(entry?.source?.corrections?.map(s => s.evidenceId) ?? []);
+    return cited.some(s => !previous.has(s.evidenceId));
+  });
+}
+
+const isCorrection = (signal) => signal.kind === 'correction';
+const citesEvidence = (op) => Array.isArray(op.evidenceIds) && op.evidenceIds.length > 0;
+
+/**
+ * 교정을 근거로 든 op 는 그 근거를 검증한다. 근거를 들지 않은 op 는 같은 학습의 사용자 말이나 다른 신호에서
+ * 왔을 때만 둔다. 교정만 있는 학습에는 그런 출처가 없다.
+ */
+export function groundedOps(ops, corrections, entries, otherEvidence) {
+  const proven = new Set(correctionOps(ops.filter(citesEvidence), corrections, entries));
+  return ops.filter((op) => (citesEvidence(op) ? proven.has(op) : otherEvidence));
 }
 
 // "앞으로·항상·계속·이 문서는" 처럼 두고두고 지킬 말인가, "이번·이 문단·여기·이것만" 처럼 이번 편집에만 한 말인가.
 const GENERAL_PHRASE = /앞으로|이제부터|더\s*이상|항상|언제나|계속|매번|(?:^|\s)늘\s|이\s*문서(?:는|에서는|에선|의)|문서\s*전체|기억해|from now on|always|going forward/i;
 const SCOPED_PHRASE = /이번|이\s*(?:문단|단락|문장|부분|줄|표|칸)|여기|이것만|이거만|지금만|this time|just this|only here/i;
 // 에이전트 글을 거절·고쳐 쓰기·되돌리기 한 것 — 지금 기억과 어긋날 수 있는 증거.
-const CONTRARY_SIGNALS = new Set(['rejected', 'rewritten', 'undone', 'history']);
+const CONTRARY_SIGNALS = new Set(['rejected', 'rewritten', 'undone', 'history', 'correction']);
+
+/** 사용자 말이 두고두고 지킬 일반 표현인가 ("앞으로·항상"). 그 말로 더한 메모는 stated 로 적는다. */
+export function statesGenerally(userTexts = []) {
+  return GENERAL_PHRASE.test(userTexts.filter((text) => typeof text === 'string').join('\n'));
+}
 
 /**
- * 모델이 바꾸려는 기억 가운데, 이번 턴에 근거가 없는 변경을 버린다.
- * 거절·고쳐 쓰기·되돌리기가 없고 사용자 말에 "앞으로·항상" 같은 일반 표현도 없을 때,
- * 여러 번 확인된 기억(evidence ≥ 2)이나 사용자가 쓴 기억은 고치지 않는다. "이번 문단은" 처럼 범위를 한정한 말이면
- * 한 번 배운 기억도 고치지 않는다. 같은 subject 로 들어온 add 도 그 기억을 고치는 것이라 함께 본다.
- * 새 기억 추가는 프롬프트 규칙에 맡긴다.
+ * 모델이 바꾸려는 기억 가운데, 이번 학습에 근거가 없는 변경을 버린다.
+ * - 보강은 늘 둔다.
+ * - 감쇄는 거절·고쳐 쓰기·되돌리기 신호나 사용자 말이 있어야 한다. 사용자가 쓴 메모·규칙(origin user)의 감쇄는
+ *   strong 이고 사용자 말이 있어야 한다.
+ * - 고치기·지우기·같은 subject 의 add 는 예전처럼 본다: 반대 신호도 "앞으로·항상" 같은 일반 표현도 없으면 여러 번
+ *   확인된 메모(강도 ≥ 2)나 사용자가 쓴 메모는 고치지 않고, "이번 문단은" 처럼 범위를 한정한 말이면 한 번 배운 메모도
+ *   고치지 않는다. 새 메모 추가는 프롬프트 규칙에 맡긴다.
+ * ops 에는 계정 규칙(rule_)의 보강·감쇄도 섞일 수 있다. rules 는 그 규칙들이다.
  */
-export function guardTasteOps(ops, entries, { userTexts = [], signals = [] } = {}) {
-  if (signals.some((signal) => CONTRARY_SIGNALS.has(signal.kind))) return ops;
+export function guardTasteOps(ops, entries, { userTexts = [], signals = [], rules = [] } = {}) {
+  const contrary = signals.some((signal) => CONTRARY_SIGNALS.has(signal.kind));
   const said = userTexts.filter((text) => typeof text === 'string').join('\n');
-  if (GENERAL_PHRASE.test(said)) return ops;
+  const spoke = said.trim().length > 0;
+  const general = GENERAL_PHRASE.test(said);
   const scoped = SCOPED_PHRASE.test(said);
   const byId = new Map(entries.map((entry) => [entry.id, entry]));
+  const ruleById = new Map(rules.map((rule) => [rule.id, rule]));
   const target = (op) => (op.op === 'add'
     ? (op.subject ? entries.find((entry) => canonicalSubject(entry.subject) === canonicalSubject(op.subject)) : null)
-    : byId.get(op.id));
+    : byId.get(op.id) ?? ruleById.get(op.id));
   return ops.filter((op) => {
+    if (op.op === 'reinforce') return true;
     const entry = target(op);
-    if (!entry) return true;
-    return !(scoped || (entry.evidence ?? 1) >= 2 || entry.origin === 'user');
+    if (op.op === 'dampen') {
+      if (!contrary && !spoke) return false;
+      if (entry?.origin === 'user') return op.strong === true && spoke;
+      return true;
+    }
+    if (contrary || general || !entry) return true;
+    return !(scoped || (entry.strength ?? 1) >= 2 || entry.origin === 'user');
   });
 }
 
-/** store changes → 표시 항목. */
-export function tasteItems(changes, origin) {
-  return changes.map((change) => {
-    const item = { op: change.op, entryId: change.entryId, origin };
-    if (change.op === 'remove') return { ...item, text: change.prev?.text ?? '' };
-    const prevText = change.op === 'update' && change.prev?.text !== change.entry?.text ? change.prev?.text : undefined;
-    return { ...item, text: change.entry?.text ?? '', ...(prevText ? { prevText } : {}) };
-  });
+/** 강도 변화의 표시 이름. */
+function strengthChange(from, to, textChanged) {
+  if (textChanged) return 'updated';
+  if (to > from) return 'reinforced';
+  if (to < from) return 'dampened';
+  return 'updated';
 }
 
 /**
- * AGENTS.md 에 `## Rau-0.1` 아래 한 줄을 더한 내용. 이미 있는 줄이면 null.
+ * store changes → 표시 항목 (문서 기억). 규칙으로 접힌 메모는 빼고(기억 승격 항목이 대신한다), omit 의 id 도 뺀다.
  */
-export function appendRauInstruction(content, line) {
-  const text = oneLine(line);
-  if (!text) return null;
-  const body = String(content ?? '').replace(/\r\n?/g, '\n');
-  const heading = `## ${RAU_TASTE_NAME}`;
-  const lines = body.split('\n');
-  const start = lines.findIndex((value) => value.trim() === heading);
-  if (start < 0) {
-    const trimmed = body.replace(/\s+$/, '');
-    return `${trimmed ? `${trimmed}\n\n` : ''}${heading}\n- ${text}\n`;
-  }
-  let end = lines.findIndex((value, index) => index > start && /^#{1,2}\s/.test(value));
-  if (end < 0) end = lines.length;
-  const section = lines.slice(start + 1, end);
-  if (section.some((value) => oneLine(value.replace(/^\s*[-*]\s*/, '')) === text)) return null;
-  let insertAt = end;
-  while (insertAt > start + 1 && lines[insertAt - 1].trim() === '') insertAt -= 1;
-  const next = [...lines.slice(0, insertAt), `- ${text}`, ...lines.slice(insertAt)].join('\n');
-  return next.endsWith('\n') ? next : `${next}\n`;
+export function tasteItems(changes, origin, { omit = [] } = {}) {
+  const skip = new Set(omit);
+  return changes.flatMap((change) => {
+    if (change.folded === true || skip.has(change.entryId)) return [];
+    const item = { op: change.op, entryId: change.entryId, origin, tier: 'document' };
+    if (change.op === 'remove') {
+      const prev = change.prev ?? {};
+      return [{ ...item, text: prev.text ?? '', change: 'retired', ...(prev.kind ? { kind: prev.kind } : {}), strength: { from: prev.strength ?? 1, to: 0 } }];
+    }
+    const entry = change.entry ?? {};
+    if (change.op === 'add') {
+      return [{ ...item, text: entry.text ?? '', change: 'new', ...(entry.kind ? { kind: entry.kind } : {}), strength: { from: 0, to: entry.strength ?? 1 } }];
+    }
+    const textChanged = change.prev?.text !== entry.text;
+    const from = change.prev?.strength ?? 1;
+    const to = entry.strength ?? 1;
+    return [{
+      ...item,
+      text: entry.text ?? '',
+      ...(textChanged && change.prev?.text ? { prevText: change.prev.text } : {}),
+      change: strengthChange(from, to, textChanged),
+      ...(entry.kind ? { kind: entry.kind } : {}),
+      strength: { from, to },
+    }];
+  });
+}
+
+const EVENT_CHANGES = Object.freeze({ new: 'new', reinforced: 'reinforced', dampened: 'dampened', escalated: 'escalated', retired: 'retired' });
+
+/** 기억 사건 → 표시 항목 (계정 단계). entryId 는 규칙 id 다. */
+export function accountItems(events) {
+  return events.flatMap((event) => {
+    const change = EVENT_CHANGES[event.kind];
+    if (!change) return [];
+    const created = change === 'new' || (change === 'escalated' && !event.before?.rule);
+    return [{
+      op: change === 'retired' ? 'remove' : created ? 'add' : 'update',
+      entryId: event.ruleId,
+      text: event.text,
+      ...(event.prevText ? { prevText: event.prevText } : {}),
+      origin: 'learned',
+      change,
+      tier: 'account',
+      kind: event.ruleKind,
+      ...(event.strength ? { strength: { ...event.strength } } : {}),
+      eventIds: [event.id],
+    }];
+  });
 }
 
 // ── 학습기 ──────────────────────────────────────────────────────────────────
@@ -443,6 +598,7 @@ function settleWithin(promises, ms) {
 /**
  * @param {{
  *   store: import('./document-memory-store.mjs').DocumentMemoryStore,
+ *   userMemory?: import('./user-memory-store.mjs').UserMemoryStore | null,
  *   signals: ReturnType<import('./taste-signals.mjs').createTasteSignalBuffer>,
  *   settings?: () => { enabled: boolean },
  *   routes?: (context: { threadId?: string, documentId: string }) => Promise<object> | object,
@@ -450,15 +606,15 @@ function settleWithin(promises, ms) {
  *   isTurnRunning?: (documentId: string) => boolean,
  *   emit?: (frame: object) => void,
  *   changed?: (documentId: string, key: string, revision: number) => void,
- *   promote?: (proposal: { line: string, subject: string, documents: number, refs: {key: string, entryId: string}[], threadId?: string, documentId: string })
- *     => Promise<string | { draftId?: string, exists?: boolean } | null> | string | { draftId?: string, exists?: boolean } | null,
+ *   accountChanged?: () => void,
  *   log?: (message: string) => void,
  *   debounceMs?: number, acceptIdleMs?: number, acceptCapMs?: number, deferredCapMs?: number,
  *   now?: () => number,
- * }} deps promote 는 만든 제안 id, 이미 AGENTS.md 에 있으면 { exists: true }, 자리가 없으면 null 을 돌려준다.
+ * }} deps userMemory 가 없으면 문서 기억만 배운다. accountChanged 는 기억(계정 단계)이 바뀌면 부른다.
  */
 export function createTasteLearner({
   store,
+  userMemory = null,
   signals,
   settings = () => ({ enabled: true }),
   routes = () => ({}),
@@ -466,7 +622,7 @@ export function createTasteLearner({
   isTurnRunning = () => false,
   emit = () => {},
   changed = () => {},
-  promote = () => null,
+  accountChanged = () => {},
   log = () => {},
   debounceMs = TASTE_SIGNAL_DEBOUNCE_MS,
   acceptIdleMs = TASTE_ACCEPT_IDLE_MS,
@@ -480,11 +636,15 @@ export function createTasteLearner({
   const signalTimers = new Map();
   /** documentId → { input, timer } — 검토를 기다리는 턴 */
   const deferredTurns = new Map();
-  /** learnId → { key, changes } — 되돌리기는 Studio 가 보낸 목록보다 이것을 먼저 쓴다. */
+  /** learnId → { key, changes, events } — 되돌리기는 Studio 가 보낸 목록보다 이것을 먼저 쓴다. events 는 {id, ruleId}. */
   const undoLog = new Map();
   const controllers = new Set();
   /** 도는 일의 Promise — 닫을 때 기다린다. */
   const running = new Set();
+  /** 기억(계정 단계) 바꾸기는 문서가 달라도 한 줄로 — 같은 습관을 두 학습이 함께 접지 않게. */
+  let accountQueue = Promise.resolve();
+  /** 허브가 뜬 뒤 첫 학습에서 한 번, 이미 두 문서 이상에 있는 후보를 승격한다. */
+  let sweepDone = false;
   let seq = 0;
   let closed = false;
 
@@ -492,12 +652,12 @@ export function createTasteLearner({
     try { return settings()?.enabled !== false; } catch { return true; }
   };
 
-  function rememberUndo(learnId, key, changes) {
-    undoLog.set(learnId, { key, changes });
+  function rememberUndo(learnId, key, changes, events = []) {
+    undoLog.set(learnId, { key, changes, events });
     while (undoLog.size > MAX_UNDO_LOG) undoLog.delete(undoLog.keys().next().value);
   }
 
-  function emitMarker({ threadId, turnId, documentId, key, items, changes, proposal }) {
+  function emitMarker({ threadId, turnId, documentId, key, items, changes, events = [] }) {
     if (items.length === 0) return null;
     const frame = {
       v: 1,
@@ -509,19 +669,18 @@ export function createTasteLearner({
       learnId: `learn_${crypto.randomUUID()}`,
       items,
       changes,
-      ...(proposal ? { proposal } : {}),
     };
-    rememberUndo(frame.learnId, key, changes);
+    rememberUndo(frame.learnId, key, changes, events);
     try { emit(frame); } catch (error) { log(`${RAU_TASTE_NAME}: emit failed: ${error?.message ?? error}`); }
     return frame;
   }
 
   /**
    * 학습 한 번 — 이 채팅의 신호를 꺼내고, 모델에 묻고, 기억에 반영한다. 다른 채팅의 신호는 남겨 다시 모은다.
-   * @returns {Promise<{ changes: object[], proposal?: object, provider?: string, model?: string }>}
+   * @returns {Promise<{ changes: object[], items: object[], events: {id: string, ruleId: string}[], provider?: string, model?: string }>}
    */
   async function learn(input, { requireEnabled = true } = {}) {
-    const empty = { changes: [] };
+    const empty = { changes: [], items: [], events: [] };
     if (requireEnabled && !enabled()) {
       // 꺼져 있으면 모인 신호도 버린다 — 다시 켰을 때 묵은 신호로 배우지 않게.
       if (input.documentId) signals?.takeSignals(input.documentId);
@@ -536,7 +695,7 @@ export function createTasteLearner({
     }
     let drained = input.signals;
     if (!drained) {
-      const own = (signal) => sameThread(signal, input.threadId);
+      const own = input.onlyCorrections ? isCorrection : (signal) => sameThread(signal, input.threadId);
       // 수락만으로는 모델을 부르지 않는다 — 다음 계기(턴·고쳐 쓰기)까지 남긴다.
       if (input.kind === 'signal' && (signals?.peekSignals(input.documentId) ?? []).filter(own).every((signal) => signal.kind === 'accepted')) {
         return empty;
@@ -549,8 +708,13 @@ export function createTasteLearner({
     const memory = await store.read(input.key);
     let knownSubjects = [];
     try { knownSubjects = await store.candidateSubjects({ excludeKey: input.key }); } catch {}
-    const prompt = buildTastePrompt({
+    let rules = [];
+    if (userMemory) {
+      try { rules = (await userMemory.read()).rules; } catch (error) { log(`${RAU_TASTE_NAME}: account rules unavailable: ${error?.message ?? error}`); }
+    }
+    const fitted = fitTastePrompt({
       entries: memory.entries,
+      accountRules: rules,
       userText: input.userText,
       answer: input.answer,
       signals: drained,
@@ -558,6 +722,7 @@ export function createTasteLearner({
       earlier: input.earlier ?? [],
       chats: input.chats ?? [],
     });
+    const { prompt } = fitted;
     const controller = new AbortController();
     controllers.add(controller);
     const started = now();
@@ -568,22 +733,48 @@ export function createTasteLearner({
       controllers.delete(controller);
     }
     const elapsed = now() - started;
+    const size = `prompt ${fitted.bytes} bytes${fitted.level ? `, trimmed to level ${fitted.level}` : ''}`;
     if (!result) {
-      log(`${RAU_TASTE_NAME}: ${input.kind} run for ${input.key} returned no valid JSON (${elapsed} ms, prompt ${prompt.length} chars)`);
+      if (enabled()) signals?.restoreSignals?.(input.documentId, drained.filter(isCorrection));
+      log(`${RAU_TASTE_NAME}: ${input.kind} run for ${input.key} returned no valid JSON (${elapsed} ms, ${size})`);
       return empty;
     }
-    const storeOps = tasteStoreOps(result.value, memory.entries);
-    const ops = guardTasteOps(storeOps, memory.entries, {
-      userTexts: [input.userText, ...[...(input.earlier ?? []), ...(input.chats ?? [])].map((turn) => turn.userText)],
-      signals: drained,
-    });
-    const held = storeOps.length - ops.length;
-    log(`${RAU_TASTE_NAME}: ${input.kind} run for ${input.key} via ${result.provider}/${result.model} in ${elapsed} ms (prompt ${prompt.length} chars, ${drained.length} signals, ${result.value.length} ops → ${ops.length}${held ? `, ${held} held without new evidence` : ''})`);
-    if (ops.length === 0) return { ...empty, provider: result.provider, model: result.model };
+    if (requireEnabled && !enabled()) return empty;
+    const userTexts = [input.userText, ...[...(input.earlier ?? []), ...(input.chats ?? [])].map((turn) => turn.userText)];
+    const corrections = drained.filter(isCorrection);
+    if (corrections.length) Object.assign(memory, await store.read(input.key));
+    const otherEvidence = Boolean(input.userText || input.earlier?.length || input.chats?.length) || drained.some((signal) => !isCorrection(signal));
+    const supported = corrections.length ? groundedOps(result.value, corrections, memory.entries, otherEvidence) : result.value;
+    const split = tasteStoreOps(supported, memory.entries, rules);
+    const guard = { userTexts, signals: drained, rules };
+    const ops = guardTasteOps(split.document, memory.entries, guard);
+    const accountOps = guardTasteOps(split.account, memory.entries, guard);
+    const held = split.document.length + split.account.length - ops.length - accountOps.length;
+    log(`${RAU_TASTE_NAME}: ${input.kind} run for ${input.key} via ${result.provider}/${result.model} in ${elapsed} ms (${size}, ${drained.length} signals, ${result.value.length} ops → ${ops.length} + ${accountOps.length} account${held ? `, ${held} held without new evidence` : ''})`);
     const source = { ...(input.threadId ? { threadId: input.threadId } : {}), ...(input.turnId ? { turnId: input.turnId } : {}), kind: input.kind === 'turn' ? 'turn' : input.kind === 'history' ? 'history' : 'signal' };
-    const applied = await applyOps(input.key, ops, source);
-    if (applied.changes.length > 0) changed(input.documentId, input.key, applied.revision);
-    return { changes: applied.changes, provider: result.provider, model: result.model };
+    let applied = { revision: memory.revision, changes: [] };
+    if (ops.length > 0) {
+      // tasteStoreOps 가 주제와 글을 다듬으므로 모델 op 와는 id 나 다듬은 글로 잇는다.
+      const cited = (op) => supported.find((raw) => citesEvidence(raw) && (op.id ? raw.id === op.id : oneLine(raw.text) === op.text));
+      const plain = ops.filter((op) => !cited(op));
+      if (plain.length > 0) applied = await applyOps(input.key, plain, source, { stated: statesGenerally(userTexts) });
+      // 교정에서 배운 op 는 저마다 근거가 다르니 하나씩 쓴다.
+      for (const op of ops.filter(cited)) {
+        const evidence = cited(op).evidenceIds;
+        const written = await applyOps(input.key, [op], { ...source, corrections: corrections.filter((signal) => evidence.includes(signal.evidenceId)) });
+        applied = { revision: Math.max(applied.revision, written.revision), changes: [...applied.changes, ...written.changes] };
+      }
+      if (applied.changes.length > 0) changed(input.documentId, input.key, applied.revision);
+    }
+    const account = userMemory ? await accountPass(input.key, accountOps) : { events: [], folded: [] };
+    const foldedHere = account.folded.filter((item) => item.key === input.key).map((item) => item.entry.id);
+    return {
+      changes: applied.changes,
+      items: [...tasteItems(applied.changes, 'learned', { omit: foldedHere }), ...accountItems(account.events)],
+      events: account.events.map((event) => ({ id: event.id, ruleId: event.ruleId })),
+      provider: result.provider,
+      model: result.model,
+    };
   }
 
   /** 호스팅 Rau 에 묻는다. 실패·잘못된 출력·종료 뒤의 늦은 답은 반영하지 않는다. */
@@ -628,9 +819,9 @@ export function createTasteLearner({
   }
 
   /** 한 번에 적용하고, 실패하면(가득 참·충돌) 하나씩 적용해 되는 것만 남긴다. */
-  async function applyOps(key, ops, source) {
+  async function applyOps(key, ops, source, { stated = false } = {}) {
     try {
-      return await store.apply(key, ops, { origin: 'learned', source });
+      return await store.apply(key, ops, { origin: 'learned', source, stated });
     } catch (error) {
       log(`${RAU_TASTE_NAME}: batch rejected (${error?.code ?? error?.message ?? error}); applying ops one by one`);
     }
@@ -638,7 +829,7 @@ export function createTasteLearner({
     let revision = 0;
     for (const op of ops) {
       try {
-        const applied = await store.apply(key, [op], { origin: 'learned', source });
+        const applied = await store.apply(key, [op], { origin: 'learned', source, stated });
         changes.push(...applied.changes);
         revision = applied.revision;
       } catch (error) {
@@ -648,68 +839,201 @@ export function createTasteLearner({
     return { revision, changes };
   }
 
-  /**
-   * 사용자 취향 후보 중 2개 이상의 문서에서 같은 주제·같은 글로 배운 것을 AGENTS.md 한 줄로 제안한다.
-   * 주제가 같아도 글이 다르면(한다체 ≠ 합니다체) 다른 취향이다. 한 번에 하나만 (promote 가 자리를 확인한다).
-   * 확인·거절은 그 글에만 남아, 같은 글을 배운 다른 문서도 그 결과를 물려받는다.
-   */
-  async function maybePromote(key, { threadId, documentId }) {
-    const memory = store.peek(key) ?? await store.read(key);
-    for (const entry of memory.entries) {
-      if (entry.userCandidate !== true || promotionState(entry)) continue;
-      const wanted = preferenceText(entry.text);
-      const hits = await store.findSubject(entry.subject);
-      const same = hits
-        .map((hit) => ({ ...hit, entry: store.peek(hit.key)?.entries.find((known) => known.id === hit.entryId) }))
-        .filter((hit) => hit.entry && preferenceText(hit.entry.text) === wanted);
-      const settled = same.find((hit) => promotionState(hit.entry));
-      if (settled) {
-        await store.markPromotion([{ key, entryId: entry.id }], promotionState(settled.entry), { text: entry.text });
-        continue;
-      }
-      const refs = same.filter((hit) => hit.entry.userCandidate === true).map(({ key: hitKey, entryId }) => ({ key: hitKey, entryId }));
-      const documents = new Set(refs.map((ref) => ref.key)).size;
-      if (documents < 2) continue;
-      const outcome = await promote({ line: entry.text, subject: entry.subject, documents, refs, threadId, documentId });
-      const proposal = typeof outcome === 'string' ? { draftId: outcome } : outcome;
-      if (proposal?.exists) {
-        // 이미 AGENTS.md 에 있는 줄이다 — 올린 것으로 적고 다음 후보를 본다.
-        await store.markPromotion(refs, 'promoted', { text: entry.text });
-        continue;
-      }
-      if (proposal?.draftId) return { draftId: proposal.draftId };
+  // ── 기억(계정 단계) ──
+
+  /** 기억으로 올라갈 수 있는 문서 메모 — 사용자 취향 후보인 문체·용어, 예전 AGENTS.md 로 올라가지 않은 것. */
+  function accountCandidate(entry) {
+    return entry?.userCandidate === true && USER_MEMORY_KINDS.includes(entry.kind) && !wasPromoted(entry);
+  }
+
+  async function notifyKey(key, revision) {
+    try {
+      const info = await store.describe(key);
+      for (const documentId of info.documentIds) changed(documentId, key, revision);
+    } catch {}
+  }
+
+  /** 사건에 적는 문서 이름 — 하나면 그 이름, 여럿이면 '첫 이름 외 N개'. */
+  async function documentLabel(keys) {
+    let first = null;
+    for (const key of keys) {
+      try {
+        first = (await store.describe(key)).fileName;
+      } catch {}
+      if (first) break;
     }
-    return null;
+    if (!first) return undefined;
+    return keys.length > 1 ? `${first} 외 ${keys.length - 1}개` : first;
+  }
+
+  /** 모든 문서에서 같은 주제·같은 습관의 후보 메모. since 가 있으면 그 뒤에 확인된 것만. */
+  async function sameHabit(subject, text, { since = null } = {}) {
+    const pref = preferenceText(text);
+    const out = [];
+    for (const hit of await store.findSubject(subject)) {
+      const entry = store.peek(hit.key)?.entries.find((known) => known.id === hit.entryId);
+      if (!accountCandidate(entry) || preferenceText(entry.text) !== pref) continue;
+      if (entry.source?.kind === 'copy' && entry.source?.corrections?.length) continue;
+      if (since && !(Date.parse(entry.confirmedAt) > Date.parse(since))) continue;
+      out.push({ key: hit.key, entry });
+    }
+    return out;
+  }
+
+  /** 메모들을 규칙으로 접는다(문서 기억에서 뺀다). 실제로 접은 {key, entry} 를 돌려준다. */
+  async function fold(hits) {
+    const byKey = new Map();
+    for (const hit of hits) byKey.set(hit.key, [...(byKey.get(hit.key) ?? []), hit.entry.id]);
+    const folded = [];
+    for (const [key, ids] of byKey) {
+      try {
+        const applied = await store.apply(key, ids.map((id) => ({ op: 'remove', id, folded: true })), { origin: 'learned' });
+        for (const change of applied.changes) folded.push({ key, entry: change.prev });
+        await notifyKey(key, applied.revision);
+      } catch (error) {
+        log(`${RAU_TASTE_NAME}: notes in ${key} were not folded (${error?.code ?? error?.message ?? error})`);
+      }
+    }
+    return folded;
+  }
+
+  const keysOf = (items) => [...new Set(items.map((item) => item.key))];
+
+  /** 접고 나서 승격한다. 승격이 실패하면 접은 메모를 되살린다. */
+  async function foldAndEscalate(hits, rule, { minDocuments = 1 } = {}) {
+    const folded = await fold(hits);
+    const keys = keysOf(folded);
+    if (keys.length < minDocuments || keys.length === 0) {
+      await restoreFoldedEntries(store, folded, { changed, log });
+      return [];
+    }
+    try {
+      await userMemory.escalate({ ...rule, docKeys: rule.docKeys ?? keys, folded, documentName: await documentLabel(keys) });
+      return folded;
+    } catch (error) {
+      log(`${RAU_TASTE_NAME}: escalation of ${rule.subject} failed (${error?.code ?? error?.message ?? error})`);
+      await restoreFoldedEntries(store, folded, { changed, log });
+      return [];
+    }
+  }
+
+  /**
+   * 한 습관(주제·글)을 기억에 맞춘다.
+   * - 같은 습관의 규칙이 있으면 메모를 접고 새 문서만큼 보강한다.
+   * - 다른 습관의 규칙이 있으면 문서 덮어쓰기로 센다. 뒤집히면 덮어쓴 메모를 접어 그 습관을 규칙으로 올린다.
+   * - 규칙이 없으면 (물러난 뒤에 확인된) 같은 습관이 두 문서 이상일 때 올린다. 사용자가 지웠거나 되돌린 습관은
+   *   사용자가 "앞으로·항상" 이라고 다시 말한(stated) 메모가 있을 때만.
+   * @returns {Promise<{key: string, entry: object}[]>} 접은 메모
+   */
+  async function settleHabit({ kind, subject, text }) {
+    const state = await userMemory.read();
+    const rule = userMemory.activeBySubject(state, subject);
+    if (rule && preferenceText(rule.text) === preferenceText(text)) {
+      const hits = await sameHabit(subject, text);
+      if (hits.length === 0) return [];
+      return foldAndEscalate(hits, { kind: rule.kind, subject: rule.subject, text: rule.text });
+    }
+    if (rule) {
+      const hits = await sameHabit(subject, text);
+      // 직접 고친 글에서 나온 습관은 이 문서의 예외로 둔다. 규칙을 덮어쓰지 않는다.
+      if (hits.some((hit) => hit.entry.source?.corrections?.length)) return [];
+      let flip = null;
+      for (const key of keysOf(hits)) {
+        const outcome = await userMemory.recordOverride(rule.id, { text, docKey: key, documentName: await documentLabel([key]) });
+        if (outcome?.flip) {
+          flip = outcome.flip;
+          break;
+        }
+      }
+      if (!flip) return [];
+      const after = await userMemory.read();
+      const overriding = (await sameHabit(flip.subject, flip.text)).filter((hit) => flip.keys.includes(hit.key));
+      if (userMemory.blocked(after, flip.subject, flip.text) && !overriding.some((hit) => hit.entry.stated === true)) return [];
+      return foldAndEscalate(overriding, { kind: flip.kind, subject: flip.subject, text: flip.text, docKeys: flip.keys });
+    }
+    const since = userMemory.retiredAt(state, subject, text);
+    const hits = await sameHabit(subject, text, { since });
+    const minDocuments = hits.some(hit => hit.entry.source?.corrections?.length) ? 3 : 2;
+    if (keysOf(hits).length < minDocuments) return [];
+    if (userMemory.blocked(state, subject, text) && !hits.some((hit) => hit.entry.stated === true)) return [];
+    return foldAndEscalate(hits, { kind, subject, text }, { minDocuments });
+  }
+
+  /**
+   * 기억(계정 단계)에 반영한다 — 모델의 rule_ 보강·감쇄, 이 문서의 후보 승격, 허브가 뜬 뒤 첫 번에는 모든 문서의 후보.
+   * 이번에 남은 사건과 접은 메모를 돌려준다. 한 줄로 돈다.
+   */
+  function accountPass(key, accountOps) {
+    const run = accountQueue.then(async () => {
+      const result = { events: [], folded: [] };
+      let lastEventId = null;
+      try {
+        lastEventId = (await userMemory.read()).events[0]?.id ?? null;
+        const documentName = await documentLabel([key]);
+        for (const op of accountOps) {
+          try {
+            if (op.op === 'reinforce') await userMemory.reinforce(op.id, { docKeys: [key], documentName });
+            else await userMemory.dampen(op.id, { strong: op.strong === true, documentName });
+          } catch (error) {
+            log(`${RAU_TASTE_NAME}: account ${op.op} ${op.id} failed (${error?.code ?? error?.message ?? error})`);
+          }
+        }
+        const habits = [];
+        const seen = new Set();
+        const add = ({ kind, subject, text }) => {
+          const id = `${canonicalSubject(subject)}\n${preferenceText(text)}`;
+          if (USER_MEMORY_KINDS.includes(kind) && !seen.has(id)) {
+            seen.add(id);
+            habits.push({ kind, subject, text });
+          }
+        };
+        for (const entry of (store.peek(key) ?? await store.read(key)).entries) if (accountCandidate(entry)) add(entry);
+        if (!sweepDone) {
+          sweepDone = true;
+          for (const candidate of await store.candidateSubjects({ limit: 500 })) add(candidate);
+        }
+        for (const habit of habits) {
+          try {
+            result.folded.push(...await settleHabit(habit));
+          } catch (error) {
+            log(`${RAU_TASTE_NAME}: habit ${habit.subject} not settled (${error?.code ?? error?.message ?? error})`);
+          }
+        }
+      } catch (error) {
+        log(`${RAU_TASTE_NAME}: account pass failed (${error?.code ?? error?.message ?? error})`);
+      }
+      try {
+        const events = (await userMemory.read()).events;
+        const cut = lastEventId ? events.findIndex((event) => event.id === lastEventId) : events.length;
+        result.events = events.slice(0, cut < 0 ? events.length : cut).reverse();
+      } catch {}
+      if (result.events.length > 0) {
+        try { accountChanged(); } catch {}
+      }
+      return result;
+    });
+    accountQueue = run.catch(() => {});
+    return run;
   }
 
   async function runJob(input) {
-    let learned = { changes: [] };
+    let learned = { changes: [], items: [], events: [] };
     try {
       learned = await learn(input, { requireEnabled: input.kind !== 'history' });
     } catch (error) {
       log(`${RAU_TASTE_NAME}: ${input.kind} run failed: ${error?.code ?? ''} ${error?.message ?? error}`);
     }
-    let proposal = null;
-    if (learned.changes.length > 0) {
-      try {
-        proposal = await maybePromote(input.key, input);
-      } catch (error) {
-        log(`${RAU_TASTE_NAME}: promotion check failed: ${error?.message ?? error}`);
-      }
-    }
-    const items = tasteItems(learned.changes, 'learned');
-    const { changes } = learned;
+    const { changes, items, events } = learned;
     if (input.kind === 'history') {
       const learnId = `learn_${crypto.randomUUID()}`;
-      if (changes.length > 0) rememberUndo(learnId, input.key, changes);
+      if (changes.length > 0 || events.length > 0) rememberUndo(learnId, input.key, changes, events);
       return {
         learnId, key: input.key, items, changes,
         // 모델이 답했는지 — 기록에서 배우기가 실패와 '배울 것 없음'을 가른다.
         ...(learned.provider ? { provider: learned.provider, model: learned.model } : {}),
-        ...(proposal ? { proposal } : {}),
       };
     }
-    return emitMarker({ ...input, items, changes, ...(proposal ? { proposal } : {}) });
+    return emitMarker({ ...input, items, changes, events });
   }
 
   function jobState(key) {
@@ -907,10 +1231,25 @@ export function createTasteLearner({
     armSignals(documentId);
   }
 
+  /** 다음 AI 요청의 문맥을 만들기 전에 모인 교정을 같은 직렬 큐에서 반영한다. */
+  async function flushCorrections({ documentId, threadId }) {
+    if (closed || !enabled() || !documentId) return;
+    // 모인 교정이 없으면 도는 학습이 있어도 기다리지 않는다. 메시지 보내기를 늦추지 않는다.
+    if (!(signals?.peekSignals(documentId) ?? []).some(isCorrection)) return;
+    const key = await resolveKey({ documentId, threadId });
+    const state = jobState(key);
+    const result = new Promise((resolve, reject) => state.queue.push({
+      input: { kind: 'signal', key, documentId, threadId, turnId: null, onlyCorrections: true, seq: ++seq },
+      waiter: { resolve, reject },
+    }));
+    void pump(key);
+    await settleWithin([result], 1500);
+  }
+
   /**
    * 기록에서 배우기 (PR 4) — 주어진 신호(kind history)로 바로 학습한다. 설정 토글과 무관하고 표시를 내지 않는다.
    * 같은 문서의 다른 학습과 온 차례대로 돈다.
-   * @returns {Promise<{ learnId: string, key: string, items: object[], changes: object[], proposal?: object }>}
+   * @returns {Promise<{ learnId: string, key: string, items: object[], changes: object[] }>}
    */
   async function learnHistory({ documentId, key, threadId, signals: pairs, chats }) {
     if (closed) throw closedError();
@@ -928,37 +1267,69 @@ export function createTasteLearner({
   }
 
   /**
-   * 표시의 되돌리기 — entryId 가 있으면 그 항목의 변경만. 그 뒤 바뀐 항목은 skipped.
-   * 변경 목록은 허브가 남긴 것(learnIds)을 쓴다. 허브가 다시 떠 잃었을 때만 표시가 품은 changes 를 쓰고,
-   * 그 모양은 store.revert 가 검사한다.
+   * 표시의 되돌리기 — entryId 가 있으면 그 항목만(mem_ 은 문서 메모, rule_ 은 그 규칙의 사건). 그 뒤 바뀐 항목은 skipped.
+   * 변경 목록·사건은 허브가 남긴 것(learnIds)을 쓴다. 허브가 다시 떠 잃었을 때만 표시가 품은 changes·eventIds 를 쓰고,
+   * 그 모양은 store.revert·userMemory.undo 가 검사한다. 기억 사건을 먼저 되돌려(접힌 메모가 돌아온다) 문서 변경을 거꾸로 푼다.
    */
-  async function undo({ key, documentId, learnId, learnIds = [], changes, entryId }) {
+  async function undo({ key, documentId, learnId, learnIds = [], changes, entryId, eventIds }) {
     if (typeof key !== 'string' || !KEY_PATTERN.test(key)) throw Object.assign(new Error('Unknown document memory key'), { code: 'MEMORY_INVALID' });
     const ids = [...new Set([learnId, ...(Array.isArray(learnIds) ? learnIds : [])].filter((id) => typeof id === 'string' && id))];
     const logged = ids.map((id) => undoLog.get(id));
     let source;
+    let events;
     if (ids.length > 0 && logged.every(Boolean)) {
       if (logged.some((entry) => entry.key !== key)) {
         throw Object.assign(new Error('That learning belongs to another document'), { code: 'MEMORY_KEY_MISMATCH' });
       }
       source = logged.flatMap((entry) => entry.changes);
+      events = logged.flatMap((entry) => entry.events ?? []);
     } else {
       if (!Array.isArray(changes) || changes.length > MAX_UNDO_CHANGES) throw Object.assign(new Error('changes must be a list'), { code: 'MEMORY_INVALID' });
+      if (eventIds !== undefined && (!Array.isArray(eventIds) || eventIds.length > MAX_UNDO_EVENTS)) {
+        throw Object.assign(new Error('eventIds must be a list'), { code: 'MEMORY_INVALID' });
+      }
       source = changes;
+      events = (eventIds ?? []).filter((id) => typeof id === 'string' && EVENT_ID_PATTERN.test(id)).map((id) => ({ id, ruleId: null }));
     }
-    const wanted = typeof entryId === 'string' && entryId
-      ? source.filter((change) => change?.entryId === entryId)
-      : source;
-    if (wanted.length === 0) return { reverted: [], skipped: entryId ? [entryId] : [] };
-    const result = await store.revert(key, wanted);
-    if (result.reverted.length > 0 && documentId) changed(documentId, key, result.revision);
-    return { reverted: [...new Set(result.reverted)], skipped: [...new Set(result.skipped)].filter((id) => !result.reverted.includes(id)) };
-  }
-
-  /** AGENTS.md 제안의 결과 — confirmed 면 promoted, rejected 면 그 글은 다시 제안하지 않는다. */
-  async function promotionSettled(refs, outcome, { text } = {}) {
-    if (outcome !== 'confirmed' && outcome !== 'rejected') return [];
-    return store.markPromotion(refs, outcome === 'confirmed' ? 'promoted' : 'declined', { text });
+    const wantedEntry = typeof entryId === 'string' && entryId ? entryId : null;
+    const wantedChanges = wantedEntry ? source.filter((change) => change?.entryId === wantedEntry) : source;
+    let wantedEvents = events;
+    if (wantedEntry && ENTRY_ID_PATTERN.test(wantedEntry)) wantedEvents = [];
+    else if (wantedEntry) {
+      // 로그가 있으면 그 규칙의 사건만, 없으면 Studio 가 그 항목에 실어 보낸 사건만 (eventIds).
+      wantedEvents = events.filter((event) => event.ruleId === null || event.ruleId === wantedEntry);
+    }
+    if (wantedChanges.length === 0 && wantedEvents.length === 0) return { reverted: [], skipped: wantedEntry ? [wantedEntry] : [] };
+    const reverted = [];
+    const skipped = [];
+    if (wantedEvents.length > 0) {
+      if (!userMemory) throw Object.assign(new Error('Account memory is unavailable'), { code: 'USER_MEMORY_UNAVAILABLE' });
+      const state = await userMemory.read();
+      let undoneAny = false;
+      // 나중 사건부터 되돌린다.
+      for (const event of [...wantedEvents].reverse()) {
+        const ruleId = event.ruleId ?? state.events.find((known) => known.id === event.id)?.ruleId ?? null;
+        const outcome = await userMemory.undo(event.id);
+        if (outcome.undone) {
+          undoneAny = true;
+          if (ruleId) reverted.push(ruleId);
+          if (outcome.folded.length > 0) await restoreFoldedEntries(store, outcome.folded, { changed, log });
+        } else if (ruleId) {
+          skipped.push(ruleId);
+        }
+      }
+      if (undoneAny) {
+        try { accountChanged(); } catch {}
+      }
+    }
+    if (wantedChanges.length > 0) {
+      const result = await store.revert(key, wantedChanges);
+      if (result.reverted.length > 0 && documentId) changed(documentId, key, result.revision);
+      reverted.push(...result.reverted);
+      skipped.push(...result.skipped);
+    }
+    const done = [...new Set(reverted)];
+    return { reverted: done, skipped: [...new Set(skipped)].filter((id) => !done.includes(id)) };
   }
 
   /**
@@ -983,5 +1354,5 @@ export function createTasteLearner({
     if (inFlight.length > 0) await settleWithin(inFlight, TASTE_CLOSE_GRACE_MS);
   }
 
-  return { turnEnded, signalsArrived, learnHistory, undo, promotionSettled, close };
+  return { turnEnded, signalsArrived, flushCorrections, learnHistory, undo, close };
 }

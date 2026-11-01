@@ -47,7 +47,7 @@ import {
 } from './settings-contract.ts';
 import { createChevron } from '../chevron.ts';
 import { createSleepyHippo } from './sleepy-hippo.ts';
-import { AGENT_LABEL, CONNECTABLE_PROVIDERS, createProviderIcon, PROVIDER_ORDER } from './providers.ts';
+import { AGENT_LABEL, createProviderIcon, PROVIDER_ORDER } from './providers.ts';
 import { createSettingsSearch, type SettingsSearchTarget } from './settings-search.ts';
 import {
   formatResetAt,
@@ -63,15 +63,15 @@ import { accountStore } from '../account/account-store.ts';
 import type { PlanStore } from '../plan/plan-store.ts';
 import { createPiGiftLine } from './settings-gift.ts';
 import { createAutofixSettingsSection } from './settings-autofix.ts';
-import { createTasteSettingsSection } from './settings-taste.ts';
-import type { DesktopRauApi } from './rau-upgrade.ts';
+import { createRauSettingsPane } from './settings-rau.ts';
+import { sharedRauMemoryStore, type RauMemoryStore } from './rau-memory-state.ts';
+import { planLocksRau } from '../plan/plan-store.ts';
 import { createMarkdownEditor } from './markdown-editor.ts';
 import type { DesktopGiftApi } from '../special-event/gift.ts';
 import { AGENT_MODES, AGENT_MODE_LABEL, isAgentMode, type AgentMode } from '../../agent/types.ts';
 import type { EventBus } from '../../core/event-bus.ts';
 import type {
   AgentName,
-  AgentInstructionsDraft,
   AgentInstructionsStatus,
   AgentAuthMethod,
   AgentSetupStatusMap,
@@ -81,7 +81,6 @@ import type {
   ProviderStatusMap,
   SidebarEvent,
   UsageSummary,
-  WritingStyleStatus,
   DocumentTemplate,
 } from '../../agent/types.ts';
 
@@ -97,7 +96,6 @@ const API_KEY_PLACEHOLDER: Record<AgentName, string> = {
   claude: 'sk-ant-…',
   codex: 'sk-proj-…',
   pi: 'sk-or-…',
-  rau: '',
   grok: 'xai-…',
   cursor: 'API 키',
   opencode: 'API 키',
@@ -343,7 +341,6 @@ export interface SettingsPanelDeps {
   };
   /** 저장된 기본값을 사이드바에 알린다 (새 대화에 적용된다). */
   applyDefaults: (prefs: AgentPrefs) => void;
-  openCalibration: () => void;
   /** 현재 대화의 CLI 세션을 다시 시작한다. */
   reconnectSession: () => void;
   /** 설정 안에 스킬 선반을 붙인다. */
@@ -356,10 +353,10 @@ export interface SettingsPanelDeps {
   deleteArchivedThread?: (thread: ThreadSummary) => Promise<boolean>;
   /** 선물 크레딧(macOS 데스크톱만). 없으면 Pi 카드에 선물 줄이 없다. */
   gift?: DesktopGiftApi | null;
-  /** 호스팅 Rau(Rau 요금제·체험) 자격. 데스크톱만. 없으면 Rau-0.1 에 Rau 줄이 없다. */
-  rau?: DesktopRauApi | null;
   /** 주소를 앱 안 브라우저의 별도 창으로 연다(ChatGPT·Claude 로그인). */
   openSignInWindow?: (url: string) => Promise<SignInWindow>;
+  /** 창이 함께 보는 계정의 기억. 생략하면 창의 것을 쓴다. */
+  rauMemory?: RauMemoryStore;
   /** 무료 요금제면 true. AI 설정은 잠기고, 들어가려는 길마다 요금제 카드가 열린다. */
   agentLocked?: () => boolean;
   openPlans?: () => void;
@@ -367,10 +364,12 @@ export interface SettingsPanelDeps {
 
 export interface SettingsPanel {
   element: HTMLElement;
-  /** 요금제가 바뀌면 AI 묶음의 잠금을 맞춘다. */
+  /** 요금제가 바뀌면 AI 묶음과 Rau 탭의 잠금을 맞춘다. */
   syncPlanLock(): void;
   open(destination?: SettingsDestinationInput): void;
   close(): void;
+  /** 설정 → Rau 가 지금 보이는가. */
+  rauVisible(): boolean;
   requestClose(): Promise<boolean>;
   isDirty(): boolean;
   /** 첫 실행 마법사 카드에서도 같은 설치/로그인 모달을 연다. */
@@ -380,8 +379,6 @@ export interface SettingsPanel {
    * 이미 로그인된 프로바이더는 완료 화면만 보여 준다.
    */
   beginAgentConnect(agent: AgentName, options?: { reauth?: boolean }): void;
-  /** AI 탭의 지시(변경안 카드)로 옮긴다. */
-  revealInstructions(): void;
   handleEvent(ev: SidebarEvent): void;
   dispose(): void;
 }
@@ -392,7 +389,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     eventBus,
     editorRuntime,
     applyDefaults,
-    openCalibration,
     reconnectSession,
     skillsSettings,
     refreshSkills,
@@ -409,14 +405,11 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   let connectionState: ConnectionState = bridge.getConnectionState();
   let providers: ProviderStatusMap | null = null;
   let usage: UsageSummary | null = null;
-  let writingStyle: WritingStyleStatus | null = null;
   let agentInstructions: AgentInstructionsStatus | null = null;
-  let pendingAgentInstructionsDraft: AgentInstructionsDraft | null = null;
   let instructionsDraftRevision = 0;
   let instructionsDirty = false;
   let instructionsBusy = false;
   let aiPrefsSaving = false;
-  let instructionsProposalBusy = false;
   let instructionsMessage = '';
   let currentDestination: SettingsDestination = 'editing';
   let lastDestination: SettingsDestination = 'editing';
@@ -486,15 +479,17 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
 
   // pi 마법사 상태 — 한 장의 카드가 단계를 갈아 끼운다.
   let piStatus: PiStatus | null = null;
-  // 취향 학습(Rau-0.1) — 허브가 정본이다. 바꾸는 즉시 저장한다.
-  const tasteSection = createTasteSettingsSection({
+  // 설정 → Rau 의 요금제 카드 — 사이드바가 이 이벤트로 Rau 칸에 맞춰 띄운다.
+  const openRauPlans = deps.plan?.api
+    ? () => { window.dispatchEvent(new CustomEvent('rhwp:open-plan-card', { detail: { focus: 'rau' } })); }
+    : null;
+  // 계정의 기억(Rau-0.1)과 문체 학습. 정본은 허브다 — 이 탭은 창이 함께 보는 상태를 그린다.
+  const rauPane = createRauSettingsPane({
     bridge,
+    store: deps.rauMemory ?? sharedRauMemoryStore(),
     isDisposed: () => disposed,
-    rau: deps.rau ?? null,
-    // 요금제 카드가 있으면 Rau 칸에 맞춰 연다(카드는 사이드바가 이 이벤트로 띄운다).
-    openPlans: deps.plan?.api
-      ? () => { window.dispatchEvent(new CustomEvent('rhwp:open-plan-card', { detail: { focus: 'rau' } })); }
-      : null,
+    openPlans: openRauPlans,
+    hasPlanApi: Boolean(deps.plan?.api),
   });
   let piCatalog: PiCatalogModel[] = [];
   let piCatalogLoading = false;
@@ -546,6 +541,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     { id: 'editing', label: '편집', icon: 'editing' },
     { id: 'theme', label: '테마', icon: 'theme' },
     { id: 'ai', label: 'AI', icon: 'ai' },
+    { id: 'rau', label: 'Rau', icon: 'rau' },
     { id: 'browser', label: '브라우저', icon: 'browser' },
     { id: 'skills', label: '스킬', icon: 'skills' },
     { id: 'project', label: '프로젝트', icon: 'project' },
@@ -614,6 +610,13 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     panes.set(destination.id, pane);
     navButtons.set(destination.id, button);
   }
+  // Rau 탭: Rau 요금제(체험 포함)가 아니면 자물쇠를 달고, 누르면 요금제 카드가 열린다.
+  const rauNavButton = navButtons.get('rau')!;
+  const rauNavLock = el('span', 'ag-settings-nav-group-lock ag-settings-nav-rau-lock');
+  rauNavLock.setAttribute('aria-hidden', 'true');
+  rauNavLock.append(createIcon('lock'));
+  rauNavButton.append(rauNavLock);
+  panes.get('rau')?.append(rauPane.root);
   layout.append(navigation, body);
   body.append(...panes.values());
   element.append(header, layout);
@@ -681,7 +684,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     { root: HTMLDetailsElement; dot: HTMLElement; detail: HTMLElement; message: HTMLElement; setup: HTMLButtonElement }
   >();
   const providerList = el('div', 'ag-settings-provider-list');
-  for (const agent of CONNECTABLE_PROVIDERS) {
+  for (const agent of PROVIDER_ORDER) {
     const row = el('details', 'ag-settings-provider-row');
     row.dataset.agent = agent;
     const dot = el('span', 'ag-settings-dot');
@@ -1269,26 +1272,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   });
   const instructionsStatus = el('p', 'ag-settings-instructions-status');
   instructionsStatus.hidden = true;
-  const instructionsProposal = el('div', 'ag-settings-instructions-proposal');
-  instructionsProposal.hidden = true;
-  const instructionsProposalTitle = el('strong', 'ag-settings-instructions-proposal-title', '에이전트 변경안');
-  const instructionsProposalMeta = el('p', 'ag-settings-note');
-  const instructionsProposalReason = el('p', 'ag-settings-instructions-proposal-reason');
-  const instructionsProposalPreview = el('pre', 'ag-settings-instructions-proposal-preview');
-  const instructionsProposalActions = el('div', 'ag-settings-actions');
-  const instructionsProposalConfirm = el('button', 'ag-settings-primary', '변경안 적용');
-  instructionsProposalConfirm.type = 'button';
-  const instructionsProposalReject = el('button', 'ag-settings-btn', '거절');
-  instructionsProposalReject.type = 'button';
-  instructionsProposalActions.append(instructionsProposalConfirm, instructionsProposalReject);
-  instructionsProposal.append(
-    instructionsProposalTitle,
-    instructionsProposalMeta,
-    instructionsProposalReason,
-    instructionsProposalPreview,
-    instructionsProposalActions,
-  );
-  // 다시 불러오기는 머리줄 오른쪽의 작은 아이콘 버튼으로 둔다(사용량 머리줄의 새로고침과 같은 모양).
   const instructionsReload = el('button', 'ag-settings-quota-refresh');
   instructionsReload.type = 'button';
   instructionsReload.title = '다시 불러오기';
@@ -1304,7 +1287,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     hancomGit.input.checked = enabled;
   });
   instructionsSection.body.append(
-    instructionsProposal,
     instructionsEditor.root,
     instructionsStatus,
   );
@@ -1356,8 +1338,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     renderAgentInstructions();
     renderDestinationState();
   });
-  instructionsProposalConfirm.addEventListener('click', () => void confirmAgentInstructionsDraft());
-  instructionsProposalReject.addEventListener('click', () => void rejectAgentInstructionsDraft());
   instructionsReload.addEventListener('click', async () => {
     if (instructionsDirty && !await confirmSheet(instructionsReload, '변경 버리기', '작성 중인 지시를 버리고 다시 불러옵니다.', { confirmLabel: '버리기', destructive: true })) return;
     instructionsDirty = false;
@@ -1366,19 +1346,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   });
 
   // ── 5. 글쓰기 보정 ────────────────────────────────────
-  const calibration = createSection('글쓰기 보정');
-  calibration.root.classList.add('ag-settings-calibration-section');
-  const calibrationRow = el('div', 'ag-settings-row ag-settings-calibration-row');
-  const calibrationText = el('div', 'ag-settings-row-text');
-  const calibrationStatus = el('span', 'ag-settings-row-name', '보정 전');
-  const calibrationSummary = el('span', 'ag-settings-row-detail ag-settings-calibration-summary');
-  calibrationSummary.hidden = true;
-  calibrationText.append(calibrationStatus, calibrationSummary);
-  const calibrationBtn = el('button', 'ag-settings-btn', '보정 시작');
-  calibrationBtn.type = 'button';
-  calibrationBtn.addEventListener('click', () => openCalibration());
-  calibrationRow.append(calibrationText, calibrationBtn);
-  calibration.body.append(calibrationRow);
 
   // ── 6. 템플릿 ─────────────────────────────────────────
   const templatesSection = createSection('템플릿');
@@ -1501,8 +1468,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     ['custom', editLockSection.root],
     ['connection', modelCatalogSection.root],
     ['custom', instructionsSection.root],
-    ['custom', tasteSection.root],
-    ['custom', calibration.root],
     ['custom', templatesSection.root],
     ['custom', notificationsSection.root],
     ...(autofixSection ? [['connection', autofixSection.root] as const] : []),
@@ -1527,8 +1492,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     quotaSection.root,
     modelCatalogSection.root,
     instructionsSection.root,
-    tasteSection.root,
-    calibration.root,
     templatesSection.root,
     notificationsSection.root,
     ...(autofixSection ? [autofixSection.root] : []),
@@ -1573,7 +1536,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     const targets: SettingsSearchTarget[] = [];
     for (const destination of destinations) {
       const pane = panes.get(destination.id);
-      if (!pane || (destination.id === 'ai' && aiLocked())) continue;
+      if (!pane || (destination.id === 'ai' && aiLocked()) || (destination.id === 'rau' && rauLocked())) continue;
       for (const label of pane.querySelectorAll<HTMLElement>(searchSelector)) {
         const text = label.textContent?.trim();
         // 프로젝트·보관한 채팅 이름은 설정이 아니다.
@@ -1658,7 +1621,8 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     const next = items[(index + delta + items.length) % items.length];
     if (!next) return;
     next.focus();
-    if (next === aiGroupHeader) return;
+    // 잠긴 Rau 탭은 화살표로 지나갈 때 요금제 카드를 띄우지 않는다 — Enter·Space 로만 연다.
+    if (next === aiGroupHeader || (next === rauNavButton && rauLocked())) return;
     next.click();
   });
   shellReady = true;
@@ -1698,6 +1662,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
         return themeSettings.isDirty();
       case 'ai':
         return isAiDirty();
+      case 'rau':
       case 'browser':
       case 'skills':
       case 'archive':
@@ -1746,7 +1711,28 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     return deps.agentLocked?.() === true;
   }
 
+  /** 요금제를 알고 Rau 가 아니면 Rau 탭이 잠긴다. 요금제 API 가 없는 웹 Studio 에서는 열려 있다. */
+  function rauLocked(): boolean {
+    return planLocksRau(deps.plan?.status() ?? null);
+  }
+
+  function syncRauLock(): void {
+    const locked = rauLocked();
+    rauNavButton.classList.toggle('ag-settings-ai-locked', locked);
+    rauNavButton.classList.toggle('ag-settings-rau-locked', locked);
+    // 자물쇠 그림은 aria-hidden 이라 잠김을 말로도 알린다.
+    if (locked) {
+      rauNavButton.title = 'Rau에서 쓸 수 있어요';
+      rauNavButton.setAttribute('aria-description', 'Rau에서 쓸 수 있어요');
+    } else {
+      rauNavButton.removeAttribute('title');
+      rauNavButton.removeAttribute('aria-description');
+    }
+    if (locked && currentDestination === 'rau') selectDestination('editing');
+  }
+
   function syncPlanLock(): void {
+    syncRauLock();
     const locked = aiLocked();
     aiGroupHeader.classList.toggle('ag-settings-ai-locked', locked);
     if (locked) aiGroupHeader.title = 'Hama에서 쓸 수 있어요';
@@ -1802,6 +1788,10 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       deps.openPlans?.();
       destination = currentDestination === 'ai' ? 'editing' : currentDestination;
     }
+    if (destination === 'rau' && rauLocked()) {
+      openRauPlans?.();
+      destination = currentDestination === 'rau' ? 'editing' : currentDestination;
+    }
     if (destination === 'ai') {
       aiGroupExpanded = true;
       if (aiSection) selectAiSection(aiSection);
@@ -1821,6 +1811,8 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     if (destination === 'skills') refreshSkills?.();
     if (destination === 'project') projectPane.open();
     if (destination === 'archive') archivePane.open();
+    if (destination === 'rau' && settingsOpen) rauPane.open();
+    else rauPane.close();
     if (destination === 'ai') for (const row of assistantRows) void row.refresh(true);
     panes.get(destination)?.scrollTo({ top: 0 });
   }
@@ -1981,6 +1973,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
         case 'ai':
           cancelAiDraft();
           return true;
+        case 'rau':
         case 'browser':
       case 'skills':
         case 'archive':
@@ -2002,6 +1995,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
         return themeSettings.apply();
       case 'ai':
         return applyAiDraft();
+      case 'rau':
       case 'browser':
       case 'skills':
       case 'archive':
@@ -2146,8 +2140,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   function selectableAgents(): readonly AgentName[] {
     return PROVIDER_ORDER.filter((agent) => {
       if (agent === 'pi') return piStatus?.setupComplete === true;
-      // Rau 는 서버가 쓸 수 있다고(Rau 플랜·체험) 답했을 때만 고를 수 있다.
-      if (agent === 'rau') return setupStatuses?.rau?.connected === true;
       return true;
     });
   }
@@ -2292,7 +2284,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   function renderProviders(): void {
     if (setupStatuses) announceProviderUpdates(setupStatuses);
     const online = connectionState === 'connected';
-    for (const agent of CONNECTABLE_PROVIDERS) {
+    for (const agent of PROVIDER_ORDER) {
       const row = providerRows.get(agent);
       if (!row) continue;
       const setup = setupStatuses?.[agent];
@@ -2926,23 +2918,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     renderAgentSetup();
   }
 
-  function renderWritingStyle(): void {
-    if (writingStyle?.active) {
-      const language = writingStyle.language === 'en' ? 'English' : '한국어';
-      const date = formatShortDate(writingStyle.updatedAt);
-      const parts = ['보정됨', language, `문서 ${writingStyle.sourceCount}개`];
-      if (date) parts.push(date);
-      calibrationStatus.textContent = parts.join(' / ');
-      calibrationSummary.textContent = writingStyle.summary ?? '';
-      calibrationSummary.hidden = !writingStyle.summary;
-      calibrationBtn.textContent = '다시 보정';
-      return;
-    }
-    calibrationStatus.textContent = '보정 전';
-    calibrationSummary.hidden = true;
-    calibrationBtn.textContent = '보정 시작';
-  }
-
   /** 미터 행 DOM — 라벨·값·진행 막대. percent 가 null 이면 막대 없는 행이다. */
   function meterRow(label: string, value: string, percent: number | null): HTMLElement {
     const row = el('div', 'ag-settings-meter');
@@ -3437,7 +3412,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     usageViews.setLimitsRefreshing(true);
     usageFeedback.textContent = '';
     usageFeedback.hidden = true;
-    void bridge.requestRauAgentStatus?.(refresh).catch(() => null);
     try {
       const result = await bridge.requestUsage(refresh);
       if (disposed) return;
@@ -3492,25 +3466,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     instructionsReload.disabled = instructionsBusy || connectionState !== 'connected';
     instructionsStatus.textContent = instructionsMessage;
     instructionsStatus.hidden = !instructionsMessage;
-    const proposal = pendingAgentInstructionsDraft;
-    instructionsProposal.hidden = !proposal;
-    if (proposal) {
-      const expiresAt = Date.parse(proposal.expiresAt);
-      const expired = !Number.isFinite(expiresAt) || expiresAt <= Date.now();
-      const expiryLabel = Number.isFinite(expiresAt)
-        ? formatResetAt(expiresAt).replace('리셋', '만료')
-        : '만료 시간 오류';
-      instructionsProposalMeta.textContent = `${proposal.requestedBy} 제안, ${expiryLabel}`;
-      instructionsProposalReason.textContent = proposal.reason
-        ? `이유: ${proposal.reason}`
-        : '승인 전에는 AGENTS.md에 저장되지 않습니다.';
-      instructionsProposalPreview.textContent = proposal.content;
-      instructionsProposalConfirm.disabled = instructionsProposalBusy
-        || expired
-        || connectionState !== 'connected';
-      instructionsProposalReject.disabled = instructionsProposalBusy
-        || connectionState !== 'connected';
-    }
   }
 
   async function refreshAgentInstructions(force = false): Promise<void> {
@@ -3554,55 +3509,16 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     return Boolean(status);
   }
 
-  async function confirmAgentInstructionsDraft(): Promise<void> {
-    const draft = pendingAgentInstructionsDraft;
-    if (!draft || instructionsProposalBusy || connectionState !== 'connected') return;
-    if (instructionsDirty
-      && !await confirmSheet(instructionsProposalConfirm, '변경안 적용', '직접 편집한 내용을 버리고 에이전트 변경안을 적용합니다.', { confirmLabel: '적용' })) return;
-    instructionsProposalBusy = true;
-    instructionsMessage = '';
-    renderAgentInstructions();
-    const status = await bridge.confirmAgentInstructionsDraft(draft);
-    if (disposed) return;
-    instructionsProposalBusy = false;
-    if (status) {
-      pendingAgentInstructionsDraft = null;
-      acceptAgentInstructions(status, `agent-confirmed:${draft.requestedBy}`, true);
-      instructionsMessage = '변경안 적용됨, 다음 턴부터 적용';
-    } else if (!instructionsMessage) {
-      instructionsMessage = '변경안 적용 실패, 최신 지시를 다시 불러옵니다';
-    }
-    renderAgentInstructions();
-  }
-
-  async function rejectAgentInstructionsDraft(): Promise<void> {
-    const draft = pendingAgentInstructionsDraft;
-    if (!draft || instructionsProposalBusy || connectionState !== 'connected') return;
-    instructionsProposalBusy = true;
-    instructionsMessage = '';
-    renderAgentInstructions();
-    const rejected = await bridge.rejectAgentInstructionsDraft(draft);
-    if (disposed) return;
-    instructionsProposalBusy = false;
-    if (rejected) {
-      pendingAgentInstructionsDraft = null;
-      instructionsMessage = '변경안 거절됨';
-    } else if (!instructionsMessage) {
-      instructionsMessage = '변경안 거절 실패';
-    }
-    renderAgentInstructions();
-  }
-
   syncPrefsInputs();
   renderModelCatalog();
   renderConnection();
   renderProviders();
   renderAgentInstructions();
-  renderWritingStyle();
   renderTemplates();
   renderUsage();
   renderPi();
   renderDestinationState();
+  syncRauLock();
 
   return {
     element,
@@ -3629,12 +3545,10 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       if (currentDestination === 'browser') browserPane.open();
       renderProviders();
       renderAgentInstructions();
-      renderWritingStyle();
-      renderTemplates();
+          renderTemplates();
       renderPi();
       void refreshProviders(false);
       void refreshAgentInstructions(false);
-      void tasteSection.refresh();
       void refreshUsage();
       void refreshPiStatus();
       void refreshSetupStatuses();
@@ -3645,6 +3559,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     },
     close(): void {
       settingsOpen = false;
+      rauPane.close();
       accountSection?.close();
       browserPane.close();
       syncUsagePolling();
@@ -3655,22 +3570,18 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       closeAgentSetup();
       finishTemplateName(null);
     },
+    rauVisible: () => settingsOpen && currentDestination === 'rau' && rauPane.isOpen(),
     requestClose: resolveDirtyExit,
     isDirty(): boolean {
       return editingSettings.isDirty() || themeSettings.isDirty() || isAiDirty() || projectPane.isDirty();
     },
     openAgentSetup,
     beginAgentConnect,
-    revealInstructions(): void {
-      selectDestination('ai', 'custom');
-      // 변경안 카드는 이 묶음의 맨 위에 있다.
-      instructionsSection.root.scrollIntoView({ block: 'start' });
-    },
     handleEvent(ev: SidebarEvent): void {
       switch (ev.type) {
         case 'taste-settings':
           // 다른 창에서 바꿨거나 요청의 답이다. 고르는 중인 값은 그 요청의 답이 덮는다.
-          tasteSection.accept(ev.settings);
+          rauPane.acceptTasteSettings(ev.settings);
           break;
         case 'connection':
           connectionState = ev.state;
@@ -3684,6 +3595,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
           renderTemplates();
           renderAgentInstructions();
           browserPane.setConnected();
+          rauPane.setConnected(ev.state === 'connected');
           if (ev.state === 'connected' && !agentInstructions) void refreshAgentInstructions(false);
           if (ev.state === 'connected' && currentDestination === 'browser') browserPane.open();
           if (ev.state === 'connected' && settingsOpen) {
@@ -3700,26 +3612,9 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
         case 'agent-instructions':
           acceptAgentInstructions(ev.status, ev.changedBy);
           break;
-        case 'agent-instructions-draft':
-          pendingAgentInstructionsDraft = ev.draft;
-          instructionsProposalBusy = false;
-          instructionsMessage = '에이전트 변경안';
-          renderAgentInstructions();
-          break;
-        case 'agent-instructions-draft-cleared':
-          if (pendingAgentInstructionsDraft?.id === ev.draftId) {
-            pendingAgentInstructionsDraft = null;
-            instructionsProposalBusy = false;
-            if (ev.outcome === 'expired') instructionsMessage = '변경안 만료';
-            if (ev.outcome === 'replaced') instructionsMessage = '새 변경안으로 교체됨';
-            if (ev.outcome === 'stale') instructionsMessage = '지시가 먼저 바뀌어 변경안이 만료됐습니다.';
-            renderAgentInstructions();
-          }
-          break;
         case 'agent-instructions-error':
           if (ev.status) agentInstructions = ev.status;
           instructionsBusy = false;
-          instructionsProposalBusy = false;
           instructionsMessage = ev.message;
           renderAgentInstructions();
           break;
@@ -3835,11 +3730,6 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
           usage = ev.usage;
           renderUsage();
           break;
-        case 'writing-style-status':
-        case 'writing-style-result':
-          writingStyle = ev.status;
-          renderWritingStyle();
-          break;
         case 'templates-catalog':
           templates = ev.catalog.templates;
           templatesMessage = '';
@@ -3912,6 +3802,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       projectPane.dispose();
       archivePane.dispose();
       browserPane.dispose();
+      rauPane.dispose();
       unsubscribeBrowserSettings();
       disposed = true;
       settingsOpen = false;

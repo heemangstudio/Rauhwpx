@@ -1,6 +1,6 @@
-// Hama 업그레이드 그림: 물에 들어선 픽셀 하마와 반짝이. 하마 마크(7×7)와 같은 픽셀 하나를 단위로 쓰는 16×9 판이다.
+// Rau 탭 머리의 그림: 물에 들어선 픽셀 하마와 반짝이. 하마 마크(7×7)와 같은 픽셀 하나를 단위로 쓰는 16×9 판이다.
 // 색은 currentColor(Hama 파랑)를 따르고, 반짝임은 CSS 가 맡는다(움직임을 줄이면 멈춘다).
-import { HAMA_MARK } from './hama-mark.ts';
+import { HAMA_MARK } from '../plan/hama-mark.ts';
 
 const NS = 'http://www.w3.org/2000/svg';
 

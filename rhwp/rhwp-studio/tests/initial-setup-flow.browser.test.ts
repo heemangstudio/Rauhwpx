@@ -24,6 +24,8 @@ test('setup gates provider connection by account and plan, and resumes after che
     const step = (name: string) => page.waitForSelector(`.rhwp-setup-dialog[data-step="${name}"]`, { visible: true });
     const start = async (account: string) => {
       await page.goto(`http://127.0.0.1:${address.port}/?reset=1&initial-setup=1&account=${account}`);
+      await step('intro');
+      await page.click('.rhwp-setup-primary');
       await step('theme');
       await page.click('.rhwp-setup-dot[aria-label="시작 방법"]');
       await step('welcome');
@@ -50,10 +52,19 @@ test('setup gates provider connection by account and plan, and resumes after che
     await start('free');
     await page.click('[data-path="ai"]');
     await step('plans');
+    await page.waitForSelector('.rhwp-setup-plans .ag-pricing-grid', { visible: true });
     assert.equal(await page.$('.rhwp-setup-dot[aria-label="AI 연결"]'), null);
-    await page.click('.rhwp-setup-plans .rhwp-setup-upgrade-action');
-    await page.waitForSelector('.ag-pricing-card', { visible: true });
-    await page.click('.ag-pricing-close');
+    await page.click('.rhwp-setup-back');
+    await step('welcome');
+    await page.click('[data-path="ai"]');
+    await step('plans');
+    await page.click('.rhwp-setup-primary');
+    await finished();
+
+    await start('free');
+    await page.click('[data-path="ai"]');
+    await step('plans');
+    await page.click('.rhwp-setup-skip');
     await finished();
 
     await start('hama');
@@ -64,23 +75,38 @@ test('setup gates provider connection by account and plan, and resumes after che
 
     await start('rau');
     await page.click('[data-path="ai"]');
-    await step('models');
-    await page.click('.rhwp-setup-primary');
     await step('rau');
     await page.screenshot({ path: resolve(artifacts, 'setup-rau-introduction.png') });
     await page.click('.rhwp-setup-primary');
+    await step('models');
+    await page.click('.rhwp-setup-primary');
     await finished();
+
+    // 체험 기간 안에 정식 Rau 를 등록해도, 남은 체험 이력으로 가입을 안내하지 않는다.
+    await start('rau-trial');
+    await page.evaluate(() => window.sidebarPreview.account.setTier('rau'));
+    await page.click('[data-path="ai"]');
+    await step('rau');
+    assert.equal(await page.$eval('.rhwp-setup-upgrade .rhwp-setup-upgrade-title', (node) => node.textContent), '이제 Rau와 함께해요');
+    await page.click('.rhwp-setup-primary');
+    await step('models');
+    await page.click('.rhwp-setup-primary');
+    await finished();
+    await page.evaluate(() => window.dispatchEvent(new CustomEvent('rhwp:open-plan-card')));
+    await page.waitForSelector('.ag-pricing-card');
+    assert.equal(await page.$('.ag-pricing-trial-tag'), null, 'paid Rau is not marked as a running trial');
+    await page.click('.ag-pricing-close');
+    await page.waitForFunction(() => !document.querySelector('.ag-pricing-card'));
 
     await start('free');
     await page.click('[data-path="ai"]');
     await step('plans');
-    await page.click('.rhwp-setup-plans .rhwp-setup-upgrade-action');
-    await page.waitForSelector('.ag-pricing-card', { visible: true });
     // 무료 계정은 Rau 체험을 쓸 수 있다. 체험 시작은 네트워크 요청 없는 mock-account 다.
     await page.click('.ag-pricing-col[data-plan="rau"] .ag-pricing-btn-trial');
-    await step('models');
-    await page.click('.rhwp-setup-primary');
     await step('rau');
+    assert.match(await page.$eval('.rhwp-setup-upgrade .rhwp-setup-upgrade-title', (node) => node.textContent ?? ''), /무료 체험을 시작했어요/);
+    await page.click('.rhwp-setup-primary');
+    await step('models');
     await page.click('.rhwp-setup-primary');
     await finished();
   } finally {

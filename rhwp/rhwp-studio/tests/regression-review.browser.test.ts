@@ -121,7 +121,7 @@ test('settings keyboard entry exposes the named region and dirty exit preserves,
         .querySelector('.ag-root')!
         .classList.contains('ag-settings-open'),
   );
-  await page.click('#settings');
+  await page.$eval('#settings', (el: HTMLButtonElement) => el.click());
   await page.click('[data-destination="editing"]');
   assert.equal(
     await page.$eval(toggle, (el: HTMLInputElement) => el.checked),

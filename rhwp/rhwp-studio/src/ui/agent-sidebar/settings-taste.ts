@@ -1,8 +1,6 @@
-// 설정 → AI 의 호스팅 Rau-0.1. 대화에서 배우기와 Rau 요금제 자격(크레딧)만 보여 준다.
+// 설정 → Rau 의 "대화에서 배우기" 스위치. 학습은 호스팅 Rau 에서만 돌아서 공급자·모델은 고르지 않는다.
 import type { SidebarBridge } from '../../agent/bridge.ts';
-import { RAU_TASTE_NAME } from '../../agent/taste.ts';
 import type { TasteSettings } from '../../agent/types.ts';
-import { openRauUpgrade, RAU_PRICE_LINE, rauStateLine, type DesktopRauApi, type RauStatus } from './rau-upgrade.ts';
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className = '', text?: string): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
@@ -11,78 +9,39 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, className = '', text?
   return node;
 }
 
-export interface TasteSettingsSectionDeps {
+export interface TasteLearningToggleDeps {
   bridge: Pick<SidebarBridge, 'requestTasteSettings' | 'setTasteSettings'>;
   isDisposed(): boolean;
-  /** 데스크톱의 호스팅 Rau 자격. 없으면 Rau 줄이 없다. */
-  rau?: DesktopRauApi | null;
-  /** 앱 요금제 카드. 있으면 업그레이드가 웹 대신 카드를 Rau 칸에 맞춰 연다. */
-  openPlans?: (() => void) | null;
 }
 
-export interface TasteSettingsSection {
+export interface TasteLearningToggle {
   root: HTMLElement;
   /** 허브의 값(요청의 답이나 다른 창의 알림). 고르는 중인 요청의 답은 이 값이 덮는다. */
   accept(settings: TasteSettings | null): void;
   refresh(): Promise<void>;
-  /** 현재 상태를 다시 그린다. */
-  render(): void;
 }
 
-export function createTasteSettingsSection(deps: TasteSettingsSectionDeps): TasteSettingsSection {
-  const root = el('section', 'ag-settings-section ag-taste-settings');
-  const head = el('div', 'ag-settings-section-head');
-  head.append(el('h3', 'ag-settings-section-title', RAU_TASTE_NAME));
-  const body = el('div', 'ag-settings-section-body');
-  root.append(head, body);
+export function createTasteLearningToggle(deps: TasteLearningToggleDeps): TasteLearningToggle {
+  const root = el('label', 'ag-settings-control-row ag-settings-toggle-row ag-taste-learning-row');
+  // 글자 없는 스위치다. 문서에서 직접 고친 글도 학습에 쓰이니 이름에 함께 밝힌다.
+  root.title = '대화와 문서 편집에서 배우기';
+  const input = el('input', 'ag-settings-toggle-input');
+  input.type = 'checkbox';
+  input.setAttribute('role', 'switch');
+  input.setAttribute('aria-label', '대화와 문서 편집에서 배우기');
+  const track = el('span', 'ag-settings-toggle-track');
+  track.setAttribute('aria-hidden', 'true');
+  root.append(input, track);
 
-  const learning = el('label', 'ag-settings-control-row ag-settings-toggle-row');
-  const learningCopy = el('span', 'ag-settings-control-copy');
-  learningCopy.append(el('span', 'ag-settings-control-label', '대화에서 배우기'));
-  const learningInput = el('input', 'ag-settings-toggle-input');
-  learningInput.type = 'checkbox';
-  learningInput.setAttribute('role', 'switch');
-  learningInput.setAttribute('aria-label', '대화에서 배우기');
-  const learningTrack = el('span', 'ag-settings-toggle-track');
-  learningTrack.setAttribute('aria-hidden', 'true');
-  learning.append(learningCopy, learningInput, learningTrack);
-
-  const basic = el('div', 'ag-settings-control-row ag-taste-setting-row ag-taste-rau-row');
-  basic.dataset.tasteField = 'rau';
-  const basicCopy = el('span', 'ag-settings-control-copy');
-  const basicDetail = el('span', 'ag-settings-control-description');
-  basicCopy.append(el('span', 'ag-settings-control-label', 'Rau'), basicDetail);
-  const basicState = el('span', 'ag-settings-control-description ag-taste-rau-state');
-  const upgrade = el('button', 'ag-settings-btn', '업그레이드');
-  upgrade.type = 'button';
-  basic.append(basicCopy, basicState, upgrade);
-  basic.hidden = true;
-  let rauStatus: RauStatus | null = null;
-
-  body.append(learning, basic);
-
-  // 허브가 답하기 전에는 기본값(켜짐, 자동)을 보이고 잠가 둔다.
+  // 허브가 답하기 전에는 기본값(켜짐)을 보이고 잠가 둔다.
   let settings: TasteSettings | null = null;
   let shown: TasteSettings = { enabled: true, provider: 'auto', model: null, effort: null };
   let saving = false;
   let request = 0;
-  function renderBasic(): void {
-    const status = rauStatus;
-    basic.hidden = !status?.ok || !shown.enabled;
-    if (!status?.ok) return;
-    const eligible = status.eligible === true;
-    upgrade.hidden = eligible;
-    basicState.hidden = !eligible;
-    basicState.textContent = eligible ? rauStateLine(status) : '';
-    basicDetail.hidden = eligible;
-    basicDetail.textContent = RAU_PRICE_LINE;
-  }
 
   function render(): void {
-    renderBasic();
-    const locked = settings === null || saving;
-    learningInput.checked = shown.enabled;
-    learningInput.disabled = locked;
+    input.checked = shown.enabled;
+    input.disabled = settings === null || saving;
   }
 
   function accept(next: TasteSettings | null): void {
@@ -94,13 +53,6 @@ export function createTasteSettingsSection(deps: TasteSettingsSectionDeps): Tast
   }
 
   async function refresh(): Promise<void> {
-    if (deps.rau) {
-      void deps.rau.getStatus().then((status) => {
-        if (deps.isDisposed()) return;
-        rauStatus = status;
-        renderBasic();
-      }, () => {});
-    }
     const seq = ++request;
     const next = await deps.bridge.requestTasteSettings();
     if (!deps.isDisposed() && seq === request) accept(next);
@@ -122,12 +74,7 @@ export function createTasteSettingsSection(deps: TasteSettingsSectionDeps): Tast
     }
   }
 
-  learningInput.addEventListener('change', () => void save({ enabled: learningInput.checked }));
-  upgrade.addEventListener('click', () => {
-    if (deps.openPlans) deps.openPlans();
-    else openRauUpgrade(deps.rau ?? null, rauStatus?.upgradeUrl);
-  });
-
+  input.addEventListener('change', () => void save({ enabled: input.checked }));
   render();
-  return { root, accept, refresh, render };
+  return { root, accept, refresh };
 }

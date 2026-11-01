@@ -83,7 +83,7 @@ function seedStorage(seed) {
   try {
     localStorage.setItem('rhwp-initial-setup', JSON.stringify({
       version: 2, completed: true, completedAt: new Date(0).toISOString(), deferred: false,
-      themeStep: 'done', providerStep: 'configured', fontStep: 'skipped', calibrationStep: 'skipped',
+      themeStep: 'done', providerStep: 'configured', fontStep: 'skipped',
     }));
     const current = JSON.parse(localStorage.getItem('rhwp-settings') || '{}');
     localStorage.setItem('rhwp-settings', JSON.stringify({ ...current, version: 2, theme: seed }));

@@ -5,6 +5,7 @@
 // 어디서든 window 의 'rhwp:open-plan-card' 이벤트로 연다(detail.focus 로 Hama·Rau 칸을 짚는다).
 import '../agent-sidebar/sheet.css';
 import './upgrade-card.css';
+import { createRauArt, stretchRauArt, type RauArt } from './rau-art.ts';
 import { createSheetFrame } from '../agent-sidebar/sheet.ts';
 import { createIcon } from '../agent-sidebar/icons.ts';
 import { openAccountPage } from '../account/account-page.ts';
@@ -27,21 +28,13 @@ const SKU_LABEL: Record<PlanSku, string> = { hamaMonthly: 'Hama · 월간', hama
 const FEATURES: Record<'free' | PlanFamily, string[]> = {
   free: ['문서 편집'],
   hama: ['내 AI 연결'],
-  rau: ['AI 포함', '매달 크레딧', 'Rau 모드'],
+  rau: ['Hama의 모든 기능', 'Rau 모드'],
 };
-
-/** Rau 마크(앱 아이콘의 Rau 글리프). */
-function rauMark(className: string): HTMLElement {
-  const mark = document.createElement('span');
-  mark.className = className;
-  mark.setAttribute('aria-hidden', 'true');
-  return mark;
-}
 
 /** 요금제 이름 앞의 마크. 무료는 없다. */
 export function planMark(plan: 'free' | PlanFamily, className: string): Element | null {
   if (plan === 'hama') return createHamaMark(`${className} ${className}-hama`);
-  if (plan === 'rau') return rauMark(`${className} ${className}-rau`);
+  if (plan === 'rau') return createHamaMark(`${className} ${className}-rau`);
   return null;
 }
 
@@ -51,6 +44,29 @@ export interface PlanCardOptions {
   /** 결제 전 로그인할 계정. 생략하면 창의 계정 상태를 쓴다. */
   account?: AccountStore;
   focus?: PlanCardFocus;
+}
+
+export type PlanChooserView = 'plans' | 'waiting' | 'done';
+
+export interface PlanChooserOptions {
+  store: PlanStore;
+  account?: AccountStore;
+  focus?: PlanCardFocus;
+  /** 결제나 체험을 확인하고 잠깐 알린 뒤. */
+  onFinish: () => void;
+  /** 완료를 알리는 시간. 다음 화면이 알려 주면 0 을 넘긴다. */
+  doneHoldMs?: number;
+  /** 그릴 때마다. busy 면 결제나 체험이 진행 중이다. */
+  onRender?: (view: PlanChooserView, busy: boolean) => void;
+  /** 로그인으로 보낸다. 생략하면 계정 페이지만 연다. 보내지 못하면 false. */
+  signIn?: (focus: PlanCardFocus | undefined) => boolean;
+}
+
+export interface PlanChooser {
+  element: HTMLElement;
+  focusColumn(target: PlanCardFocus | undefined): void;
+  focusTarget(): HTMLElement | null;
+  dispose(): void;
 }
 
 export interface PlanCardHandle {
@@ -73,44 +89,27 @@ function button(className: string, text: string): HTMLButtonElement {
   return node;
 }
 
-/** 열린 카드가 있으면 그 카드를 짚고, 없으면 새로 연다. 요금제 API 가 없으면 열지 않는다. */
-export function openPlanCard(options: PlanCardOptions): PlanCardHandle | null {
-  if (!options.store.api) return null;
-  if (openCard) {
-    openCard.focus(options.focus);
-    return openCard.handle;
-  }
+/**
+ * 세 칸과 결제·체험 흐름. 틀이 없어 시트 카드와 처음 설정의 요금제 장이 함께 쓴다.
+ * 결제나 체험을 확인하고 잠깐 알린 뒤 onFinish 를 부른다.
+ */
+export function createPlanChooser(options: PlanChooserOptions): PlanChooser {
   const { store } = options;
   const api = store.api!;
   const account = options.account ?? accountStore();
-  const frame = createSheetFrame({
-    title: '요금제',
-    center: true,
-    role: 'dialog',
-    className: 'ag-pricing-card',
-    dragIgnore: 'button, label, input',
-  });
-  const { sheet, header } = frame;
-
-  const head = el('div', 'ag-pricing-head');
-  header.replaceWith(head);
-  const close = button('ag-pricing-close', '');
-  close.setAttribute('aria-label', '닫기');
-  close.append(createIcon('close'));
-  head.append(header, close);
-
   const body = el('div', 'ag-pricing-body');
-  sheet.append(body);
+  /** 다시 그려도 물결이 끊기지 않게 하나를 옮겨 붙인다. */
+  let rauArt: RauArt | null = null;
+  let stopStretch: () => void = () => {};
 
-  type View = 'plans' | 'waiting' | 'done';
-  let view: View = 'plans';
+  let view: PlanChooserView = 'plans';
   /** 결제한 상품의 등급이 되면 성공. */
   let awaiting: { sku: PlanSku; fromTier: PlanTier } | null = null;
   const awaitingFor = (sku: PlanSku): { sku: PlanSku; fromTier: PlanTier } => ({ sku, fromTier: status()?.tier ?? 'free' });
   let notice = '';
   let checkoutBusy = false;
   let trialBusy = false;
-  /** 성공 화면의 등급. 체험은 요금제 상태보다 먼저 끝날 수 있어 따로 든다. */
+  /** 완료 단추의 등급. 체험은 요금제 상태보다 먼저 끝날 수 있어 따로 든다. */
   let doneTier: PlanTier | null = null;
   let focused: PlanCardFocus | undefined = options.focus;
   let successTimer: number | null = null;
@@ -130,13 +129,13 @@ export function openPlanCard(options: PlanCardOptions): PlanCardHandle | null {
     if (!account.api?.startRauTrial) return 'none';
     const current = account.status();
     if (!current || current.state !== 'signed_in') return current?.available === false ? 'none' : 'available';
-    if (current.trial?.state === 'active' && current.plan.tier === 'rau') return 'active';
+    if (current.trial?.state === 'active' && current.plan.rau?.source === 'trial') return 'active';
     if (current.trial?.state === 'available' && current.plan.tier !== 'rau') return 'available';
     return 'none';
   }
 
   async function beginTrial(): Promise<void> {
-    if (trialBusy || checkoutBusy) return;
+    if (doneTier !== null || trialBusy || checkoutBusy) return;
     const current = account.status();
     if (current?.state !== 'signed_in') {
       if (sendToSignIn()) return;
@@ -166,26 +165,19 @@ export function openPlanCard(options: PlanCardOptions): PlanCardHandle | null {
 
   function showDone(): void {
     view = 'done';
-    if (successTimer === null) successTimer = window.setTimeout(() => finish(true), SUCCESS_HOLD_MS);
+    if (successTimer === null) successTimer = window.setTimeout(options.onFinish, options.doneHoldMs ?? SUCCESS_HOLD_MS);
     render();
   }
 
-  /** 카드를 닫고 계정 페이지의 로그인으로 보낸다. 로그인하면 같은 칸을 짚은 카드로 돌아온다. */
+  /** 계정 페이지의 로그인으로 보낸다. 시트 카드는 닫았다가 로그인하면 같은 칸을 짚어 돌아온다. */
   function sendToSignIn(): boolean {
-    const back = focused;
-    const page = openAccountPage({
-      store: account,
-      plan: store,
-      section: 'sign-in',
-      onSignedIn: () => { openPlanCard({ ...options, ...(back ? { focus: back } : {}) }); },
-    });
-    if (!page) return false;
-    finish(false);
-    return true;
+    return options.signIn
+      ? options.signIn(focused)
+      : openAccountPage({ store: account, plan: store, section: 'sign-in' }) !== null;
   }
 
   async function begin(sku: PlanSku): Promise<void> {
-    if (checkoutBusy) return;
+    if (doneTier !== null || checkoutBusy || trialBusy) return;
     checkoutBusy = true;
     notice = '';
     render();
@@ -241,12 +233,22 @@ export function openPlanCard(options: PlanCardOptions): PlanCardHandle | null {
     }
     doneTier = tierForSku(awaiting!.sku);
     view = 'done';
-    successTimer = window.setTimeout(() => finish(true), SUCCESS_HOLD_MS);
+    successTimer = window.setTimeout(options.onFinish, options.doneHoldMs ?? SUCCESS_HOLD_MS);
   }
 
   function planColumn(plan: 'free' | PlanFamily, tier: PlanTier | null): HTMLElement {
     const column = el('article', 'ag-pricing-col');
     column.dataset.plan = plan;
+    if (plan === 'rau') {
+      rauArt ??= createRauArt();
+      column.append(rauArt.element);
+      column.addEventListener('click', () => {
+        const host = body.closest<HTMLElement>('.ag-pricing-card, .rhwp-setup-dialog');
+        if (!host) return;
+        stopStretch();
+        stopStretch = stretchRauArt(host, column);
+      });
+    }
     const trial = plan === 'rau' ? trialState() : 'none';
     const current = tier === plan;
     if (current) column.dataset.current = 'true';
@@ -268,16 +270,25 @@ export function openPlanCard(options: PlanCardOptions): PlanCardHandle | null {
     for (const line of FEATURES[plan]) features.append(el('li', '', line));
 
     // 체험 중인 Rau 는 '체험 중'을 두고 계속 쓸 결제 단추를 그대로 둔다.
-    if (current && trial !== 'active') {
+    if (view === 'done' && doneTier === plan) {
+      const done = button('ag-pricing-btn ag-pricing-btn-primary ag-pricing-btn-success', '');
+      done.disabled = true;
+      done.setAttribute('aria-label', `${TIER_LABEL[plan]} 활성화 완료`);
+      done.append(createIcon('check'));
+      actions.setAttribute('role', 'status');
+      actions.setAttribute('aria-label', `${TIER_LABEL[plan]} 활성화 완료`);
+      actions.append(done);
+    } else if (current && trial !== 'active') {
       actions.append(el('span', 'ag-pricing-current', '사용 중'));
     } else if (plan !== 'free' && !(plan === 'hama' && tier === 'rau')) {
       if (trial === 'active') actions.append(el('span', 'ag-pricing-current ag-pricing-trial-tag', '체험 중'));
       const { monthly, yearly } = PLAN_CYCLES[plan];
-      const skus = [monthly, yearly].filter(available);
+      // 체험을 쓸 수 있으면 체험만 권한다. 체험을 쓴 뒤에 결제 단추가 선다.
+      const skus = trial === 'available' ? [] : [monthly, yearly].filter(available);
       if (trial === 'available') {
         const start = button('ag-pricing-btn ag-pricing-btn-primary ag-pricing-btn-trial', trialButtonLabel(account.status()?.trial));
         start.dataset.trial = 'rau';
-        start.disabled = trialBusy || checkoutBusy;
+        start.disabled = view === 'done' || trialBusy || checkoutBusy;
         start.addEventListener('click', () => { void beginTrial(); });
         actions.append(start);
       }
@@ -286,7 +297,7 @@ export function openPlanCard(options: PlanCardOptions): PlanCardHandle | null {
         const primary = sku === monthly && trial !== 'available';
         const buy = button(primary ? 'ag-pricing-btn ag-pricing-btn-primary' : 'ag-pricing-btn', sku === monthly ? '월간' : '연간');
         buy.dataset.sku = sku;
-        buy.disabled = checkoutBusy || trialBusy;
+        buy.disabled = view === 'done' || checkoutBusy || trialBusy;
         buy.addEventListener('click', () => { void begin(sku); });
         actions.append(buy);
       }
@@ -331,23 +342,11 @@ export function openPlanCard(options: PlanCardOptions): PlanCardHandle | null {
     body.append(wait);
   }
 
-  function renderDone(): void {
-    const done = el('div', 'ag-pricing-state ag-pricing-done');
-    const mark = el('span', 'ag-pricing-done-mark');
-    mark.append(createIcon('check'));
-    const tier = doneTier ?? status()?.tier ?? 'hama';
-    const title = el('p', 'ag-pricing-state-title', `${TIER_LABEL[tier]}를 쓸 수 있어요`);
-    title.setAttribute('role', 'status');
-    done.append(mark, title);
-    body.append(done);
-  }
-
   function render(): void {
     body.replaceChildren();
-    sheet.dataset.view = view;
-    if (view === 'plans') renderPlans();
-    else if (view === 'waiting') renderWaiting();
-    else renderDone();
+    options.onRender?.(view, view !== 'plans' || checkoutBusy || trialBusy);
+    if (view === 'waiting') renderWaiting();
+    else renderPlans();
   }
 
   function focusColumn(target: PlanCardFocus | undefined): void {
@@ -355,7 +354,7 @@ export function openPlanCard(options: PlanCardOptions): PlanCardHandle | null {
       focused = target;
       if (view === 'plans') render();
     }
-    if (target) sheet.querySelector(`.ag-pricing-col[data-plan="${target}"]`)?.scrollIntoView({ block: 'nearest' });
+    if (target) body.querySelector(`.ag-pricing-col[data-plan="${target}"]`)?.scrollIntoView({ block: 'nearest' });
   }
 
   if (status()?.pendingCheckout) {
@@ -377,23 +376,81 @@ export function openPlanCard(options: PlanCardOptions): PlanCardHandle | null {
     render();
   });
 
-  let resolveClosed!: () => void;
-  const closed = new Promise<void>((resolve) => { resolveClosed = resolve; });
-  const finish = frame.present(
-    () => sheet.querySelector<HTMLElement>(focused ? `.ag-pricing-col[data-plan="${focused}"] button:not([disabled])` : '.ag-pricing-btn-primary:not([disabled])')
-      ?? close,
-    () => {
+  return {
+    element: body,
+    focusColumn,
+    focusTarget: () => body.querySelector<HTMLElement>(
+      focused ? `.ag-pricing-col[data-plan="${focused}"] button:not([disabled])` : '.ag-pricing-btn-primary:not([disabled])',
+    ),
+    dispose(): void {
+      rauArt?.dispose();
+      stopStretch();
       unsubscribe();
       unsubscribeAccount();
       if (successTimer !== null) window.clearTimeout(successTimer);
+    },
+  };
+}
+
+/** 열린 카드가 있으면 그 카드를 짚고, 없으면 새로 연다. 요금제 API 가 없으면 열지 않는다. */
+export function openPlanCard(options: PlanCardOptions): PlanCardHandle | null {
+  if (!options.store.api) return null;
+  if (openCard) {
+    openCard.focus(options.focus);
+    return openCard.handle;
+  }
+  const { store } = options;
+  const account = options.account ?? accountStore();
+  const frame = createSheetFrame({
+    title: '요금제',
+    center: true,
+    role: 'dialog',
+    className: 'ag-pricing-card',
+    dragIgnore: 'button, label, input',
+  });
+  const { sheet, header } = frame;
+
+  const head = el('div', 'ag-pricing-head');
+  header.replaceWith(head);
+  const close = button('ag-pricing-close', '');
+  close.setAttribute('aria-label', '닫기');
+  close.append(createIcon('close'));
+  head.append(header, close);
+
+  const chooser = createPlanChooser({
+    store,
+    account,
+    ...(options.focus ? { focus: options.focus } : {}),
+    onFinish: () => finish(true),
+    onRender: (view) => { sheet.dataset.view = view; },
+    signIn: (back) => {
+      const page = openAccountPage({
+        store: account,
+        plan: store,
+        section: 'sign-in',
+        onSignedIn: () => { openPlanCard({ ...options, ...(back ? { focus: back } : {}) }); },
+      });
+      if (!page) return false;
+      finish(false);
+      return true;
+    },
+  });
+  sheet.append(chooser.element);
+
+  let resolveClosed!: () => void;
+  const closed = new Promise<void>((resolve) => { resolveClosed = resolve; });
+  const finish = frame.present(
+    () => chooser.focusTarget() ?? close,
+    () => {
+      chooser.dispose();
       openCard = null;
       resolveClosed();
     },
   );
   close.addEventListener('click', () => finish(false));
   const handle: PlanCardHandle = { close: () => finish(false), closed };
-  openCard = { handle, focus: focusColumn };
-  if (focused) requestAnimationFrame(() => focusColumn(focused));
+  openCard = { handle, focus: chooser.focusColumn };
+  if (options.focus) requestAnimationFrame(() => chooser.focusColumn(options.focus));
   return handle;
 }
 

@@ -114,7 +114,6 @@ const CATEGORIES = {
   askChatgpt: plain('other', 'ChatGPT에 물음'),
   askClaude: plain('other', 'Claude에 물음'),
   copyLayout: plain('other', '레이아웃 복제'),
-  instructions: plain('other', '지시 변경 제안'),
   skill: plain('other', '스킬 변경'),
   foreign: counted('other', (n) => `도구 ${n}번`),
 } satisfies Record<string, CategoryDef>;
@@ -188,7 +187,6 @@ const ONCE_TOOLS: Readonly<Record<string, CategoryId>> = {
   open_document: 'documentLink',
   create_document: 'documentCreate',
   detach_document: 'documentDetach',
-  update_agent_instructions: 'instructions',
   commit_product_skill: 'skill',
   project_edit: 'projectEdit',
   project_import: 'projectImport',

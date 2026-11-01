@@ -8,7 +8,6 @@
  */
 import './motion.css';
 import './agent-sidebar.css';
-import './rau-harness.css';
 import './plan-presentation.css';
 import '../../styles/inline-rename.css';
 import '../../styles/worktree-chip.css';
@@ -27,7 +26,6 @@ import type { DocumentPosition } from '../../core/types.ts';
 import type { EventBus } from '../../core/event-bus.ts';
 import type { HubChat, SidebarBridge } from '../../agent/bridge.ts';
 import type {
-  AgentInstructionsDraft,
   AgentName,
   AgentPhase,
   AgentSetupStatusMap,
@@ -36,7 +34,6 @@ import type {
   AgentWorkflowState,
   CompactionSupport,
   CompactionTrigger,
-  RauAgentStatus,
   PermissionProfile,
   ServiceTier,
   PendingChangeSet,
@@ -215,7 +212,6 @@ import { createChatScrollRail } from './chat-scroll-rail.ts';
 import { formatTokens } from './usage-format.ts';
 import { createComposerRestingMotion } from './composer-resting.ts';
 import { createChatHama, type ChatHama, type HamaActionName } from './chat-hama.ts';
-import { rauEntry, rauIsDefault, readHarnessChoice, recordHarnessChoice } from './rau-harness.ts';
 import { createArrivalGuard, typingActivity as windowTypingActivity, type TypingActivity } from './typing-guard.ts';
 import { createDelayedStatus, revealAfterDelay } from './delayed-status.ts';
 import { ownsTextInput } from '../../command/shortcut-target.ts';
@@ -250,7 +246,8 @@ import {
   type EditorSettingsRuntime,
   type SettingsDestinationInput,
 } from './settings-contract.ts';
-import { createWritingStyleCalibration } from './writing-style-calibration.ts';
+import { sharedRauMemoryStore } from './rau-memory-state.ts';
+import { createStyleLearnPill } from './style-learn-pill.ts';
 import {
   createInitialSetup,
   firstRunAgentForChat,
@@ -355,7 +352,6 @@ import {
   type TurnInterruptionRowState,
 } from './turn-interruption-row.ts';
 import { createRequestCardController } from './request-card.ts';
-import { createInstructionsCard, type InstructionsCard } from './instructions-card.ts';
 import { createModeMenu, parseModeCommand } from './mode-menu.ts';
 import { fitPopupAboveViewportTop } from './popup-fit.ts';
 import { createTurnRestoreActions } from './turn-restore-action.ts';
@@ -363,10 +359,10 @@ import type { TurnRestoreControl } from '../../agent/turn-checkpoints.ts';
 import { desktopGiftApi, type DesktopGiftApi } from '../special-event/gift.ts';
 import { createRauUpgradeChip, desktopRauApi, type DesktopRauApi } from './rau-upgrade.ts';
 import type { DesktopLicenseApi } from './settings-license.ts';
-import { createPlanStore, desktopPlanApi, planLocksAgent } from '../plan/plan-store.ts';
+import { createPlanStore, desktopPlanApi, planLocksAgent, planLocksRau } from '../plan/plan-store.ts';
 import { recordAccountActivity } from '../account/account-store.ts';
 import type { DesktopPlanApi } from '../plan/plan-types.ts';
-import { listenForPlanCardEvents, openPlanCard, type PlanCardFocus } from '../plan/upgrade-card.ts';
+import { listenForPlanCardEvents, createPlanChooser, openPlanCard, type PlanCardFocus } from '../plan/upgrade-card.ts';
 import '../plan/plan-lock.css';
 import { agentModeFor, agentModeTarget, planTodoTitle, type AgentMode } from '../../agent/types.ts';
 import { formatThreadTranscript } from '../issue-report/transcript.ts';
@@ -385,8 +381,6 @@ export interface AgentSidebarDeps {
   gift?: DesktopGiftApi | null;
   /** 처음 설정의 라이선스 장. 생략하면 rhwpDesktop.license 를 쓰고, null 이면 장이 없다. */
   license?: DesktopLicenseApi | null;
-  /** 데스크톱 앱인가 — Rau 를 쓸 수 없을 때 잠긴 Rau 항목을 보인다. 생략하면 rhwpDesktop 이 있는지로 정한다. */
-  desktopApp?: boolean;
   /** 호스팅 Rau-0.1(Rau 요금제·체험) 자격과 업그레이드 페이지. 생략하면 rhwpDesktop.rau 를 쓰고, null 이면 없다. */
   rau?: DesktopRauApi | null;
   /** 앱 요금제. 생략하면 rhwpDesktop.plan 을 쓰고, null 이면 없다(잠금·업그레이드 단추 없음). */
@@ -652,11 +646,8 @@ export interface AgentSidebarHandle {
 
 /* 첫 실행 안내는 페이지에 하나만 띄운다 — 문서마다 사이드바가 있어도 겹치지 않게. */
 let initialSetupOwner: object | null = null;
-/**
- * 말투 맞추기가 켜져 있는지 — 허브 하나의 상태라 사이드바들이 함께 쓴다. 모르면 null 이고 그동안 권유 칩을 띄우지
- * 않는다 — 새로 선 사이드바가 허브의 답을 기다리는 동안 칩이 떴다 사라지며 대화가 밀리지 않는다.
- */
-let sharedWritingStyleActive: boolean | null = null;
+/** 닫은 문체 학습 권유 칩 — 창마다가 아니라 앱에 한 번. */
+const STYLE_INVITE_KEY = 'rhwp-style-learn-invite';
 let sharedHumanBrowserView: ReturnType<WorkbenchBrowser['suspendShared']> = null;
 let sharedFloatingBrowserView: ReturnType<WorkbenchBrowser['suspendShared']> = null;
 /** 사이드바마다 다른 확인 필요 설명 id. */
@@ -1481,16 +1472,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     openSettings: () => requestSettingsOpen('ai-connection'),
     restartSession: () => restartAgentSession(),
     resend: (retry, failure) => resendFailedRequest(retry, failure),
-    rauTrial: () => bridge.rauAgentStatus?.().source === 'trial',
-    switchToByok: () => {
-      // 키가 있으면 프로바이더 전환과 같은 길(기록 전달)로 옮기고, 없으면 BYOK 설정을 연다.
-      if (connectedProviders.has('pi')) {
-        selectAgent('pi');
-        return;
-      }
-      requestSettingsOpen('ai-connection');
-      settingsPanel.openAgentSetup('pi');
-    },
     ...(deps.reportIssue ? { reportIssue: deps.reportIssue } : {}),
     ...(deps.failureResumeGraceMs !== undefined ? { resumeGraceMs: deps.failureResumeGraceMs } : {}),
     autofix: { ready: autofixReady, create: createAutofixButton },
@@ -1961,14 +1942,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   providerMenu.setAttribute('aria-hidden', 'true');
   const providerItems = new Map<AgentName, HTMLButtonElement>();
 
-  /** 호스팅 Rau 상태 (rau-agent-status). 피커의 Rau 항목과 기본 하네스가 읽는다. */
-  let rauStatus: RauAgentStatus | null = bridge.rauAgentStatus?.() ?? null;
-  const desktopApp = deps.desktopApp
-    ?? typeof (window as Window & { rhwpDesktop?: unknown }).rhwpDesktop !== 'undefined';
-
   function selectAgent(agent: AgentName): void {
     if (isSelectionLocked()) return;
-    recordHarnessChoice(agent);
     setSelectedAgent(agent);
     selectedModel = resolveModelForAgent(agent, selectedModel);
     selectedEffort = resolveEffortForAgent(agent, selectedEffort, selectedModel);
@@ -1981,8 +1956,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     providerTrigger.focus();
   }
 
-  const rauLock = el('span', 'ag-provider-lock');
-  rauLock.append(createIcon('lock'));
   for (const agent of PROVIDER_ORDER) {
     const item = el('button', 'ag-model-item ag-provider-item');
     item.type = 'button';
@@ -1992,16 +1965,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     item.title = AGENT_LABEL[agent];
     item.setAttribute('aria-label', AGENT_LABEL[agent]);
     item.append(createProviderIcon(agent), el('span', 'ag-provider-name', AGENT_LABEL[agent]));
-    if (agent === 'rau') item.append(rauLock);
-    item.addEventListener('click', () => {
-      if (agent === 'rau' && item.dataset.locked === 'true') {
-        // 잠긴 Rau — 하네스를 바꾸지 않고 요금제 카드의 Rau 칸을 연다(카드는 앱 쪽이 이 이벤트로 띄운다).
-        setConfigPanelOpen(false);
-        window.dispatchEvent(new CustomEvent('rhwp:open-plan-card', { detail: { focus: 'rau' } }));
-        return;
-      }
-      selectAgent(agent);
-    });
+    item.addEventListener('click', () => selectAgent(agent));
     providerItems.set(agent, item);
     providerMenu.appendChild(item);
   }
@@ -2014,23 +1978,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
 
   function syncProviderMenu(): void {
-    for (const [agent, item] of providerItems) {
-      if (agent !== 'rau') {
-        item.hidden = !connectedProviders.has(agent);
-        continue;
-      }
-      const entry = rauEntry(rauStatus, desktopApp);
-      const locked = entry === 'locked';
-      item.hidden = entry === 'hidden';
-      item.dataset.locked = locked ? 'true' : 'false';
-      item.setAttribute('role', locked ? 'menuitem' : 'menuitemradio');
-      if (locked) item.removeAttribute('aria-checked');
-      else if (!item.hasAttribute('aria-checked')) item.setAttribute('aria-checked', String(selectedAgent === 'rau'));
-      if (locked) item.setAttribute('aria-haspopup', 'dialog');
-      else item.removeAttribute('aria-haspopup');
-      item.setAttribute('aria-label', locked ? `${AGENT_LABEL.rau} (잠김)` : AGENT_LABEL.rau);
-      rauLock.hidden = !locked;
-    }
+    for (const [agent, item] of providerItems) item.hidden = !connectedProviders.has(agent);
     if (document.activeElement instanceof HTMLButtonElement
       && document.activeElement.hidden
       && providerMenu.contains(document.activeElement)) {
@@ -2363,7 +2311,14 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     const documentId = forDocumentId ?? getDocumentContext?.()?.documentId ?? currentThread.documentId;
     if (!documentId) return;
     documentMemorySheet?.close();
-    const sheet = openDocumentMemorySheet({ bridge, documentId, anchor: root });
+    // 기억에서 덮어쓴 규칙('장기기억' 칸)은 Rau 요금제에서만 보인다. rauMemory 는 아래에서 만드는 창 하나의 상태와 같다.
+    const sheet = openDocumentMemorySheet({
+      bridge,
+      documentId,
+      anchor: root,
+      plan: planStore,
+      rauMemory: sharedRauMemoryStore(),
+    });
     documentMemorySheet = sheet;
     void sheet.closed.then(() => {
       if (documentMemorySheet === sheet) documentMemorySheet = null;
@@ -3961,49 +3916,121 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   planRestore.addEventListener('click', () => setPlanMinimized(false));
   planSurface.append(planCardSlot);
   let initialSetup: InitialSetupUi | null = null;
-  const writingStyleCalibration = createWritingStyleCalibration(bridge, {
-    onDismiss: (result) => {
-      initialSetup?.notifyCalibrationClosed(result.completed);
-      if (result.completed) settleCalibrationChip('done');
-    },
-  });
+  /* 계정의 기억(Rau-0.1)과 문체 학습 — 창의 사이드바들이 한 상태를 함께 본다. */
+  const rauMemory = sharedRauMemoryStore();
+  let styleInviteDismissed = false;
+  try { styleInviteDismissed = localStorage.getItem(STYLE_INVITE_KEY) === 'done'; } catch { /* 저장소가 없으면 띄운다 */ }
 
-  /* 문체 보정 권유 칩 — 첫 실행을 마치고 첫 답을 받은 뒤 한 번 뜬다.
-     닫거나 보정을 끝내면 다시 뜨지 않는다. */
-  const calibrationChip = el('div', 'ag-calibration-chip');
-  calibrationChip.hidden = true;
-  const calibrationChipOpen = el('button', 'ag-calibration-chip-open');
-  calibrationChipOpen.type = 'button';
-  calibrationChipOpen.append(
-    el('span', 'ag-calibration-chip-text', '원고를 올리면 내 말투로 씁니다'),
-    el('span', 'ag-calibration-chip-action', '말투 맞추기'),
+  /* 문체 학습 권유 칩 — 첫 실행을 마치고 첫 답을 받은 뒤, Rau 요금제에서 기억도 올린 원고도 없을 때.
+     닫거나 눌러 Rau 탭을 열면 다시 뜨지 않는다. */
+  const styleInviteChip = el('div', 'ag-calibration-chip ag-style-invite-chip');
+  styleInviteChip.hidden = true;
+  const styleInviteOpen = el('button', 'ag-calibration-chip-open');
+  styleInviteOpen.type = 'button';
+  styleInviteOpen.append(
+    el('span', 'ag-calibration-chip-text', '원고를 올리면 문체를 배웁니다'),
+    el('span', 'ag-calibration-chip-action', '문체 학습'),
   );
-  const calibrationChipClose = el('button', 'ag-calibration-chip-close');
-  calibrationChipClose.type = 'button';
-  calibrationChipClose.setAttribute('aria-label', '닫기');
-  calibrationChipClose.appendChild(createIcon('close'));
-  calibrationChip.append(calibrationChipOpen, calibrationChipClose);
-  calibrationChipOpen.addEventListener('click', () => writingStyleCalibration.open());
-  calibrationChipClose.addEventListener('click', () => settleCalibrationChip('skipped'));
+  const styleInviteClose = el('button', 'ag-calibration-chip-close');
+  styleInviteClose.type = 'button';
+  styleInviteClose.setAttribute('aria-label', '닫기');
+  styleInviteClose.appendChild(createIcon('close'));
+  styleInviteChip.append(styleInviteOpen, styleInviteClose);
+  styleInviteOpen.addEventListener('click', () => {
+    settleStyleInvite();
+    openRauTab();
+  });
+  styleInviteClose.addEventListener('click', () => settleStyleInvite());
+
+  /* 예전 말투 맞추기 원고 칩 — 허브에 옛 원고가 남아 있으면 묻는다. 답하면 허브가 옛 폴더를 지운다. */
+  const styleLegacyChip = el('div', 'ag-calibration-chip ag-style-legacy-chip');
+  styleLegacyChip.hidden = true;
+  const styleLegacyText = el('span', 'ag-calibration-chip-text ag-style-legacy-text');
+  const styleLegacyAccept = el('button', 'ag-calibration-chip-open ag-style-legacy-accept');
+  styleLegacyAccept.type = 'button';
+  styleLegacyAccept.append(styleLegacyText, el('span', 'ag-calibration-chip-action', '만들기'));
+  const styleLegacyDecline = el('button', 'ag-calibration-chip-open ag-style-legacy-decline');
+  styleLegacyDecline.type = 'button';
+  styleLegacyDecline.append(el('span', 'ag-calibration-chip-action', '아니요'));
+  styleLegacyChip.append(styleLegacyAccept, styleLegacyDecline);
+  let styleLegacyAnswered = false;
+  const answerStyleLegacy = (accept: boolean): void => {
+    const files = rauMemory.state().memory?.legacy?.files ?? 0;
+    const requestId = bridge.answerStyleLearnLegacy(accept);
+    if (!requestId) {
+      showToast({ message: '허브에 연결되지 않아 답하지 못했습니다.', durationMs: 3200 });
+      return;
+    }
+    // 받아들이면 학습(run)이 칩을 가린다 — 이 표시는 거절해서 run 이 없는 경우를 위한 것이다.
+    styleLegacyAnswered = !accept;
+    if (accept) rauMemory.begin(requestId, Array.from({ length: files }, (_, index) => `이전 원고 ${index + 1}`), { legacy: true });
+    updateStyleChips();
+  };
+  styleLegacyAccept.addEventListener('click', () => answerStyleLegacy(true));
+  styleLegacyDecline.addEventListener('click', () => answerStyleLegacy(false));
+
+  /* 문체 학습 알약 — Rau 탭이 보이지 않는 동안 도는 학습. */
+  const styleLearnPill = createStyleLearnPill({
+    store: rauMemory,
+    open: () => openRauTab(),
+    rauTabVisible: () => settingsPanelOpen && settingsPanel.rauVisible(),
+  });
 
   /* 호스팅 Rau-0.1 업그레이드 칩 — 허브가 Rau 요금제가 아니라는 거절을 받은 뒤 한 번. 닫으면 그 거절에는 다시 뜨지 않는다. */
   const rauApi = deps.rau === undefined ? desktopRauApi() : deps.rau;
   const rauUpgradeChip = createRauUpgradeChip({ rau: rauApi, openPlans: planStore.api ? () => openPlans('rau') : null });
 
-  function settleCalibrationChip(step: 'done' | 'skipped'): void {
-    saveInitialSetup({ calibrationStep: step });
-    calibrationChip.hidden = true;
+  function settleStyleInvite(): void {
+    try { localStorage.setItem(STYLE_INVITE_KEY, 'done'); } catch { /* 저장소가 없으면 이 창에서만 닫는다 */ }
+    styleInviteDismissed = true;
+    styleInviteChip.hidden = true;
   }
 
-  function updateCalibrationChip(): void {
+  /** 설정 → Rau 를 연다. Rau 요금제가 아니면(Hama·무료) 요금제 카드를 Rau 칸에 맞춰 연다. */
+  function openRauTab(): void {
+    if (planLocksRau(planStore.status())) {
+      openPlans('rau');
+      return;
+    }
+    requestSettingsOpen('rau');
+  }
+
+  function updateStyleChips(): void {
+    const { memory, run } = rauMemory.state();
+    const onRau = planStore.status()?.tier === 'rau';
     const setup = loadInitialSetup();
-    const eligible = setup.completed
-      && setup.calibrationStep === 'pending'
-      && sharedWritingStyleActive === false
+    const invite = onRau
+      && !styleInviteDismissed
+      && setup.completed
+      && memory !== null
+      // available 은 크레딧 소진에도 참이다 — 지금 배울 수 있을 때만 권한다.
+      && memory.availability === 'active'
+      && memory.rules.length === 0
+      && memory.uploads.length === 0
+      && !memory.legacy
+      && !run
       && !turnRunning
       && currentThread.messages.some((message) => message.role === 'assistant');
-    calibrationChip.hidden = !eligible || !reconnectChip.hidden;
+    styleInviteChip.hidden = !invite || !reconnectChip.hidden;
+    const legacyFiles = memory?.legacy?.files ?? 0;
+    if (!legacyFiles) styleLegacyAnswered = false;
+    styleLegacyText.textContent = `이전 원고 ${legacyFiles}개로 장기기억을 만들까요?`;
+    // 받아들인 학습이 실패하면(멈춤·크레딧·Rau 닿지 않음) 허브는 옛 원고를 그대로 두므로 칩이 다시 뜬다.
+    styleLegacyChip.hidden = !legacyFiles || memory?.availability !== 'active' || Boolean(run) || styleLegacyAnswered
+      || !reconnectChip.hidden;
   }
+
+  /* 학습이 돌면 입력창 하마가 읽고(read) 일하고(work) 생각하다(think) 끝에 환호한다. 칩도 다시 정한다. */
+  function syncStyleHama(state: ReturnType<typeof rauMemory.state>): void {
+    const run = state.run;
+    if (run) chatHama?.background(run.stage === 'extracting' ? 'work' : run.stage === 'merging' ? 'think' : 'read');
+    else if (state.outcome?.kind === 'result' && Date.now() - state.outcome.at < 2000) chatHama?.background('done');
+    else chatHama?.background(null);
+  }
+  const unsubscribeRauMemory = rauMemory.subscribe((state) => {
+    syncStyleHama(state);
+    updateStyleChips();
+  });
 
   /* 미뤄 둔 첫 실행 설정 칩 — 문서를 열면서 처음 켜졌을 때 같은 자리에 뜬다.
      누르면 설정을 열고, 닫으면 다시 묻지 않는다. */
@@ -4086,8 +4113,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   }
 
   function providerNeedsLogin(agent: AgentName): boolean {
-    // Rau 는 로그인하지 않는다 — 쓸 수 없으면 피커에서 잠길 뿐이다.
-    if (agent === 'rau' || !(PROVIDER_ORDER as readonly AgentName[]).includes(agent)) return false;
+    if (!(PROVIDER_ORDER as readonly AgentName[]).includes(agent)) return false;
     const status = setupStatuses?.[agent];
     if (!status || status.authenticating) return false;
     // 설치만 됐고 한 번도 연결하지 않은 프로바이더는 입력기 메뉴에 없다.
@@ -4128,7 +4154,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     authFailedAgents.add(agent);
     authFailedAt.set(agent, Date.now());
     updateReconnectChip();
-    updateCalibrationChip();
+    updateStyleChips();
     void bridge.requestAgentSetupStatus(true);
   }
 
@@ -4473,6 +4499,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     shown: () => active && (root.classList.contains('ag-fullscreen') || !root.classList.contains('ag-collapsed'))
       && !chatPage.classList.contains('ag-chat-empty'),
   });
+  // 학습이 도는 중에 열린 사이드바도 다음 진행 프레임을 기다리지 않고 바로 맞춘다.
+  syncStyleHama(rauMemory.state());
   const unsubscribeHamaSetting = userSettings.subscribe(() => chatHama?.sync());
   // 접기·집중 화면·설정이나 목록 같은 다른 면은 모두 뿌리의 클래스로 바뀐다.
   const hamaRootObserver = typeof MutationObserver === 'function'
@@ -4648,7 +4676,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   // 입력기 위에 흐름으로 쌓인 것들의 높이. 떠 있는 요소는 이들을 덮지 않고 한 겹 위에 선다.
   // attached 는 입력기와 한 면을 이루는 질문 카드, stack 은 그 위의 변경 막대와 칩이다.
   // 위치만 바꾸고 크기는 건드리지 않아 관찰 고리가 생기지 않는다.
-  const composerStackNodes = [compactChanges, reconnectChip, setupChip, calibrationChip, rauUpgradeChip.root, watchStrip.root, followUpStrip.root];
+  const composerStackNodes = [compactChanges, reconnectChip, setupChip, styleLegacyChip, styleInviteChip, styleLearnPill.root, rauUpgradeChip.root, watchStrip.root, followUpStrip.root];
   let composerStackFrame = 0;
   function syncComposerStack(): void {
     const question = questionController.root;
@@ -4688,7 +4716,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     });
     chatHama?.sync();
   }
-  chatPage.append(header, messages, focusGreeting.root, review, compactChanges, planSurface, planRestore, reconnectChip, setupChip, calibrationChip, rauUpgradeChip.root, watchStrip.root, followUpStrip.root, questionController.root, composer);
+  chatPage.append(header, messages, focusGreeting.root, review, compactChanges, planSurface, planRestore, reconnectChip, setupChip, styleLegacyChip, styleInviteChip, styleLearnPill.root, rauUpgradeChip.root, watchStrip.root, followUpStrip.root, questionController.root, composer);
   messages.after(latestDock);
   const scrollRail = createChatScrollRail({ messages, scrollToTurn: scrollConversationToTurn });
 
@@ -5169,30 +5197,22 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       permission: permissionProfile,
     }),
     applyDefaults: (prefs) => applyAgentPrefs(prefs),
-    openCalibration: () => writingStyleCalibration.open(),
     reconnectSession: () => restartAgentSession(),
     skillsSettings: skillsShelf.root,
     refreshSkills: () => bridge.listSkills(),
     deleteArchivedThread: (thread) => deleteThreadWithConfirm(thread),
     gift: deps.gift === undefined ? desktopGiftApi() : deps.gift,
-    rau: rauApi,
   });
   const settingsPage = settingsPanel.element;
   const initialSetupDeps: InitialSetupDeps = {
     openAgentSetup: (agent) => settingsPanel.openAgentSetup(agent),
     beginAgentConnect: (agent) => settingsPanel.beginAgentConnect(agent),
-    openCalibration: (options) => writingStyleCalibration.open(options),
     plan: planStore,
-    openPlans: async () => {
-      const card = openPlanCard({ store: planStore, license: planLicenseApi });
-      if (!card) return false;
-      await card.closed;
-      return true;
-    },
+    createPlanChooser: (hooks) => (planStore.api ? createPlanChooser({ store: planStore, ...hooks }) : null),
     onFinished: () => {
       adoptFirstRunDefaultAgent();
       updateReconnectChip();
-      updateCalibrationChip();
+      updateStyleChips();
       openDocumentHome?.({ instant: true });
     },
   };
@@ -6462,6 +6482,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     applyWorkspaceExitLabel(false);
     settingsPage.setAttribute('aria-hidden', 'true');
     settingsPanel.close();
+    // 설정이 닫히면 Rau 탭의 카드도 가려진다 — 돌고 있는 학습을 알약이 이어 보인다.
+    styleLearnPill.sync();
   }
 
   async function requestSettingsClose(
@@ -6544,8 +6566,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   skillsBtn.addEventListener('click', () => setSkillsPanelOpen(true));
   skillsClose.addEventListener('click', () => { setSkillsPanelOpen(false); skillsBtn.focus(); });
 
-  /** 다음에 여는 설정이 지시의 변경안 카드로 옮겨 간다(취향 학습 구분선의 지시에 추가 제안). */
-  let revealInstructionsOnSettingsOpen = false;
   function setSettingsPanelOpen(open: boolean, destination?: SettingsDestinationInput): void {
     if (open) settingsOpening = true;
     // 설정은 집중 화면에만 연다 — 좁은 사이드바에서 부르면 집중 화면으로 넓힌 뒤 열고, 닫으면 사이드바로 돌아간다.
@@ -6593,14 +6613,13 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       setCollapsed(false);
       settingsPanel.open(destination);
       settingsPage.querySelector<HTMLElement>('.ag-settings-nav-button.ag-active')?.focus();
-      if (revealInstructionsOnSettingsOpen) settingsPanel.revealInstructions();
       settingsOpening = false;
     } else {
       settingsPanel.close();
       settingsOpening = false;
       if (agentLockedByPlan()) setCollapsed(true);
     }
-    revealInstructionsOnSettingsOpen = false;
+    styleLearnPill.sync();
   }
 
   function requestSettingsOpen(destination?: SettingsDestinationInput): void {
@@ -6711,7 +6730,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     value: string;
     label: string;
     detail: string;
-    local?: 'skills' | 'calibration' | 'settings' | 'templates' | 'fast' | 'compact' | 'learn';
+    local?: 'skills' | 'style' | 'settings' | 'templates' | 'fast' | 'compact' | 'learn';
     mode?: AgentMode;
     templateId?: string;
     skillName?: string;
@@ -6891,7 +6910,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         : []),
       { value: '/compact', label: '/compact', detail: '콘텍스트 압축', local: 'compact' },
       { value: '/learn', label: '/learn', detail: '기록에서 배우기', local: 'learn' },
-      { value: '/calibration', label: '/calibration', detail: '말투 맞추기', local: 'calibration' },
+      { value: '/문체학습', label: '/문체학습', detail: '원고로 문체 배우기 (Rau)', local: 'style' },
       { value: '/settings', label: '/settings', detail: '설정 열기 (연결, 기본값, 사용량)', local: 'settings' },
       { value: '/templates', label: '/templates', detail: '문서 템플릿 선택', local: 'templates' },
       { value: '/skills', label: '/skills', detail: '스킬 라이브러리 열기', local: 'skills' },
@@ -6963,7 +6982,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       void requestMode(option.mode);
       return;
     }
-    if (option.local === 'calibration') { input.value = ''; writingStyleCalibration.open(); return; }
+    if (option.local === 'style') { input.value = ''; openRauTab(); return; }
     if (option.local === 'settings') { input.value = ''; requestSettingsOpen(); return; }
     if (option.local === 'templates') {
       input.value = '/templates ';
@@ -7414,8 +7433,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     const requestText = decorateRequestText(request.requestText, currentThread.id, request.carriesContinuation === true);
     failureNotices.noteSend(currentThread.id, request.retryPayload, request.source ?? null);
     const mentions = splitThreadMentions(request.mentions);
-    // 이 하네스로 대화해 봤다 — 다음 새 채팅의 기본 하네스 판단에 쓴다.
-    recordHarnessChoice(selectedAgent);
     const sent = bridge.sendUserMessage(
       requestText,
       request.skillName,
@@ -7561,6 +7578,14 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       return;
     }
     if (readOnlyDocLabel !== null || mergeResolverLocked) return;
+    // /문체학습 은 무엇도 보내지 않는다 — 무료에서도 다른 Rau 입구처럼 요금제 카드를 Rau 칸에 맞춰 연다.
+    if (input.value.trim() === '/문체학습' && !activeComposerSkill) {
+      input.value = '';
+      setSlashMenuOpen(false);
+      resizeComposerInput();
+      openRauTab();
+      return;
+    }
     // 무료 요금제: 보내기·Enter·슬래시·스킬 모두 여기로 온다. 아무것도 보내지 않고 요금제 카드를 연다.
     if (planBlocksAgent()) return;
     if (questionController.isPresented()) {
@@ -7687,7 +7712,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       }
       if (text === '/compact') { input.value = ''; setSlashMenuOpen(false); resizeComposerInput(); void requestCompaction(); return; }
       if (text === '/learn') { input.value = ''; setSlashMenuOpen(false); resizeComposerInput(); void learnFromHistory(); return; }
-      if (text === '/calibration') { input.value = ''; writingStyleCalibration.open(); return; }
+      if (text === '/문체학습') { input.value = ''; setSlashMenuOpen(false); resizeComposerInput(); openRauTab(); return; }
       if (text === '/settings') { input.value = ''; requestSettingsOpen(); return; }
       if (text === '/skills') { input.value = ''; setSkillsPanelOpen(true); return; }
     }
@@ -8507,9 +8532,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     }
     for (const pill of permissionController.rootsForContext({ threadId: thread.id, documentId: currentDocumentId })) {
       appendConversation(pill);
-    }
-    for (const card of instructionCards.values()) {
-      if (card.threadId === thread.id) appendConversation(card.view.root);
     }
     if (documentRequiredRow?.dataset.threadId === thread.id && chatIsUnlinked()) appendConversation(documentRequiredRow);
     landConversationAtEnd();
@@ -9370,32 +9392,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     }
   }
 
-  /** 새 채팅을 Rau 로 열지 — Rau 를 쓸 수 있고 다른 하네스를 고르거나 써 본 적이 없을 때. */
-  function rauIsDefaultNow(): boolean {
-    return rauIsDefault(rauStatus, { choice: readHarnessChoice(), hasChats: peekThreads().length > 0 });
-  }
-
-  /**
-   * Rau 상태가 연결로 처음 닿으면, 아직 아무것도 보내지 않은 빈 채팅을 Rau 로 세운다. 일하는 채팅·보낸
-   * 채팅·열람 중인 채팅은 바꾸지 않는다.
-   */
-  function adoptRauDefault(): void {
-    if (selectedAgent === 'rau' || !rauIsDefaultNow()) return;
-    const next = firstRunAgentForChat('rau', {
-      selectedAgent,
-      userMessages: currentThread.messages.filter((message) => message.role === 'user').length,
-      working: agentWorking() || bridge.isTurnRunning() || bridge.getPendingUserQuestion() !== null,
-      readOnly: readOnlyDocLabel !== null,
-    });
-    if (!next) return;
-    applyDefaultSelection();
-    startCurrentBridgeChat();
-    refreshSidebarWidthMin();
-  }
-
   /** 저장된 기본값을 지금 선택으로 세운다 (새 대화 진입점에서만 부른다). */
   function applyDefaultSelection(): void {
-    const nextAgent = rauIsDefaultNow() ? 'rau' : agentPrefs.defaultAgent;
+    const nextAgent = agentPrefs.defaultAgent;
     const nextModel = resolveModelForAgent(nextAgent, agentPrefs.defaultModel);
     const nextEffort = resolveEffortForAgent(nextAgent, agentPrefs.defaultEffort, nextModel);
     selectedModel = nextModel;
@@ -10088,7 +10087,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   function updateComposer(): void {
     if (composerRest.resting && !canComposerRest()) composerRest.setResting(false);
     updateReconnectChip();
-    updateCalibrationChip();
+    updateStyleChips();
     renderContextMeter();
     syncProviderMenu();
     const realLock = realComposerLock();
@@ -10602,8 +10601,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   /** 설정 탭에서 저장된 기본값 — 새 대화부터 적용된다. */
   function applyAgentPrefs(prefs: AgentPrefs): void {
-    // 기본 프로바이더를 바꿔 저장했다 — 직접 고른 것이다(Rau 기본값이 덮지 않는다).
-    if (prefs.defaultAgent !== agentPrefs.defaultAgent) recordHarnessChoice(prefs.defaultAgent);
     agentPrefs = prefs;
     rebuildLlmMenu();
   }
@@ -12394,28 +12391,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
 
   /** 펼친 취향 학습 구분선(learnId) — 채팅을 다시 그려도 펼친 채로 둔다. */
   const expandedTasteMarkers = new Set<string>();
-  /** 이 창에 와 있는 AGENTS.md 변경안 id — 구분선의 지시에 추가 제안은 그 변경안이 남아 있을 때만 보인다. */
-  const pendingInstructionDrafts = new Set<string>();
-  /** 에이전트가 만든 지시 변경안 — 그 채팅의 대화 흐름에 승인 카드로 뜬다. 정착한 카드도 남긴다. */
-  const instructionCards = new Map<string, { threadId: string; view: InstructionsCard }>();
-
-  async function showInstructionsCard(draft: AgentInstructionsDraft): Promise<void> {
-    if (draft.origin !== 'agent' || !draft.threadId || instructionCards.has(draft.id)) return;
-    const threadId = draft.threadId;
-    const current = await bridge.requestAgentInstructions().catch(() => null);
-    if (instructionCards.has(draft.id) || !pendingInstructionDrafts.has(draft.id)) return;
-    const view = createInstructionsCard({
-      draft,
-      current: current?.content ?? null,
-      confirm: async (target) => (await bridge.confirmAgentInstructionsDraft(target)) !== null,
-      reject: (target) => bridge.rejectAgentInstructionsDraft(target),
-    });
-    instructionCards.set(draft.id, { threadId, view });
-    if (threadId !== currentThread.id) return;
-    flushPendingAssistantRender();
-    flushAssistantBuffer({ kind: 'progress' });
-    withAutoScroll(() => appendConversation(view.root));
-  }
   const tasteViews = new WeakMap<HTMLElement, TasteMarkerView>();
 
   /** 취향 학습(Rau-0.1) 구분선. 지금 채팅에만 그리므로 되돌리기는 그 채팅을 가리킨다. */
@@ -12424,8 +12399,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     const { learnId, documentId } = marker;
     const view = createTasteMarkerView(marker, {
       onUndo: (entryId) => void undoTasteEntry(threadId, learnId, entryId),
-      onShowAll: () => openDocumentMemory(documentId),
-      onProposal: () => openInstructionsProposal(),
+      // 계정의 기억이 섞였으면 설정 → Rau, 아니면 이 문서의 기억 시트.
+      onShowAll: (account) => (account ? openRauTab() : openDocumentMemory(documentId)),
       onToggle: (expanded) => {
         if (expanded) expandedTasteMarkers.add(learnId);
         else expandedTasteMarkers.delete(learnId);
@@ -12433,7 +12408,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     }, {
       live: opts.live,
       expanded: expandedTasteMarkers.has(learnId),
-      proposalPending: marker.proposalDraftId !== undefined && pendingInstructionDrafts.has(marker.proposalDraftId),
     });
     tasteViews.set(view.root, view);
     return view.root;
@@ -12442,13 +12416,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   function tasteMarkerView(learnId: string): TasteMarkerView | null {
     const node = messages.querySelector<HTMLElement>(`.ag-taste[data-learn-id="${CSS.escape(learnId)}"]`);
     return node ? tasteViews.get(node) ?? null : null;
-  }
-
-  function syncTasteProposals(): void {
-    for (const message of currentThread.messages) {
-      if (message.kind !== 'marker' || message.marker !== 'taste' || !message.proposalDraftId) continue;
-      tasteMarkerView(message.learnId)?.setProposalPending(pendingInstructionDrafts.has(message.proposalDraftId));
-    }
   }
 
   /**
@@ -12468,9 +12435,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     persistCurrentThread();
     const view = tasteMarkerView(marker.learnId);
     if (view) {
-      view.update(marker, {
-        proposalPending: marker.proposalDraftId !== undefined && pendingInstructionDrafts.has(marker.proposalDraftId),
-      });
+      view.update(marker);
       return;
     }
     const node = renderTasteMarker(marker, { live: true });
@@ -12503,6 +12468,10 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     if (!marker || marker.undone?.includes(entryId)) return;
     const viewNow = () => (threadId === currentThread.id ? tasteMarkerView(learnId) : null);
     viewNow()?.setUndoPending(entryId, true);
+    // 계정의 기억 줄은 entryId 가 규칙 id 이고, 그 줄의 기억 사건을 함께 보낸다.
+    const eventIds = marker.items
+      .filter((item) => item.entryId === entryId && item.tier === 'account')
+      .flatMap((item) => item.eventIds ?? []);
     const result = await bridge.undoTaste({
       learnId: marker.learnId,
       learnIds: [marker.learnId, ...(marker.learnIds ?? [])],
@@ -12510,6 +12479,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       key: marker.key,
       changes: marker.changes,
       entryId,
+      ...(eventIds.length ? { eventIds } : {}),
     });
     // 기다리는 사이 채팅을 옮겼을 수 있다 — 그 채팅의 저장본에 남긴다.
     const current = threadId === currentThread.id;
@@ -12559,14 +12529,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     for (const { threadId, learned } of deferredHistoryMarkers.splice(0)) addTasteHistoryMarker(threadId, learned);
   }
 
-  /** 설정 → AI → 사용자화를 열고 지시의 변경안 카드로 옮긴다. */
-  function openInstructionsProposal(): void {
-    revealInstructionsOnSettingsOpen = true;
-    requestSettingsOpen('ai-custom');
-  }
-
   function handleSidebarEvent(e: SidebarEvent): void {
-    writingStyleCalibration.handleEvent(e);
+    // 계정의 기억·문체 학습 프레임은 창의 상태가 받는다(같은 프레임이 사이드바마다 와도 한 번만 바뀐다).
+    rauMemory.accept(e);
     // 설정 탭은 연결·프로바이더·사용량·문체 상태를 그대로 받아 그린다.
     settingsPanel.handleEvent(e);
     initialSetup?.handleEvent(e);
@@ -12670,8 +12635,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         }
       case 'connection':
         setConnection(e.state, { attempt: e.attempt, retryInMs: e.retryInMs });
-        // 허브에 붙을 때마다 호스팅 Rau 상태를 묻는다(답은 rau-agent-status 로 온다).
-        if (e.state === 'connected') void bridge.requestRauAgentStatus?.().catch(() => null);
         permissionController.setConnection(e.state === 'connected');
         // 재연결 시 진행 상태를 브리지와 다시 동기화한다. 붙이지 않은 허브 턴은 초안의 일이 아니다.
         setTurnRunning(bridge.isTurnRunning() && !hubChatUnbound());
@@ -12834,20 +12797,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         persistCurrentThread();
         if (e.reason === 'deleted') systemMessage('템플릿이 삭제되어 해제했습니다.');
         break;
-      case 'rau-agent-status':
-        rauStatus = e.status;
-        syncProviderMenu();
-        if (selectedAgent === 'rau') {
-          // 브리지가 Rau 모델 레지스트리를 먼저 바꿨다. 지금 선택도 새 목록으로 접는다.
-          selectedModel = resolveModelForAgent('rau', selectedModel);
-          selectedEffort = resolveEffortForAgent('rau', selectedEffort, selectedModel);
-          rebuildLlmMenu();
-          rebuildEffortMenu();
-          scheduleSidebarWidthMin();
-        }
-        failureNotices.refresh();
-        adoptRauDefault();
-        break;
       case 'pi-status':
         syncProviderMenu();
         // 브리지가 이 하네스의 모델 레지스트리를 먼저 갱신했다. 현재 선택을 새 목록으로 접는다.
@@ -12876,14 +12825,12 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         }
         updateComposer();
         break;
-      case 'writing-style-status':
-      case 'writing-style-result':
-        sharedWritingStyleActive = e.status.active === true;
-        if (sharedWritingStyleActive) calibrationChip.hidden = true;
-        break;
-      case 'writing-style-progress':
-      case 'writing-style-error':
-      case 'writing-style-catalog':
+      // 계정의 기억·문체 학습은 위에서 창의 상태가 받았다. 칩·알약·Rau 탭은 그 상태를 구독한다.
+      case 'user-memory':
+      case 'style-learn-progress':
+      case 'style-learn-result':
+      case 'style-learn-error':
+      case 'style-learn-status':
         break;
       // 프로바이더 상태·pi 설정 진행은 설정 탭이 이미 받아 그렸다.
       case 'provider-status':
@@ -12919,16 +12866,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         break;
       case 'taste-history-learned':
         handleTasteHistoryLearned(e);
-        break;
-      case 'agent-instructions-draft':
-        pendingInstructionDrafts.add(e.draft.id);
-        syncTasteProposals();
-        void showInstructionsCard(e.draft);
-        break;
-      case 'agent-instructions-draft-cleared':
-        pendingInstructionDrafts.delete(e.draftId);
-        syncTasteProposals();
-        instructionCards.get(e.draftId)?.view.settle(e.outcome);
         break;
       case 'title-result': {
         if (e.threadId !== currentThread.id && !hasThread(e.threadId)) break;
@@ -13928,9 +13865,6 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   setSelectedAgent(selectedAgent);
   setConnection(connState);
   setTurnRunning(turnRunning);
-  // 호스팅 Rau 상태 — 이미 받아 둔 것이 있으면 바로 쓰고, 붙어 있으면 다시 묻는다.
-  adoptRauDefault();
-  if (connState === 'connected') void bridge.requestRauAgentStatus?.().catch(() => null);
   updateWorkflowControl();
   updateDocumentContext();
   /**
@@ -14483,7 +14417,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         resizeMoveRaf = null;
       }
       document.removeEventListener('pointerdown', onConnPopoverOutside);
-      writingStyleCalibration.dispose();
+      styleLearnPill.dispose();
+      unsubscribeRauMemory();
       settingsPanel.dispose();
       versionManagerPage?.dispose();
       versionController?.dispose?.();

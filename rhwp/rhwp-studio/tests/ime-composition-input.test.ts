@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 
 import { createTestModuleServer } from './support/module-server.ts';
+import { EventBus } from '../src/core/event-bus.ts';
 import type { CursorRect, DocumentPosition } from '../src/core/types.ts';
 
 const rootDir = fileURLToPath(new URL('..', import.meta.url));
@@ -69,6 +70,7 @@ function createHandler(initialText: string, caretOffset: number, options: Record
 
   const handler: any = Object.create(proto);
   Object.assign(handler, {
+    eventBus: new EventBus(),
     active: true,
     readOnly: false,
     userEditingLocked: false,
@@ -555,11 +557,14 @@ test('문서 전환은 조합 중인 preedit 을 확정하지 않고 되돌린 �
     exitBlockSelectionMode: stub,
   });
 
+  const composition: unknown[] = [];
+  h.handler.eventBus = { emit: (name: string, start: unknown) => { if (name === 'user-correction-composition') composition.push(start); } };
   h.handler.onCompositionStart();
   h.textarea.browserSet('가');
   h.handler.onCompositionUpdate({ data: '가' });
   h.handler.deactivate();
 
+  assert.deepEqual(composition, [true, false], '조합이 끊겨도 교정 원장이 조합 중에 멈추지 않아야 한다');
   assert.equal(h.text(), 'XY', '교체 중인 문서에 이전 preedit 이 남으면 안 된다');
   assert.deepEqual(h.ops, []);
   assert.equal(h.handler.imeSession.isComposing, false);

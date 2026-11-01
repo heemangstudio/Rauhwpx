@@ -87,12 +87,12 @@ test('the hub gets the result or the error code, never the lease, and nothing is
   assert.equal(await handleRauRequest(licensed, { type: 'rhwp-gift-request', id: 'g' }), null);
 });
 
-test('Studio gets eligibility and credits without the agent route, and opens only our upgrade pages', async () => {
+test('Studio gets eligibility and credits, and opens only our upgrade pages', async () => {
   const handlers = new Map();
   const opened = [];
   const answers = [
-    [200, { ok: true, eligible: false, source: null, reason: 'rau_plan_required', upgradeUrl: 'https://groble.im/rau', allowanceUsd: null, usedUsd: null, remainingUsd: null, resetsAt: null, agent: { baseUrl: '/v1/rau/agent', model: 'rau' } }],
-    [200, { ok: true, eligible: true, source: 'trial', reason: null, upgradeUrl: RAU_UPGRADE_URL, allowanceUsd: 2, usedUsd: 0.5, remainingUsd: 1.5, resetsAt: RESETS_AT, agent: { baseUrl: '/v1/rau/agent', model: 'rau', contextWindow: 200000, maxOutputTokens: 16000 } }],
+    [200, { ok: true, eligible: false, source: null, reason: 'rau_plan_required', upgradeUrl: 'https://groble.im/rau', allowanceUsd: null, usedUsd: null, remainingUsd: null, resetsAt: null }],
+    [200, { ok: true, eligible: true, source: 'trial', reason: null, upgradeUrl: RAU_UPGRADE_URL, allowanceUsd: 2, usedUsd: 0.5, remainingUsd: 1.5, resetsAt: RESETS_AT }],
     [403, { ok: false, error: 'rau_plan_required', upgradeUrl: 'https://heemangstudios.com/pricing.html#rau' }],
   ];
   const { calls, fetchImpl } = fakeFetch(() => answers.shift());
@@ -119,4 +119,34 @@ test('Studio gets eligibility and credits without the agent route, and opens onl
   await handlers.get('rau:open-upgrade')(trusted, 'https://heemangstudios.com/pricing.html#rau');
   assert.deepEqual(opened, [RAU_UPGRADE_URL, 'https://heemangstudios.com/pricing.html#rau']);
   assert.throws(() => handlers.get('rau:status')({}), /Untrusted Rau IPC sender/);
+});
+
+test('the hub status operation answers eligibility and credits without the lease or the agent route', async () => {
+  const answers = [
+    [200, { ok: true, eligible: true, source: 'plan', reason: null, upgradeUrl: RAU_UPGRADE_URL, allowanceUsd: 8, usedUsd: 8, remainingUsd: 0, resetsAt: RESETS_AT, agent: { baseUrl: '/v1/rau/agent', model: 'rau' } }],
+    [403, { ok: false, error: 'rau_plan_required', upgradeUrl: 'https://heemangstudios.com/pricing.html#rau' }],
+    [502, { ok: false, error: 'upstream_unavailable' }],
+  ];
+  const { calls, fetchImpl } = fakeFetch(() => answers.shift());
+  const client = createRauClient({ fetchImpl });
+  const licensed = { client, currentLease: async () => LEASE };
+  const message = (id) => ({ type: 'rhwp-rau-request', id, operation: 'status' });
+
+  const spent = await handleRauRequest(licensed, message('s1'));
+  assert.equal(spent.ok, true);
+  assert.deepEqual([spent.value.eligible, spent.value.source, spent.value.remainingUsd], [true, 'plan', 0]);
+  assert.equal('agent' in spent.value, false);
+  assert.equal(JSON.stringify(spent).includes(LEASE), false);
+  assert.equal(calls[0].url.endsWith('/v1/rau/status'), true);
+
+  const hama = await handleRauRequest(licensed, message('s2'));
+  assert.deepEqual([hama.ok, hama.value.eligible, hama.value.reason], [true, false, 'rau_plan_required']);
+
+  const down = await handleRauRequest(licensed, message('s3'));
+  assert.deepEqual([down.type, down.id, down.ok, down.code], ['rhwp-rau-response', 's3', false, 'upstream_unavailable']);
+
+  const before = calls.length;
+  const free = await handleRauRequest({ client, currentLease: async () => null }, message('s4'));
+  assert.deepEqual([free.ok, free.value.eligible, free.value.reason], [true, false, 'no_license']);
+  assert.equal(calls.length, before, 'no HTTP call without a lease');
 });

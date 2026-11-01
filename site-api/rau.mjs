@@ -12,14 +12,13 @@ import {
   spendReport,
   usd,
 } from './rau-ledger.mjs';
-import { RAU_AGENT_MODEL, RAU_AGENT_PREFIX, RAU_CONTEXT_WINDOW, RAU_MAX_OUTPUT_TOKENS } from './rau-proxy.mjs';
 import { createRateLimiter } from './rate-limit.mjs';
 import { createMemoryStore } from './store.mjs';
 
 /**
- * Hosted Rau: the Rau agent (rau-proxy.mjs) and Rau-0.1, the taste learner (`learn`), for Rau keys,
- * keys with an active plan in the frozen hama.json, and accounts in their trial. The app sends its
- * lease; the server calls the model with keys of its own, so the app never holds a provider key.
+ * Hosted Rau: Rau-0.1, the taste learner (`learn`), for Rau keys, keys with an active plan in the
+ * frozen hama.json, and accounts in their trial. The app sends its lease; the server calls the model
+ * through rau-upstream.mjs with keys of its own, so the app never holds a provider key.
  *
  * Each principal has one ledger (rau-ledger.mjs): a Rau license spends RAU_MONTHLY_ALLOWANCE_USD each
  * month from its anchor, a trial RAU_TRIAL_ALLOWANCE_USD over its 7 days. A call is refused before
@@ -74,13 +73,11 @@ export function parseRauPrompt(raw) {
   return prompt;
 }
 
-/** What `GET /v1/rau/status` tells the app about the agent endpoint. */
-export const RAU_AGENT_INFO = Object.freeze({
-  baseUrl: RAU_AGENT_PREFIX,
-  model: RAU_AGENT_MODEL,
-  contextWindow: RAU_CONTEXT_WINDOW,
-  maxOutputTokens: RAU_MAX_OUTPUT_TOKENS,
-});
+/** The lease the app sends: `Authorization: Bearer <lease>`, or `x-api-key: <lease>`. */
+export function leaseOf(req) {
+  const bearer = String(req.headers.authorization ?? '').match(/^Bearer\s+(.+)$/i)?.[1]?.trim() ?? '';
+  return String(req.headers['x-api-key'] ?? '').trim() || bearer;
+}
 
 export function createRauService({
   store = createMemoryStore(emptyRauState()),
@@ -159,35 +156,17 @@ export function createRauService({
     if (!s) {
       return {
         ok: true, eligible: false, source: null, reason: 'rau_plan_required', upgradeUrl,
-        allowanceUsd: null, usedUsd: null, remainingUsd: null, resetsAt: null, agent: { ...RAU_AGENT_INFO },
+        allowanceUsd: null, usedUsd: null, remainingUsd: null, resetsAt: null,
       };
     }
     return {
       ok: true, eligible: true, source: s.source, reason: null, upgradeUrl,
       allowanceUsd: s.allowanceUsd, usedUsd: s.usedUsd, remainingUsd: s.remainingUsd, resetsAt: isoOf(s.period.end),
-      agent: { ...RAU_AGENT_INFO },
     };
   }
 
   /**
-   * Checks a lease before a hosted call. Resolves to `{ principal, refusal }`: the principal's standing
-   * (it is billed against `principal.period`), and `{ resetsAt (ISO), allowanceUsd, usedUsd }` when its
-   * credits are spent (a spent trial too, while its 7 days run: it resets at the trial's end). Throws
-   * 401 unauthorized, 503 rau_not_configured or 403 rau_plan_required.
-   */
-  async function admit(lease) {
-    const principal = await who(lease);
-    if (!configured) throw rauError('rau_not_configured', 503);
-    const s = standing(principal.rau, await read());
-    if (!s) throw rauError('rau_plan_required', 403, { upgradeUrl });
-    const refusal = s.usedUsd >= s.allowanceUsd
-      ? { resetsAt: isoOf(s.period.end), allowanceUsd: s.allowanceUsd, usedUsd: s.usedUsd }
-      : null;
-    return { principal: s, refusal };
-  }
-
-  /**
-   * Bills one finished (or cut off) call to the principal's ledger and the weekly spend. Idempotent on
+   * Bills one finished call to the principal's ledger and the weekly spend. Idempotent on
    * `call.id`: a repeated id returns `{ duplicate: true }` and counts nowhere. Saved before it resolves.
    */
   async function record(principal, call) {
@@ -301,5 +280,5 @@ export function createRauService({
     },
   };
 
-  return { configured, status, usage, admit, record, learn, admin };
+  return { configured, status, usage, learn, admin };
 }

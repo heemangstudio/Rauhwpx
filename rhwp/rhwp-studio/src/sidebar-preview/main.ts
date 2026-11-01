@@ -17,6 +17,7 @@ import { THEME_PRESET_LIST } from '../core/theme-presets/index.ts';
 import { createMockBridge, failureKinds, scenarios, type FailureKind, type Scenario } from './mock-bridge.ts';
 import { createMockVersions } from './mock-versions.ts';
 import { skipTasteUndo, tasteUndos } from './mock-taste.ts';
+import { syncUserMemoryPlan, userMemoryControls } from './mock-user-memory.ts';
 import { showToast } from '../ui/toast.ts';
 import { normalizeThemeAccent, normalizeThemePreset, userSettings } from '../core/user-settings.ts';
 import { completeInitialSetup, saveInitialSetup } from '../ui/initial-setup/state.ts';
@@ -59,7 +60,6 @@ import { typingActivity, type TypingActivity } from '../ui/agent-sidebar/typing-
 import { provideLocalPasswordsApi } from '../ui/agent-sidebar/browser-local-passwords.ts';
 import { createPreviewLocalPasswords } from './mock-local-passwords.ts';
 import { createMockGift, mockGiftMode } from './mock-gift.ts';
-import { mockRauAgentMode, mockRauAgentModes, mockRauAgentStatus, type MockRauAgentMode } from './mock-rau-agent.ts';
 import { createMockAutofix, mockAutofixOutcomes } from './mock-autofix.ts';
 import { setAutofixApi, type AutofixStatus } from '../ui/autofix/autofix.ts';
 import { createMockLicense, mockLicenseMode } from './mock-license.ts';
@@ -254,6 +254,13 @@ if (mockAccount) {
   });
   listenForAccountPageEvents({ plan: mockPlan ? createPlanStore(mockPlan.api) : null });
 }
+/*
+ * 계정 기억(Rau 탭). 허브의 쓸 수 있음은 요금제를 따른다 — rau(체험 포함)면 active, hama·free 면 not_eligible,
+ * 요금제 API 가 없으면 웹 Studio 의 허브처럼 unavailable. `availability=` 가 고정하고, `userMemory=sample|empty|legacy`
+ * 와 `styleLearn=hold|fail` 은 mock-user-memory.ts 가 읽는다.
+ */
+syncUserMemoryPlan(mockPlan?.status().tier ?? null);
+mockPlan?.api.onChange((status) => syncUserMemoryPlan(status.tier));
 const mockLicense = createMockLicense(
   mockPlan && mockLicenseMode(params) === 'off' ? 'free' : mockLicenseMode(params), report);
 mockLicense?.onLicensed(() => {
@@ -272,20 +279,14 @@ const mock = createMockBridge(report, () => {
     restoreState.ready.add(restoreState.turnKey);
     notifyRestore();
   }
-}, { liveChat, piGift: () => mockGift?.active() === true, rauAgent: mockRauAgentStatus(mockRauAgentMode(params)) });
+}, { liveChat, piGift: () => mockGift?.active() === true });
 mockGift?.api.onChange(() => mock.syncPiStatus());
-const rauDesktop = params.has('rauAgent');
-/** 잠긴 Rau 를 누르면 앱이 띄울 요금제 카드 요청. 요금제 대역이 있으면 진짜 카드가 뜨므로 기록만 한다. */
+/** 업그레이드 단추·잠긴 Rau 탭이 앱에 띄워 달라는 요금제 카드. 요금제 대역이 있으면 진짜 카드가 뜨므로 기록만 한다. */
 const planCardRequests: unknown[] = [];
 window.addEventListener('rhwp:open-plan-card', (event) => {
   planCardRequests.push((event as CustomEvent).detail);
   if (!mockPlan) report('Plan card placeholder');
 });
-/** `sidebarPreview.setRauAgent('exhausted')` — 호스팅 Rau 상태를 바꿔 rau-agent-status 를 다시 보낸다. */
-function setRauAgent(mode: MockRauAgentMode): void {
-  if (!mockRauAgentModes.includes(mode)) throw new Error(`rauAgent mode: ${mockRauAgentModes.join(', ')}`);
-  mock.setRauAgentStatus(mockRauAgentStatus(mode));
-}
 /** 자동 수정(데스크톱). `autofix=fixed|failed|unavailable|off|undecided`, 없으면 웹 빌드처럼 단추가 없다. */
 const mockAutofix = createMockAutofix(params);
 setAutofixApi(mockAutofix?.api ?? null);
@@ -376,7 +377,6 @@ if (params.get('initial-setup') === 'deferred')
 else if (!params.has('initial-setup'))
   completeInitialSetup({
     providerStep: 'configured',
-    calibrationStep: 'skipped',
   });
 if (params.get('width'))
   localStorage.setItem(
@@ -660,8 +660,6 @@ const sidebar = initAgentSidebar({
   turnRestore,
   gift: mockGift?.api ?? null,
   license: mockLicense?.api ?? null,
-  // `rauAgent=` 를 주면 데스크톱 앱이다 — active·trial 이 아니면 잠긴 Rau 항목이 보인다. 생략하면 웹 Studio 라 항목이 없다.
-  desktopApp: rauDesktop,
   rau: mockRau,
   plan: mockPlan?.api ?? null,
   // 웹 빌드처럼 창 세션만 안다(앱 실행 id 는 데스크톱만). 이 사이드바가 창의 기본 허브 세션을 쓴다.
@@ -848,6 +846,21 @@ document.querySelector('#save-gate')!.addEventListener('click', () => {
   if (previewUnlinkedChat()) mock.emitDocumentRequired('project_edit');
 });
 document.querySelector('#rau-upgrade')!.addEventListener('click', () => mock.emitRauUpgrade(MOCK_RAU_UPGRADE_URL));
+// 한 턴의 학습이 문서 기억과 계정 기억을 함께 바꾼 구분선 — 보이는 채팅에 붙는다.
+const rauMemoryLearned = document.createElement('button');
+rauMemoryLearned.id = 'rau-memory-learned';
+rauMemoryLearned.title = 'Rau-0.1 taught a document note and changed the long-term memory (장기기억 승격, 보강, 감쇄)';
+rauMemoryLearned.textContent = 'Rau memory learned';
+document.querySelector('#rau-upgrade')!.after(rauMemoryLearned);
+rauMemoryLearned.addEventListener('click', () => {
+  const shown = chats[shownChat]!;
+  const threadId = shown.sidebar.currentThreadId();
+  if (!threadId) {
+    report('Start or open a chat first');
+    return;
+  }
+  shown.mock.emitAccountTasteLearned(threadId);
+});
 if (mockRauMode(params) === 'upgrade') mock.emitRauUpgrade(MOCK_RAU_UPGRADE_URL);
 document
   .querySelector('#settings')!
@@ -910,6 +923,11 @@ if (params.get('open') === 'account' && mockAccount) {
   window.dispatchEvent(new CustomEvent('rhwp:open-account', {
     detail: section === 'plan' || section === 'devices' || section === 'licenses' || section === 'sign-in' ? { section } : {},
   }));
+}
+// `styleLearn=run|hold|fail`: a style-learning run from "another window" is already going when the page opens.
+if (['run', 'hold', 'fail'].includes(params.get('styleLearn') ?? '')) {
+  await sidebar.startupChatSettled();
+  userMemoryControls.startSampleStyleLearn();
 }
 // `memory=sample` / `memory=empty`: the 문서 기억 sheet of the shown document (mock store in mock-document-memory.ts).
 if (params.has('memory')) {
@@ -998,7 +1016,6 @@ if (hamaParam && (HAMA_SHOWCASE as readonly string[]).includes(hamaParam)) {
 // Typed hooks for browser checks and custom scenario scripts.
 const preview = { ...mock, sidebar, versions, eventBus, enterFocusMode, undoState, restoreState, navigation, typingHold, linkCalls, detachCalls,
   gift: mockGift,
-  setRauAgent,
   planCardRequests,
   autofix: mockAutofix,
   plan: mockPlan,
@@ -1008,6 +1025,7 @@ const preview = { ...mock, sidebar, versions, eventBus, enterFocusMode, undoStat
   openFromAttention,
   projects: previewProjects, projectScene, localPasswords,
   taste: { undos: tasteUndos, skipUndo: skipTasteUndo },
+  userMemory: userMemoryControls,
   threadStore: { listThreads, getThread, upsertThread, waitForThreadsPersistence },
   chatStatus: { markChatWorking, getChatStatus, getChatStatusLabel } };
 export type SidebarPreview = typeof preview;

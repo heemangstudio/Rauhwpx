@@ -41,7 +41,7 @@ const ENTRY_ID_PATTERN = /^mem_[a-z0-9]{12}$/;
 const REPOSITORY_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const ORIGINS = new Set(['explicit', 'learned', 'user']);
 const SOURCE_KINDS = new Set(['turn', 'signal', 'history', 'copy']);
-const KIND_LABELS = Object.freeze({ decision: '결정', term: '용어', protect: '보호', style: '문체', fact: '사실' });
+const KIND_SUBJECT = Object.freeze({ decision: '결정', term: '용어', protect: '보호', style: '문체', fact: '사실' });
 
 export class DocumentMemoryError extends Error {
   constructor(code, message) {
@@ -100,19 +100,28 @@ export function preferenceText(text) {
   return String(text ?? '').normalize('NFKC').trim().replace(/\s+/g, ' ').replace(/[.。]+$/, '').trim().toLowerCase();
 }
 
+/** 강도 상한 — 기억(user-memory-store.mjs)과 같다. */
+export const MAX_ENTRY_STRENGTH = 5;
+
+/** 처음 강도 — 사용자가 시트에서 쓴 메모는 3, 배운 메모는 1. */
+function initialStrength(origin) {
+  return origin === 'user' ? 3 : 1;
+}
+
+function clampStrength(value) {
+  return Math.max(1, Math.min(MAX_ENTRY_STRENGTH, Math.round(value)));
+}
+
 /**
- * 이 항목의 지금 글이 AGENTS.md 제안에서 확인(promoted)·거절(declined)됐는가. 표시는 그때의 글에만 묶인다 —
- * 글이 바뀌면 새 취향이라 다시 제안할 수 있다. 글 없이 남은 표시는 지금 글의 것으로 본다.
- * @returns {'promoted' | 'declined' | null}
+ * 예전 AGENTS.md 의 `## Rau-0.1` 로 올라간 글인가. 그 글은 이제 사용자의 지시에 있으니 기억으로 승격하지 않는다.
+ * 표시는 그때의 글에만 묶인다 — 글이 바뀌면 새 습관이다.
  */
-export function promotionState(entry) {
-  if (!entry || (entry.promoted !== true && entry.promotionDeclined !== true)) return null;
-  if (preferenceText(entry.promotionText ?? entry.text) !== preferenceText(entry.text)) return null;
-  return entry.promoted === true ? 'promoted' : 'declined';
+export function wasPromoted(entry) {
+  return entry?.promoted === true && preferenceText(entry.promotionText ?? entry.text) === preferenceText(entry.text);
 }
 
 function deriveSubject(kind, text) {
-  return `${KIND_LABELS[kind] ?? kind}.${text}`.slice(0, MAX_SUBJECT_CHARS).trim();
+  return `${KIND_SUBJECT[kind] ?? kind}.${text}`.slice(0, MAX_SUBJECT_CHARS).trim();
 }
 
 /**
@@ -160,6 +169,12 @@ function normalizeSource(value) {
     if (typeof value[field] === 'string' && value[field] && value[field].length <= 256) source[field] = value[field];
   }
   if (SOURCE_KINDS.has(value.kind)) source.kind = value.kind;
+  if (Array.isArray(value.corrections)) {
+    source.corrections = value.corrections.slice(0, 20).filter(row => row && typeof row.evidenceId === 'string'
+      && typeof row.passageId === 'string' && typeof row.after === 'string' && typeof row.userText === 'string')
+      .map(row => ({ evidenceId: row.evidenceId.slice(0, 200), passageId: row.passageId.slice(0, 200),
+        after: row.after.slice(0, 600), userText: row.userText.slice(0, 600) }));
+  }
   return Object.keys(source).length ? source : undefined;
 }
 
@@ -182,13 +197,15 @@ function readStoredEntry(value) {
     entry.origin = ORIGINS.has(value.origin) ? value.origin : 'user';
     const source = normalizeSource(value.source);
     if (source) entry.source = source;
-    entry.evidence = Number.isSafeInteger(value.evidence) && value.evidence >= 1 ? value.evidence : 1;
+    // 강도는 예전 evidence(확인 횟수)를 잇는다. 둘 다 없으면 사용자의 메모는 3, 배운 메모는 1.
+    if (Number.isFinite(value.strength) && value.strength >= 1) entry.strength = clampStrength(value.strength);
+    else if (Number.isFinite(value.evidence) && value.evidence >= 1) entry.strength = clampStrength(value.evidence);
+    else entry.strength = initialStrength(entry.origin);
     if (value.userCandidate === true) entry.userCandidate = true;
-    if (value.promoted === true) entry.promoted = true;
-    if (value.promotionDeclined === true) entry.promotionDeclined = true;
-    if ((entry.promoted || entry.promotionDeclined) && typeof value.promotionText === 'string'
-      && value.promotionText.length <= MAX_ENTRY_TEXT_CHARS) {
-      entry.promotionText = value.promotionText;
+    if (value.stated === true) entry.stated = true;
+    if (value.promoted === true) {
+      entry.promoted = true;
+      if (typeof value.promotionText === 'string' && value.promotionText.length <= MAX_ENTRY_TEXT_CHARS) entry.promotionText = value.promotionText;
     }
     const epoch = new Date(0).toISOString();
     entry.createdAt = isoOr(value.createdAt, epoch);
@@ -375,9 +392,11 @@ export class DocumentMemoryStore {
 
   /**
    * ops 를 한 번에 적용한다 — 하나라도 실패하면 아무것도 바뀌지 않는다.
-   * add 의 subject 가 이미 있으면 그 항목을 고치고 evidence 를 1 올린다.
+   * add 의 subject 가 이미 있으면 그 항목을 고친다: 같은 습관이면 강도를 1 올리고(보강), 다른 글이면 글을 바꾸고
+   * 강도를 처음으로 돌린다. reinforce·dampen 은 강도만 바꾼다 — dampen 으로 0 이 되면 메모가 물러난다(지워진다).
+   * 자리가 없으면 이번에 건드리지 않은 가장 약하고 오래된 배운 메모를 내보낸다. 배운 메모가 없으면 MEMORY_FULL.
    */
-  apply(key, ops, { expectedRevision, origin, source } = {}) {
+  apply(key, ops, { expectedRevision, origin, source, stated = false } = {}) {
     return this.#mutate(async () => {
       if (!ORIGINS.has(origin)) throw memoryError('MEMORY_INVALID', 'origin must be explicit, learned or user');
       if (!Array.isArray(ops) || ops.length === 0 || ops.length > MAX_OPS) {
@@ -394,7 +413,18 @@ export class DocumentMemoryStore {
       const writer = normalizeSource(source);
       const entries = doc.entries.map(cloneEntry);
       const changes = [];
+      /** 이번에 건드린 항목 — 자리를 낼 때 내보내지 않는다. */
+      const touched = new Set();
       const at = (index, message) => memoryError('MEMORY_INVALID', `ops[${index}]: ${message}`);
+      /** 이번에 건드리지 않은 가장 약하고 오래된 배운 메모를 내보낸다. 없으면 false. */
+      const evictOne = () => {
+        const pool = entries.filter((entry) => entry.origin === 'learned' && !touched.has(entry.id));
+        if (pool.length === 0) return false;
+        const weakest = pool.sort((a, b) => a.strength - b.strength || Date.parse(a.updatedAt) - Date.parse(b.updatedAt))[0];
+        entries.splice(entries.indexOf(weakest), 1);
+        changes.push({ op: 'remove', entryId: weakest.id, prev: cloneEntry(weakest), evicted: true });
+        return true;
+      };
       ops.forEach((raw, index) => {
         if (!isPlainObject(raw)) throw at(index, 'operation must be an object');
         try {
@@ -407,18 +437,26 @@ export class DocumentMemoryStore {
             const existing = entries.find((entry) => canonicalSubject(entry.subject) === canonicalSubject(subject));
             if (existing) {
               const prev = cloneEntry(existing);
-              Object.assign(existing, { kind, subject, text, origin, evidence: existing.evidence + 1, updatedAt: stamp, confirmedAt: stamp });
+              const same = preferenceText(existing.text) === preferenceText(text);
+              const strength = same ? Math.min(MAX_ENTRY_STRENGTH, existing.strength + 1) : initialStrength(origin);
+              Object.assign(existing, { kind, subject, text, origin, strength, updatedAt: stamp, confirmedAt: stamp });
               if (anchor) existing.anchor = anchor;
               else if (anchor === null) delete existing.anchor;
               if (typeof raw.userCandidate === 'boolean') {
                 if (raw.userCandidate) existing.userCandidate = true;
                 else delete existing.userCandidate;
               }
+              if (stated) existing.stated = true;
+              if (!same) {
+                delete existing.promoted;
+                delete existing.promotionText;
+              }
               if (writer) existing.source = writer;
+              touched.add(existing.id);
               changes.push({ op: 'update', entryId: existing.id, entry: cloneEntry(existing), prev });
               return;
             }
-            if (entries.length >= MAX_MEMORY_ENTRIES) {
+            if (entries.length >= MAX_MEMORY_ENTRIES && !evictOne()) {
               throw memoryError('MEMORY_FULL', `This document already has ${MAX_MEMORY_ENTRIES} notes; remove or merge one first.`);
             }
             const entry = {
@@ -429,14 +467,40 @@ export class DocumentMemoryStore {
               ...(anchor ? { anchor } : {}),
               origin,
               ...(writer ? { source: writer } : {}),
-              evidence: 1,
+              strength: initialStrength(origin),
               ...(raw.userCandidate === true ? { userCandidate: true } : {}),
+              ...(stated ? { stated: true } : {}),
               createdAt: stamp,
               updatedAt: stamp,
               confirmedAt: stamp,
             };
             entries.push(entry);
+            touched.add(entry.id);
             changes.push({ op: 'add', entryId: entry.id, entry: cloneEntry(entry) });
+            return;
+          }
+          if (raw.op === 'reinforce' || raw.op === 'dampen') {
+            const position = entries.findIndex((candidate) => candidate.id === raw.id);
+            if (position < 0) throw memoryError('MEMORY_ENTRY_NOT_FOUND', `No note ${String(raw.id)} in this document's memory`);
+            const entry = entries[position];
+            const prev = cloneEntry(entry);
+            touched.add(entry.id);
+            if (raw.op === 'reinforce') {
+              if (entry.strength >= MAX_ENTRY_STRENGTH) return;
+              Object.assign(entry, { strength: entry.strength + 1, updatedAt: stamp, confirmedAt: stamp });
+              if (writer?.corrections) entry.source = writer;
+              changes.push({ op: 'update', entryId: entry.id, entry: cloneEntry(entry), prev });
+              return;
+            }
+            const step = raw.strong === true ? 2 : 1;
+            if (entry.strength - step <= 0) {
+              // 물러났다 — 문서 기억에는 물러난 목록이 없어 지운다. 되돌리기로 되살린다.
+              entries.splice(position, 1);
+              changes.push({ op: 'remove', entryId: entry.id, prev, retired: true });
+              return;
+            }
+            Object.assign(entry, { strength: entry.strength - step, updatedAt: stamp });
+            changes.push({ op: 'update', entryId: entry.id, entry: cloneEntry(entry), prev });
             return;
           }
           if (raw.op === 'update') {
@@ -461,7 +525,12 @@ export class DocumentMemoryStore {
             }
             if (sameEntry(prev, entry)) return;
             Object.assign(entry, { origin, updatedAt: stamp, confirmedAt: stamp });
+            if (text && preferenceText(text) !== preferenceText(prev.text)) {
+              delete entry.promoted;
+              delete entry.promotionText;
+            }
             if (writer) entry.source = writer;
+            touched.add(entry.id);
             changes.push({ op: 'update', entryId: entry.id, entry: cloneEntry(entry), prev });
             return;
           }
@@ -469,10 +538,10 @@ export class DocumentMemoryStore {
             const position = entries.findIndex((candidate) => candidate.id === raw.id);
             if (position < 0) throw memoryError('MEMORY_ENTRY_NOT_FOUND', `No note ${String(raw.id)} in this document's memory`);
             const [removed] = entries.splice(position, 1);
-            changes.push({ op: 'remove', entryId: removed.id, prev: cloneEntry(removed) });
+            changes.push({ op: 'remove', entryId: removed.id, prev: cloneEntry(removed), ...(raw.folded === true ? { folded: true } : {}) });
             return;
           }
-          throw at(index, 'op must be add, update or remove');
+          throw at(index, 'op must be add, update, reinforce, dampen or remove');
         } catch (error) {
           if (error instanceof DocumentMemoryError && error.code === 'MEMORY_INVALID' && !error.message.startsWith('ops[')) {
             throw at(index, error.message);
@@ -480,8 +549,10 @@ export class DocumentMemoryStore {
           throw error;
         }
       });
-      if (textChars(entries) > MAX_MEMORY_TEXT_CHARS) {
-        throw memoryError('MEMORY_FULL', `Document memory may hold up to ${MAX_MEMORY_TEXT_CHARS.toLocaleString('en-US')} characters of notes; shorten or remove notes first.`);
+      while (textChars(entries) > MAX_MEMORY_TEXT_CHARS) {
+        if (!evictOne()) {
+          throw memoryError('MEMORY_FULL', `Document memory may hold up to ${MAX_MEMORY_TEXT_CHARS.toLocaleString('en-US')} characters of notes; shorten or remove notes first.`);
+        }
       }
       if (changes.length === 0) return { revision: doc.revision, changes };
       await this.#commit(doc, entries);
@@ -533,52 +604,15 @@ export class DocumentMemoryStore {
     });
   }
 
-  /**
-   * 사용자 지시로 올린 결과를 항목에 적는다 — promoted 는 확인됨, declined 는 거절됨(다시 제안하지 않는다).
-   * 내용이 아닌 표시라 리비전을 올리지 않는다 (에이전트에게 기억을 다시 보내지 않는다).
-   * 표시는 제안한 글(text, 없으면 항목의 지금 글)에 묶인다 — 그 글과 다른 항목은 건드리지 않는다.
-   * @param {{key: string, entryId: string}[]} refs
-   * @param {'promoted' | 'declined'} outcome
-   * @param {{ text?: string }} [options]
-   * @returns {Promise<string[]>} 표시한 항목 id
-   */
-  markPromotion(refs, outcome, { text } = {}) {
+  /** 이 기억의 문서 정보 — 파일 이름과 묶인 documentId 들 (다른 문서의 메모를 접을 때 알린다). */
+  describe(key) {
     return this.#mutate(async () => {
-      const field = outcome === 'promoted' ? 'promoted' : outcome === 'declined' ? 'promotionDeclined' : null;
-      if (!field) throw memoryError('MEMORY_INVALID', 'outcome must be promoted or declined');
-      const line = typeof text === 'string' && text.trim() ? text.normalize('NFC').trim().slice(0, MAX_ENTRY_TEXT_CHARS) : null;
-      const byKey = new Map();
-      for (const ref of Array.isArray(refs) ? refs : []) {
-        if (typeof ref?.key !== 'string' || !KEY_PATTERN.test(ref.key) || typeof ref.entryId !== 'string') continue;
-        byKey.set(ref.key, [...(byKey.get(ref.key) ?? []), ref.entryId]);
-      }
-      const marked = [];
-      for (const [key, ids] of byKey) {
-        const doc = await this.#loadDoc(key);
-        const hits = doc.entries
-          .filter((entry) => ids.includes(entry.id) && (!line || preferenceText(line) === preferenceText(entry.text))
-            && promotionState(entry) !== outcome)
-          .map((entry) => entry.id);
-        if (hits.length === 0) continue;
-        const withPromotion = (entry) => {
-          const copy = cloneEntry(entry);
-          delete copy.promoted;
-          delete copy.promotionDeclined;
-          return { ...copy, [field]: true, promotionText: line ?? entry.text };
-        };
-        const next = {
-          ...doc,
-          entries: doc.entries.map((entry) => (hits.includes(entry.id) ? withPromotion(entry) : entry)),
-        };
-        await this.#writeDoc(next);
-        Object.assign(doc, next);
-        marked.push(...hits);
-      }
-      return marked;
+      const doc = await this.#loadDoc(this.#key(key));
+      return { key: doc.key, fileName: doc.fileName ?? null, documentIds: [...doc.documentIds] };
     });
   }
 
-  /** 모든 문서에서 같은 주제의 항목 (사용자 단위 취향 승격용). */
+  /** 모든 문서에서 같은 주제의 항목 (기억 승격용). */
   findSubject(subject) {
     return this.#mutate(async () => {
       const wanted = canonicalSubject(subject);
@@ -596,7 +630,7 @@ export class DocumentMemoryStore {
 
   /**
    * 다른 문서들의 사용자 취향 후보 — 주제와 글. 학습기가 같은 취향에는 같은 주제·글을 쓰게 한다.
-   * @returns {Promise<{subject: string, text: string}[]>}
+   * @returns {Promise<{kind: string, subject: string, text: string}[]>}
    */
   candidateSubjects({ excludeKey, limit = 30 } = {}) {
     return this.#mutate(async () => {
@@ -606,7 +640,7 @@ export class DocumentMemoryStore {
         const doc = await this.#loadDoc(key).catch(() => null);
         for (const entry of doc?.entries ?? []) {
           const id = `${canonicalSubject(entry.subject)}\n${preferenceText(entry.text)}`;
-          if (entry.userCandidate === true && !found.has(id)) found.set(id, { subject: entry.subject, text: entry.text });
+          if (entry.userCandidate === true && !wasPromoted(entry) && !found.has(id)) found.set(id, { kind: entry.kind, subject: entry.subject, text: entry.text });
         }
       }
       return [...found.values()].slice(0, limit);
@@ -788,13 +822,13 @@ export function documentMemoryPromptBlock(memory, { excludeIds = [], emptied = f
   if (entries.length === 0 && omitted.length === 0 && !emptied) return '';
   const lines = [
     `<document_memory revision="${Number(memory?.revision) || 0}">`,
-    'Notes on this document, the user\'s preferences unless the current request conflicts. Follow them when you write or edit the document, not in chat replies. Tags: 직접 user-edited, 요청 saved on request, 학습 learned. Replaces any earlier document_memory block.',
+    'Notes on this document, the user\'s preferences unless the current request conflicts. Follow them when you write or edit the document, not in chat replies. Tags: 직접 user-edited, 요청 saved on request, 학습 learned; 강도 1-5, higher is better established. Replaces any earlier document_memory block.',
   ];
   let used = 0;
   const subjectsOnly = [];
   for (const entry of entries) {
     const anchor = entry.anchor?.quote ? `, anchor "${blockText(entry.anchor.quote)}"` : '';
-    const line = `- [${entry.kind}, ${ORIGIN_TAGS[entry.origin] ?? ORIGIN_TAGS.user}] ${blockText(entry.text)}  (${entry.id}${anchor})`;
+    const line = `- [${entry.kind}, ${ORIGIN_TAGS[entry.origin] ?? ORIGIN_TAGS.user}, 강도 ${entry.strength ?? 1}] ${blockText(entry.text)}  (${entry.id}${anchor})`;
     if (used + line.length > budget) {
       subjectsOnly.push(`${blockText(entry.subject)} (${entry.id})`);
       continue;

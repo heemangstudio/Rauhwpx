@@ -82,6 +82,7 @@ export function createAccountClient({
     signOut: (session) => call('/v1/account/signout', { session, json: {} }),
     removeDevice: (session, deviceId) => call('/v1/account/devices/remove', { session, json: { deviceId } }),
     redeem: (session, key) => call('/v1/account/redeem', { session, json: { key } }),
+    redeemGiftCode: (session, code) => call('/v1/account/gift-codes/redeem', { session, json: { code } }),
     claim: (session, { orderId, email }) => call('/v1/account/claim', { session, json: { orderId, email } }),
     rauTrial: (session) => call('/v1/account/rau-trial', { session, json: {} }),
     updateProfile: (session, { name }) => call('/v1/account/profile', { session, json: { name } }),

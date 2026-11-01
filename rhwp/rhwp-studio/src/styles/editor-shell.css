@@ -169,7 +169,7 @@
 }
 .editor-command-search kbd { margin-left: 24px; font: 11px var(--font-family-ui); color: var(--ui-text-muted); }
 .editor-command-search:hover { background: var(--ui-hover); border-color: var(--ui-border-strong); }
-/* 자동 수정(연장통): 명령 검색과 같은 테두리 상자의 아이콘 단추. 도는 동안 오른쪽 위에 초록 점이 물결친다. */
+/* 자동 수정(연장통): 테두리 없는 아이콘 단추. 도는 동안 오른쪽 위에 초록 점이 물결친다. */
 .editor-autofix-manual {
   position: relative;
   display: inline-flex;
@@ -178,14 +178,14 @@
   width: 30px;
   min-height: 28px;
   padding: 0;
-  border: 1px solid var(--ui-border);
+  border: 1px solid transparent;
   border-radius: 6px;
-  background: var(--ui-surface);
+  background: transparent;
   color: var(--ui-text-secondary);
   font: inherit;
   cursor: default;
 }
-.editor-autofix-manual:hover { background: var(--ui-hover); border-color: var(--ui-border-strong); }
+.editor-autofix-manual:hover { background: var(--ui-hover); }
 .editor-autofix-manual[data-running]::after {
   content: '';
   position: absolute;

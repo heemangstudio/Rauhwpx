@@ -692,8 +692,11 @@ test('the mode-agnostic brief describes every mode and both edit lifecycles', ()
   assert.match(brief, /marked as stopped/);
   assert.match(brief, /including apply_engine_edits batches, apply directly/);
   assert.match(brief, /There is no review step/);
-  assert.match(brief, /update_agent_instructions/);
-  assert.match(brief, /In 채팅 and 플랜, read_agent_instructions reads/);
+  // AGENTS.md 는 사용자만 고친다 — "앞으로·항상" 요청은 사용자가 직접 적도록 안내한다.
+  assert.doesNotMatch(brief, /update_agent_instructions/);
+  assert.match(brief, /Only the user writes the app-only AGENTS\.md, in every mode/);
+  assert.match(brief, /설정 → AI → 사용자화 → 지시/);
+  assert.match(brief, /app_agents_md outranks document_memory, which outranks user_memory/);
   assert.match(brief, /present-plan product skill/);
   assert.match(brief, /native question interaction or ask_user_question/);
   assert.match(brief, /update_todos is the todo list the user watches/);

@@ -712,7 +712,6 @@ export class Hama implements ActionHost {
   constructor(fixedFacing?: Facing) {
     this.fixedFacing = fixedFacing;
     this.el = document.createElement('div');
-    // .ag-hama 는 Hama 하네스의 에이전트 클래스(ag-${agent})라 하마 그림은 다른 이름을 쓴다.
     this.el.className = 'ag-hama-hippo';
     this.el.setAttribute('aria-hidden', 'true');
     this.el.style.marginLeft = `${OX * SCALE}px`;
@@ -1047,6 +1046,8 @@ export interface ChatHama {
   react(moment: HamaMoment): void;
   /** 이름으로 몸짓을 바로 한다(미리보기·시험용). 하마가 없으면 false. */
   perform(name: HamaActionName): boolean;
+  /** 턴 밖의 일(문체 학습)을 보인다 — 턴이 도는 동안은 턴이 하마를 쓴다. null 이면 한가함으로. */
+  background(mode: ChatHamaMode | null): void;
   /** 지금 상태(시험용). */
   readonly mode: ChatHamaMode;
   dispose(): void;
@@ -1078,6 +1079,8 @@ export function createChatHama(opts: ChatHamaOptions): ChatHama {
   let runStartedAt = 0;
   let lastMomentAt = -Infinity;
   const momentAt = new Map<HamaMoment, number>();
+  /** 턴 밖의 일(문체 학습)이 바라는 모습. 턴이 끝나거나 끝 상태가 거둬지면 이리로 돌아간다. */
+  let backgroundMode: ChatHamaMode | null = null;
   let settleAt = 0;
   let settleTimer = 0;
   let homeTimer = 0;
@@ -1118,12 +1121,12 @@ export function createChatHama(opts: ChatHamaOptions): ChatHama {
     if (!settleAt || !isActive()) return;
     const wait = settleAt - performance.now();
     if (wait <= 0) {
-      if (!running) setMode('idle');
+      if (!running) setMode(backgroundMode ?? 'idle');
       return;
     }
     settleTimer = window.setTimeout(() => {
       settleTimer = 0;
-      if (!running && settleAt) setMode('idle');
+      if (!running && settleAt) setMode(backgroundMode ?? 'idle');
     }, wait);
   }
 
@@ -1293,12 +1296,13 @@ export function createChatHama(opts: ChatHamaOptions): ChatHama {
       running = next;
       if (next) {
         runStartedAt = performance.now();
-        if (!RUNNING_MODES.has(mode)) {
+        // 문체 학습의 모습(read·work·think)도 RUNNING_MODES 다 — 그때도 턴이 하마를 넘겨받는다.
+        if (!RUNNING_MODES.has(mode) || (backgroundMode !== null && mode === backgroundMode)) {
           setMode('think');
           mounted?.hama.play('hop');
         }
       } else if (RUNNING_MODES.has(mode)) {
-        setMode('idle');
+        setMode(backgroundMode ?? 'idle');
       }
     },
     tool(tool: string, argsJson = '{}'): void {
@@ -1311,7 +1315,7 @@ export function createChatHama(opts: ChatHamaOptions): ChatHama {
       const long = runStartedAt > 0 && performance.now() - runStartedAt >= LONG_RUN_MS;
       running = false;
       runStartedAt = 0;
-      setMode(outcome === 'completed' ? 'done' : outcome === 'failed' ? 'error' : 'idle');
+      setMode(outcome === 'completed' ? 'done' : outcome === 'failed' ? 'error' : backgroundMode ?? 'idle');
       if (outcome === 'completed' && long && isActive()) mounted?.hama.play('confetti');
     },
     react(moment: HamaMoment): void {
@@ -1329,6 +1333,25 @@ export function createChatHama(opts: ChatHamaOptions): ChatHama {
       mounted.hama.wake();
       mounted.hama.play(name);
       return true;
+    },
+    background(next: ChatHamaMode | null): void {
+      const prevBg = backgroundMode;
+      // 끝 모습(done·error)은 한 번 보이고 거두는 것이라 돌아갈 모습으로 남기지 않는다.
+      const oneShot = next !== null && SETTLE_MS[next] !== undefined;
+      backgroundMode = oneShot ? null : next;
+      if (running) return;
+      if (oneShot) {
+        if (next !== mode) setMode(next);
+        return;
+      }
+      // 턴의 끝 상태(환호·움츠림)는 다 보인 뒤 armSettle 이 배경 모습으로 넘긴다 — 여기서 자르지 않는다.
+      if (settleAt && (mode === 'done' || mode === 'error')) return;
+      if (next === null) {
+        // 배경이 맡았던 모습만 거둔다.
+        if (prevBg !== null && mode === prevBg) setMode('idle');
+        return;
+      }
+      if (next !== mode) setMode(next);
     },
     get mode() {
       return mode;

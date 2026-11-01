@@ -29,7 +29,6 @@ import {
 } from './tool-executor.ts';
 import { readFileSourceResponse, type FileDocumentSource, type ForeignDocumentBytes } from './foreign-documents.ts';
 import { PendingEditManager, editReportNote } from './pending-edits.ts';
-import { inactiveRauAgentStatus, readRauAgentStatus } from './rau-agent-status.ts';
 import { PendingOverlayRenderer, type JumpFlashTarget } from './pending-overlay.ts';
 import { readProviderQuota, readRemoteBalance } from './provider-quota-protocol.ts';
 import { PendingRequestRegistry } from './pending-requests.ts';
@@ -46,6 +45,14 @@ import {
 } from './provider-failure.ts';
 import { isPlanApprovalText } from './plan-approval-text.ts';
 import { missingAnchorIds, readDocumentMemoryResult } from './document-memory.ts';
+import {
+  readStyleLearnError,
+  readStyleLearnJob,
+  readStyleLearnProgress,
+  readStyleLearnResult,
+  readUserMemoryResult,
+  readUserMemorySnapshot,
+} from './user-memory.ts';
 import { readTasteLearned, readTasteSettings, readTasteUndoResult } from './taste.ts';
 import {
   AutoHistoryTrigger,
@@ -78,7 +85,6 @@ import {
 import {
   setModelCatalog,
   setPiModels as setPiModelRegistry,
-  setRauModels,
   type CatalogAgent,
   type ModelCatalogEntry,
 } from './models.ts';
@@ -107,7 +113,6 @@ import type {
   AgentBridgeOptions,
   AgentEditorHost,
   AgentViewHost,
-  AgentInstructionsDraft,
   AgentInstructionsStatus,
   DocumentMemory,
   DocumentMemoryChange,
@@ -116,6 +121,9 @@ import type {
   DocumentMemoryResult,
   TasteHistoryResult,
   TasteSettings,
+  StyleLearnUpload,
+  UserMemoryOp,
+  UserMemoryResult,
   TasteUndoResult,
   AgentEditingLease,
   AgentName,
@@ -134,7 +142,6 @@ import type {
   PiCatalogModel,
   PiModelConfig,
   PiStatus,
-  RauAgentStatus,
   BrowserEvent,
   BrowserResult,
   BrowserDownload,
@@ -165,14 +172,6 @@ import type {
   TokenUsageDays,
   TokenUsageReport,
   UsageWindow,
-  WritingStyleLanguage,
-  WritingStyleCatalog,
-  WritingStyleCatalogModel,
-  WritingStyleCatalogProvider,
-  WritingStyleProgress,
-  WritingStyleProgressState,
-  WritingStyleStatus,
-  WritingStyleUpload,
   DocumentTemplate,
   TemplateCatalog,
   AgentStreamEvent,
@@ -489,10 +488,6 @@ export interface AgentBridge {
   setUsagePlan(agent: AgentName, plan: string): Promise<UsageSummary | null>;
   /** pi 하네스(설치 · 키 · 모델) 설정 상태. */
   requestPiStatus(): Promise<PiStatus | null>;
-  /** 호스팅 Rau 상태를 허브에 묻는다. refresh 면 사이트 API 에 다시 묻는다. 답이 없으면 null. */
-  requestRauAgentStatus(refresh?: boolean): Promise<RauAgentStatus | null>;
-  /** 마지막으로 받은 호스팅 Rau 상태 (rau-agent-status 프레임). 아직 받지 않았으면 unavailable. */
-  rauAgentStatus(): RauAgentStatus;
   /** pi coding agent 설치. 진행 상황은 pi-setup-progress 이벤트로 온다. */
   installPi(): Promise<PiStatus | null>;
   /** OpenRouter API 키를 검증하고 저장한다. */
@@ -582,11 +577,8 @@ export interface AgentBridge {
   /** 채팅 카드의 생성 문서를 열거나 받을 때 지금 허브 세션의 주소를 새로 받는다. 연결이 없으면 null. */
   requestGeneratedArtifact(artifactId: string, threadId: string): Promise<GeneratedArtifactLookup | null>;
   saveSkillEditor(name: string, body: string, base: string): Promise<SkillCommitOutcome | null>;
-  requestWritingStyleStatus(): string;
   requestAgentInstructions(): Promise<AgentInstructionsStatus | null>;
   saveAgentInstructions(content: string, expectedRevision: number): Promise<AgentInstructionsStatus | null>;
-  confirmAgentInstructionsDraft(draft: AgentInstructionsDraft): Promise<AgentInstructionsStatus | null>;
-  rejectAgentInstructionsDraft(draft: AgentInstructionsDraft): Promise<boolean>;
   /** 문서 기억 — documentId 를 생략하면 이 채팅의 문서. 연결이 없으면 null, 허브가 거절하면 ok:false. */
   listDocumentMemory(documentId?: string | null): Promise<DocumentMemoryResult | null>;
   applyDocumentMemory(
@@ -609,18 +601,20 @@ export interface AgentBridge {
     key: string;
     changes: unknown[];
     entryId?: string;
+    /** 계정 기억 줄의 기억 사건 — 허브가 학습 기록을 잃었을 때 이것으로 되돌린다. */
+    eventIds?: string[];
   }): Promise<TasteUndoResult | null>;
   /** 기록에서 배우기 — 이 문서에서 에이전트 글을 사용자가 고친 짝을 찾아 배운다 (설정과 상관없이). */
   learnFromHistory(): Promise<TasteHistoryOutcome>;
-  requestWritingStyleCatalog(refresh?: boolean): Promise<WritingStyleCatalog | null>;
-  calibrateWritingStyle(input: {
-    language: WritingStyleLanguage;
-    files: WritingStyleUpload[];
-    agent: AgentName;
-    model: string;
-    append: boolean;
-  }): string;
-  setWritingStyleInstruction(instruction: string): string;
+  /** 계정의 기억(Rau 탭). 연결이 없으면 null, 허브가 거절하면 ok:false. 바뀌면 허브가 user-memory 도 보낸다. */
+  requestUserMemory(op: UserMemoryOp): Promise<UserMemoryResult | null>;
+  /** 문체 학습을 시작한다. 진행·결과·오류는 style-learn-* 이벤트로 온다. 보내지 못하면 null. */
+  startStyleLearn(files: StyleLearnUpload[]): string | null;
+  cancelStyleLearn(jobId: string): void;
+  /** 지금 도는 문체 학습을 묻는다 — 답은 style-learn-status 이벤트. */
+  requestStyleLearnStatus(): string | null;
+  /** 예전 말투 맞추기 원고로 기억을 만들지 답한다. 받아들이면 보통 학습처럼 진행 이벤트가 온다. */
+  answerStyleLearnLegacy(accept: boolean): string | null;
   /** 현재 막힌 프로바이더 요청에 답한다. 재연결 재시도에도 같은 응답 ID를 쓴다. */
   answerUserQuestion(interactionId: string, answers: Record<string, UserQuestionAnswer>): string;
   /**
@@ -790,7 +784,7 @@ export function readContextEvent(event: AgentStreamEvent): AgentStreamEvent | nu
 }
 
 function isAgentName(v: unknown): v is AgentName {
-  return v === 'claude' || v === 'codex' || v === 'pi' || v === 'rau';
+  return v === 'claude' || v === 'codex' || v === 'pi';
 }
 
 function isBoundedText(value: unknown, max: number): value is string {
@@ -986,32 +980,6 @@ function readAgentInstructionsStatus(value: unknown): AgentInstructionsStatus | 
   };
 }
 
-function readAgentInstructionsDraft(value: unknown): AgentInstructionsDraft | null {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  const item = value as Record<string, unknown>;
-  const expectedRevision = Number(item['expectedRevision']);
-  if (typeof item['id'] !== 'string' || !item['id']
-    || typeof item['content'] !== 'string'
-    || !Number.isSafeInteger(expectedRevision) || expectedRevision < 1
-    || (item['reason'] !== null && typeof item['reason'] !== 'string')
-    || typeof item['requestedBy'] !== 'string'
-    || typeof item['createdAt'] !== 'string' || !Number.isFinite(Date.parse(item['createdAt']))
-    || typeof item['expiresAt'] !== 'string' || !Number.isFinite(Date.parse(item['expiresAt']))
-    || typeof item['confirmationToken'] !== 'string' || !item['confirmationToken']) return null;
-  return {
-    id: item['id'],
-    content: item['content'],
-    expectedRevision,
-    reason: item['reason'] as string | null,
-    requestedBy: item['requestedBy'],
-    createdAt: item['createdAt'],
-    expiresAt: item['expiresAt'],
-    confirmationToken: item['confirmationToken'],
-    threadId: typeof item['threadId'] === 'string' && item['threadId'] ? item['threadId'] : null,
-    origin: item['origin'] === 'rau' ? 'rau' : 'agent',
-  };
-}
-
 function readTemplateCatalog(value: unknown): TemplateCatalog {
   const source = value && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -1030,131 +998,6 @@ function readTemplateCatalog(value: unknown): TemplateCatalog {
 function readTemplateResponse(value: unknown) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   return readDocumentTemplate((value as Record<string, unknown>)['template']);
-}
-
-function isWritingStyleProgressState(value: unknown): value is WritingStyleProgressState {
-  return value === 'queued'
-    || value === 'reading'
-    || value === 'extracting'
-    || value === 'preparing'
-    || value === 'analyzing'
-    || value === 'synthesizing'
-    || value === 'saving';
-}
-
-function readWritingStyleStatus(value: unknown): WritingStyleStatus {
-  const src = value && typeof value === 'object' && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : {};
-  const rawSources = Array.isArray(src['sources'])
-    ? src['sources']
-    : Array.isArray(src['sourceDocuments']) ? src['sourceDocuments'] : null;
-  const sources = rawSources
-    ? rawSources.flatMap((raw) => {
-      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return [];
-      const source = raw as Record<string, unknown>;
-      if (typeof source['name'] !== 'string' || !source['name']) return [];
-      const size = Number(source['size']);
-      return [{
-        ...(typeof source['id'] === 'string' ? { id: source['id'] } : {}),
-        name: source['name'],
-        ...(typeof source['type'] === 'string' ? { type: source['type'] } : {}),
-        ...(Number.isFinite(size) && size >= 0 ? { size } : {}),
-        ...(typeof source['addedAt'] === 'string' ? { addedAt: source['addedAt'] } : {}),
-      }];
-    })
-    : undefined;
-  const sourceCount = Number(src['sourceCount']);
-  const pageEstimate = Number(src['pageEstimate']);
-  return {
-    active: src['active'] === true,
-    language: src['language'] === 'en' ? 'en' : 'ko',
-    updatedAt: typeof src['updatedAt'] === 'string' ? src['updatedAt'] : null,
-    sourceCount: Number.isFinite(sourceCount) && sourceCount >= 0 ? sourceCount : 0,
-    pageEstimate: Number.isFinite(pageEstimate) && pageEstimate >= 0 ? pageEstimate : 0,
-    summary: typeof src['summary'] === 'string' ? src['summary'] : '',
-    additionalInstruction: typeof src['additionalInstruction'] === 'string'
-      ? src['additionalInstruction']
-      : '',
-    ...(isAgentName(src['agent']) ? { agent: src['agent'] } : {}),
-    ...(typeof src['model'] === 'string' ? { model: src['model'] } : {}),
-    ...(sources ? { sources } : {}),
-    ...(sources ? { sourceDocuments: sources } : {}),
-    ...(Number.isFinite(Number(src['savedSourceCount'])) && Number(src['savedSourceCount']) >= 0
-      ? { savedSourceCount: Number(src['savedSourceCount']) }
-      : {}),
-  };
-}
-
-function readWritingStyleProgress(value: Record<string, unknown>): WritingStyleProgress | null {
-  if (!isWritingStyleProgressState(value['state'])) return null;
-  const completed = Number(value['completed']);
-  const total = Number(value['total']);
-  return {
-    state: value['state'],
-    ...(typeof value['phase'] === 'string' ? { phase: value['phase'] } : {}),
-    ...(typeof value['activity'] === 'string' ? { activity: value['activity'] } : {}),
-    ...(typeof value['detail'] === 'string' ? { detail: value['detail'] } : {}),
-    ...(Number.isFinite(completed) && completed >= 0 ? { completed } : {}),
-    ...(Number.isFinite(total) && total > 0 ? { total } : {}),
-    ...(isAgentName(value['agent']) ? { agent: value['agent'] } : {}),
-    ...(typeof value['model'] === 'string' ? { model: value['model'] } : {}),
-    ...(typeof value['startedAt'] === 'string' ? { startedAt: value['startedAt'] } : {}),
-    ...(Number.isFinite(Number(value['elapsedMs'])) && Number(value['elapsedMs']) >= 0
-      ? { elapsedMs: Number(value['elapsedMs']) }
-      : {}),
-  };
-}
-
-function readWritingStyleCatalogModel(value: unknown): WritingStyleCatalogModel | null {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  const src = value as Record<string, unknown>;
-  if (typeof src['id'] !== 'string' || !src['id']) return null;
-  return {
-    id: src['id'],
-    name: typeof src['name'] === 'string' && src['name'] ? src['name'] : src['id'],
-    efforts: Array.isArray(src['efforts']) ? src['efforts'].filter((item): item is string => typeof item === 'string') : [],
-    defaultEffort: typeof src['defaultEffort'] === 'string' ? src['defaultEffort'] : null,
-  };
-}
-
-function readWritingStyleCatalogProvider(value: unknown): WritingStyleCatalogProvider | null {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  const src = value as Record<string, unknown>;
-  if (!isAgentName(src['id'])) return null;
-  return {
-    id: src['id'],
-    name: typeof src['name'] === 'string' && src['name'] ? src['name'] : src['id'],
-    available: src['available'] === true,
-    error: typeof src['error'] === 'string' ? src['error'] : null,
-    models: Array.isArray(src['models'])
-      ? src['models'].map(readWritingStyleCatalogModel).filter((item): item is WritingStyleCatalogModel => item !== null)
-      : [],
-  };
-}
-
-function readWritingStyleCatalog(value: unknown): WritingStyleCatalog {
-  const src = value && typeof value === 'object' && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : {};
-  const selection = src['defaultSelection'];
-  const defaultSelection = selection && typeof selection === 'object' && !Array.isArray(selection)
-    ? selection as Record<string, unknown>
-    : null;
-  return {
-    providers: Array.isArray(src['providers'])
-      ? src['providers'].map(readWritingStyleCatalogProvider).filter((item): item is WritingStyleCatalogProvider => item !== null)
-      : [],
-    defaultSelection: defaultSelection
-      && isAgentName(defaultSelection['agent'])
-      && typeof defaultSelection['model'] === 'string'
-      ? {
-        agent: defaultSelection['agent'],
-        model: defaultSelection['model'],
-        ...(typeof defaultSelection['effort'] === 'string' ? { effort: defaultSelection['effort'] } : {}),
-      }
-      : null,
-  };
 }
 
 function isReferenceScope(value: unknown): value is ReferenceScope {
@@ -1260,8 +1103,6 @@ function readProviderStatus(value: unknown): ProviderStatusMap {
     claude: readProviderHealth(src['claude']),
     codex: readProviderHealth(src['codex']),
     pi: readProviderHealth(src['pi']),
-    // Rau 는 Pi 런타임으로 돈다. 허브가 따로 보내지 않으면 Pi 의 실행 환경을 따른다.
-    rau: readProviderHealth(src['rau'] ?? src['pi']),
   } as ProviderStatusMap;
 }
 
@@ -1306,7 +1147,6 @@ function readAgentSetupStatuses(value: unknown): AgentSetupStatusMap {
     claude: readAgentSetupStatus(src['claude'], 'claude'),
     codex: readAgentSetupStatus(src['codex'], 'codex'),
     pi: readAgentSetupStatus(src['pi'], 'pi'),
-    rau: readAgentSetupStatus(src['rau'], 'rau'),
   } as AgentSetupStatusMap;
 }
 
@@ -1619,8 +1459,6 @@ export class AgentBridgeImpl implements AgentBridge {
   /** 문서 작업용 편집기 — 화면에 붙어 있으면 view.inputHandler, 아니면 헤드리스 호스트. */
   private editor: AgentEditorHost;
   private view: AgentViewHost | null;
-  /** 마지막 rau-agent-status 프레임. 받기 전에는 unavailable. */
-  private lastRauAgentStatus: RauAgentStatus = inactiveRauAgentStatus();
   /** 하위 구성요소에 넘기는 전달자. 붙이기·떼기가 구성요소를 다시 만들지 않고 반영된다. */
   private readonly editorHost: AgentEditorHost;
   private overlay: PendingOverlayRenderer;
@@ -1980,6 +1818,7 @@ export class AgentBridgeImpl implements AgentBridge {
     });
     const paragraphReader = wasmParagraphReader(deps.wasm);
     this.tasteSignals = new TasteSignalCollector({
+      learningEnabled: () => tasteLearningEnabled === true,
       pending: this.pendingEdits,
       eventBus: deps.eventBus,
       reader: paragraphReader,
@@ -3678,25 +3517,6 @@ export class AgentBridgeImpl implements AgentBridge {
         });
         break;
       }
-      case 'agent-instructions-draft': {
-        const draft = readAgentInstructionsDraft(msg.draft);
-        if (draft) this.emit({ type: 'agent-instructions-draft', draft });
-        break;
-      }
-      case 'agent-instructions-draft-cleared': {
-        const outcome = msg.outcome === 'confirmed'
-          || msg.outcome === 'rejected'
-          || msg.outcome === 'expired'
-          || msg.outcome === 'replaced'
-          || msg.outcome === 'stale'
-          ? msg.outcome
-          : null;
-        if (typeof msg.requestId === 'string') this.requests.settle(msg.requestId, outcome === 'rejected');
-        if (typeof msg.draftId === 'string' && outcome) {
-          this.emit({ type: 'agent-instructions-draft-cleared', draftId: msg.draftId, outcome });
-        }
-        break;
-      }
       case 'document-memory-result': {
         if (typeof msg.requestId !== 'string') break;
         const result = readDocumentMemoryResult(msg);
@@ -3816,26 +3636,35 @@ export class AgentBridgeImpl implements AgentBridge {
         if (typeof msg.requestId === 'string') this.requests.settle(msg.requestId, null);
         this.emit({ type: 'skills-error', requestId: String(msg.requestId ?? ''), code: String(msg.code ?? 'SKILLS_ERROR'), message: String(msg.message ?? 'Skill request failed') });
         break;
-      case 'writing-style-status':
-        this.emit({ type: 'writing-style-status', requestId: String(msg.requestId ?? ''), status: readWritingStyleStatus(msg.status) });
-        break;
-      case 'writing-style-progress': {
-        const progress = readWritingStyleProgress(msg);
-        if (progress) this.emit({ type: 'writing-style-progress', requestId: String(msg.requestId ?? ''), ...progress });
+      case 'user-memory-result': {
+        if (typeof msg.requestId === 'string') this.requests.settle(msg.requestId, readUserMemoryResult(msg));
         break;
       }
-      case 'writing-style-result':
-        this.emit({ type: 'writing-style-result', requestId: String(msg.requestId ?? ''), status: readWritingStyleStatus(msg.status) });
-        break;
-      case 'writing-style-error':
-        this.emit({ type: 'writing-style-error', requestId: String(msg.requestId ?? ''), code: String(msg.code ?? 'CALIBRATION_FAILED'), message: String(msg.message ?? 'Writing-style calibration failed') });
-        break;
-      case 'writing-style-catalog': {
-        const catalog = readWritingStyleCatalog(msg);
-        if (typeof msg.requestId === 'string') this.requests.settle(msg.requestId, catalog);
-        this.emit({ type: 'writing-style-catalog', requestId: String(msg.requestId ?? ''), catalog });
+      case 'user-memory': {
+        const memory = readUserMemorySnapshot(msg.memory);
+        if (memory) this.emit({ type: 'user-memory', memory });
         break;
       }
+      case 'style-learn-progress': {
+        const progress = readStyleLearnProgress(msg);
+        if (progress) this.emit({ type: 'style-learn-progress', ...progress });
+        break;
+      }
+      case 'style-learn-result': {
+        const result = readStyleLearnResult(msg);
+        if (result) this.emit({ type: 'style-learn-result', ...result });
+        break;
+      }
+      case 'style-learn-error':
+        this.emit({ type: 'style-learn-error', ...readStyleLearnError(msg) });
+        break;
+      case 'style-learn-status':
+        this.emit({
+          type: 'style-learn-status',
+          ...(typeof msg.requestId === 'string' && msg.requestId ? { requestId: msg.requestId } : {}),
+          job: readStyleLearnJob(msg.job),
+        });
+        break;
       case 'provider-status': {
         const providers = readProviderStatus(msg.providers);
         if (typeof msg.requestId === 'string') this.requests.settle(msg.requestId, providers);
@@ -3972,15 +3801,6 @@ export class AgentBridgeImpl implements AgentBridge {
         setPiModelRegistry(status.models);
         if (typeof msg.requestId === 'string') this.requests.settle(msg.requestId, status);
         this.emit({ type: 'pi-status', status });
-        break;
-      }
-      case 'rau-agent-status': {
-        const status = readRauAgentStatus(msg.status);
-        this.lastRauAgentStatus = status;
-        // 모델 레지스트리를 먼저 바꿔 리스너가 modelsForAgent('rau') 를 바로 최신으로 읽게 한다.
-        setRauModels(status.models);
-        if (typeof msg.requestId === 'string') this.requests.settle(msg.requestId, status);
-        this.emit({ type: 'rau-agent-status', status });
         break;
       }
       case 'pi-setup-progress': {
@@ -4999,6 +4819,8 @@ export class AgentBridgeImpl implements AgentBridge {
   ): Promise<string | null> {
     if (acceptance && (this.messageReceipts.has(acceptance.messageId)
       || this.queuedMessages.some((message) => message.messageId === acceptance.messageId))) return Promise.resolve(null);
+    this.tasteSignals?.flush();
+    this.reviewSignals?.flush();
     const context = this.referenceContext();
     // 영수증 id 는 채팅 메시지의 messageId 로도 저장돼 워터마크가 된다 — 새로고침 뒤에도 겹치지 않게 한다.
     const messageId = acceptance?.messageId ?? (stagedReferenceIds.length > 0 || requireReceipt
@@ -5736,12 +5558,6 @@ export class AgentBridgeImpl implements AgentBridge {
     return this.request<SkillCommitOutcome>({ type: 'skill-editor-save', name, body, base }, 'skill-editor-save');
   }
 
-  requestWritingStyleStatus(): string {
-    const requestId = `writing-style-status-${++this.requestSeq}`;
-    this.sendJson({ v: AGENT_PROTOCOL_VERSION, type: 'writing-style-status-request', requestId });
-    return requestId;
-  }
-
   requestAgentInstructions(): Promise<AgentInstructionsStatus | null> {
     return this.request<AgentInstructionsStatus>(
       { type: 'agent-instructions-request' },
@@ -5757,30 +5573,6 @@ export class AgentBridgeImpl implements AgentBridge {
       { type: 'agent-instructions-save', content, expectedRevision },
       'agent-instructions-save',
     );
-  }
-
-  confirmAgentInstructionsDraft(
-    draft: AgentInstructionsDraft,
-  ): Promise<AgentInstructionsStatus | null> {
-    return this.request<AgentInstructionsStatus>(
-      {
-        type: 'agent-instructions-draft-confirm',
-        draftId: draft.id,
-        confirmationToken: draft.confirmationToken,
-      },
-      'agent-instructions-confirm',
-    );
-  }
-
-  rejectAgentInstructionsDraft(draft: AgentInstructionsDraft): Promise<boolean> {
-    return this.request<boolean>(
-      {
-        type: 'agent-instructions-draft-reject',
-        draftId: draft.id,
-        confirmationToken: draft.confirmationToken,
-      },
-      'agent-instructions-reject',
-    ).then((result) => result === true);
   }
 
   listDocumentMemory(documentId: string | null = this.documentId): Promise<DocumentMemoryResult | null> {
@@ -5838,6 +5630,7 @@ export class AgentBridgeImpl implements AgentBridge {
     key: string;
     changes: unknown[];
     entryId?: string;
+    eventIds?: string[];
   }): Promise<TasteUndoResult | null> {
     return this.request<TasteUndoResult>({
       type: 'taste-undo',
@@ -5847,6 +5640,7 @@ export class AgentBridgeImpl implements AgentBridge {
       key: input.key,
       changes: input.changes,
       ...(input.entryId ? { entryId: input.entryId } : {}),
+      ...(input.eventIds?.length ? { eventIds: input.eventIds } : {}),
     }, 'taste-undo');
   }
 
@@ -5937,34 +5731,33 @@ export class AgentBridgeImpl implements AgentBridge {
     return { revision: cached.memory.revision, missing: anchored.length ? this.missingDocumentMemoryAnchors(anchored) : [] };
   }
 
-  requestWritingStyleCatalog(refresh = false): Promise<WritingStyleCatalog | null> {
-    return this.request<WritingStyleCatalog>(
-      { type: 'writing-style-catalog-request', ...(refresh ? { refresh: true } : {}) },
-      'writing-style-catalog',
-    );
+  requestUserMemory(op: UserMemoryOp): Promise<UserMemoryResult | null> {
+    return this.request<UserMemoryResult>({ type: 'user-memory-request', ...op }, 'user-memory');
   }
 
-  calibrateWritingStyle(input: {
-    language: WritingStyleLanguage;
-    files: WritingStyleUpload[];
-    agent: AgentName;
-    model: string;
-    append: boolean;
-  }): string {
-    const requestId = `writing-style-calibration-${++this.requestSeq}`;
-    this.sendJson({ v: AGENT_PROTOCOL_VERSION, type: 'writing-style-calibrate', requestId, ...input });
-    return requestId;
+  /** 대기표 없이 보내는 문체 학습 프레임. 답은 모든 창에 오는 이벤트라 requestId 만 돌려준다. */
+  private sendStyleLearn(payload: Record<string, unknown> & { type: string }): string | null {
+    if (this.state !== 'connected') return null;
+    // 진행 프레임은 모든 창에 가므로 창마다 겹치지 않는 id 를 쓴다.
+    const requestId = `style-learn-${Date.now().toString(36)}-${++this.requestSeq}`;
+    return this.sendJson({ v: AGENT_PROTOCOL_VERSION, requestId, ...payload }) ? requestId : null;
   }
 
-  setWritingStyleInstruction(instruction: string): string {
-    const requestId = `writing-style-instruction-${++this.requestSeq}`;
-    this.sendJson({
-      v: AGENT_PROTOCOL_VERSION,
-      type: 'writing-style-instruction-set',
-      requestId,
-      instruction,
-    });
-    return requestId;
+  startStyleLearn(files: StyleLearnUpload[]): string | null {
+    return this.sendStyleLearn({ type: 'style-learn-start', files });
+  }
+
+  cancelStyleLearn(jobId: string): void {
+    if (this.state !== 'connected') return;
+    this.sendJson({ v: AGENT_PROTOCOL_VERSION, type: 'style-learn-cancel', jobId });
+  }
+
+  requestStyleLearnStatus(): string | null {
+    return this.sendStyleLearn({ type: 'style-learn-status-request' });
+  }
+
+  answerStyleLearnLegacy(accept: boolean): string | null {
+    return this.sendStyleLearn({ type: 'style-learn-legacy', accept });
   }
 
   answerUserQuestion(interactionId: string, answers: Record<string, UserQuestionAnswer>): string {
@@ -6181,14 +5974,6 @@ export class AgentBridgeImpl implements AgentBridge {
 
   requestPiStatus(): Promise<PiStatus | null> {
     return this.request<PiStatus>({ type: 'pi-status-request' }, 'pi-status');
-  }
-
-  requestRauAgentStatus(refresh = false): Promise<RauAgentStatus | null> {
-    return this.request<RauAgentStatus>({ type: 'rau-agent-status-request', ...(refresh ? { refresh: true } : {}) }, 'rau-agent-status');
-  }
-
-  rauAgentStatus(): RauAgentStatus {
-    return this.lastRauAgentStatus;
   }
 
   installPi(): Promise<PiStatus | null> {

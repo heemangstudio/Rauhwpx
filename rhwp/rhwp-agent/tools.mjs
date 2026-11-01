@@ -663,21 +663,12 @@ const browserRefShape = () => ({
 const BASE_TOOL_DEFINITIONS = [
   {
     name: 'read_agent_instructions',
-    description: 'Read the app-only AGENTS.md (durable user preferences for HamaEditor chats): content, revision, updatedAt. Read before update_agent_instructions. Not a project AGENTS.md; never shared outside this app.',
+    description: 'Read the app-only AGENTS.md (durable user preferences for HamaEditor chats, written only by the user): content, revision, updatedAt. Not a project AGENTS.md; never shared outside this app.',
     shape: {},
   },
   {
-    name: 'update_agent_instructions',
-    description: 'Propose a full replacement for the app-only AGENTS.md; saved only when the user approves the card it shows in this chat. Durable instructions or repeated preferences only — never one-off task details, secrets or sensitive inferred facts. Say in one line what the card changes.',
-    shape: {
-      content: z.string().max(30_000).describe('Replacement AGENTS.md content'),
-      expectedRevision: z.number().int().min(1).describe('From read_agent_instructions'),
-      reason: z.string().min(1).optional(),
-    },
-  },
-  {
     name: 'read_document_memory',
-    description: 'Read this document\'s memory notes and revision.',
+    description: 'Read this document\'s memory notes and revision, and on the Rau plan the user\'s account rules (account: revision, rules with kind, subject, text, strength 1-5). Read-only: Rau-0.1 and the user write memory.',
     shape: {},
   },
   {
@@ -2028,7 +2019,6 @@ const BASE_TOOL_DEFINITIONS = [
 /** @type {Readonly<Record<string, 'instruction-read'|'instruction-write'|'memory-read'|'document-read'|'document-write'|'reference-read'|'template-read'|'template-write'|'download-write'|'artifact-write'|'user-interaction'|'planning-control'|'plan-progress'|'background-control'|'background-worker'|'browser'|'project-read'|'project-write'|'project-ingest'|'document-link'>>} */
 export const TOOL_CLASSIFICATIONS = Object.freeze({
   read_agent_instructions: 'instruction-read',
-  update_agent_instructions: 'instruction-write',
   read_document_memory: 'memory-read',
   read_product_skill: 'document-read',
   commit_product_skill: 'instruction-write',

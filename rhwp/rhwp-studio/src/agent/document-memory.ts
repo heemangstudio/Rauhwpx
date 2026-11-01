@@ -21,9 +21,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+/** 세기 1–5. 옛 허브는 evidence(본 횟수)만 보낸다 — 그때는 그 수를 세기 상한까지 쓴다. */
+function readStrength(strength: unknown, evidence: unknown, origin: unknown): number {
+  const raw = typeof strength === 'number' && Number.isFinite(strength)
+    ? strength
+    : typeof evidence === 'number' && Number.isFinite(evidence) ? evidence : origin === 'user' ? 3 : 1;
+  return Math.max(1, Math.min(5, Math.round(raw)));
+}
+
 function readEntry(value: unknown): DocumentMemoryEntry | null {
   if (!isRecord(value)) return null;
-  const { id, kind, subject, text, origin, evidence, createdAt, updatedAt, confirmedAt } = value;
+  const { id, kind, subject, text, origin, strength, evidence, createdAt, updatedAt, confirmedAt } = value;
   if (typeof id !== 'string' || !id || typeof subject !== 'string' || typeof text !== 'string') return null;
   if (!DOCUMENT_MEMORY_KINDS.includes(kind as DocumentMemoryKind)) return null;
   if (origin !== 'explicit' && origin !== 'learned' && origin !== 'user') return null;
@@ -33,7 +41,7 @@ function readEntry(value: unknown): DocumentMemoryEntry | null {
     subject,
     text,
     origin,
-    evidence: typeof evidence === 'number' && Number.isFinite(evidence) ? evidence : 1,
+    strength: readStrength(strength, evidence, origin),
     createdAt: typeof createdAt === 'string' ? createdAt : '',
     updatedAt: typeof updatedAt === 'string' ? updatedAt : '',
     confirmedAt: typeof confirmedAt === 'string' ? confirmedAt : '',
@@ -54,7 +62,6 @@ function readEntry(value: unknown): DocumentMemoryEntry | null {
     entry.source = source;
   }
   if (value.userCandidate === true) entry.userCandidate = true;
-  if (value.promoted === true) entry.promoted = true;
   return entry;
 }
 

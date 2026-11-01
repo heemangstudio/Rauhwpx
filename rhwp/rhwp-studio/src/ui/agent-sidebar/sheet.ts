@@ -70,6 +70,8 @@ function focusables(container: HTMLElement): HTMLElement[] {
 /** 시트 틀을 만들 때의 공용 선택. 확인 시트와 내용 시트(문서 기억 등)가 같이 쓴다. */
 export interface SheetFrameOptions {
   title: string;
+  /** false 면 열고 닫을 때 이동·전이 없이 바로 보인다. */
+  animate?: boolean;
   signal?: AbortSignal;
   center?: boolean;
   anchor?: Element | null;
@@ -131,6 +133,11 @@ export function createSheetFrame(options: SheetFrameOptions): SheetFrame {
   layer.append(backdrop, sheet);
 
   const present: SheetFrame['present'] = (initialFocus, onSettle) => {
+    if (options.animate === false) {
+      layer.classList.add('ag-sheet-open');
+      Object.assign(sheet.style, { transform: 'none', transition: 'none', opacity: '1' });
+      Object.assign(backdrop.style, { transition: 'none', opacity: '1' });
+    }
     host.appendChild(layer);
     let settled = false;
 
@@ -157,7 +164,7 @@ export function createSheetFrame(options: SheetFrameOptions): SheetFrame {
         fallback = null;
         layer.remove();
       };
-      if (reducedMotion()) remove();
+      if (options.animate === false || reducedMotion()) remove();
       else {
         sheet.addEventListener('transitionend', onSheetTransitionEnd);
         fallback = window.setTimeout(remove, 480);

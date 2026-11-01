@@ -99,12 +99,12 @@ const LICENSE_EMAIL_COPY = {
     preheader: 'Hama 키를 담았어요. 내 AI를 연결해 에이전트를 바로 쓸 수 있어요.',
     noteHtml: 'Hama 키예요. 앱의 모든 기능을 쓸 수 있고, <strong>내 AI 연결</strong>로 에이전트를 쓸 수 있어요. 키 하나로 <strong>기기 2대</strong>(Mac · Windows)까지 쓸 수 있어요.',
   },
-  // Rau: AI included with monthly credits, and Rau mode.
+  // Rau: everything in Hama plus Rau mode, two devices. Plan copy names no model or AI vendor.
   rau: {
     subject: '[HamaEditor] Rau 라이선스 키를 보내드려요',
     heading: 'Rau를 구독해 주셔서 고마워요.',
-    preheader: 'Rau 키를 담았어요. AI가 포함돼 있어 따로 연결하지 않아도 바로 쓸 수 있어요.',
-    noteHtml: 'Rau 키예요. 앱의 모든 기능과 <strong>AI 포함</strong> 에이전트(매달 크레딧 제공), 문서를 배우는 <strong>Rau 모드</strong>를 쓸 수 있어요. 키 하나로 <strong>기기 2대</strong>(Mac · Windows)까지 쓸 수 있어요.',
+    preheader: 'Rau 키를 담았어요. Hama의 모든 기능에 Rau 모드를 더해요.',
+    noteHtml: 'Rau 키예요. 앱의 모든 기능과 <strong>내 AI 연결</strong>에 더해, 작업하면서 내 글 취향을 배우는 <strong>Rau 모드</strong>를 쓸 수 있어요. 키 하나로 <strong>기기 2대</strong>(Mac · Windows)까지 쓸 수 있어요.',
   },
   signature: {
     subject: '[HamaEditor] Signature 라이선스 키를 보내드려요',

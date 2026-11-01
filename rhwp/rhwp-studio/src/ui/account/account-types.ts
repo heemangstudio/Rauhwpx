@@ -28,7 +28,7 @@ export interface AccountLicense {
   primary: boolean;
 }
 
-/** 호스팅 Rau(에이전트·Rau 모드)의 자격과 크레딧. source 'trial' 이면 resetsAt 은 체험이 끝나는 때다. */
+/** Rau 요금제(Rau 모드)의 자격과 크레딧. source 'trial' 이면 resetsAt 은 체험이 끝나는 때다. */
 export interface AccountRau {
   eligible: boolean;
   source: 'plan' | 'trial' | null;

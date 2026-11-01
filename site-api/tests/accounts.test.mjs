@@ -766,19 +766,12 @@ test('a trial ends once its $2 is spent: just under it Rau still runs, at it Rau
   assert.deepEqual([spent.trial.state, spent.plan.tier, spent.plan.rau], ['ended', 'free', NO_RAU]);
   const status = (await s.rauStatus(spent.lease)).body;
   assert.deepEqual([status.eligible, status.source, status.remainingUsd, status.resetsAt], [true, 'trial', 0, new Date(TRIAL_END).toISOString()]);
-  const ask = { model: 'rau', max_tokens: 10, messages: [{ role: 'user', content: 'x' }] };
-  const agent = await s.post('/v1/rau/agent/v1/messages', ask, { 'x-api-key': spent.lease });
-  const refused = await agent.json();
-  assert.deepEqual([agent.status, refused.error.type, agent.headers.get('x-rau-resets-at')], [429, 'rau_credits_exhausted', new Date(TRIAL_END).toISOString()]);
-  assert.ok(refused.error.message.includes(`[rau-credits:${new Date(TRIAL_END).toISOString()}]`));
   const learn = await s.post('/v1/rau/learn', { prompt: 'x' }, { authorization: `Bearer ${spent.lease}` });
-  assert.deepEqual([learn.status, (await learn.json()).error], [402, 'rau_credits_exhausted']);
+  assert.deepEqual([learn.status, await learn.json()], [402, { ok: false, error: 'rau_credits_exhausted', allowanceUsd: 2, usedUsd: 2, resetsAt: new Date(TRIAL_END).toISOString() }]);
 
   s.clock.now = TRIAL_END;
   const over = (await s.refresh(me.session)).body;
   assert.deepEqual([(await s.rauStatus(over.lease)).body.eligible, (await s.rauStatus(over.lease)).body.reason], [false, 'rau_plan_required']);
-  const late = await s.post('/v1/rau/agent/v1/messages', ask, { 'x-api-key': over.lease });
-  assert.deepEqual([late.status, (await late.json()).error.type], [403, 'rau_plan_required']);
   const lateLearn = await s.post('/v1/rau/learn', { prompt: 'x' }, { authorization: `Bearer ${over.lease}` });
   assert.deepEqual([lateLearn.status, (await lateLearn.json()).error], [403, 'rau_plan_required']);
 });

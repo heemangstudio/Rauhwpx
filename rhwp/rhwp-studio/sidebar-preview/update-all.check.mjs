@@ -17,7 +17,7 @@ export async function checkUpdateAll(page, origin) {
       onAllState: listener => { listeners.add(listener); return () => listeners.delete(listener); },
       updateAll: async () => { calls.start++; push({ phase: 'updating', items: state.items.map(item => ({ ...item, status: 'running' })) }); return state; },
       later: async () => { calls.later++; push({ phase: 'deferred' }); },
-    }, null, {
+    }, {
       // The home offers the one-click sign to paid users only.
       status: () => ({ signedIn: true, tier: 'rau', agentUnlocked: true }),
       subscribe: () => () => {},

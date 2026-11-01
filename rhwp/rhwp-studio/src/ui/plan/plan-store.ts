@@ -29,6 +29,11 @@ export function planLocksAgent(status: PlanStatus | null): boolean {
   return status !== null && status.tier === 'free' && !status.agentUnlocked;
 }
 
+/** Rau 탭(기억·문체 학습)을 잠그는지 — 요금제를 알고 Rau(체험 포함)가 아닐 때만. 모르거나 API 가 없으면 열어 둔다. */
+export function planLocksRau(status: PlanStatus | null): boolean {
+  return status !== null && status.tier !== 'rau';
+}
+
 /** 문서 홈의 Rau 입구. Rau 로 올라갈 수 있는 유료 등급(Hama)에만. */
 export function showsRauHomeEntry(status: PlanStatus | null): boolean {
   return status?.tier === 'hama';

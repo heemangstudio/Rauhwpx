@@ -1,0 +1,187 @@
+/* 업데이트 뒤 앱 위에 뜨는 릴리스 노트 창 (release-card.ts). 처음 설정 창(initial-setup.css)과
+   같은 덮개·시트·전환을 쓰고, 위의 장면과 글머리표만 하마 그림의 픽셀로 그린다. */
+.rn-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  display: grid;
+  place-items: center;
+  overflow: auto;
+  padding: 24px;
+  scrollbar-width: none;
+  background: var(--overlay-bg);
+  color: var(--n-ink);
+  font-family: var(--ag-font);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--ag-dur-slow) var(--ag-ease-out);
+}
+
+.rn-overlay::-webkit-scrollbar { display: none; }
+
+.rn-overlay.rn-open {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.rn-dialog {
+  --rn-added: #62b3e2; /* 하마 몸 색 */
+  --rn-fixed: var(--n-ink-tertiary);
+
+  position: relative;
+  box-sizing: border-box;
+  width: min(440px, 100%);
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px 24px 24px;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scrollbar-width: none;
+  border: 1px solid var(--n-ink-hairline);
+  border-radius: var(--ag-r-sheet);
+  background: var(--n-surface);
+  box-shadow: var(--ag-elev-sheet);
+  outline: none;
+  opacity: 0;
+  transform: translateY(12px) scale(0.98);
+  transition:
+    opacity var(--ag-dur-base) var(--ag-ease-out),
+    transform var(--ag-dur-slow) var(--ag-spring);
+}
+
+.rn-dialog::-webkit-scrollbar { display: none; }
+
+.rn-open .rn-dialog {
+  opacity: 1;
+  transform: none;
+}
+
+.rn-scene {
+  display: flex;
+  flex: none;
+  justify-content: center;
+  padding-top: 16px;
+}
+
+/* 30×18 그림을 여섯 배로. */
+.rn-hama {
+  display: block;
+  width: 180px;
+  height: 108px;
+  image-rendering: pixelated;
+}
+
+.rn-hama-dark { display: none; }
+:root[data-theme-effective='dark'] .rn-hama-light { display: none; }
+:root[data-theme-effective='dark'] .rn-hama-dark { display: block; }
+
+.rn-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--ag-r-row);
+  background: transparent;
+  color: var(--n-ink-secondary);
+  cursor: default;
+  transition: var(--ag-transition-color);
+}
+
+.rn-close:hover {
+  background: var(--n-ink-fill-hover);
+  color: var(--n-ink);
+}
+
+.rn-close:focus-visible,
+.rn-confirm:focus-visible {
+  outline: var(--ag-focus-ring);
+  outline-offset: var(--ag-focus-offset);
+}
+
+.rn-title {
+  margin: 0;
+  font-size: var(--ag-fs-title);
+  font-weight: var(--ag-fw-strong);
+  letter-spacing: var(--ag-track-tight);
+}
+
+.rn-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-top: -4px;
+}
+
+.rn-label {
+  margin: 0 0 6px;
+  color: var(--n-ink-secondary);
+  font-size: var(--ag-fs-meta);
+  font-weight: var(--ag-fw-medium);
+}
+
+.rn-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.rn-item {
+  position: relative;
+  padding-left: 15px;
+  font-size: var(--ag-fs-body);
+  line-height: 1.55;
+  letter-spacing: var(--ag-track-tight);
+  word-break: keep-all;
+}
+
+/* 픽셀 네모 글머리표. 새 기능은 하마 색, 고친 문제는 흐린 색. */
+.rn-item::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: calc(0.775em - 3px);
+  width: 6px;
+  height: 6px;
+  background: var(--rn-added);
+}
+
+.rn-fixed .rn-item::before { background: var(--rn-fixed); }
+
+.rn-footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 4px;
+}
+
+.rn-confirm {
+  min-width: 96px;
+  height: 36px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: var(--ag-r-row);
+  background: var(--ag-primary-bg);
+  color: var(--ag-primary-fg);
+  font: inherit;
+  font-size: var(--ag-fs-body);
+  font-weight: var(--ag-fw-medium);
+  letter-spacing: var(--ag-track-tight);
+  cursor: default;
+  transition: var(--ag-transition-color);
+}
+
+.rn-confirm:hover { background: var(--ag-primary-bg-hover); }
+
+.rn-confirm:active {
+  background: var(--ag-primary-bg-pressed);
+  transition: none;
+}

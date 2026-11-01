@@ -57,7 +57,7 @@ export async function checkMarkdownEditor(page, origin, artifacts) {
   await open(page, origin, 'light');
   const original = await readMarkdown(page);
   assert.match(original, /^# 앱 에이전트 지시\n\n/);
-  assert.equal(await page.$eval(SURFACE, (s) => s.querySelectorAll('h1, h2, ul > li').length), 6, 'headings and list render formatted');
+  assert.deepEqual(await page.$eval(SURFACE, (s) => [s.querySelectorAll('h1').length, s.querySelectorAll('h2').length, s.querySelectorAll('ul > li').length]), [1, 1, 3], 'headings and list render formatted');
   assert.equal(await page.$eval(APPLY, (b) => b.disabled), true, 'nothing to apply before an edit');
   await shot('light');
 

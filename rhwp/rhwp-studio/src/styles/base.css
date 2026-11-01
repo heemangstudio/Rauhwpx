@@ -525,7 +525,7 @@ body.window-inactive ::selection {
 
 body.window-inactive :is(
   .ag-send:not(.ag-stop), .ag-inline-send, .ag-approve, .ag-hub-retry-btn,
-  .ag-settings-primary, .ag-agent-setup-primary, .ag-calibration-primary,
+  .ag-settings-primary, .ag-agent-setup-primary,
   .ag-question-option[data-selected='true'] .ag-question-option-number,
   .ag-skill-toggle[aria-pressed='true'], .ag-settings-toggle-input:checked + .ag-settings-toggle-track,
   .dialog-btn-primary, .dialog-btn-group button.active, .goto-bookmark-item.selected,

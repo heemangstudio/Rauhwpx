@@ -1,5 +1,5 @@
 // 호스팅 Rau 를 Electron 에 연결한다: Studio IPC(자격·크레딧·업그레이드 페이지)와 허브의 Rau-0.1 학습 요청.
-// lease 는 여기서만 쓰고 Studio·허브로 보내지 않는다. Rau 에이전트에 lease 를 주는 길은 rau-agent-host.mjs 다.
+// lease 는 여기서만 쓰고 Studio·허브로 보내지 않는다.
 import { RAU_UPGRADE_URL, RauServerError, upgradeUrlFrom } from './rau-client.mjs';
 
 /** 키가 없거나 lease 가 지금 검증되지 않을 때(무료 lease 포함). 서버에 묻지 않는다. */
@@ -11,8 +11,7 @@ async function statusFor({ client, currentLease }) {
   const lease = await currentLease();
   if (!lease) return { ok: true, eligible: false, source: null, reason: NO_LICENSE, upgradeUrl: RAU_UPGRADE_URL, ...NO_USAGE };
   try {
-    const { agent: _agent, ...status } = await client.status(lease);
-    return { ok: true, ...status };
+    return { ok: true, ...(await client.status(lease)) };
   } catch (error) {
     if (error?.code === 'rau_plan_required') {
       return { ok: true, eligible: false, source: null, reason: 'rau_plan_required', upgradeUrl: upgradeUrlFrom(error.upgradeUrl), ...NO_USAGE };
@@ -50,13 +49,22 @@ function errorFields(error) {
 }
 
 /**
- * 허브의 {type:'rhwp-rau-request', id, operation:'learn', prompt} 에 답한다. 다른 메시지면 null.
- * 성공: {ok:true, value:{text, model}}. 실패: {ok:false, error, code, ...}.
+ * 허브의 {type:'rhwp-rau-request', id, operation:'learn'|'status', prompt?} 에 답한다. 다른 메시지면 null.
+ * learn 성공: {ok:true, value:{text, model}}. status 성공: {ok:true, value: RauStatus} — Studio 의 rau:status 와 같은 답이고
+ * 허브는 이것으로 기억(계정 단계)을 실을지 정한다. 실패: {ok:false, error, code, ...}.
  */
 export async function handleRauRequest({ client, currentLease }, message) {
   if (!message || message.type !== 'rhwp-rau-request' || typeof message.id !== 'string') return null;
   const response = { type: 'rhwp-rau-response', id: message.id };
   try {
+    if (message.operation === 'status') {
+      const status = await statusFor({ client, currentLease });
+      if (!status.ok) throw Object.assign(new Error('Rau status failed.'), { code: status.code });
+      const { ok: _ok, ...value } = status;
+      response.ok = true;
+      response.value = value;
+      return response;
+    }
     if (message.operation !== 'learn') throw Object.assign(new Error('Unsupported Rau operation.'), { code: 'RAU_UNSUPPORTED' });
     const lease = await currentLease();
     if (!lease) throw Object.assign(new Error('No license lease.'), { code: NO_LICENSE });

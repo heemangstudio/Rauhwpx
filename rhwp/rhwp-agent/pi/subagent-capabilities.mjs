@@ -13,7 +13,6 @@ const ROOT_ONLY_TOOLS = new Set([
   'present_implementation_plan',
   'update_todos',
   'register_copy_layout_template',
-  'update_agent_instructions',
   'commit_product_skill',
   'browser_request_account',
   'request_secret',
@@ -39,7 +38,7 @@ function capabilityError(code, message) {
 }
 
 function requireActivePiTurn(activeSession) {
-  if (activeSession?.agent !== 'pi' && activeSession?.agent !== 'rau') {
+  if (activeSession?.agent !== 'pi') {
     throw capabilityError('PI_SUBAGENT_ROOT_REQUIRED', 'A Pi root turn is required');
   }
   if (activeSession.providerRole !== 'chat' || !activeSession.providerCapabilityResource) {

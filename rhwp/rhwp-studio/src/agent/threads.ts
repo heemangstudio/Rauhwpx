@@ -237,8 +237,6 @@ export type ThreadMarkerMessage =
       undone?: string[];
       /** 그새 바뀌어 되돌릴 수 없는 항목의 entryId */
       stale?: string[];
-      /** 이 학습이 낸 AGENTS.md 변경안 */
-      proposalDraftId?: string;
       planId?: never;
     });
 
@@ -554,14 +552,12 @@ function saveLegacyThreads(threads: ChatThread[]) {
 function isStoredChatThread(v: unknown): v is StoredChatThread {
   if (!v || typeof v !== 'object') return false;
   const t = v as Record<string, unknown>;
-  // 예전 이름 'hama'(호스팅 하네스)는 'rau' 로 읽는다.
-  if (t.agent === 'hama') t.agent = 'rau';
   return (
     typeof t.id === 'string'
     && typeof t.title === 'string'
     && typeof t.createdAt === 'number'
     && typeof t.updatedAt === 'number'
-    && (t.agent === 'claude' || t.agent === 'codex' || t.agent === 'pi' || t.agent === 'rau')
+    && (t.agent === 'claude' || t.agent === 'codex' || t.agent === 'pi')
     && typeof t.model === 'string'
     && typeof t.effort === 'string'
     && Array.isArray(t.messages)
@@ -569,7 +565,6 @@ function isStoredChatThread(v: unknown): v is StoredChatThread {
 }
 
 function parseAgentName(value: unknown): AgentName | undefined {
-  if (value === 'hama') return 'rau';
   return isAgentName(value) ? value : undefined;
 }
 
@@ -664,7 +659,7 @@ function parseThreadTask(value: unknown): ThreadTaskRecord | null {
 }
 
 function isAgentName(value: unknown): value is AgentName {
-  return value === 'claude' || value === 'codex' || value === 'pi' || value === 'rau';
+  return value === 'claude' || value === 'codex' || value === 'pi';
 }
 
 function normalizeRetryPayload(value: unknown): ThreadRetryPayload | undefined {
@@ -1148,7 +1143,6 @@ function normalizeStoredMarker(message: Record<string, unknown>): ThreadMarkerMe
     const undone = ids(message.undone);
     const stale = ids(message.stale).filter((id) => !undone.includes(id));
     const turnId = nonEmptyString(message.turnId);
-    const proposalDraftId = nonEmptyString(message.proposalDraftId);
     return {
       role: 'system',
       kind: 'marker',
@@ -1162,7 +1156,6 @@ function normalizeStoredMarker(message: Record<string, unknown>): ThreadMarkerMe
       changes: message.changes,
       ...(undone.length ? { undone } : {}),
       ...(stale.length ? { stale } : {}),
-      ...(proposalDraftId ? { proposalDraftId } : {}),
       text: message.text,
     };
   }
@@ -2466,7 +2459,7 @@ export function findTasteMarker(messages: readonly ThreadMessage[], learnId: str
  */
 export function addTasteMarker(
   thread: ChatThread,
-  learned: Pick<TasteLearned, 'learnId' | 'turnId' | 'documentId' | 'key' | 'items' | 'changes' | 'proposal'>,
+  learned: Pick<TasteLearned, 'learnId' | 'turnId' | 'documentId' | 'key' | 'items' | 'changes'>,
 ): ThreadTasteMarker | null {
   if (!learned.items.length || findTasteMarker(thread.messages, learned.learnId)) return null;
   const turnId = learned.turnId ?? null;
@@ -2483,7 +2476,6 @@ export function addTasteMarker(
     if (sameTurn.stale) sameTurn.stale = sameTurn.stale.filter((id) => !fresh.has(id));
     if (!sameTurn.undone?.length) delete sameTurn.undone;
     if (!sameTurn.stale?.length) delete sameTurn.stale;
-    if (learned.proposal?.draftId) sameTurn.proposalDraftId = learned.proposal.draftId;
     return sameTurn;
   }
   const marker: ThreadTasteMarker = {
@@ -2496,7 +2488,6 @@ export function addTasteMarker(
     key: learned.key,
     items: [...learned.items],
     changes: [...learned.changes],
-    ...(learned.proposal?.draftId ? { proposalDraftId: learned.proposal.draftId } : {}),
     text: '',
   };
   thread.messages.splice(tasteMarkerIndex(thread.messages, turnId), 0, marker);
