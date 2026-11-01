@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { CommandRegistry } from '../src/command/registry.ts';
 import { shortcuts } from '../src/command/effective-shortcuts.ts';
 import { syncToolbarShortcutTitles } from '../src/ui/toolbar-shortcut-titles.ts';
+import { formatShortcutLabel } from '../src/engine/navigation-keymap.ts';
 
 class FakeButton {
   private attrs = new Map<string, string>();
@@ -52,9 +53,9 @@ test('도구 막대 title 은 사용자 지정 단축키를 따르고, 되돌리
     shortcuts.remove('edit:find', 'mod+f');
     shortcuts.assign('insert:image', 'mod+shift+9');
     syncToolbarShortcutTitles(root, registry);
-    assert.equal(bold.getAttribute('title'), '굵게 (Ctrl+Shift+B)');
+    assert.equal(bold.getAttribute('title'), `굵게 (${formatShortcutLabel('Ctrl+Shift+B')})`);
     assert.equal(find.getAttribute('title'), '찾기', '키가 없으면 단축키 표기를 뺀다');
-    assert.equal(image.getAttribute('title'), '그림 (Ctrl+Shift+9)');
+    assert.equal(image.getAttribute('title'), `그림 (${formatShortcutLabel('Ctrl+Shift+9')})`);
 
     shortcuts.resetAll();
     syncToolbarShortcutTitles(root, registry);
