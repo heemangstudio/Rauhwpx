@@ -9,7 +9,8 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-const PANE = '#ag-settings-pane-rau';
+const PANE = '.ag-rau-pane';
+const RAU_TAB = '#ag-settings-tab-ai-rau';
 const RAU = 'reset=1&page=settings&destination=rau&plan=rau&userMemory=sample';
 const CHAT = 'preview-chat-taste';
 
@@ -20,8 +21,7 @@ const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 async function openRau(page, open, query = RAU) {
   await open(query);
   await page.waitForSelector(`${PANE}`, { visible: true });
-  await page.waitForFunction(() => document.querySelector('#ag-settings-pane-rau')?.dataset
-    && document.querySelector('.ag-rau-pane')?.dataset.availability !== 'loading');
+  await page.waitForFunction(() => document.querySelector('.ag-rau-pane')?.dataset.availability !== 'loading');
 }
 
 /** 기억 묶음별 규칙 — 강한 것부터 보이는 그대로. */
@@ -53,13 +53,23 @@ async function checkLocked({ page, open, screenshot }) {
   for (const tier of ['hama', 'free']) {
     await open(`reset=1&plan=${tier}&userMemory=sample`);
     await page.evaluate(() => window.sidebarPreview.eventBus.emit('settings:open', { destination: 'editing' }));
-    await page.waitForSelector('#ag-settings-tab-rau', { visible: true });
-    // 자물쇠와 "Rau에서 쓸 수 있어요" — 눌러도 탭은 열리지 않고 요금제 카드가 Rau 칸에 맞춰 열린다.
-    assert.equal(await page.$eval('#ag-settings-tab-rau', (tab) => tab.title), 'Rau에서 쓸 수 있어요');
-    assert.equal(await shown(page, '#ag-settings-tab-rau .ag-settings-nav-rau-lock'), true, `${tier}: lock icon`);
-    assert.equal(await shown(page, PANE), false);
-    if (tier === 'hama') await screenshot('rau-tab-locked');
-    await page.click('#ag-settings-tab-rau');
+    await page.waitForSelector('#ag-settings-tab-ai', { visible: true });
+    assert.equal(await shown(page, RAU_TAB), false, `${tier}: Rau sits in the collapsed AI group`);
+    if (tier === 'free') {
+      // 무료는 AI 묶음째 잠겨 있어 Rau 를 바로 열 때만 Rau 칸의 요금제 카드가 뜬다.
+      await page.waitForSelector('#ag-settings-tab-ai.ag-settings-ai-locked', { visible: true });
+      await page.evaluate(() => window.sidebarPreview.eventBus.emit('settings:open', { destination: 'rau' }));
+    } else {
+      // 넷째 세부 탭의 자물쇠와 "Rau에서 쓸 수 있어요" — 눌러도 열리지 않고 요금제 카드가 Rau 칸에 맞춰 열린다.
+      await page.click('#ag-settings-tab-ai');
+      await page.waitForSelector(RAU_TAB, { visible: true });
+      assert.deepEqual(await page.$$eval('#ag-settings-nav-ai-sections .ag-settings-nav-sub', (tabs) => tabs.map((tab) => tab.textContent.trim())), ['연결', '사용량', '사용자화', 'Rau']);
+      assert.equal(await page.$eval(RAU_TAB, (tab) => tab.title), 'Rau에서 쓸 수 있어요');
+      assert.equal(await shown(page, `${RAU_TAB} .ag-settings-nav-rau-lock`), true, `${tier}: lock icon`);
+      assert.equal(await shown(page, PANE), false);
+      await screenshot('rau-tab-locked');
+      await page.click(RAU_TAB);
+    }
     await page.waitForSelector('.ag-pricing-col[data-plan="rau"][data-focus="true"]', { visible: true });
     assert.deepEqual(await page.evaluate(() => window.sidebarPreview.planCardRequests), [{ focus: 'rau' }], `${tier}: opens the plan card on Rau`);
     assert.equal(await shown(page, PANE), false, `${tier}: the Rau pane stays closed`);
@@ -75,8 +85,10 @@ async function checkLocked({ page, open, screenshot }) {
   await page.click('.ag-pricing-close');
   await page.waitForFunction(() => !document.querySelector('.ag-pricing-card'));
   await page.evaluate(() => window.sidebarPreview.plan.setTier('rau'));
-  await page.waitForFunction(() => !document.querySelector('#ag-settings-tab-rau')?.classList.contains('ag-settings-rau-locked'));
-  await page.click('#ag-settings-tab-rau');
+  await page.waitForFunction((tab) => !document.querySelector(tab)?.classList.contains('ag-settings-rau-locked'), {}, RAU_TAB);
+  await page.click('#ag-settings-tab-ai');
+  await page.waitForSelector(RAU_TAB, { visible: true });
+  await page.click(RAU_TAB);
   await page.waitForSelector(PANE, { visible: true });
   await page.waitForSelector('.ag-rau-rule', { visible: true });
 }
@@ -84,7 +96,7 @@ async function checkLocked({ page, open, screenshot }) {
 async function checkNoPlanApi({ page, open }) {
   // 요금제 API 가 없으면(웹 Studio) 잠그지 않고, 허브는 unavailable 로 답한다: 기억은 보고 지울 수 있고 배우기는 막힌다.
   await openRau(page, open, 'reset=1&page=settings&destination=rau&userMemory=sample');
-  assert.equal(await page.$eval('#ag-settings-tab-rau', (tab) => tab.classList.contains('ag-settings-rau-locked')), false);
+  assert.equal(await page.$eval(RAU_TAB, (tab) => tab.classList.contains('ag-settings-rau-locked')), false);
   await page.waitForFunction(() => document.querySelector('.ag-rau-pane')?.dataset.availability === 'unavailable');
   assert.equal(await shown(page, '.ag-rau-notice'), true, 'a calm notice');
   assert.equal(await page.$eval('.ag-rau-drop', (button) => button.disabled), true, 'learning is closed');
@@ -113,7 +125,7 @@ async function checkExhausted({ page, open, workdir }) {
 async function checkOpen({ page, open, screenshot }) {
   await openRau(page, open);
   await page.waitForSelector('.ag-rau-rule', { visible: true });
-  assert.equal(await page.$eval('#ag-settings-tab-rau', (tab) => tab.classList.contains('ag-settings-rau-locked')), false);
+  assert.equal(await page.$eval(RAU_TAB, (tab) => tab.classList.contains('ag-settings-rau-locked')), false);
   assert.equal(await shown(page, '.ag-rau-notice'), false, 'no notice on the Rau plan');
   assert.match(await text(page, '.ag-rau-hero-status'), /장기기억 9개/);
   assert.equal(await page.$eval('.ag-taste-learning-row input', (input) => input.checked), true, '대화에서 배우기 is on by default');

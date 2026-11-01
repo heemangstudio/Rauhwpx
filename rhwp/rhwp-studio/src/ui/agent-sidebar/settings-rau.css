@@ -13,9 +13,13 @@
   --rau-accent: #dd5967;
 }
 
+/* 뉴런이 AI 본문의 여백까지 번지고 그 끝에서 잘린다. */
+.ag-settings-destination-content:has(> .ag-rau-pane) {
+  overflow-x: clip;
+}
+
 .ag-rau-pane {
   isolation: isolate;
-  overflow-x: clip;
   --rau-water: var(--rau-accent);
   --ag-primary-bg: var(--rau-button);
   --ag-primary-fg: #fff;

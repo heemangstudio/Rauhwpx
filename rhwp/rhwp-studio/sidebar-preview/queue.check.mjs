@@ -449,11 +449,11 @@ export async function checkComposerSendPath(page, origin) {
   // 로컬 명령은 사용자 메시지를 보내지 않는다.
   await submit('/fast status');
   await submit('/문체학습');
-  await page.waitForSelector('#ag-settings-pane-rau', { visible: true });
+  await page.waitForSelector('.ag-rau-pane', { visible: true });
   assert.deepEqual(await sent(), [], 'local commands never reach the agent');
   assert.equal(await page.$$eval('.ag-msg-user', (nodes) => nodes.length), 0);
   await page.$eval('.ag-settings-close', (close) => close.click());
-  await page.waitForSelector('#ag-settings-pane-rau', { hidden: true });
+  await page.waitForSelector('.ag-rau-pane', { hidden: true });
   // 설정이 닫히며 채팅 화면이 돌아오는 동안에는 입력창을 누를 수 없다.
   await page.waitForSelector('.ag-input', { visible: true });
 

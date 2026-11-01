@@ -1,5 +1,5 @@
 /**
- * 설정 → Rau. 계정의 장기기억(Rau-0.1)과 문체 학습 — Rau 요금제(체험 포함)에서만 열린다.
+ * 설정 → AI → Rau. 계정의 장기기억(Rau-0.1)과 문체 학습 — Rau 요금제(체험 포함)에서만 열린다.
  *
  * 위에서부터: 하마가 선 물가와 상태 줄·학습 스위치, 문체 학습(올리기 → 도는 카드 → 결과 카드),
  * 장기기억(문체·용어, 강도, 지우기·더하기), 최근 변화(되돌리기), 물러난 장기기억(되살리기).
@@ -230,7 +230,7 @@ export function createRauSettingsPane(deps: RauSettingsPaneDeps): RauSettingsPan
   const lastStrength = new Map<string, number>();
   let seenRules = false;
 
-  const root = el('div', 'ag-settings-destination-content ag-rau-pane');
+  const root = el('div', 'ag-rau-pane');
 
   // ── 머리: 물가의 하마, 이름, 상태 줄, 학습 스위치 ─────────
   const hero = el('section', 'ag-rau-hero');
