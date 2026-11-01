@@ -1654,7 +1654,6 @@ const accountHost = installAccountHost({ ipcMain, manager: accountManager, isTru
 // 앱 요금제: 계정으로 무료·Hama·Rau 를 정하고, 앱 안 결제를 ref 로 확인해 키를 계정에 연결한다.
 const planManager = createPlanManager({
   accountManager,
-  enforce: licenseEnforced,
   fetchImpl: (url, init) => net.fetch(url, init),
   apiBase: licenseApiBase,
   userDataDir: app.getPath('userData'),

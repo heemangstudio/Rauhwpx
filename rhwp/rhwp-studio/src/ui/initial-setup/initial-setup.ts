@@ -34,6 +34,7 @@ import { accountStore, type AccountStore } from '../account/account-store.ts';
 import type { PlanStore } from '../plan/plan-store.ts';
 import type { PlanChooser, PlanChooserOptions } from '../plan/upgrade-card.ts';
 import { createAccountStep } from './account-step.ts';
+import { createWebAssistantStep, webAssistantsAvailable, type WebAssistantStepDeps } from './web-assistant-step.ts';
 import { holdInitialSetup, markLicensedHere, releaseInitialSetup } from './active.ts';
 import {
   completeInitialSetup,
@@ -122,6 +123,8 @@ export interface InitialSetupDeps {
   plan?: PlanStore;
   /** 요금제 장에 넣을 세 칸. 없으면 안내 한 줄만 둔다. */
   createPlanChooser?: (hooks: Pick<PlanChooserOptions, 'onFinish' | 'onRender' | 'doneHoldMs'>) => PlanChooser | null;
+  /** 웹 ChatGPT·Claude 장. 없거나 앱 안 브라우저가 없으면 장을 넣지 않는다. */
+  webAssistants?: Pick<WebAssistantStepDeps, 'request' | 'openSignInWindow' | 'pollMs'>;
   /** 끝내거나 건너뛰어 다시 열 일이 없어졌을 때. */
   onFinished?: () => void;
 }
@@ -155,6 +158,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   const accountApi = account?.api ?? null;
   let accountStep = false;
   let ai = false;
+  let assistantsAvailable = false;
   /** 결제·체험이 진행 중이면 그 결과를 알릴 때까지 장을 바꾸지 않는다. */
   let planBusy = false;
   function rebuildSteps(preferred = currentStep()): void {
@@ -164,6 +168,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
       ai, account: accountStep,
       signedIn: accountApi ? account?.status()?.state === 'signed_in' : plan?.signedIn === true,
       tier: plan?.tier ?? 'free',
+      assistants: assistantsAvailable,
     });
     const index = steps.indexOf(preferred);
     stepIndex = index >= 0 ? index : Math.min(stepIndex, steps.length - 1);
@@ -183,6 +188,20 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
       rebuildSteps();
       renderStep();
     });
+
+  // 웹 ChatGPT·Claude 장은 앱 안 브라우저가 있을 때만. 처음엔 허브가 아직 안 붙었을 수 있어 AI 경로를 고를 때 다시 본다.
+  let assistantsReady: Promise<void> = Promise.resolve();
+  function probeAssistants(): Promise<void> {
+    if (!deps.webAssistants) return assistantsReady;
+    assistantsReady = webAssistantsAvailable(deps.webAssistants.request).then((available) => {
+      if (disposed || available === assistantsAvailable) return;
+      assistantsAvailable = available;
+      rebuildSteps();
+      renderStep();
+    });
+    return assistantsReady;
+  }
+  void probeAssistants();
 
   const overlay = el('div', 'rhwp-setup-overlay');
   overlay.setAttribute('aria-hidden', 'true');
@@ -384,6 +403,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     }
     ai = true;
     rebuildSteps('welcome');
+    void probeAssistants();
     void next();
   });
   welcomePanel.append(freePath, aiPath, routeNotice);
@@ -412,10 +432,21 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
   );
   const modelsHint = el('p', 'rhwp-setup-hint', '연결은 나중에 설정에서도 할 수 있어요.');
   modelsPanel.append(modelsHint);
-  body.append(introPanel, themePanel, fontsPanel, welcomePanel, freePanel, accountElement, plansPanel, modelsPanel, rauPanel);
+
+  // ── 웹 ChatGPT·Claude: 켜고 로그인한 뒤 질문을 하나 보내 작동을 확인한다. ──
+  const assistantStep = deps.webAssistants
+    ? createWebAssistantStep({
+      ...deps.webAssistants,
+      say: (line) => hippo.say(line),
+      cheer: (line) => hippo.cheer(line),
+      onStateChange: () => renderStep(),
+    })
+    : null;
+  const assistantsPanel = assistantStep?.element ?? el('div', 'rhwp-setup-panel');
+  body.append(introPanel, themePanel, fontsPanel, welcomePanel, freePanel, accountElement, plansPanel, modelsPanel, assistantsPanel, rauPanel);
   const panels: Record<SetupStep, HTMLElement> = {
     intro: introPanel, theme: themePanel, fonts: fontsPanel, welcome: welcomePanel, free: freePanel,
-    account: accountElement, plans: plansPanel, models: modelsPanel, rau: rauPanel,
+    account: accountElement, plans: plansPanel, models: modelsPanel, assistants: assistantsPanel, rau: rauPanel,
   };
 
   function mountPlanChooser(): void {
@@ -515,6 +546,9 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     if (step === 'models') {
       return configuredAgents().length > 0 ? HIPPO_LINES.modelConnected : HIPPO_LINES.models;
     }
+    if (step === 'assistants') {
+      return (assistantStep?.verified().length ?? 0) > 0 ? HIPPO_LINES.assistantVerified : HIPPO_LINES.assistants;
+    }
     if (step === 'welcome') return HIPPO_LINES.welcome;
     if (step === 'free') return '문서를 편집할 준비가 되었습니다.';
     if (step === 'plans') return HIPPO_LINES.plans;
@@ -542,7 +576,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     }
     dialog.dataset.step = step;
     const labels: Record<SetupStep, string> = {
-      intro: '안내', theme: '화면 테마', models: 'AI 연결', fonts: '글꼴', account: '계정',
+      intro: '안내', theme: '화면 테마', models: 'AI 연결', assistants: '웹 AI 연결', fonts: '글꼴', account: '계정',
       welcome: '시작 방법', free: '무료 편집 안내', plans: '요금제', rau: 'Rau 소개',
     };
     dots.replaceChildren(...steps.flatMap((name, index) => {
@@ -565,9 +599,11 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
     primary.hidden = step === 'welcome';
     primary.textContent = step === 'intro' ? '시작하기' : leave ? 'AI 없이 무료로 시작' : step === 'models' ? '연결 건너뛰기' : last ? '홈으로' : '다음';
     if (step === 'models' && configuredAgents().length > 0) primary.textContent = last ? '홈으로' : '다음';
+    const assistantsVerified = (assistantStep?.verified().length ?? 0) > 0;
+    if (step === 'assistants') primary.textContent = assistantsVerified ? (last ? '홈으로' : '다음') : '연결 건너뛰기';
     if (step === 'free') primary.textContent = '문서 열기';
     primary.setAttribute('aria-label', primary.textContent);
-    primary.dataset.quiet = leave || step === 'models' ? 'true' : 'false';
+    primary.dataset.quiet = leave || step === 'models' || (step === 'assistants' && !assistantsVerified) ? 'true' : 'false';
     primary.dataset.leave = leave ? 'true' : 'false';
     if (spokenStep !== step && overlay.isConnected) {
       spokenStep = step;
@@ -618,7 +654,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
       return;
     }
     // 글꼴·계정 장을 넣을지 알기 전에는 마지막 장을 정하지 않는다.
-    await Promise.all([fontStepReady, accountStepReady]);
+    await Promise.all([fontStepReady, accountStepReady, assistantsReady]);
     if (currentStep() === 'plans'
       || (currentStep() === 'account' && !accountPanel?.signedIn())) {
       finish();
@@ -704,6 +740,7 @@ export function createInitialSetup(deps: InitialSetupDeps): InitialSetupUi {
       stopPlan();
       unmountPlanChooser();
       accountPanel?.dispose();
+      assistantStep?.dispose();
       hippo.dispose();
       document.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('focus', onWindowFocus);

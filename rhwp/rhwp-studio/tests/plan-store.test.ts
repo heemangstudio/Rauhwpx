@@ -34,8 +34,6 @@ test('without a desktop plan API nothing is locked', () => {
 
 test('the lock and the home Rau entry follow the tier', () => {
   assert.equal(planLocksAgent(status('free')), true);
-  // 라이선스를 강제하지 않는 개발 빌드는 무료여도 열린다.
-  assert.equal(planLocksAgent(status('free', true)), false);
   for (const tier of ['hama', 'rau'] as const) assert.equal(planLocksAgent(status(tier)), false, tier);
   // Hama 사용자만 문서 홈에서 Rau 로 올라간다.
   assert.deepEqual((['free', 'hama', 'rau'] as const).map((tier) => showsRauHomeEntry(status(tier))), [false, true, false]);

@@ -144,16 +144,6 @@ test('a v1 cache moves to v2: Basic, Pro and legacy become Hama, the old hosted 
   assert.deepEqual([unknown.tier, unknown.pendingCheckout], ['free', null]);
 });
 
-test('dev builds that do not enforce the license unlock the free tier only while signed in', async (t) => {
-  const { make, account } = await setup(t, { entitlement: { signedIn: false, accountId: null, tier: null } });
-  const plan = make({ enforce: false });
-  let status = await plan.getStatus();
-  assert.deepEqual([status.tier, status.agentUnlocked], ['free', false]);
-  account.holder.entitlement = { signedIn: true, accountId: 'acct_1', tier: 'free' };
-  status = await plan.getStatus();
-  assert.deepEqual([status.tier, status.agentUnlocked], ['free', true]);
-});
-
 test('the cached tier lasts 7 days for the same account while the lease is unverifiable and survives a restart', async (t) => {
   const { dir, clock, account, make } = await setup(t, { entitlement: { signedIn: true, accountId: 'acct_1', tier: 'hama' } });
   assert.equal((await make().getStatus()).source, 'live');

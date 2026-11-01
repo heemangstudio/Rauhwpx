@@ -80,3 +80,21 @@ export function createWebAssistantStore({ filePath, projectUrl: normalizeProject
     }),
   };
 }
+
+/** 처음 설정의 확인 질문이 쓰는 채팅 열쇠. 다시 확인해도 HamaEditor 프로젝트의 같은 채팅을 이어 간다. */
+export const WEB_ASSISTANT_VERIFY_CHAT_KEY = 'setup:verify';
+export const WEB_ASSISTANT_VERIFY_QUESTION = 'HamaEditor 연결 확인입니다. "연결됐어요"라고만 답해 주세요.';
+const VERIFY_ANSWER_CHARS = 200;
+
+/**
+ * 처음 설정의 "작동 확인": 실제로 짧은 질문을 보내고 답을 받는다. 로그인 확인만으로는 입력창·답 읽기가 되는지 모른다.
+ * 답이 비면 실패로 본다. 답은 화면에 보일 만큼만 돌려준다.
+ * @param {{ ask: (input: { chatKey: string, question: string, sessionId?: string | null }) => Promise<{ chatUrl: string, answer: string }> }} driver
+ * @param {{ sessionId?: string | null, code: string }} options
+ */
+export async function verifyWebAssistant(driver, { sessionId = null, code }) {
+  const result = await driver.ask({ chatKey: WEB_ASSISTANT_VERIFY_CHAT_KEY, question: WEB_ASSISTANT_VERIFY_QUESTION, sessionId });
+  const answer = String(result?.answer ?? '').replace(/\s+/g, ' ').trim();
+  if (!answer) throw Object.assign(new Error('The test question got an empty answer.'), { code: `${code}_UI_CHANGED` });
+  return { verified: true, chatUrl: result.chatUrl, answer: answer.slice(0, VERIFY_ANSWER_CHARS) };
+}

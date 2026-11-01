@@ -519,6 +519,58 @@
   line-height: var(--ag-lh-tight);
 }
 
+/* ── 웹 ChatGPT·Claude: 두 칸, 카드 안에 상태 한 줄과 확인 질문의 답 ── */
+
+.rhwp-setup-assistant-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+/* 상태 줄이 없을 때도 같은 높이로, 로고와 이름은 카드 한가운데. */
+.rhwp-setup-assistant .rhwp-setup-card-action {
+  justify-content: center;
+  height: 100%;
+  min-height: 128px;
+}
+
+.rhwp-setup-assistant-detail[hidden] {
+  display: none;
+}
+
+/* ChatGPT 는 OpenAI 마크를 앱 잉크색으로 — Codex 카드의 푸른 색은 쓰지 않는다. */
+.rhwp-setup-assistant[data-service='chatgpt'] .rhwp-setup-card-logo .ag-provider-icon-mask {
+  color: var(--n-ink);
+}
+
+.rhwp-setup-assistant-detail,
+.rhwp-setup-assistant-answer {
+  max-width: 100%;
+  color: var(--n-ink-secondary);
+  font-size: var(--ag-fs-meta);
+  line-height: var(--ag-lh-tight);
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+
+.rhwp-setup-assistant-answer {
+  display: -webkit-box;
+  margin-top: 4px;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.rhwp-setup-assistant-answer[hidden] {
+  display: none;
+}
+
+.rhwp-setup-assistant[data-state='verified'] .rhwp-setup-assistant-detail {
+  color: var(--n-ink);
+}
+
+.rhwp-setup-assistant .rhwp-setup-card-action[aria-busy='true'] .rhwp-setup-card-logo {
+  animation: rhwp-setup-search 900ms var(--ag-ease-out) infinite alternate;
+}
+
 /* ── 글꼴: 찾기와 한컴오피스 받기 두 칸, 못 찾았을 때만 폴더 링크 ── */
 
 .rhwp-setup-font-actions {
@@ -845,7 +897,8 @@
   .rhwp-setup-panel,
   .rhwp-setup-check,
   .rhwp-setup-dot,
-  .rhwp-setup-font-icon {
+  .rhwp-setup-font-icon,
+  .rhwp-setup-card-logo {
     animation: none;
     transition: none;
   }

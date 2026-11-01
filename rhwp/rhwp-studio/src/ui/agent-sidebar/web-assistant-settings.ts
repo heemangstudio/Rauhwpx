@@ -43,7 +43,7 @@ export function readWebAssistantStatus(value: unknown): WebAssistantStatus | nul
   };
 }
 
-const errorKind = (code: string | null | undefined): 'challenge' | 'signed-out' | null =>
+export const webAssistantErrorKind = (code: string | null | undefined): 'challenge' | 'signed-out' | null =>
   code === 'CHATGPT_CHALLENGE' || code === 'CLAUDE_CHALLENGE' ? 'challenge'
     : code === 'CHATGPT_SIGNED_OUT' || code === 'CLAUDE_SIGNED_OUT' ? 'signed-out' : null;
 
@@ -54,7 +54,7 @@ export function webAssistantStatusView(service: WebAssistant, status: WebAssista
   if (!status.available) return { text: '데스크톱 앱에서만 사용 가능', tone: 'off' };
   if (!status.enabled) return { text: '꺼짐', tone: 'off' };
   if (options.signingIn && status.signedIn !== true) return { text: '로그인 창에서 로그인하세요', tone: 'warn' };
-  const kind = errorKind(options.error);
+  const kind = webAssistantErrorKind(options.error);
   if (kind === 'challenge') return { text: `${name} 확인 필요`, tone: 'warn' };
   if (kind === 'signed-out') return { text: '로그인 필요', tone: 'warn' };
   if (options.error && !options.checking) return { text: '확인하지 못함', tone: 'warn' };
@@ -72,6 +72,18 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, className: string, te
 
 /** 로그인 창이 열린 동안 로그인을 확인하는 간격. */
 const SIGN_IN_POLL_MS = 3_000;
+
+/** 로그인 창이 열린 동안 signedIn 으로 로그인을 보고, 되면 창을 닫는다. 로그인했으면 true. 설정 줄과 처음 설정이 같이 쓴다. */
+export async function watchSignInWindow(window: SignInWindow, signedIn: () => Promise<boolean>, pollMs = SIGN_IN_POLL_MS): Promise<boolean> {
+  let open = true;
+  void window.closed.then(() => { open = false; });
+  while (open) {
+    await Promise.race([window.closed, new Promise((resolve) => setTimeout(resolve, pollMs))]);
+    if (!open) break;
+    if (await signedIn()) { await window.close(); return true; }
+  }
+  return false;
+}
 
 export function createWebAssistantSettingsRow(service: WebAssistant, options: {
   request: BrowserSettingsRequest;
@@ -118,7 +130,7 @@ export function createWebAssistantSettingsRow(service: WebAssistant, options: {
     toggle.disabled = !options.isConnected() || !status?.available;
     signIn.hidden = !options.openSignInWindow || !status?.enabled || !status.available || status.signedIn === true || (checking && !signInWindow);
     signIn.disabled = !!signInWindow;
-    signIn.textContent = errorKind(error) === 'challenge' ? '확인 열기' : '로그인';
+    signIn.textContent = webAssistantErrorKind(error) === 'challenge' ? '확인 열기' : '로그인';
   };
 
   const refresh = async (check = true): Promise<void> => {
@@ -145,18 +157,6 @@ export function createWebAssistantSettingsRow(service: WebAssistant, options: {
     }
   };
 
-  /** 로그인 창이 열린 동안 로그인됐는지 보고, 되면 창을 닫는다. */
-  const watchSignIn = async (window: SignInWindow): Promise<void> => {
-    let open = true;
-    void window.closed.then(() => { open = false; });
-    while (open) {
-      await Promise.race([window.closed, new Promise((resolve) => setTimeout(resolve, options.pollMs ?? SIGN_IN_POLL_MS))]);
-      if (!open) break;
-      await refresh(true);
-      if (status?.signedIn === true) { await window.close(); break; }
-    }
-  };
-
   toggle.addEventListener('change', () => {
     const enabled = toggle.checked;
     toggle.disabled = true;
@@ -167,10 +167,10 @@ export function createWebAssistantSettingsRow(service: WebAssistant, options: {
   });
   signIn.addEventListener('click', () => {
     if (!options.openSignInWindow || signInWindow) return;
-    const url = errorKind(error) === 'challenge' ? spec.homeUrl : spec.signInUrl;
+    const url = webAssistantErrorKind(error) === 'challenge' ? spec.homeUrl : spec.signInUrl;
     void options.openSignInWindow(url).then(async (window) => {
       signInWindow = window; error = null; render();
-      await watchSignIn(window);
+      await watchSignInWindow(window, async () => { await refresh(true); return status?.signedIn === true; }, options.pollMs);
       await window.closed;
       signInWindow = null;
       await refresh(true);

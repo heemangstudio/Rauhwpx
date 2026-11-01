@@ -5207,6 +5207,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     beginAgentConnect: (agent) => settingsPanel.beginAgentConnect(agent),
     plan: planStore,
     createPlanChooser: (hooks) => (planStore.api ? createPlanChooser({ store: planStore, ...hooks }) : null),
+    // 웹 ChatGPT·Claude 장: 설정 → AI 의 같은 허브 동작과 로그인 창을 쓴다(창은 아래에서 정의된다).
+    webAssistants: {
+      request: (action, args) => bridge.requestBrowser(action, args),
+      openSignInWindow: (url) => openSignInWindow(url),
+    },
     onFinished: () => {
       adoptFirstRunDefaultAgent();
       updateReconnectChip();

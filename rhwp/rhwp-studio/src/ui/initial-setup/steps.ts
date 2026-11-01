@@ -23,7 +23,7 @@ import {
   isLocalFontAccessSupported,
 } from '../../core/local-fonts.ts';
 
-export type SetupStep = 'intro' | 'theme' | 'fonts' | 'welcome' | 'free' | 'account' | 'plans' | 'models' | 'rau';
+export type SetupStep = 'intro' | 'theme' | 'fonts' | 'welcome' | 'free' | 'account' | 'plans' | 'models' | 'assistants' | 'rau';
 /** missing: 데스크톱에서 색인에 한컴 글꼴이 없다. discover: 브라우저에서 아직 못 찾았다. */
 export type FontStepKind = 'missing' | 'discover';
 
@@ -35,6 +35,12 @@ export const HIPPO_LINES = {
   welcome: '어떻게 시작할까요?',
   plans: '나에게 맞는 요금제를 골라 주세요.',
   models: '쓰고 있는 AI가 있으면 연결해 주세요.',
+  assistants: 'ChatGPT나 Claude를 웹에서 쓰고 있으면 연결해 주세요. 메모리와 대화 기록을 물어볼 수 있어요.',
+  assistantSignIn: '열린 창에서 로그인해 주세요.',
+  assistantVerifying: '잘 되는지 질문을 하나 보내 볼게요.',
+  assistantVerified: '잘 작동해요!',
+  assistantFailed: '확인하지 못했어요. 다시 시도해 주세요.',
+  assistantSignedOut: '로그인을 마치지 않았어요. 카드를 다시 눌러 주세요.',
   rau: 'Rau도 함께할 준비가 됐어요!',
   hamaReady: 'Hama를 쓸 수 있어요! 쓰고 있는 AI를 연결해 주세요.',
   modelConnected: '연결됐어요!',
@@ -86,10 +92,13 @@ export function planFontStep(env: FontEnvironment): FontStepKind | null {
   return env.canDiscover ? 'discover' : null;
 }
 
-/** 무료 경로는 홈으로, AI 경로는 계정과 실제 유료 등급을 확인한 뒤 연결 단계로 간다. */
+/**
+ * 무료 경로는 홈으로, AI 경로는 계정과 실제 유료 등급을 확인한 뒤 연결 단계로 간다.
+ * 웹 ChatGPT·Claude 장은 프로바이더 연결 뒤에, 데스크톱 앱 안 브라우저가 있을 때만(assistants) 둔다.
+ */
 export function planSteps(
   fontStep: FontStepKind | null,
-  options: { ai?: boolean; account?: boolean; signedIn?: boolean; tier?: PlanTier } = {},
+  options: { ai?: boolean; account?: boolean; signedIn?: boolean; tier?: PlanTier; assistants?: boolean } = {},
 ): SetupStep[] {
   const steps: SetupStep[] = ['intro', 'theme'];
   if (fontStep) steps.push('fonts');
@@ -101,6 +110,7 @@ export function planSteps(
   // Rau 는 시작을 먼저 축하하고 나서 쓰던 AI 를 연결한다.
   if (options.tier === 'rau') steps.push('rau');
   steps.push('models');
+  if (options.assistants) steps.push('assistants');
   return steps;
 }
 
