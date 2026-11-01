@@ -141,19 +141,85 @@ test('documents without notes write nothing to disk', async (t) => {
   assert.deepEqual(readdirSync(dir), []);
 });
 
-test('adding an existing subject updates that note and counts the confirmation', async (t) => {
+test('adding an existing subject reinforces the same habit and resets the strength of a new one', async (t) => {
   const store = new DocumentMemoryStore({ dir: tempDir(t) });
   const key = await store.resolveKey({ documentId: 'doc-1' });
-  const first = await store.apply(key, [{ op: 'add', kind: 'style', subject: '문체.종결', text: '본문은 합니다체 사용' }], explicit);
-  const second = await store.apply(key, [{ op: 'add', kind: 'style', subject: ' 문체.종결 ', text: '본문은 한다체 사용' }], { origin: 'learned' });
+  const learned = { origin: 'learned' };
+  const first = await store.apply(key, [{ op: 'add', kind: 'style', subject: '문체.종결', text: '본문은 합니다체 사용' }], learned);
+  const again = await store.apply(key, [{ op: 'add', kind: 'style', subject: '문체.종결', text: '본문은 합니다체 사용.' }], learned);
+  assert.deepEqual([again.changes[0].prev.strength, again.changes[0].entry.strength], [1, 2]);
+  const second = await store.apply(key, [{ op: 'add', kind: 'style', subject: ' 문체.종결 ', text: '본문은 한다체 사용' }], learned);
   assert.equal(second.changes[0].op, 'update');
   assert.equal(second.changes[0].entryId, first.changes[0].entryId);
-  assert.equal(second.changes[0].prev.text, '본문은 합니다체 사용');
+  assert.equal(second.changes[0].prev.text, '본문은 합니다체 사용.');
   const { entries } = await store.read(key);
   assert.equal(entries.length, 1);
   assert.equal(entries[0].text, '본문은 한다체 사용');
-  assert.equal(entries[0].evidence, 2);
+  assert.equal(entries[0].strength, 1, 'a different habit starts over');
   assert.equal(entries[0].origin, 'learned');
+});
+
+test('reinforce and dampen move the strength within 1-5; dampening to zero retires the note and revert restores it', async (t) => {
+  const store = new DocumentMemoryStore({ dir: tempDir(t) });
+  const key = await store.resolveKey({ documentId: 'doc-1' });
+  const added = await store.apply(key, [{ op: 'add', kind: 'term', subject: '용어.고객', text: "'이용자'로 통일" }], { origin: 'learned' });
+  const id = added.changes[0].entryId;
+  for (let step = 0; step < 6; step += 1) await store.apply(key, [{ op: 'reinforce', id }], { origin: 'learned' });
+  assert.equal((await store.read(key)).entries[0].strength, 5, 'capped at 5');
+  await store.apply(key, [{ op: 'dampen', id, strong: true }], { origin: 'learned' });
+  await store.apply(key, [{ op: 'dampen', id }], { origin: 'learned' });
+  assert.equal((await store.read(key)).entries[0].strength, 2);
+  const retired = await store.apply(key, [{ op: 'dampen', id, strong: true }], { origin: 'learned' });
+  assert.deepEqual([retired.changes[0].op, retired.changes[0].retired], ['remove', true]);
+  assert.deepEqual((await store.read(key)).entries, []);
+  const reverted = await store.revert(key, retired.changes);
+  assert.deepEqual(reverted.reverted, [id]);
+  assert.equal((await store.read(key)).entries[0].strength, 2);
+  await assert.rejects(store.apply(key, [{ op: 'reinforce', id: 'mem_zzzzzzzzzzzz' }], { origin: 'learned' }), { code: 'MEMORY_ENTRY_NOT_FOUND' });
+});
+
+test('a full memory evicts its weakest, oldest learned note; only user or requested notes left means MEMORY_FULL', async (t) => {
+  let clock = Date.parse('2026-10-01T00:00:00Z');
+  const store = new DocumentMemoryStore({ dir: tempDir(t), now: () => new Date(clock += 1000).toISOString() });
+  const key = await store.resolveKey({ documentId: 'doc-1' });
+  const ops = Array.from({ length: MAX_MEMORY_ENTRIES }, (_, index) => ({ op: 'add', kind: 'fact', subject: `사실.${index}`, text: `사실 ${index}` }));
+  await store.apply(key, ops.slice(0, 20), { origin: 'user' });
+  await store.apply(key, ops.slice(20), { origin: 'learned' });
+  const strong = (await store.read(key)).entries.find((entry) => entry.subject === '사실.20');
+  await store.apply(key, [{ op: 'reinforce', id: strong.id }], { origin: 'learned' });
+  const full = await store.apply(key, [{ op: 'add', kind: 'fact', subject: '사실.새것', text: '새 사실' }], { origin: 'learned' });
+  const evicted = full.changes.find((change) => change.evicted === true);
+  assert.equal(evicted.prev.subject, '사실.21', 'the weakest learned note, oldest first; the reinforced one stays');
+  const { entries } = await store.read(key);
+  assert.equal(entries.length, MAX_MEMORY_ENTRIES);
+  assert.equal(entries.filter((entry) => entry.origin === 'user').length, 20, 'user notes are never evicted');
+  // 되돌리면 새 메모가 빠지고 내보낸 메모가 돌아온다.
+  await store.revert(key, full.changes);
+  assert.equal((await store.read(key)).entries.some((entry) => entry.subject === '사실.21'), true);
+
+  const userOnly = await store.resolveKey({ documentId: 'doc-2' });
+  await store.apply(userOnly, ops, { origin: 'user' });
+  await assert.rejects(store.apply(userOnly, [{ op: 'add', kind: 'fact', subject: '사실.넘침', text: '하나 더' }], { origin: 'learned' }), { code: 'MEMORY_FULL' });
+});
+
+test('stored evidence reads as strength, and a user note without either starts at 3', async (t) => {
+  const dir = tempDir(t);
+  const store = new DocumentMemoryStore({ dir });
+  const key = await store.resolveKey({ documentId: 'doc-1' });
+  await store.apply(key, [{ op: 'add', kind: 'fact', subject: '사실.a', text: 'a' }], { origin: 'learned' });
+  const file = path.join(dir, 'docs', `${key}.json`);
+  const raw = JSON.parse(readFileSync(file, 'utf8'));
+  const base = raw.entries[0];
+  raw.entries = [
+    { ...base, id: 'mem_aaaaaaaaaaaa', subject: '사실.a', strength: undefined, evidence: 4, origin: 'learned' },
+    { ...base, id: 'mem_bbbbbbbbbbbb', subject: '사실.b', strength: undefined, evidence: 9, origin: 'learned' },
+    { ...base, id: 'mem_cccccccccccc', subject: '사실.c', strength: undefined, origin: 'user' },
+    { ...base, id: 'mem_dddddddddddd', subject: '사실.d', strength: undefined, origin: 'learned' },
+  ];
+  writeFileSync(file, JSON.stringify(raw));
+  const reopened = new DocumentMemoryStore({ dir });
+  const strengths = Object.fromEntries((await reopened.read(key)).entries.map((entry) => [entry.subject, entry.strength]));
+  assert.deepEqual(strengths, { '사실.a': 4, '사실.b': 5, '사실.c': 3, '사실.d': 1 });
 });
 
 test('caps reject a 41st note and an over-long memory without changing anything', async (t) => {
@@ -244,9 +310,9 @@ test('the prompt block leaves out notes whose anchor is gone and lists subjects 
   const memory = {
     key: 'dm_x', revision: 4,
     entries: [
-      { id: 'mem_aaaaaaaaaaaa', kind: 'style', subject: '문체.종결', text: '본문은 한다체 사용', origin: 'user' },
+      { id: 'mem_aaaaaaaaaaaa', kind: 'style', subject: '문체.종결', text: '본문은 한다체 사용', origin: 'user', strength: 3 },
       { id: 'mem_bbbbbbbbbbbb', kind: 'protect', subject: '보호.3장', text: '3장 수정 금지', anchor: { quote: '제3장' }, origin: 'explicit' },
-      { id: 'mem_dddddddddddd', kind: 'term', subject: '용어.고객', text: "'이용자'로 통일", origin: 'learned' },
+      { id: 'mem_dddddddddddd', kind: 'term', subject: '용어.고객', text: "'이용자'로 통일", origin: 'learned', strength: 2 },
       { id: 'mem_cccccccccccc', kind: 'fact', subject: '사실.긴글', text: '가'.repeat(290), origin: 'explicit' },
     ],
   };
@@ -254,8 +320,8 @@ test('the prompt block leaves out notes whose anchor is gone and lists subjects 
   // Notes carry their origin; the block makes no trust claim for text an agent may have written.
   assert.match(block, /^<document_memory revision="4">\n/);
   assert.doesNotMatch(block, /trust=/);
-  assert.match(block, /- \[style, 직접\] 본문은 한다체 사용 {2}\(mem_aaaaaaaaaaaa\)/);
-  assert.match(block, /- \[term, 학습\] '이용자'로 통일/);
+  assert.match(block, /- \[style, 직접, 강도 3\] 본문은 한다체 사용 {2}\(mem_aaaaaaaaaaaa\)/);
+  assert.match(block, /- \[term, 학습, 강도 2\] '이용자'로 통일/);
   assert.doesNotMatch(block, /3장 수정 금지/);
   assert.match(block, /Omitted .*mem_bbbbbbbbbbbb/);
   assert.match(block, /subjects only .*사실\.긴글 \(mem_cccccccccccc\)/);

@@ -7,7 +7,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { DocumentMemoryStore } from '../document-memory-store.mjs';
-import { createHostedRau, createIpcRauSource, RAU_REFUSAL_MS } from '../rau-hosted.mjs';
+import { availabilityFromStatus, createHostedRau, createIpcRauSource, RAU_REFUSAL_MS } from '../rau-hosted.mjs';
 import { createTasteSignalBuffer } from '../taste-signals.mjs';
 import { createTasteLearner } from '../taste-learner.mjs';
 
@@ -205,4 +205,85 @@ test('an unavailable hosted learn preserves existing preferences and manual hist
   assert.equal(source.prompts.length, 3);
   assert.equal(h.calls.length, 0);
   assert.deepEqual(await h.store.read(key), before);
+});
+
+test('the IPC status operation asks the desktop for eligibility', async () => {
+  const processRef = new EventEmitter();
+  processRef.env = { RHWP_RAU_BROKER: 'ipc' };
+  const sent = [];
+  processRef.send = (message, callback) => { sent.push(message); callback?.(null); };
+  const source = createIpcRauSource({ processRef });
+  const status = source.status();
+  assert.deepEqual([sent[0].type, sent[0].operation, 'prompt' in sent[0]], ['rhwp-rau-request', 'status', false]);
+  processRef.emit('message', { type: 'rhwp-rau-response', id: sent[0].id, ok: true, value: { eligible: true, source: 'trial', remainingUsd: 1.5 } });
+  assert.deepEqual(await status, { eligible: true, source: 'trial', remainingUsd: 1.5 });
+});
+
+test('eligibility maps the desktop answer, is cached for its TTL, waits only briefly and refreshes on a license change', async () => {
+  assert.equal(availabilityFromStatus({ eligible: true, remainingUsd: 3 }), 'active');
+  assert.equal(availabilityFromStatus({ eligible: true, remainingUsd: 0 }), 'exhausted');
+  assert.equal(availabilityFromStatus({ eligible: true, remainingUsd: null }), 'active');
+  assert.equal(availabilityFromStatus({ eligible: false, reason: 'rau_plan_required' }), 'not_eligible');
+  assert.equal(availabilityFromStatus(null), 'unavailable');
+
+  const clock = { t: 1_000 };
+  let answer = { eligible: true, remainingUsd: 2 };
+  let asks = 0;
+  let hold = null;
+  const listeners = new Set();
+  const source = {
+    available: true,
+    async learn() { throw Object.assign(new Error('x'), { code: 'rau_credits_exhausted' }); },
+    async status() {
+      asks += 1;
+      if (hold) await hold;
+      if (answer instanceof Error) throw answer;
+      return answer;
+    },
+    onChange(callback) { listeners.add(callback); },
+  };
+  const hosted = createHostedRau({ source, now: () => clock.t, eligibilityTtlMs: 60_000, eligibilityWaitMs: 30 });
+  const changes = [];
+  hosted.onEligibilityChange((value) => changes.push(value));
+  assert.equal(hosted.cachedEligibility(), 'unavailable', 'nothing known before the first answer');
+  assert.equal(await hosted.eligibility(), 'active');
+  answer = { eligible: false };
+  clock.t += 59_000;
+  assert.equal(await hosted.eligibility(), 'active', 'cached within the TTL');
+  assert.equal(asks, 1);
+  clock.t += 2_000;
+  assert.equal(await hosted.eligibility(), 'not_eligible', 'asked again after the TTL');
+
+  // 데스크톱이 늦으면 길게 기다리지 않고 지난 답을 쓰고, 새 답은 들어오는 대로 기억한다.
+  let release;
+  hold = new Promise((resolve) => { release = resolve; });
+  answer = { eligible: true, remainingUsd: 0 };
+  clock.t += 61_000;
+  const started = Date.now();
+  assert.equal(await hosted.eligibility(), 'not_eligible');
+  assert.ok(Date.now() - started < 1_000);
+  release();
+  hold = null;
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(hosted.cachedEligibility(), 'exhausted');
+
+  // 라이선스가 바뀌면 곧바로 다시 묻는다. 실패는 unavailable 이다.
+  answer = new Error('offline');
+  for (const listener of listeners) listener();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(hosted.cachedEligibility(), 'unavailable');
+  assert.deepEqual(changes, ['active', 'not_eligible', 'exhausted', 'unavailable']);
+
+  // learn 이 크레딧 소진을 받으면 쓸 수 있음도 exhausted 가 된다.
+  answer = { eligible: true, remainingUsd: 5 };
+  for (const listener of listeners) listener();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(hosted.cachedEligibility(), 'active');
+  await hosted.learn('p');
+  assert.equal(hosted.cachedEligibility(), 'exhausted');
+  assert.equal(hosted.unusableCode(), 'rau_credits_exhausted');
+
+  const browser = createHostedRau({ source: { available: false } });
+  assert.equal(await browser.eligibility(), 'unavailable');
+  assert.equal(browser.unusableCode(), 'unavailable');
 });

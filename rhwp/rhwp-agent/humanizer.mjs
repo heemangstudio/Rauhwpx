@@ -92,21 +92,15 @@ Fix violations in the same batch. Do not re-read the document, call verify_chang
 For a dedicated full pass on long or heavily AI-written text, read the bundled humanize-korean skill and its references.
 </humanize_korean>`;
 
-const ENGLISH_DISCIPLINE = `Applies to document drafts, rewrites, summaries, headings, captions, and table cells, not to chat replies. Preserve facts, figures, dates, units, proper nouns, quotations, citations, negation, uncertainty, and causality; never invent examples, sources, or experiences.
-- Start with what the reader needs to understand. Let paragraph breaks follow changes in the thought.
-- Choose familiar, precise wording and verbs that make the action clear. Keep established terminology.
-- Let sentence length follow meaning. Do not alternate short and long sentences on purpose or force fragments.
-- Revise empty framing ("In conclusion", "it is important to note") and vague praise when they add nothing.
-- Match the writer's register and regional spelling. Use contractions, humour, or a strong stance only where the author and reader call for them.
-Check these inside the same apply_edits batch; do not re-read or call verify_changes for it.`;
+const PERSONAL_VOICE = 'The user_memory block holds the user\'s own 문체 rules: follow them where they fit the passage. The rules above still win on meaning and AI tells.';
 
-const PERSONAL_VOICE = 'A personal voice portrait is active: follow its observed tendencies where they fit the passage, and ignore numeric style targets in older profiles. The rules above still win on meaning and AI tells.';
-
-/** 문서 작성 단계의 턴 트리거. 룰북 본문은 시스템 브리프(HUMANIZE_KOREAN_RULES)에 있다. */
-export function humanizerPromptBlock(phase, { language = 'ko', personalProfile = false } = {}) {
+/**
+ * 문서 작성 단계의 턴 트리거. 룰북 본문은 시스템 브리프(HUMANIZE_KOREAN_RULES)에 있다. 문서 글은 늘 한국어로 본다.
+ * personalProfile 은 기억(계정 단계)에 문체 규칙이 있고 쓸 수 있을 때다.
+ */
+export function humanizerPromptBlock(phase, { personalProfile = false } = {}) {
   if (!isBuildPhase(phase)) return '';
   const voice = personalProfile ? `\n${PERSONAL_VOICE}` : '';
-  if (language === 'en') return `<english_writing_discipline>\n${ENGLISH_DISCIPLINE}${voice}\n</english_writing_discipline>`;
   return `<humanize_korean_trigger>
 Every Korean passage you write into the document this turn goes through the humanize_korean rules in your system instructions before the apply_edits call: write it free of their patterns and run the self-check in the same batch. When the user asks to polish, 윤문, or remove AI 티, apply them to the requested range as surgical replace_range edits.${voice}
 </humanize_korean_trigger>`;

@@ -13,7 +13,6 @@ const ROOT_ONLY_TOOLS = new Set([
   'present_implementation_plan',
   'update_todos',
   'register_copy_layout_template',
-  'update_agent_instructions',
   'commit_product_skill',
   'browser_request_account',
   'request_secret',

@@ -20,7 +20,7 @@ import path from 'node:path';
 import { HUMANIZE_KOREAN_RULES } from '../humanizer.mjs';
 import { RHWP_TOOL_RULES } from '../tool-rules.mjs';
 import {
-  INSTRUCTION_WRITE_BRIEF,
+  AGENTS_MD_BRIEF,
   normalizeExecutionMode,
   parallelWorkBriefFor,
 } from './backend.mjs';
@@ -89,7 +89,8 @@ export const PI_WRITING_SECTION = HUMANIZE_KOREAN_RULES;
 
 /** 모드 안내 머리말 — 현재 모드를 고르는 법과 쓰기 가능한 모드에만 적용되는 절을 알린다. */
 export const PI_MODES_INTRO = `# Modes
-The user picks one mode in the sidebar and can switch it between turns. A <rhwp_mode> block at the top of each user message names the current mode and any chat grants; it supersedes earlier mode text in this conversation, and only that mode's section below applies. The editing, recovery, and parallel-work sections apply in the modes that can change the document: 에이전트, 전체, and plan implementation. In those modes: ${INSTRUCTION_WRITE_BRIEF}`;
+The user picks one mode in the sidebar and can switch it between turns. A <rhwp_mode> block at the top of each user message names the current mode and any chat grants; it supersedes earlier mode text in this conversation, and only that mode's section below applies. The editing, recovery, and parallel-work sections apply in the modes that can change the document: 에이전트, 전체, and plan implementation.
+${AGENTS_MD_BRIEF}`;
 
 /** 채팅 — 읽기 전용 대화. Pi 에는 웹 도구가 없다. */
 export function piChatModeSection() {
@@ -103,7 +104,7 @@ A read-only conversation about the open document: read the live document, worksp
 /** 플랜 — 조사하고 계획을 세운다. 승인 전에는 읽기 전용. */
 export function piPlanModeSection() {
   return `## Mode: 플랜 (plan)
-Research the task and work out an implementation plan with the user. This mode is read-only: the live document cannot be changed here, nor the workspace without a local-execution grant, whatever the permission profile, and subagents are planning-only. read_agent_instructions reads the app-only AGENTS.md; a requested change to it can become a plan step. download_file fetches a remote file without writing it locally.
+Research the task and work out an implementation plan with the user. This mode is read-only: the live document cannot be changed here, nor the workspace without a local-execution grant, whatever the permission profile, and subagents are planning-only. read_agent_instructions reads the app-only AGENTS.md; only the user can change it. download_file fetches a remote file without writing it locally.
 - The user can keep editing during planning. A save injects a live-document notification so you can re-read the current state; it is not a request to implement or draft a plan.
 - Blocking choices go through ask_user_question; the answer returns in the same turn. When requirements are unclear, the bundled grilling product skill describes a short interview: one question at a time, each with a recommended answer.
 - present_implementation_plan shows the plan card; the bundled present-plan product skill describes its contract, and the call is the last action of its turn. The plan is ready only once that tool returns success. Questions and research leave a presented plan in place; concrete feedback revises it directly.

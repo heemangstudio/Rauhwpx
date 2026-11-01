@@ -3104,19 +3104,6 @@
   justify-content: flex-end;
 }
 
-/* 글쓰기 보정: 상태 왼쪽, 동작 오른쪽의 한 줄. */
-.ag-settings-page .ag-settings-calibration-row .ag-settings-row-text {
-  gap: 2px;
-}
-
-.ag-settings-page .ag-settings-calibration-summary {
-  white-space: normal;
-}
-
-.ag-settings-page .ag-settings-calibration-summary[hidden] {
-  display: none;
-}
-
 /* 템플릿: 목록 행 + 도움말과 추가 버튼이 선 마지막 줄. */
 #ag-settings-pane-ai .ag-settings-templates-section :is(.ag-template-list, .ag-template-row) {
   min-width: 0;

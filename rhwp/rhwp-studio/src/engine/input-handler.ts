@@ -2110,7 +2110,11 @@ export class InputHandler {
 
   /** 붙여넣기 이벤트 처리 */
   private onPaste(e: ClipboardEvent): void {
-    _keyboard.onPaste.call(this, e);
+    // 막힌 붙여넣기는 문서를 바꾸지 않으니 모은 교정을 거두지 않는다.
+    const pasting = this.active && !this.readOnly && !this.userEditingLocked;
+    if (pasting) this.eventBus.emit('user-correction-paste', true);
+    try { _keyboard.onPaste.call(this, e); }
+    finally { if (pasting) this.eventBus.emit('user-correction-paste', false); }
   }
 
   // ─── 서식 적용 ─────────────────────────────────────────
@@ -3326,6 +3330,19 @@ export class InputHandler {
    * 라우터가 적절한 Undo 전략을 자동 선택한다.
    */
   executeOperation(desc: OperationDescriptor): void {
+    const paste = desc.kind === 'snapshot' && desc.operationType.toLowerCase().startsWith('paste');
+    if (paste) this.eventBus.emit('user-correction-paste', true);
+    const user = !paste && desc.meta?.origin !== 'agent' && !this.readOnly && !this.userEditingLocked
+      && !this.cursor.isInHeaderFooter() && !this.cursor.isInFootnote();
+    if (user) this.eventBus.emit('user-correction-start', this.cursor.getPosition());
+    try { this.executeOperationInner(desc); }
+    finally {
+      if (user) this.eventBus.emit('user-correction-end');
+      if (paste) this.eventBus.emit('user-correction-paste', false);
+    }
+  }
+
+  private executeOperationInner(desc: OperationDescriptor): void {
     if (this.readOnly) return;
     if (this.userEditingLocked && desc.meta?.origin !== 'agent') return;
     if (this.agentTemplateLocked && desc.kind !== 'record') return;
@@ -4841,6 +4858,7 @@ export class InputHandler {
   private resetInputSessionState(): void {
     this.resetRawTextMutationEffects();
     this.imeSession.reset();
+    this.eventBus.emit('user-correction-composition', false);
     this.compositionAnchor = null;
     this.compositionAnchorRect = null;
     this.compositionLength = 0;
@@ -4907,6 +4925,7 @@ export class InputHandler {
     _text.revertCompositionPreview.call(this);
     this.resetRawTextMutationEffects();
     this.imeSession.reset();
+    this.eventBus.emit('user-correction-composition', false);
     this.compositionAnchor = null;
     this.compositionAnchorRect = null;
     this.compositionLength = 0;
@@ -5000,6 +5019,7 @@ export class InputHandler {
       _text.revertCompositionPreview.call(this);
       this.resetRawTextMutationEffects();
       this.imeSession.reset();
+      this.eventBus.emit('user-correction-composition', false);
       this.compositionAnchor = null;
       this.compositionAnchorRect = null;
       this.compositionLength = 0;

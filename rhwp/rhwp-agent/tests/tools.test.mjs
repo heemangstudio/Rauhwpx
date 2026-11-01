@@ -52,7 +52,6 @@ test('root requestable catalogs expose bounded app capabilities while plan and w
     assert.ok(!names(profile, { requestable: true }).has('insert_text'));
     assert.ok(!names(profile, { requestable: true }).has('request_permission'));
   }
-  assert.ok(!names('question', { requestable: true }).has('update_agent_instructions'));
   assert.ok(!names('question', { requestable: true }).has('delegate_copy_layout'));
 });
 
@@ -215,7 +214,7 @@ test('도구 프로필은 direct 호환성과 planning/implementing 가시성을
   assert.ok(direct.has('commit_product_skill'));
   assert.ok(direct.has('list_harness_skills'));
   assert.ok(direct.has('read_agent_instructions'));
-  assert.ok(direct.has('update_agent_instructions'));
+  assert.ok(!direct.has('update_agent_instructions'), 'AGENTS.md is written only by the user');
   assert.ok(direct.has('materialize_document_snapshot'));
   assert.ok(direct.has('publish_artifact'));
   assert.ok(direct.has('apply_edits'));
@@ -249,7 +248,6 @@ test('도구 프로필은 direct 호환성과 planning/implementing 가시성을
   assert.ok(planning.has('read_reference_image'));
   assert.ok(planning.has('ask_user_question'));
   assert.ok(planning.has('read_agent_instructions'));
-  assert.ok(!planning.has('update_agent_instructions'));
   assert.ok(!planning.has('commit_product_skill'));
   assert.ok(planning.has('list_harness_skills'));
   assert.ok(!planning.has('insert_text'));
@@ -353,19 +351,20 @@ test('project tools reach every chat profile, chat edits and home search are gat
   assert.ok(!byName.get('project_edit').shape.ops.safeParse([{ op: 'graph-pin', id: 'fabcdef' }]).success);
 });
 
-test('app-only AGENTS.md tools separate reads from bounded revision-checked writes', () => {
+test('agents can read the app-only AGENTS.md and memory but no tool writes either', () => {
   const read = byName.get('read_agent_instructions');
-  const update = byName.get('update_agent_instructions');
   assert.equal(read?.category, 'instruction-read');
-  assert.equal(update?.category, 'instruction-write');
   assert.deepEqual(Object.keys(read?.shape ?? {}), []);
-  assert.ok(update?.shape.content.safeParse('keep answers concise').success);
-  assert.ok(!update?.shape.content.safeParse('x'.repeat(30_001)).success);
-  assert.ok(update?.shape.expectedRevision.safeParse(1).success);
-  assert.ok(!update?.shape.expectedRevision.safeParse(0).success);
-  assert.match(update?.description ?? '', /one-off task details/);
-  assert.match(update?.description ?? '', /saved only when the user approves the card/);
+  assert.match(read?.description ?? '', /written only by the user/);
   assert.match(read?.description ?? '', /outside this app/);
+  assert.equal(byName.has('update_agent_instructions'), false);
+  assert.equal(TOOL_CLASSIFICATIONS.update_agent_instructions, undefined);
+  const memory = byName.get('read_document_memory');
+  assert.match(memory?.description ?? '', /account rules/);
+  for (const profile of ['direct', 'planning', 'question', 'awaiting-approval', 'implementing']) {
+    const visible = new Set(filterToolDefinitions(profile, { requestable: true, documentLink: true }).map((definition) => definition.name));
+    assert.equal([...visible].some((name) => /agent_instructions|memory/.test(name) && !name.startsWith('read_')), false, profile);
+  }
 });
 
 test('browser actions require scoped current tab and semantic snapshot identities', () => {

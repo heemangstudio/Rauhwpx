@@ -342,7 +342,6 @@ export class SkillRegistry {
   constructor({
     bundledRoot,
     userRoot = defaultSkillDataRoot(),
-    writingStyleStore = null,
     platform = process.platform,
     home = os.homedir(),
     harnessRoots = null,
@@ -351,7 +350,6 @@ export class SkillRegistry {
   }) {
     this.bundledRoot = bundledRoot;
     this.userRoot = userRoot;
-    this.writingStyleStore = writingStyleStore;
     this.platform = platform;
     this.home = home;
     this.harnessRoots = harnessRoots;
@@ -560,7 +558,7 @@ export class SkillRegistry {
   }
 
   // requestContext: 사용자 요청 바로 앞에 붙일 턴 콘텍스트 블록 (live_document).
-  async promptContext(text, explicitName, { phase = 'direct', agent = null, requestContext = '' } = {}) {
+  async promptContext(text, explicitName, { phase = 'direct', agent = null, requestContext = '', personalProfile = false } = {}) {
     const catalog = await this.catalog();
     const enabled = catalog.rows.filter((row) => row.enabled && row.kind !== 'broken');
     const sealed = enabled.find((row) => row.kind === 'sealed') ?? null;
@@ -621,18 +619,14 @@ export class SkillRegistry {
         if (toolNote) activated += `\n\n<provider_tool_notes agent="${agent}">\n${toolNote}\n</provider_tool_notes>`;
       }
     }
-    const writingStyle = this.writingStyleStore ? await this.writingStyleStore.promptBlock() : '';
-    const styleStatus = this.writingStyleStore && writingStyle ? await this.writingStyleStore.status() : null;
-    const humanizer = humanizerPromptBlock(phase, {
-      language: styleStatus?.language === 'en' ? 'en' : 'ko',
-      personalProfile: Boolean(styleStatus?.active),
-    });
+    // personalProfile: 기억(계정 단계)에 문체 규칙이 있고 Rau 요금제다 — 규칙 글은 <user_memory> 가 싣는다.
+    const humanizer = humanizerPromptBlock(phase, { personalProfile: personalProfile === true });
     const loadedNote = inline.size > 0
       ? ' Skills shown in <product_skill> blocks are already loaded: when the request matches one, follow it directly without read_product_skill.'
       : '';
     const skills = `<rhwp_product_skills>\nOnly the skills in this catalog are product skills.${loadedNote} If the request clearly matches a skill listed by name only, call read_product_skill for its SKILL.md before acting, then read supporting resources progressively. Do not use provider-global skills.\n${metadata || '(no enabled skills)'}\n</rhwp_product_skills>${activated}`;
     const request = typeof text === 'string' && text.length > 0 ? `<user_request>\n${text}\n</user_request>` : '';
-    return [writingStyle, humanizer, skills, requestContext, request].filter(Boolean).join('\n\n');
+    return [humanizer, skills, requestContext, request].filter(Boolean).join('\n\n');
   }
 
   async _commit(change) {

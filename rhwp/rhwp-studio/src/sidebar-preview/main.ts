@@ -16,6 +16,7 @@ import { THEME_PRESET_LIST } from '../core/theme-presets/index.ts';
 import { createMockBridge, failureKinds, scenarios, type FailureKind, type Scenario } from './mock-bridge.ts';
 import { createMockVersions } from './mock-versions.ts';
 import { skipTasteUndo, tasteUndos } from './mock-taste.ts';
+import { syncUserMemoryPlan, userMemoryControls } from './mock-user-memory.ts';
 import { showToast } from '../ui/toast.ts';
 import { normalizeThemeAccent, normalizeThemePreset, userSettings } from '../core/user-settings.ts';
 import { completeInitialSetup, saveInitialSetup } from '../ui/initial-setup/state.ts';
@@ -252,6 +253,13 @@ if (mockAccount) {
   });
   listenForAccountPageEvents({ plan: mockPlan ? createPlanStore(mockPlan.api) : null });
 }
+/*
+ * 계정 기억(Rau 탭). 허브의 쓸 수 있음은 요금제를 따른다 — rau(체험 포함)면 active, hama·free 면 not_eligible,
+ * 요금제 API 가 없으면 웹 Studio 의 허브처럼 unavailable. `availability=` 가 고정하고, `userMemory=sample|empty|legacy`
+ * 와 `styleLearn=hold|fail` 은 mock-user-memory.ts 가 읽는다.
+ */
+syncUserMemoryPlan(mockPlan?.status().tier ?? null);
+mockPlan?.api.onChange((status) => syncUserMemoryPlan(status.tier));
 const mockLicense = createMockLicense(
   mockPlan && mockLicenseMode(params) === 'off' ? 'free' : mockLicenseMode(params), report);
 mockLicense?.onLicensed(() => {
@@ -272,8 +280,10 @@ const mock = createMockBridge(report, () => {
   }
 }, { liveChat, piGift: () => mockGift?.active() === true });
 mockGift?.api.onChange(() => mock.syncPiStatus());
-/** 업그레이드 단추가 앱에 띄워 달라는 요금제 카드. 요금제 대역이 있으면 진짜 카드가 뜨므로 기록만 한다. */
-window.addEventListener('rhwp:open-plan-card', () => {
+/** 업그레이드 단추·잠긴 Rau 탭이 앱에 띄워 달라는 요금제 카드. 요금제 대역이 있으면 진짜 카드가 뜨므로 기록만 한다. */
+const planCardRequests: unknown[] = [];
+window.addEventListener('rhwp:open-plan-card', (event) => {
+  planCardRequests.push((event as CustomEvent).detail);
   if (!mockPlan) report('Plan card placeholder');
 });
 /** 자동 수정(데스크톱). `autofix=fixed|failed|unavailable|off|undecided`, 없으면 웹 빌드처럼 단추가 없다. */
@@ -366,7 +376,6 @@ if (params.get('initial-setup') === 'deferred')
 else if (!params.has('initial-setup'))
   completeInitialSetup({
     providerStep: 'configured',
-    calibrationStep: 'skipped',
   });
 if (params.get('width'))
   localStorage.setItem(
@@ -836,6 +845,21 @@ document.querySelector('#save-gate')!.addEventListener('click', () => {
   if (previewUnlinkedChat()) mock.emitDocumentRequired('project_edit');
 });
 document.querySelector('#rau-upgrade')!.addEventListener('click', () => mock.emitRauUpgrade(MOCK_RAU_UPGRADE_URL));
+// 한 턴의 학습이 문서 기억과 계정 기억을 함께 바꾼 구분선 — 보이는 채팅에 붙는다.
+const rauMemoryLearned = document.createElement('button');
+rauMemoryLearned.id = 'rau-memory-learned';
+rauMemoryLearned.title = 'Rau-0.1 taught a document note and changed the long-term memory (장기기억 승격, 보강, 감쇄)';
+rauMemoryLearned.textContent = 'Rau memory learned';
+document.querySelector('#rau-upgrade')!.after(rauMemoryLearned);
+rauMemoryLearned.addEventListener('click', () => {
+  const shown = chats[shownChat]!;
+  const threadId = shown.sidebar.currentThreadId();
+  if (!threadId) {
+    report('Start or open a chat first');
+    return;
+  }
+  shown.mock.emitAccountTasteLearned(threadId);
+});
 if (mockRauMode(params) === 'upgrade') mock.emitRauUpgrade(MOCK_RAU_UPGRADE_URL);
 document
   .querySelector('#settings')!
@@ -899,6 +923,11 @@ if (params.get('open') === 'account' && mockAccount) {
     detail: section === 'plan' || section === 'devices' || section === 'licenses' || section === 'sign-in' ? { section } : {},
   }));
 }
+// `styleLearn=run|hold|fail`: a style-learning run from "another window" is already going when the page opens.
+if (['run', 'hold', 'fail'].includes(params.get('styleLearn') ?? '')) {
+  await sidebar.startupChatSettled();
+  userMemoryControls.startSampleStyleLearn();
+}
 // `memory=sample` / `memory=empty`: the 문서 기억 sheet of the shown document (mock store in mock-document-memory.ts).
 if (params.has('memory')) {
   await sidebar.startupChatSettled();
@@ -940,6 +969,7 @@ if (parallel === 'locked') {
 // Typed hooks for browser checks and custom scenario scripts.
 const preview = { ...mock, sidebar, versions, eventBus, enterFocusMode, undoState, restoreState, navigation, typingHold, linkCalls, detachCalls,
   gift: mockGift,
+  planCardRequests,
   autofix: mockAutofix,
   plan: mockPlan,
   account: mockAccount,
@@ -948,6 +978,7 @@ const preview = { ...mock, sidebar, versions, eventBus, enterFocusMode, undoStat
   openFromAttention,
   projects: previewProjects, projectScene, localPasswords,
   taste: { undos: tasteUndos, skipUndo: skipTasteUndo },
+  userMemory: userMemoryControls,
   threadStore: { listThreads, getThread, upsertThread, waitForThreadsPersistence },
   chatStatus: { markChatWorking, getChatStatus, getChatStatusLabel } };
 export type SidebarPreview = typeof preview;

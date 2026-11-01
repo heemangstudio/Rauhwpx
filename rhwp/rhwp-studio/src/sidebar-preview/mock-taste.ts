@@ -3,40 +3,31 @@
  *
  * 설정은 모든 모의 브리지가 나눈다. 바꾸면 허브처럼 붙은 모든 브리지에 taste-settings 를 보낸다.
  * 되돌리기는 받은 요청을 `tasteUndos` 에 남기고, `skipTasteUndo(entryId)` 로 고른 항목은 skipped 로 답한다.
- * `?taste=sample` 의 표본 채팅과 AGENTS.md 변경안은 fixtures.ts 의 sampleTasteChat 과 이 모듈의 draft 가 만든다.
+ * 계정 기억 줄(entryId 가 rule_…)은 허브처럼 실어 온 기억 사건(eventIds)을 mock-user-memory 에서 되돌린다 —
+ * 그 뒤 규칙이 다시 바뀌었으면 skipped 다.
+ * `?taste=sample` 의 표본 채팅은 fixtures.ts 의 sampleTasteChat 이 만든다.
  */
 import type { SidebarBridge } from '../agent/bridge.ts';
-import { RAU_TASTE_NAME } from '../agent/taste.ts';
 import type * as T from '../agent/types.ts';
+import { userMemoryControls } from './mock-user-memory.ts';
 
 const settings: T.TasteSettings = { enabled: true, provider: 'auto', model: null, effort: null };
 const sinks = new Set<(event: T.SidebarEvent) => void>();
 const skipped = new Set<string>();
 /** 받은 되돌리기 요청 — 미리보기 확인이 읽는다. */
-export const tasteUndos: Array<{ learnId: string; learnIds?: string[]; documentId: string; key: string; entryId: string | null; changes: number }> = [];
+export const tasteUndos: Array<{
+  learnId: string;
+  learnIds?: string[];
+  documentId: string;
+  key: string;
+  entryId: string | null;
+  changes: number;
+  eventIds?: string[];
+}> = [];
 
 /** 이 항목의 되돌리기는 그새 바뀐 것으로 답한다. */
 export function skipTasteUndo(entryId: string): void {
   skipped.add(entryId);
-}
-
-/** `?taste=sample` 구분선이 가리키는 AGENTS.md 변경안. */
-export const SAMPLE_TASTE_DRAFT_ID = 'preview-taste-draft';
-
-export function sampleTasteDraft(instructions: T.AgentInstructionsStatus): T.AgentInstructionsDraft {
-  const now = Date.now();
-  return {
-    id: SAMPLE_TASTE_DRAFT_ID,
-    content: `${instructions.content}\n- 표 제목 칸은 굵게 씁니다.`,
-    expectedRevision: instructions.revision,
-    reason: '두 문서에서 같은 표 제목 서식을 골랐습니다.',
-    requestedBy: RAU_TASTE_NAME,
-    createdAt: new Date(now).toISOString(),
-    expiresAt: new Date(now + 60 * 60_000).toISOString(),
-    confirmationToken: 'preview-taste-token',
-    threadId: null,
-    origin: 'rau',
-  };
 }
 
 export type MockTaste = Pick<
@@ -66,8 +57,19 @@ export function createMockTaste(emit: (event: T.SidebarEvent) => void): MockTast
       setTimeout(() => sinks.forEach((sink) => sink(event)), 0);
       return settle({ ...settings });
     },
-    undoTaste: ({ learnId, learnIds, documentId, key, changes, entryId }) => {
-      tasteUndos.push({ learnId, ...(learnIds?.length ? { learnIds: [...learnIds] } : {}), documentId, key, entryId: entryId ?? null, changes: changes.length });
+    undoTaste: ({ learnId, learnIds, documentId, key, changes, entryId, eventIds }) => {
+      tasteUndos.push({
+        learnId, ...(learnIds?.length ? { learnIds: [...learnIds] } : {}), documentId, key, entryId: entryId ?? null, changes: changes.length,
+        ...(eventIds?.length ? { eventIds: [...eventIds] } : {}),
+      });
+      // 계정 기억 줄 — 그 규칙의 기억 사건을 되돌린다.
+      if (entryId?.startsWith('rule_') || (!entryId && eventIds?.length)) {
+        const account: { reverted: string[]; skipped: string[] } = skipped.has(entryId ?? '')
+          ? { reverted: [], skipped: [entryId!] }
+          : userMemoryControls.undoEvents(eventIds ?? []);
+        if (entryId && !account.reverted.includes(entryId) && !account.skipped.includes(entryId)) account.skipped.push(entryId);
+        return settle({ ok: true, learnId, ...account });
+      }
       const ids = entryId
         ? [entryId]
         : changes.flatMap((change) => {

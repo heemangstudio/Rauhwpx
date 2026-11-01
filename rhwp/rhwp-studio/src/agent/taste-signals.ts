@@ -1,6 +1,6 @@
 /**
  * 취향 학습용 검토 신호 — 사용자가 에이전트의 글을 받아들이고(accepted), 거절하고(rejected),
- * 고쳐 쓰고(rewritten), 되돌린(undone) 흔적을 모아 허브에 보낸다 (chat-review-signal).
+ * 고쳐 쓰고(rewritten), 되돌린(undone) 흔적과 직접 고친 글(correction)을 모아 허브에 보낸다 (chat-review-signal).
  *
  * - accepted·rejected: 대기 편집의 승인·거절에서 op 마다 원래 글(before)과 에이전트 글(after)을 짝짓는다.
  *   승인은 문단 하나 안의 op 들을 문단 전체 글의 짝으로 묶는다. 전체 모드의 즉시 확정(direct)과
@@ -10,6 +10,8 @@
  *   ('input-handler-edit' 로 와도) 글이 바뀌지 않는다 — 글은 스테이징 때 'agent-*' 로 이미 바뀌었다.
  * - undone: 에이전트 적용 항목을 실행 취소했거나(history-jumped 뒤 redo 스택에 있다)
  *   "이 작업 전으로 되돌리기"로 그 턴 이전으로 돌렸을 때.
+ * - correction: correction-ledger.ts 가 맡는다. 사용자가 어느 글이든 직접 고친 것 가운데 같은 고침이 두 문단 이상에
+ *   나타날 때만 낸다. evidenceId·passageId 로 허브가 모델의 근거 인용을 검증한다.
  * 신호는 ReviewSignalOutbox 가 2초씩 모아 프레임 하나에 20개까지 싣는다. 끊긴 동안은 잠깐(1분)
  * 쌓아 두고, 다른 문서로 바뀐 신호는 버린다. 허브는 메모리에만 둔다.
  * 저장·이름 바꾸기는 문서를 바꾸지 않는다 — 문서 인스턴스가 바뀔 때만 모은 것을 버린다.
@@ -18,6 +20,7 @@
  *
  * node --test 가 그대로 읽도록 상대 경로 import 와 타입 import 만 쓴다.
  */
+import { CorrectionLedger } from './correction-ledger.ts';
 import type { DocumentPosition } from '../core/types.ts';
 import type { EventBus } from '../core/event-bus.ts';
 import type { PendingChangeSet, PendingEditsChangeEvent, PendingOp, ReviewSignal } from './types.ts';
@@ -288,6 +291,8 @@ function clipSignal(signal: ReviewSignal): ReviewSignal {
   if (signal.userText) out.userText = clipText(signal.userText);
   if (signal.paraIdx !== undefined) out.paraIdx = signal.paraIdx;
   if (signal.turnId) out.turnId = signal.turnId;
+  if (signal.evidenceId) out.evidenceId = signal.evidenceId;
+  if (signal.passageId) out.passageId = signal.passageId;
   return out;
 }
 
@@ -408,6 +413,7 @@ export interface TasteUndoHistory {
 }
 
 export interface TasteSignalCollectorDeps {
+  learningEnabled?(): boolean;
   pending: {
     onChange(cb: (e: PendingEditsChangeEvent) => void): () => void;
     getChangeSets(): ReadonlyArray<PendingChangeSet>;
@@ -448,6 +454,7 @@ interface WriteRecord {
 }
 
 export class TasteSignalCollector {
+  private readonly corrections: CorrectionLedger;
   private readonly deps: TasteSignalCollectorDeps;
   private readonly rewrites: RewriteTracker;
   private readonly origins = new Map<string, SetOrigin>();
@@ -462,6 +469,15 @@ export class TasteSignalCollector {
 
   constructor(deps: TasteSignalCollectorDeps) {
     this.deps = deps;
+    this.corrections = new CorrectionLedger({ reader: deps.reader, enabled: () => deps.learningEnabled?.() === true,
+      emit: (signals) => this.send(signals, null) });
+    this.unsubs.push(
+      deps.eventBus.on('user-correction-start', (pos) => this.corrections.begin(pos as DocumentPosition)),
+      deps.eventBus.on('user-correction-end', () => this.corrections.end()),
+      deps.eventBus.on('user-correction-composition', (start, pos) => this.corrections.composition(start === true, pos as DocumentPosition)),
+      deps.eventBus.on('user-correction-paste', (start) => this.corrections.suspend(start === true)),
+      deps.eventBus.on('history-jumped', () => this.corrections.invalidate()),
+    );
     this.documentInstance = deps.documentInstance?.();
     this.rewrites = new RewriteTracker({
       reader: deps.reader,
@@ -478,7 +494,7 @@ export class TasteSignalCollector {
     this.unsubs.push(deps.pending.onChange((e) => this.onPendingChange(e)));
     // 키 입력마다 오므로 깃발만 세운다. 'agent-*' 는 어느 채팅의 매니저든 에이전트의 변이다.
     this.unsubs.push(deps.eventBus.on('document-mutated', (reason) => {
-      if (typeof reason === 'string' && reason.startsWith('agent-')) this.rewrites.noteForeignEdit();
+      if (typeof reason === 'string' && reason.startsWith('agent-')) { this.rewrites.noteForeignEdit(); this.corrections.invalidate(); }
       else this.rewrites.noteUserEdit();
     }));
     this.unsubs.push(deps.eventBus.on('history-jumped', () => this.onHistoryJumped()));
@@ -494,11 +510,13 @@ export class TasteSignalCollector {
 
   /** 고친 문단을 기다리지 않고 지금 낸다 (채팅을 닫기 전). */
   flush(): void {
+    this.corrections.flush();
     this.rewrites.flush();
   }
 
   /** 다음 에이전트 턴이 시작된다 — 고친 문단은 지금 내고 지켜보기를 그만둔다. */
   noteTurnStart(): void {
+    this.corrections.flush();
     this.rewrites.flush();
     this.rewrites.clear();
   }
@@ -535,6 +553,7 @@ export class TasteSignalCollector {
   }
 
   reset(): void {
+    this.corrections.clear();
     this.rewrites.clear();
     this.origins.clear();
     this.droppedOps.clear();

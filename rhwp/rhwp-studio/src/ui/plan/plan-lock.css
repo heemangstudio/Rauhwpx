@@ -66,3 +66,12 @@
 .ag-root .ag-settings-page .ag-settings-nav-group.ag-settings-ai-locked {
   color: var(--ag-text-tertiary);
 }
+
+/* 설정의 Rau 탭: Rau 요금제가 아니면 오른쪽 끝에 자물쇠. 누르면 요금제 카드가 Rau 칸에 맞춰 열린다. */
+.ag-settings-nav-rau-lock {
+  margin-left: auto;
+}
+
+.ag-root .ag-settings-page .ag-settings-nav-button.ag-settings-rau-locked {
+  color: var(--ag-text-tertiary);
+}

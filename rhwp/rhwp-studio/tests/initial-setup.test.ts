@@ -65,18 +65,17 @@ test('첫 실행 플래그가 없으면 마법사를 보여 준다', () => {
 
 test('끝내거나 건너뛰면 다음 실행에서 다시 열리지 않는다', () => {
   const storage = memoryStore();
-  completeInitialSetup({ providerStep: 'skipped', calibrationStep: 'skipped' }, storage, () => '2026-08-23T00:00:00.000Z');
+  completeInitialSetup({ providerStep: 'skipped' }, storage, () => '2026-08-23T00:00:00.000Z');
   assert.equal(isInitialSetupComplete(storage), true);
   assert.equal(shouldShowInitialSetup(storage, ''), false);
   const saved = loadInitialSetup(storage);
   assert.equal(saved.providerStep, 'skipped');
-  assert.equal(saved.calibrationStep, 'skipped');
   assert.equal(saved.completedAt, '2026-08-23T00:00:00.000Z');
 });
 
 test('?initial-setup=1 이면 끝난 뒤에도 다시 연다', () => {
   const storage = memoryStore();
-  completeInitialSetup({ providerStep: 'configured', calibrationStep: 'done' }, storage);
+  completeInitialSetup({ providerStep: 'configured' }, storage);
   assert.equal(shouldForceInitialSetup('?initial-setup=1'), true);
   assert.equal(shouldForceInitialSetup('initial-setup'), true);
   assert.equal(shouldForceInitialSetup('?foo=1'), false);
@@ -121,8 +120,10 @@ test('이전 버전에서 끝낸 설정은 업데이트 뒤에도 다시 열리�
   const migrated = loadInitialSetup(storage);
   assert.equal(migrated.version, 2);
   assert.equal(migrated.providerStep, 'configured');
-  assert.equal(migrated.calibrationStep, 'done');
   assert.equal(migrated.deferred, false);
+  // 없어진 단계의 기록은 읽혀도 새 기록으로 번지지 않는다.
+  assert.equal('calibrationStep' in migrated, false);
+  assert.equal('calibrationStep' in saveInitialSetup({ deferred: false }, storage), false);
 });
 
 test('문서를 열면서 처음 켜져 미룬 설정은 자동으로 열지 않고 칩으로만 권한다', () => {
