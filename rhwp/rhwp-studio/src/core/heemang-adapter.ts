@@ -515,6 +515,9 @@ export class HeemangAdapter {
     return !progress.complete;
   }
 
+  /** 앞쪽만 조판해 연 문서의 나머지 쪽이 아직 남았는지. 쪽 읽기 밖의 엔진 호출은 남은 조판을 한 번에 끝낸다. */
+  get layoutPending(): boolean { return this.firstPages > 0 || this.partialLayoutEpoch !== null; }
+
   /** 앞쪽만 조판하던 여는 단계를 끝낸다. 남은 쪽이 있으면 true — 호출자가 layoutMore 로 마저 조판한다. */
   finishFirstPages(): boolean {
     this.firstPages = 0;

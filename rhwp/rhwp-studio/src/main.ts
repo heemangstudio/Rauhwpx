@@ -1685,7 +1685,7 @@ async function initialize(): Promise<void> {
     });
     installDesktopNativeMenu({
       menuBar: document.getElementById('menu-bar')!, dispatcher, registry, eventBus,
-      beforeSync: () => syncSpacingPresetMenus(wasm),
+      beforeSync: () => syncSpacingPresetMenus(wasm, document, { layoutPending: wasm.viewer.layoutPending }),
     });
     syncToolbarShortcutTitles(document, registry);
     eventBus.on('shortcuts-changed', () => syncToolbarShortcutTitles(document, registry));
