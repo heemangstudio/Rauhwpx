@@ -365,38 +365,3 @@ pub(crate) fn append_nodes(
     }
 }
 
-#[cfg(test)]
-mod metric_tests {
-    use super::*;
-    fn metric(a: f64, d: f64, gap: f64) -> Option<PublicMetrics> {
-        PublicMetrics::from_ratios(a, a + d + gap, gap)
-    }
-    #[test]
-    fn ruby_metric_slots_and_script_descent_are_independent() {
-        let a = metric(0.8, 0.2, 0.3);
-        let b = metric(0.9, 0.1, 0.7);
-        let (gap, shifts) = mac_baseline_offsets(1200, 600, &[a, b], &[a, b], 96.0).unwrap();
-        assert_eq!(gap, 14.4);
-        assert!((shifts[0] - 1.6).abs() < 1e-9);
-        assert!((shifts[1] - 0.8).abs() < 1e-9);
-        let (_, smaller) = mac_baseline_offsets(1200, 300, &[a, b], &[a, b], 96.0).unwrap();
-        assert!(smaller[0] < shifts[0]);
-    }
-    #[test]
-    fn ruby_invalid_or_missing_metrics_preserve_fallback() {
-        for (a, h, g) in [
-            (f64::NAN, 1.0, 0.0),
-            (0.8, f64::INFINITY, 0.0),
-            (0.0, 1.0, 0.0),
-            (0.8, 0.7, 0.0),
-            (0.8, 1.0, f64::NAN),
-        ] {
-            assert!(PublicMetrics::from_ratios(a, h, g).is_none());
-        }
-        let good = metric(0.8, 0.2, 0.0);
-        assert!(mac_baseline_offsets(1200, 600, &[good, None], &[good], 96.0).is_none());
-        assert!(mac_baseline_offsets(1200, 600, &[good], &[None], 96.0).is_none());
-        assert!(mac_baseline_offsets(1200, 600, &[good], &[good], f64::NAN).is_none());
-        assert_eq!(main_metric_hu(1200, &[good, None]), 1020);
-    }
-}

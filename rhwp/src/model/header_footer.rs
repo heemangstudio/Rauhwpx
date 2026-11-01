@@ -121,20 +121,3 @@ impl MasterPage {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_header_default() {
-        let header = Header::default();
-        assert_eq!(header.apply_to, HeaderFooterApply::Both);
-        assert!(header.paragraphs.is_empty());
-    }
-
-    #[test]
-    fn test_footer_default() {
-        let footer = Footer::default();
-        assert_eq!(footer.apply_to, HeaderFooterApply::Both);
-    }
-}

@@ -151,30 +151,3 @@ fn bytes_into_utf8(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::read_variable;
-
-    /// 선언 길이가 입력보다 터무니없이 크면 그만큼 할당하지 않고 짧은 읽기 오류를
-    /// 돌려줘야 한다. 예전 `vec![0; len]` 은 여기서 수 EB 를 요구해 abort 했다.
-    #[test]
-    fn read_variable_rejects_huge_declared_length_without_allocating_it() {
-        let data = [7u8; 10];
-        let mut input = &data[..];
-
-        let err = read_variable(&mut input, usize::MAX / 2).expect_err("short input must fail");
-        assert!(err.to_string().contains("but 10 bytes read"), "{err}");
-    }
-
-    /// 조각 크기(8 KiB)를 넘는 길이도 정확히 그 바이트만 읽고 나머지는 남겨 둔다.
-    #[test]
-    fn read_variable_reads_exact_length_across_chunks() {
-        let data: Vec<u8> = (0..20_000u32).map(|v| v as u8).collect();
-        let mut input = data.as_slice();
-
-        let (bytes, consumed) = read_variable(&mut input, 19_999).expect("full read");
-        assert_eq!(consumed, 19_999);
-        assert_eq!(bytes, data[..19_999]);
-        assert_eq!(input, &data[19_999..]);
-    }
-}

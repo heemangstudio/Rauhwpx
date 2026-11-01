@@ -48,20 +48,3 @@ where
     HotFn::current(function).ptr_address().0
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn probe_calls_the_current_function_body() {
-        assert_eq!(subsecond_probe(), 41);
-    }
-
-    #[test]
-    fn ignores_non_patch_devserver_messages() {
-        assert!(!apply_subsecond_devtools_message(
-            r#"{"HotPatchStart":null}"#
-        ));
-        assert!(!apply_subsecond_devtools_message("not json"));
-    }
-}

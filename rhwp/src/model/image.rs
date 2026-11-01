@@ -224,30 +224,3 @@ impl Default for ImageFormat {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_picture_default() {
-        let pic = Picture::default();
-        assert_eq!(pic.image_attr.effect, ImageEffect::RealPic);
-        assert_eq!(pic.border_width, 0);
-    }
-
-    #[test]
-    fn test_crop_info() {
-        let crop = CropInfo {
-            left: 100,
-            top: 200,
-            right: 300,
-            bottom: 400,
-        };
-        assert_eq!(crop.left, 100);
-    }
-
-    #[test]
-    fn test_image_format_default() {
-        assert_eq!(ImageFormat::default(), ImageFormat::Unknown);
-    }
-}

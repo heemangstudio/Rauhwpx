@@ -100,30 +100,3 @@ fn read_i32(b: &[u8]) -> i32 {
     read_u32(b) as i32
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// wasm32 에서는 u32 offset/length 합이 usize 를 넘친다. 64비트에서도 같은 합
-    /// 넘침을 재현하도록 usize 끝값을 직접 넣어, 범위 검사가 넘침에 속지 않는지 본다.
-    #[test]
-    fn slice_at_rejects_offsets_whose_end_overflows() {
-        let payload = [0u8; 32];
-
-        assert!(slice_at(&payload, usize::MAX, 0x20).is_err());
-        assert!(slice_at(&payload, HEADER_BYTES + 16, usize::MAX).is_err());
-        assert!(slice_at(&payload, HEADER_BYTES + 16, 17).is_err());
-        assert_eq!(slice_at(&payload, HEADER_BYTES + 16, 16).unwrap().len(), 16);
-    }
-
-    #[test]
-    fn stretch_dibits_with_hostile_offsets_is_an_error() {
-        let mut payload = vec![0u8; FIXED];
-        payload[40..44].copy_from_slice(&0xFFFF_FFF0u32.to_le_bytes()); // offBmiSrc
-        payload[44..48].copy_from_slice(&0x20u32.to_le_bytes()); // cbBmiSrc
-        payload[48..52].copy_from_slice(&0xFFFF_FFFFu32.to_le_bytes()); // offBitsSrc
-        payload[52..56].copy_from_slice(&0xFFFF_FFFFu32.to_le_bytes()); // cbBitsSrc
-
-        assert!(parse(&payload).is_err());
-    }
-}

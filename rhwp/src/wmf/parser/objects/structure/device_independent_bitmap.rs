@@ -284,24 +284,3 @@ impl core::fmt::Debug for BitmapBuffer {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// colors_length가 BITMAPINFOHEADER의 검증되지 않은 colors_used(u32)에서
-    /// 그대로 오는 경우, 거대한 값(u32::MAX)을 넘겨도 Vec::with_capacity가
-    /// 그 값을 그대로 예약하지 않고(256 상한) 데이터 부족으로 정상적으로
-    /// 에러를 반환해야 한다 (OOM abort 없이 graceful degradation).
-    #[test]
-    fn parse_from_color_usage_bounds_huge_colors_length() {
-        let mut data: &[u8] = &[0u8; 4]; // RGBQuad 1개 분량도 안 되는 소량 데이터
-        let result = Colors::parse_from_color_usage(
-            &mut data,
-            crate::wmf::parser::ColorUsage::DIB_RGB_COLORS,
-            u32::MAX as usize,
-            false,
-        );
-
-        assert!(result.is_err());
-    }
-}

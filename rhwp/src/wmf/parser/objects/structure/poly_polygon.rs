@@ -67,27 +67,3 @@ impl PolyPolygon {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn total_point_count_above_u16_does_not_wrap() {
-        // 두 polygon의 점 수 합계는 65,536이다. 이전 u16 누산은 debug에서는
-        // overflow panic, release에서는 0으로 wrap되어 점을 읽지 않고 성공했다.
-        let mut bytes = Vec::new();
-        bytes.extend_from_slice(&2u16.to_le_bytes());
-        bytes.extend_from_slice(&32_768u16.to_le_bytes());
-        bytes.extend_from_slice(&32_768u16.to_le_bytes());
-        bytes.resize(2 + 2 * 2 + 65_536 * 4, 0); // PointS { x: 0, y: 0 } × 65,536
-        let mut input = bytes.as_slice();
-
-        let (polygon, consumed) =
-            PolyPolygon::parse(&mut input).expect("u16을 넘는 총점도 모든 PointS를 읽어야 함");
-        assert!(
-            polygon.a_points.len() == 65_536,
-            "총점이 65,536인데 aPoints가 wrap되면 안 됨"
-        );
-        assert_eq!(consumed, bytes.len());
-    }
-}

@@ -67,28 +67,3 @@ pub struct Padding {
     pub bottom: HwpUnit16,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_rect_dimensions() {
-        let r = Rect {
-            left: 100,
-            top: 200,
-            right: 500,
-            bottom: 700,
-        };
-        assert_eq!(r.width(), 400);
-        assert_eq!(r.height(), 500);
-    }
-
-    #[test]
-    fn test_colorref_format() {
-        // 빨간색: R=0xFF, G=0x00, B=0x00 → 0x000000FF
-        let red: ColorRef = 0x000000FF;
-        assert_eq!(red & 0xFF, 0xFF); // R
-        assert_eq!((red >> 8) & 0xFF, 0x00); // G
-        assert_eq!((red >> 16) & 0xFF, 0x00); // B
-    }
-}

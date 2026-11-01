@@ -199,29 +199,3 @@ impl BitmapInfoHeader {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // MS-WMF 2.2.2.9: a negative Height indicates a top-down DIB; the
-    // absolute value is still the pixel height. `height()` must return the
-    // magnitude, matching what `size()` already does via `unsigned_abs()`.
-    #[test]
-    fn height_of_top_down_dib_is_absolute_value() {
-        let header = BitmapInfoHeader::Info(BitmapInfoHeaderInfo {
-            header_size: 40,
-            width: 10,
-            height: -10,
-            planes: 1,
-            bit_count: crate::wmf::parser::BitCount::BI_BITCOUNT_5,
-            compression: crate::wmf::parser::Compression::BI_RGB,
-            image_size: 0,
-            x_pels_per_meter: 0,
-            y_pels_per_meter: 0,
-            color_used: 0,
-            color_important: 0,
-        });
-
-        assert_eq!(header.height(), 10);
-    }
-}

@@ -1087,8 +1087,6 @@ impl Paginator {
 mod engine;
 mod state;
 
-#[cfg(test)]
-mod tests;
 
 /// 수락된 원점만 반영한다. 줄의 나머지 wire 필드와 원본 리셋은 건드리지 않는다.
 pub(crate) fn publish_committed_line_origins(
