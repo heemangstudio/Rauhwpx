@@ -314,6 +314,13 @@ export interface TableInfo { table: TableAddress; rows: number; columns: number;
 export interface DocState {
     instance: number; contentEpoch: number; layoutEpoch: number; fontGeneration: number;
     format: "hwp5" | "hwpx" | "hwp3" | "hml"; pageCount: number; dirty: boolean; undo: number; redo: number;
+    /** False while `layoutFirst`/`layoutMore` have laid out only the first `pageCount` pages. */
+    layoutComplete: boolean;
+}
+/** What `layoutFirst` and `layoutMore` laid out: the pages so far, whether that is all of them, the
+ *  layout epoch, and the pages to paint again since the last call (new ones included). */
+export interface LayoutProgress {
+    pageCount: number; complete: boolean; layoutEpoch: number; changedPages: number[];
 }
 export interface Area { x: number; y: number; width: number; height: number }
 /** A picture to decode with the browser and draw in place of a patch. */
@@ -581,6 +588,22 @@ export class Doc {
     glyphRequests(): string;
     hasTableTransposeClipboard(): boolean;
     /**
+     * Lays out only the first pages of a document not laid out yet, so a
+     * host can show them before the rest: stops once more than `pages`
+     * pages are laid out, at a page start the layout can go on from.
+     * `LayoutProgress` as JSON. Until the layout is complete, the page
+     * list, page packets, patches, pictures and state serve the pages laid
+     * out so far; every other request completes the layout first.
+     */
+    layoutFirst(pages: number): string;
+    /**
+     * Lays out about `pages` more pages after `layoutFirst`, or the rest
+     * with 0. `LayoutProgress` as JSON, naming the pages to paint again:
+     * the new ones, and earlier ones whose page number, header, footer or
+     * total page count changed.
+     */
+    layoutMore(pages: number): string;
+    /**
      * Paragraphs the last layout reused and formatted.
      */
     layoutStats(): Float64Array;
@@ -817,6 +840,11 @@ export class Engine {
      */
     addFontFile(label: string, file: FontFileSource): number;
     /**
+     * Registers Hancom's font information table (`fontinfo.dat`), whose
+     * substitution rows choose the face for characters a face lacks.
+     */
+    addFontInfo(bytes: Uint8Array): boolean;
+    /**
      * Registers Hancom's font mapping table (`FontMap.dat`).
      */
     addFontMap(bytes: Uint8Array): boolean;
@@ -955,6 +983,8 @@ export interface InitOutput {
     readonly doc_furniturePreview: (a: number, b: number, c: number) => [number, number, number];
     readonly doc_glyphRequests: (a: number) => [number, number, number, number];
     readonly doc_hasTableTransposeClipboard: (a: number) => [number, number, number];
+    readonly doc_layoutFirst: (a: number, b: number) => [number, number, number, number];
+    readonly doc_layoutMore: (a: number, b: number) => [number, number, number, number];
     readonly doc_layoutStats: (a: number) => [number, number, number, number];
     readonly doc_locate: (a: number, b: number, c: number) => [number, number, number, number];
     readonly doc_markSaved: (a: number, b: number) => [number, number];
@@ -996,6 +1026,7 @@ export interface InitOutput {
     readonly engine_addCodeTable: (a: number, b: number, c: number) => number;
     readonly engine_addFont: (a: number, b: number, c: number, d: number, e: number) => number;
     readonly engine_addFontFile: (a: number, b: number, c: number, d: any) => number;
+    readonly engine_addFontInfo: (a: number, b: number, c: number) => number;
     readonly engine_addFontMap: (a: number, b: number, c: number) => number;
     readonly engine_addHftInfo: (a: number, b: number, c: number) => number;
     readonly engine_create: (a: number, b: number, c: number) => [number, number, number];

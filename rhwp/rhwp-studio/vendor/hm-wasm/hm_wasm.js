@@ -390,6 +390,60 @@ export class Doc {
         return ret[0] !== 0;
     }
     /**
+     * Lays out only the first pages of a document not laid out yet, so a
+     * host can show them before the rest: stops once more than `pages`
+     * pages are laid out, at a page start the layout can go on from.
+     * `LayoutProgress` as JSON. Until the layout is complete, the page
+     * list, page packets, patches, pictures and state serve the pages laid
+     * out so far; every other request completes the layout first.
+     * @param {number} pages
+     * @returns {string}
+     */
+    layoutFirst(pages) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.doc_layoutFirst(this.__wbg_ptr, pages);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Lays out about `pages` more pages after `layoutFirst`, or the rest
+     * with 0. `LayoutProgress` as JSON, naming the pages to paint again:
+     * the new ones, and earlier ones whose page number, header, footer or
+     * total page count changed.
+     * @param {number} pages
+     * @returns {string}
+     */
+    layoutMore(pages) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.doc_layoutMore(this.__wbg_ptr, pages);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
      * Paragraphs the last layout reused and formatted.
      * @returns {Float64Array}
      */
@@ -1292,6 +1346,18 @@ export class Engine {
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.engine_addFontFile(this.__wbg_ptr, ptr0, len0, file);
         return ret >>> 0;
+    }
+    /**
+     * Registers Hancom's font information table (`fontinfo.dat`), whose
+     * substitution rows choose the face for characters a face lacks.
+     * @param {Uint8Array} bytes
+     * @returns {boolean}
+     */
+    addFontInfo(bytes) {
+        const ptr0 = passArray8ToWasm0(bytes, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.engine_addFontInfo(this.__wbg_ptr, ptr0, len0);
+        return ret !== 0;
     }
     /**
      * Registers Hancom's font mapping table (`FontMap.dat`).

@@ -1,17 +1,14 @@
 # hm-wasm
 
-Generated browser bindings and WASM from HeemangEngine `rc/combined-20261028` at `b3a2d0b` (2026-10-31), which merges
-engine PR #4 (`fix/editing-parity`, merge `306e4ed`: editing parity with Hancom Office 2022 from the Studio editing audit)
-and engine PR #3 (`fix/table-split-parity` at `7e09370`). `21bc492` was `6d33534` plus table pagination parity with Hancom Office 2022 (rows and cells split across pages, merged-cell cuts, rows
-taller than a page, nested-table margins at a cut, continuation spacing). `6d33534` adds the save-corruption fixes of engine PR #2 over `f7c5b55`, which merges `feat/notes-parity` at `845ba85`:
-`rc/combined-20261028` at `8d80eb0` plus footnote and endnote parity with Hancom Office 2022 (note insertion, numbering,
-note shapes, clipboard, page-local numbers, HWP/HWPX/HML round trips, and note layout and painting). `8d80eb0` changes only tests and documents
-over `1a54900`, which over the
-`afcacaf` package adds the rendering lanes through `b3cce93` (tables, text, forms/math, curriculum and objects
-under the r12 gate fonts), Hancom-captured table editing (`9bbcf60`: merge drops empty cells, split grids and heights,
-`copyRow`/`copyColumn`, saved laid-out table height, `moveTableCellEdge`), caret motion fixes (`054d48b`) and the
-typing performance work with its incremental-versus-fresh layout equivalence test (`1a54900`). Built with
-`CARGO_BUILD_JOBS=4 WASM_BINDGEN=<wasm-bindgen 0.2.125> crates/hm-wasm/build.sh`, no wasm-opt.
+Generated browser bindings and WASM from HeemangEngine `rc/combined-20261028` at `c4fbb80` (2026-11-01). Over `b3a2d0b`
+(editing parity #4 and table splits #3) it merges: #6 and #9 (a missing Hancom face draws with the closest OS face but
+lays out with the Hancom face's own widths, from committed width tables), #5, #7, #13 and #14 (Hancom pagination rules:
+held tables whose first row misses the page, bottom-caption reservation, footnotes inside split tables, merged-cell
+leftover height and page-end credit, and more), #10 and #11 (local rendering: cut-cell alignment, Latin glyph fallback,
+Word-compatible cut cells, chart theme colours, WMF scale and pens, paper-relative pictures), #12 (HWP and HWPX
+conversion keeps stored lines and no longer refuses edited documents; fixes for files Hancom refused) and #8 (incremental
+pagination, `layoutFirst`/`layoutMore` progressive first pages and faster cold layout). Built with
+`CARGO_BUILD_JOBS=3 WASM_BINDGEN=<wasm-bindgen 0.2.125> crates/hm-wasm/build.sh`, no wasm-opt.
 Contract and page-packet versions are both 1. The package is committed so Studio does not need the HeemangEngine
 checkout to run or build.
 
@@ -19,10 +16,13 @@ SHA-256 of the four files:
 
 | File | Bytes | SHA-256 |
 | --- | ---: | --- |
-| `hm_wasm_bg.wasm` | 8,076,941 | `5f99378e9d70749103c42586ad042b17657ce738d82a0553534a5874fc770efe` |
-| `hm_wasm.js` | 75,224 | `3db65c95d05ed435b11805bc34129ed9d235574d78b83b3ffadd4d45cb47a4bb` |
-| `hm_wasm.d.ts` | 66,520 | `634c301dec4743ecfbd141e8f1f0f53978e07e645b614d4bb342b5503e3c6b6a` |
-| `hm_wasm_bg.wasm.d.ts` | 9,432 | `07b5c75ac375ad462fbe491a4162bca1d5e0956c203c02a37823eceec6135c4f` |
+| `hm_wasm_bg.wasm` | 8,479,420 | `45d70f9911f87669445e2bce7bfacc745dfc027be2aff7aeb54eede271f6cb73` |
+| `hm_wasm.js` | 77,636 | `1e1a9f8ea520d241f8c15a690785afd92ac7017fd1d1c6c43669fbdc5a72806a` |
+| `hm_wasm.d.ts` | 68,221 | `fb0bb83bf4e8091c419d2b6d93e00e588ea3813e80100f5dc74b072ab1e460dd` |
+| `hm_wasm_bg.wasm.d.ts` | 9,689 | `c76607cfd0f7ad53a8cde07d0e06bbaf102a42994b9cf87e5bc70a125bd609c9` |
+
+Earlier packages: `b3a2d0b` merged engine PR #4 (editing parity with Hancom Office 2022) and #3 (table splits) over
+`6d33534` (save-corruption fixes, #2) and `f7c5b55` (footnote and endnote parity, #1).
 
 Integration `e48a461` adds, over the earlier `e2c92f9`, structural version merging and `Doc.verifyHwp`
 (`feat/studio-version-merge`, `208dbfb`), sparse host-font glyph coverage (`fix/studio-export-packaging`, `ebf68e8`)
