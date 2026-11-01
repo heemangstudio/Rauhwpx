@@ -1332,6 +1332,36 @@ export class CanvasView {
     );
   }
 
+  /**
+   * 점진 조판으로 쪽이 늘었다. 쪽 목록과 스크롤 크기를 맞추고 새로 보이는 쪽을 그린다. 이미 그린 쪽은
+   * 엔진이 바뀌었다고 알린 쪽(쪽 번호·전체 쪽 수 등)이 있거나 문서 폭이 바뀔 때만 편집 뒤처럼 다시 그린다.
+   */
+  applyLayoutProgress(changedPages: readonly number[]): void {
+    if (this.disposed || engineTrap() || !this.wasm.hasLoadedDocument() || this.pages.length === 0) return;
+    if (changedPages.some(pageIdx => this.canvasPool.has(pageIdx))) {
+      this.refreshPages();
+      return;
+    }
+    let pages: PageInfo[] | null;
+    try {
+      pages = this.collectPageInfo(this.wasm.pageCount);
+    } catch (error) {
+      if (!reportEngineTrap(error)) throw error;
+      pages = null;
+    }
+    if (!pages) return;
+    // 더 넓은 쪽이 생기면 문서 폭과 쪽 left 가 함께 바뀌므로 그린 쪽을 다시 놓는다.
+    let widest = 0;
+    for (const page of this.pages) widest = Math.max(widest, page.width);
+    if (pages.some(page => page.width > widest)) {
+      this.refreshPages();
+      return;
+    }
+    this.pages = pages;
+    this.recalcLayout();
+    this.updateVisiblePages();
+  }
+
   private refreshInvalidatedPageNow(pageIndex: number, renderContext: PageRenderContext): void {
     if (this.pages.length === 0 || engineTrap()) return;
 

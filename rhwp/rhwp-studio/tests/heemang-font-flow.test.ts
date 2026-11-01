@@ -51,7 +51,7 @@ const stubs = new Map([
     export class Player {
       paint(ctx) { const e = globalThis.heemangFontTest(); e.paints.push(ctx); e.onPaint?.(); }
     }
-    export const decodePacket = () => ({width:7200,height:7200,fontGeneration:0,layoutEpoch:0,ops:globalThis.heemangFontTest().packetOps ?? []});
+    export const decodePacket = () => ({width:7200,height:7200,fontGeneration:0,layoutEpoch:0,...globalThis.heemangFontTest().packetHeader?.(),ops:globalThis.heemangFontTest().packetOps ?? []});
     export const patchImage = () => null;`],
 ]);
 registerHooks({
@@ -386,4 +386,68 @@ test('host Hancom engine tables reach the engine once, in order, before any HFT 
   await next.prepareFonts(['Body'],{});
   assert.equal(env.events.filter((event: string) => event.startsWith('table:')).length,3);
   assert.ok(['code','info','map'].every(id => reads.includes(id)));
+});
+
+test('a progressive open lays out only the first pages, keeps unchanged page packets while the rest lays out and repaints every page after another call completes it', async () => {
+  const { HeemangAdapter } = await setup([asset(1,'Body.ttf','Body')], () => req(['Body'],[]));
+  // 엔진처럼 상태 읽기는 아직 조판하지 않았거나 글꼴이 바뀐 문서를 끝까지 조판하고, layoutFirst 는 앞쪽만 조판한다.
+  const total = 10;
+  let laid = 0, epoch = 0, laidWith = -1;
+  const range = (from: number, to: number) => Array.from({length: to - from}, (_, i) => from + i);
+  const stale = () => laid === 0 || laidWith !== env.registered.length;
+  const lay = (pages: number, label: string) => { env.events.push(label); laid = Math.min(total, pages); epoch++; laidWith = env.registered.length; };
+  const progress = (changedPages: number[]) => JSON.stringify({pageCount:laid,complete:laid === total,layoutEpoch:epoch,changedPages});
+  env.packetHeader = () => ({layoutEpoch:epoch,fontGeneration:env.registered.length});
+  Object.assign(env.doc, {
+    state: () => {
+      if (stale()) lay(total, 'layout:all');
+      return JSON.stringify({pageCount:laid,fontGeneration:env.registered.length,layoutEpoch:epoch,layoutComplete:laid === total});
+    },
+    layoutFirst: (pages: number) => { if (stale()) lay(pages + 1, 'layout:first'); return progress(range(0, laid)); },
+    layoutMore: (pages: number) => {
+      if (stale()) lay(total, 'layout:all');
+      if (laid === total) return progress([]);
+      const before = laid;
+      lay(pages ? laid + pages : total, 'layout:more');
+      // 끝까지 조판하면 전체 쪽 수를 보이는 첫 쪽 꼬리말도 바뀐다.
+      return progress(laid === total ? [0, ...range(before, laid)] : range(before, laid));
+    },
+    query: () => { if (laid < total) lay(total, 'layout:rest'); return '[]'; },
+    page: (i: number) => { env.events.push(`page:${i}`); return new Uint8Array(); },
+  });
+  const fetched = () => env.events.filter((event: string) => event.startsWith('page:'));
+  const open = async (adapter: any) => {
+    laid = 0;
+    adapter.loadDocument(new Uint8Array([0x50,0x4b]));
+    assert.equal(adapter.beginFirstPages(3), true);
+    await adapter.prepareFonts(['Body'],{});
+    assert.equal(adapter.pageCount, 4);
+    assert.equal(env.events.includes('layout:all'), false, 'opening reads lay out only the first pages, also after fonts arrive');
+    assert.equal(adapter.finishFirstPages(), true);
+  };
+  const adapter = new HeemangAdapter(); await adapter.initialize();
+  await open(adapter);
+  const first = canvas(), second = canvas();
+  adapter.renderPageToCanvas(0,first,1); adapter.renderPageToCanvas(1,second,1);
+  env.events = [];
+  let p = adapter.layoutMore(3);
+  assert.deepEqual([p.pageCount, p.complete, p.changedPages], [7, false, [4,5,6]]);
+  adapter.renderPageToCanvas(0,first,1); adapter.renderPageToCanvas(1,second,1);
+  assert.deepEqual(fetched(), [], 'pages the layout left alone keep their packets');
+  p = adapter.layoutMore(0);
+  assert.deepEqual([p.pageCount, p.complete], [total, true]);
+  adapter.renderPageToCanvas(0,first,1); adapter.renderPageToCanvas(1,second,1);
+  assert.deepEqual(fetched(), ['page:0'], 'pages the layout changed are read again');
+
+  // 위치 찾기 같은 다른 호출이 남은 조판을 끝내면 그 차이는 진행 결과에 없으므로 모든 쪽을 다시 그린다.
+  env.events = [];
+  await open(adapter);
+  adapter.renderPageToCanvas(1,second,1);
+  adapter.hmDoc().query('{}');
+  env.events = [];
+  p = adapter.layoutMore(3);
+  assert.equal(p.complete, true);
+  assert.deepEqual(p.changedPages, range(0, total));
+  adapter.renderPageToCanvas(1,second,1);
+  assert.deepEqual(fetched(), ['page:1']);
 });

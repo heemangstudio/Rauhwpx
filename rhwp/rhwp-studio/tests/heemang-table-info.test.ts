@@ -29,7 +29,7 @@ function open(t: test.TestContext) {
   let doc = engine.open(blank), loaded = true;
   documents.push(doc);
   t.after(() => { for (const item of documents) item.free(); engine.free(); });
-  const adapter = { documentInstance: 1, hmDoc: () => { if (!loaded) throw new Error('문서가 닫혔습니다'); return doc; },
+  const adapter = { documentInstance: 1, hmDoc: () => { if (!loaded) throw new Error('문서가 닫혔습니다'); return doc; }, hmStateJson() { return this.hmDoc().state(); },
     hasLoadedDocument: () => loaded, applyReceipt: () => {}, refreshLayout: () => {} };
   const core = new HmCore(adapter as unknown as HeemangAdapter);
   let queries = 0;

@@ -19,6 +19,14 @@ import { isHftBytes } from './hft-glyphs';
 export type { Address, Affinity, Caret, CharPatch, Copied, Located, LocateRequest, Match, Motion, NavigateRequest, ParagraphInfo, ParaPatch, Receipt, Rect, SearchResult, Selected, SelectRequest, Step } from '../../vendor/hm-wasm/hm_wasm';
 export type { TextSelection, CellSelection, EditingSelection } from './heemang-editing';
 export type DocState = Omit<HmDocState, 'format'> & { format: 'hwp5' | 'hwpx' | 'hwp3' | 'hml' };
+/** layoutFirst·layoutMore 가 조판한 결과: 지금까지의 쪽 수, 다 조판했는지, 조판 순번, 다시 그릴 쪽(새 쪽 포함). */
+export interface LayoutProgress { pageCount: number; complete: boolean; layoutEpoch: number; changedPages: number[] }
+/** 앞쪽부터 나눠 조판하는 hm-wasm 문서. 예전 vendor 패키지에는 없으므로 있는지 보고 쓴다. */
+type ProgressiveDoc = Doc & { layoutFirst(pages: number): string; layoutMore(pages: number): string };
+const progressiveDoc = (doc: Doc | null): ProgressiveDoc | null => {
+  const d = doc as Partial<ProgressiveDoc> | null;
+  return typeof d?.layoutFirst === 'function' && typeof d.layoutMore === 'function' ? d as ProgressiveDoc : null;
+};
 export interface EditResult { caret: Located; anchor?: Located | null; receipt: Receipt; selection?: EditingSelection }
 export interface CutResult { clipboard: Copied; edit: EditResult | null }
 export interface ReplaceAllResult { count: number; edit: EditResult | null }
@@ -277,6 +285,10 @@ export class HeemangAdapter {
   });
   private readonly webFonts = new Map<string, Promise<void>>();
   private doc: Doc | null = null;
+  /** 앞쪽만 조판해 여는 동안 상태·쪽 읽기가 조판할 쪽 수(layoutFirst). 0이면 엔진대로 문서 전체를 조판한다. */
+  private firstPages = 0;
+  /** 나머지 쪽을 조판하는 중에 쪽 packet 과 쪽 목록이 따르는 조판 순번. 다 조판했으면 null. */
+  private partialLayoutEpoch: number | null = null;
   private packets = new Map<number, PagePacket>();
   private furniturePreview: { key: string; doc: Doc; list: { section: number; steps: { para: number; control: number; index: number }[] } } | null = null;
   private pageMetadata: { doc: Doc; layoutEpoch: number; fontGeneration: number; pages: HmPage[] } | null = null;
@@ -356,15 +368,19 @@ export class HeemangAdapter {
       if (!current()) return;
     }
     if (!this.fontCount()) throw new EngineNotSupportedError('글꼴 파일이 필요합니다. 로컬 TTF·OTF·TTC·HFT 글꼴을 연결해 주세요.');
-    const pageCount = (JSON.parse(doc.state()) as DocState).pageCount;
+    // 첫 조판이 찾은 대체 글꼴도 연결한다. 앞쪽만 조판하는 문서는 그 쪽들의 글꼴만 찾고, 나머지는 completeFonts 가 맡는다.
+    const pageCount = this.state().pageCount;
     while (await this.loadFonts(requests())) {
       if (!current()) return;
     }
     if (!current()) return;
-    await this.prepareOutlines(doc);
+    // 윤곽선 요청은 문서 전체를 조판해 모든 쪽을 만든다. 앞쪽만 조판하는 동안에는 completeFonts 로 미룬다.
+    if (!this.firstPages) await this.prepareOutlines(doc);
     if (!current()) return;
     this.refreshLayout();
     if (pageCount > 0) {
+      // 그사이 글꼴이 바뀌었으면 쪽을 읽기 전에 앞쪽만 다시 조판한다.
+      if (this.firstPages) progressiveDoc(doc)?.layoutFirst(this.firstPages);
       const packet = decodePacket(doc.page(0).slice());
       // 첫 쪽의 그림도 준비한 뒤 문서를 화면에 공개한다.
       await this.pictures.prepare(doc, 0, packet.ops.flatMap(op => op.op === 'patch' ? [op.item] : []));
@@ -385,7 +401,7 @@ export class HeemangAdapter {
   adoptSourceDigest(digest: string): void { if (this.doc) this._digest = digest; }
   hasLoadedDocument(): boolean { return this.doc !== null; }
   get pageCount(): number { return this.doc && this.fontsPrepared ? this.state().pageCount : 0; }
-  state(): DocState { return JSON.parse(this.document().state()); }
+  state(): DocState { return JSON.parse(this.hmStateJson()); }
   get wasmMemoryBytes(): number { return this.memory.buffer.byteLength; }
 
   releaseDocument(): void {
@@ -399,6 +415,8 @@ export class HeemangAdapter {
     this.doc?.free();
     this.doc = null;
     this.fontsPrepared = false;
+    this.firstPages = 0;
+    this.partialLayoutEpoch = null;
     this.packets.clear();
     this.pageMetadata = null;
     this.pageList = null;
@@ -473,8 +491,85 @@ export class HeemangAdapter {
   }
   refreshLayout(): void { this.packets.clear(); this.pageMetadata = null; }
 
+  // ─── 점진 조판: 큰 문서의 앞쪽을 먼저 보여 준다 ───────────────
+
+  /** 엔진 상태 JSON. 앞쪽만 조판해 여는 동안에는 글꼴이 바뀌어도 앞쪽만 다시 조판한다. */
+  hmStateJson(): string {
+    const doc = this.document();
+    if (this.firstPages) progressiveDoc(doc)?.layoutFirst(this.firstPages);
+    return doc.state();
+  }
+
+  /**
+   * 편집기가 문서를 열 때 부른다. 엔진이 지원하면 finishFirstPages 까지 상태·쪽 읽기가 문서 전체가 아니라
+   * 앞쪽 pages 쪽만 조판한다. 앞쪽 조판으로 다 조판되는 문서이거나 엔진이 지원하지 않으면 false.
+   */
+  beginFirstPages(pages: number): boolean {
+    const doc = progressiveDoc(this.doc);
+    if (!doc) return false;
+    const progress = JSON.parse(doc.layoutFirst(Math.max(1, pages))) as LayoutProgress;
+    this.firstPages = progress.complete ? 0 : Math.max(1, pages);
+    return !progress.complete;
+  }
+
+  /** 앞쪽만 조판하던 여는 단계를 끝낸다. 남은 쪽이 있으면 true — 호출자가 layoutMore 로 마저 조판한다. */
+  finishFirstPages(): boolean {
+    this.firstPages = 0;
+    const doc = progressiveDoc(this.doc);
+    if (!doc) return false;
+    const state = JSON.parse(doc.state()) as DocState & { layoutComplete?: boolean };
+    this.partialLayoutEpoch = state.layoutComplete === false ? state.layoutEpoch : null;
+    return this.partialLayoutEpoch !== null;
+  }
+
+  /**
+   * 남은 쪽을 pages 쪽쯤 더 조판한다(0이면 끝까지). 다시 그릴 쪽의 packet 만 버린다.
+   * 그사이 다른 호출이 조판했으면(엔진은 다른 요청 전에 남은 조판을 끝낸다) 모든 쪽을 다시 그릴 쪽으로 돌려준다.
+   */
+  layoutMore(pages: number): LayoutProgress | null {
+    const doc = progressiveDoc(this.doc);
+    if (!doc) return null;
+    const seen = this.partialLayoutEpoch;
+    const before = (JSON.parse(doc.state()) as DocState).layoutEpoch;
+    const progress = JSON.parse(doc.layoutMore(Math.max(0, pages))) as LayoutProgress;
+    this.pageMetadata = null;
+    if (seen === null || before !== seen) {
+      this.packets.clear();
+      progress.changedPages = Array.from({ length: progress.pageCount }, (_, index) => index);
+    } else if (progress.layoutEpoch !== seen) {
+      for (const index of progress.changedPages) this.packets.delete(index);
+      for (const packet of this.packets.values()) packet.layoutEpoch = progress.layoutEpoch;
+    }
+    this.partialLayoutEpoch = progress.complete ? null : progress.layoutEpoch;
+    return progress;
+  }
+
+  /**
+   * 앞쪽만 조판해 연 문서의 조판이 끝난 뒤 부른다. 나머지 쪽이 찾은 대체 글꼴과 글꼴 윤곽선을 마저 연결한다.
+   * 연결한 것이 있으면 true — 조판이나 글자 모양이 바뀌었을 수 있으므로 호출자가 쪽을 다시 그린다.
+   */
+  async completeFonts(): Promise<boolean> {
+    const doc = this.doc;
+    if (!doc) return false;
+    let changed = false;
+    while (await this.loadFonts(JSON.parse(doc.fontRequests()) as FontRequests)) {
+      if (this.doc !== doc) return false;
+      changed = true;
+    }
+    if (this.doc !== doc) return false;
+    if (await this.prepareOutlines(doc)) changed = true;
+    if (this.doc !== doc) return false;
+    if (changed) this.refreshLayout();
+    return changed;
+  }
+
   private invalidate(receipt: Receipt): void {
-    if (receipt.changedPages === null) { this.packets.clear(); return; }
+    // 나머지 쪽을 조판하는 중에 편집하면 엔진이 조판을 먼저 끝낸다. 영수증은 그 뒤만 비교하므로 모두 버린다.
+    if (receipt.changedPages === null || this.partialLayoutEpoch !== null) {
+      this.partialLayoutEpoch = null;
+      this.packets.clear();
+      return;
+    }
     for (const index of receipt.changedPages) this.packets.delete(index);
     // 전역 epoch가 바뀌어도 엔진이 보장한 나머지 쪽의 packet은 재사용한다.
     for (const packet of this.packets.values()) {
@@ -1008,6 +1103,8 @@ export class HeemangAdapter {
     const doc = this.document();
     // adopt 는 성공하든 실패하든 next 를 가져가 닫는다.
     doc.adopt(this.engine.open(bytes));
+    this.firstPages = 0;
+    this.partialLayoutEpoch = null;
     if (this.pictureFrame) cancelAnimationFrame(this.pictureFrame);
     this.pictureFrame = 0;
     this.pictures.clear();

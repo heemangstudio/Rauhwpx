@@ -28,7 +28,7 @@ function open(t: test.TestContext, bytes = new Uint8Array(readFileSync(new URL('
   const engine = new Engine(), doc = engine.open(bytes);
   t.after(() => { doc.free(); engine.free(); });
   // 실 WASM 문서를 쓰고, 이 테스트와 무관한 화면 packet 전달만 생략한다.
-  const adapter = { documentInstance: 1, hmDoc: () => doc, hasLoadedDocument: () => true,
+  const adapter = { documentInstance: 1, hmDoc: () => doc, hmStateJson() { return this.hmDoc().state(); }, hasLoadedDocument: () => true,
     applyReceipt: () => {}, refreshLayout: () => {} } as unknown as HeemangAdapter;
   return { core: new HmCore(adapter), doc };
 }

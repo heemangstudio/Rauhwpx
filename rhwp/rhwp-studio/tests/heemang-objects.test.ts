@@ -26,7 +26,7 @@ const png = new Uint8Array(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1
 function open(t: test.TestContext) {
   const engine = new Engine();
   const doc = engine.open(blank);
-  const core = new HmCore({ documentInstance: 1, hmDoc: () => doc, hasLoadedDocument: () => true,
+  const core = new HmCore({ documentInstance: 1, hmDoc: () => doc, hmStateJson() { return this.hmDoc().state(); }, hasLoadedDocument: () => true,
     applyReceipt() {}, refreshLayout() {}, getSectionCount: () => 1 } as unknown as HeemangAdapter);
   t.after(() => { doc.free(); engine.free(); });
   return { core, doc, engine };
@@ -97,7 +97,7 @@ test('a bridge whose fonts were never prepared reports the same page count in it
   const doc = engine.open(blank);
   t.after(() => { doc.free(); engine.free(); });
   // 비교·버전 사본 브리지처럼 글꼴 준비를 거치지 않는다. 어댑터의 들인 직후 정보는 쪽 수를 세지 않는다.
-  const core = new HmCore({ documentInstance: 3, hmDoc: () => doc, hasLoadedDocument: () => true, fontsReady: false,
+  const core = new HmCore({ documentInstance: 3, hmDoc: () => doc, hmStateJson() { return this.hmDoc().state(); }, hasLoadedDocument: () => true, fontsReady: false,
     getDocumentInfo: () => ({ version: 'hm-wasm/1', sectionCount: 1, pageCount: 0, encrypted: false, fallbackFont: '', fontsUsed: [] }),
     applyReceipt() {}, refreshLayout() {}, getSectionCount: () => 1 } as unknown as HeemangAdapter);
   const info = api.getDocumentInfo(core);
@@ -167,7 +167,7 @@ test('a hyperlink inside a table cell is found by its cell target and position',
 function reopenCore(t: test.TestContext, doc: { serializeAs(format: string, x: boolean): Uint8Array }, format: string) {
   const engine = new Engine();
   const reopened = engine.open(doc.serializeAs(format, false));
-  const core = new HmCore({ documentInstance: 2, hmDoc: () => reopened, hasLoadedDocument: () => true,
+  const core = new HmCore({ documentInstance: 2, hmDoc: () => reopened, hmStateJson() { return this.hmDoc().state(); }, hasLoadedDocument: () => true,
     applyReceipt() {}, refreshLayout() {}, getSectionCount: () => 1 } as unknown as HeemangAdapter);
   t.after(() => { reopened.free(); engine.free(); });
   return core;

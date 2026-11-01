@@ -28,7 +28,7 @@ function open(t: test.TestContext, fixture = '../src/core/hm/blank.hwpx') {
   const engine = new Engine();
   const doc = engine.open(readFileSync(new URL(fixture, import.meta.url)));
   const adapter = {
-    documentInstance: 1, hmDoc: () => doc, hmEngine: () => engine,
+    documentInstance: 1, hmDoc: () => doc, hmStateJson() { return this.hmDoc().state(); }, hmEngine: () => engine,
     hasLoadedDocument: () => true, applyReceipt: () => {}, refreshLayout: () => {}, getSectionCount: () => 1,
   } as unknown as HeemangAdapter;
   t.after(() => { doc.free(); engine.free(); });
