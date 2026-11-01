@@ -43,7 +43,7 @@
       case 'expired':
         return [`${status.license?.licenseExpiresAt ? `${date(status.license.licenseExpiresAt)}에 ` : ''}Basic 기간이 끝났어요. 구독을 갱신하거나 새 키를 넣어 주세요.`, true];
       case 'free':
-        return ['키를 넣으면 Basic 기능을 쓸 수 있어요.', false];
+        return ['선물 코드나 라이선스 키를 넣으면 요금제 기능을 쓸 수 있어요.', false];
       case 'revoked':
         return [beta
           ? '베타 테스트 기간이 끝나 키가 해지되었어요.'
@@ -67,7 +67,7 @@
     const expired = hasLicense && status.state === 'expired';
     // 결제 실패·기간 끝은 Studio 의 연장 안내와 같은 제목을 쓴다.
     const renewal = (status.state === 'licensed' && status.license?.paymentFailed) || (expired && status.license.licenseExpiresAt);
-    $('title').textContent = renewal ? '키 만료, 연장할까요?' : showLicensed && status.license.tier === 'beta' ? '베타 테스터 라이선스' : '라이선스';
+    $('title').textContent = renewal ? '키 만료, 연장할까요?' : showLicensed && status.license.tier === 'beta' ? '베타 테스터 라이선스' : showLicensed ? '라이선스' : '프로모션 코드';
     $('fix-payment').hidden = !(status.state === 'licensed' && status.license?.paymentFailed);
     $('licensed-section').hidden = !showLicensed;
     $('activate-section').hidden = showLicensed;
@@ -97,15 +97,31 @@
     event.preventDefault();
     activateNote.classList.remove('ok');
     activateNote.textContent = '';
+    $('sign-in-row').hidden = true;
     const result = await busy(activateButton, () => api.activate(keyInput.value));
-    if (result.ok) {
+    if (result.ok && result.kind === 'gift') {
+      keyInput.value = '';
+      activateNote.classList.add('ok');
+      activateNote.textContent = result.alreadyLinked ? '이미 이 계정에 등록한 선물 코드예요.' : '선물 코드를 등록했어요. 계정 요금제에 바로 적용됐어요.';
+    } else if (result.ok) {
       keyInput.value = '';
       licensedNote.classList.add('ok');
       licensedNote.textContent = '활성화했어요.';
     } else {
       setNote(activateNote, result.message);
+      $('sign-in-row').hidden = !result.signInRequired;
     }
     render(result.status);
+  });
+
+  $('sign-in').addEventListener('click', async (event) => {
+    const result = await busy(event.currentTarget, () => api.signIn());
+    if (result && result.ok === false && result.code !== 'already_signed_in') setNote(activateNote, result.message ?? '로그인을 시작하지 못했어요.');
+    else {
+      activateNote.classList.add('ok');
+      activateNote.textContent = '브라우저에서 로그인을 마친 뒤 코드를 다시 등록해 주세요.';
+      $('sign-in-row').hidden = true;
+    }
   });
 
   $('check').addEventListener('click', async (event) => {
