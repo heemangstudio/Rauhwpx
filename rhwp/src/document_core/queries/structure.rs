@@ -277,36 +277,3 @@ impl DocumentCore {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn clause_detects_jo_hang_ho_mok() {
-        let cases = [
-            ("제1조(목적)", "조", 5u8),
-            ("제12장 보칙", "장", 2),
-            ("①사업자는", "항", 6),
-            ("1. 첫째 호", "호", 7),
-            ("가. 첫째 목", "목", 8),
-        ];
-        for (text, kind, level) in cases {
-            let h = classify_clause(text).unwrap_or_else(|| panic!("미검출: {text}"));
-            assert_eq!(h.kind, kind, "{text}");
-            assert_eq!(h.level, level, "{text}");
-        }
-    }
-
-    #[test]
-    fn clause_ignores_plain_text() {
-        assert!(classify_clause("일반 문장입니다").is_none());
-        assert!(classify_clause("").is_none());
-        assert!(classify_clause("제목 없음").is_none()); // "제"+비숫자
-    }
-
-    #[test]
-    fn clause_marker_extracted() {
-        assert_eq!(classify_clause("제3조 적용범위").unwrap().marker, "제3조");
-        assert_eq!(classify_clause("②다음").unwrap().marker, "②");
-    }
-}

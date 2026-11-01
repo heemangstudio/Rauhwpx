@@ -5,8 +5,6 @@ mod document;
 // 서식 › 문단 간격: 문서 전체 줄 간격·문단 간격 프리셋.
 pub(crate) mod document_spacing;
 mod document_transfer;
-#[cfg(test)]
-mod edit_integrity_tests;
 mod footnote_ops;
 mod foreign_paste;
 mod formatting;

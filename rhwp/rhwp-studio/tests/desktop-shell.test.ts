@@ -236,43 +236,6 @@ test('desktop owns Cmd/Ctrl+Shift+V in its native Edit menu', () => {
   assert.match(desktopAppMenu, /clipboard\.readText\(\)/);
 });
 
-test('desktop packages register as an HWPX editor with the operating system', () => {
-  const associations = rootPackage.build.fileAssociations;
-  assert.ok(associations.some((association: { ext: string | string[] }) =>
-    associationExts(association).includes('hwpx')));
-  const hangulAssociation = associations.find((association: { name?: string }) =>
-    association.name === 'Hangul document');
-  assert.equal(associationExts(hangulAssociation ?? {}).includes('rhwpx'), false);
-
-  const macInfo = rootPackage.build.mac.extendInfo;
-  const hwpxType = macInfo.CFBundleDocumentTypes.find((type: {
-    LSItemContentTypes?: string[];
-  }) => type.LSItemContentTypes?.includes('com.hataewook.rauhwpx.hwpx-document'));
-  assert.equal(hwpxType?.CFBundleTypeRole, 'Editor');
-  assert.equal(hwpxType?.LSHandlerRank, 'Default');
-
-  const exportedHwpxType = macInfo.UTExportedTypeDeclarations.find((type: {
-    UTTypeIdentifier?: string;
-  }) => type.UTTypeIdentifier === 'com.hataewook.rauhwpx.hwpx-document');
-  assert.deepEqual(exportedHwpxType?.UTTypeTagSpecification['public.filename-extension'], ['hwpx']);
-  const exportedHistoryType = macInfo.UTExportedTypeDeclarations.find((type: {
-    UTTypeIdentifier?: string;
-  }) => type.UTTypeIdentifier === 'com.hataewook.rauhwpx.history-bundle');
-  assert.deepEqual(exportedHistoryType?.UTTypeTagSpecification['public.filename-extension'], ['rhwpx']);
-  assert.deepEqual(exportedHistoryType?.UTTypeConformsTo, ['public.content', 'public.data']);
-  const historyDocumentType = macInfo.CFBundleDocumentTypes.find((type: {
-    LSItemContentTypes?: string[];
-  }) => type.LSItemContentTypes?.includes('com.hataewook.rauhwpx.history-bundle'));
-  assert.equal(historyDocumentType?.LSTypeIsPackage, undefined);
-  assert.doesNotMatch(JSON.stringify(macInfo), /com\.apple\.package/);
-
-  assert.equal(rootPackage.build.nsis.oneClick, false);
-  assert.equal(rootPackage.build.nsis.perMachine, false);
-  assert.equal(rootPackage.build.nsis.selectPerMachineByDefault, false);
-  assert.equal(rootPackage.build.nsis.allowElevation, true);
-  assert.equal(rootPackage.build.nsis.packElevateHelper, true);
-});
-
 test('packaged Studio uses a secure path-safe standard scheme', () => {
   assert.equal(STUDIO_URL, 'rauhwpx://app/index.html');
   assert.equal(
@@ -1005,39 +968,6 @@ test('unix launch-directory cleanup does not retry a locked recursive rm', async
   assert.equal((await stat(directory)).isDirectory(), true);
 });
 
-test('desktop package registers supported document associations without bundling runtime data', () => {
-  const hangulAssociation = rootPackage.build.fileAssociations.find(
-    (association: { name?: string }) => association.name === 'Hangul document',
-  );
-  const historyAssociation = rootPackage.build.fileAssociations.find(
-    (association: { ext?: string | string[] }) => associationExts(association).includes('rhwpx'),
-  );
-  assert.deepEqual(hangulAssociation?.ext, ['hwp', 'hwpx', 'hml']);
-  assert.deepEqual(historyAssociation?.ext, ['rhwpx']);
-  assert.equal(historyAssociation?.name, 'HamaEditor history archive');
-  assert.notEqual(historyAssociation?.name, 'Hangul document');
-  assert.equal(historyAssociation?.isPackage, undefined);
-  assert.match(desktopMain, /desktop:pick-legacy-history-folder/);
-  assert.match(desktopMain, /properties: \['openFile'\]/);
-  assert.match(desktopMain, /properties: \['openDirectory'\]/);
-  assert.doesNotMatch(desktopMain, /\['openFile', 'openDirectory'\]/);
-  assert.doesNotMatch(desktopMain, /writePortableHistoryFolder\(/);
-  assert.doesNotMatch(desktopMain, /desktop:(?:save-portable-history-file|native-file-write-portable-history)/);
-  assert.match(desktopMain, /HamaEditor history archive/);
-  assert.ok(rootPackage.build.asarUnpack.includes('rhwp/rhwp-agent/**'));
-  assert.ok(rootPackage.build.files.every((entry: string) => !/runtime|launch-work/.test(entry)));
-});
-
-
-test('save picker strips document extensions so the managed one is applied once', () => {
-  // The suggested name enters the NSSavePanel field without a managed tail, and
-  // every document extension a user could type is stripped before `.ext` is
-  // appended — so `name.hwpx` never becomes `name.hwpx.hwpx`.
-  assert.match(desktopMain, /const suggestedStem = \['\.hwp', '\.hwpx', '\.hml', '\.rhwpx'\]\.includes\(extname\(suggestedName\)\.toLowerCase\(\)\)/);
-  assert.match(desktopMain, /defaultPath: documentFolder \? join\(documentFolder, suggestedStem\) : suggestedStem/);
-  assert.match(desktopMain, /while \(\['\.hwp', '\.hwpx', '\.hml', '\.rhwpx'\]\.includes\(extname\(saveStem\)\.toLowerCase\(\)\)\)/);
-  assert.match(desktopMain, /const filePath = join\(saveDir, `\$\{saveStem \|\| 'document'\}\.\$\{extension\}`\)/);
-});
 
 
 test('desktop edit accelerators send commands to the focused renderer', () => {

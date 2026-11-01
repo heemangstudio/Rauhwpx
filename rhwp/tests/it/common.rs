@@ -3,8 +3,6 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use rhwp::document_core::DocumentCore;
-use rhwp::wasm_api::HwpDocument;
 
 pub fn sample_path(rel: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join(rel)
@@ -12,14 +10,6 @@ pub fn sample_path(rel: &str) -> PathBuf {
 
 pub fn read_sample(rel: &str) -> Vec<u8> {
     std::fs::read(sample_path(rel)).unwrap_or_else(|e| panic!("read {rel}: {e}"))
-}
-
-pub fn load_doc(rel: &str) -> HwpDocument {
-    HwpDocument::from_bytes(&read_sample(rel)).unwrap_or_else(|e| panic!("parse {rel}: {e:?}"))
-}
-
-pub fn load_core(rel: &str) -> DocumentCore {
-    DocumentCore::from_bytes(&read_sample(rel)).unwrap_or_else(|e| panic!("parse {rel}: {e:?}"))
 }
 
 /// 테스트 대상 CLI. nextest 아카이브 실행은 `CARGO_BIN_EXE_rhwp` 를 런타임에 재매핑해
@@ -55,14 +45,4 @@ pub fn assert_code(args: &[&str], expected: i32) -> Output {
         describe(args, &output)
     );
     output
-}
-
-/// stdout 전체가 JSON 하나여야 한다(`--json` 계약).
-pub fn parse_json(args: &[&str], output: &Output) -> serde_json::Value {
-    serde_json::from_slice(&output.stdout).unwrap_or_else(|e| {
-        panic!(
-            "stdout 이 순수 JSON 이 아닙니다 ({e}).\n{}",
-            describe(args, output)
-        )
-    })
 }

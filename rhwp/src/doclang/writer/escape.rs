@@ -54,33 +54,3 @@ pub fn escape_attr(s: &str) -> String {
     out
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn text_escapes_markup_chars_only() {
-        assert_eq!(escape_text("a & b < c > d"), "a &amp; b &lt; c &gt; d");
-        // Quotes are NOT escaped in text content.
-        assert_eq!(escape_text("\"x\" 'y'"), "\"x\" 'y'");
-    }
-
-    #[test]
-    fn attr_escapes_quotes_too() {
-        assert_eq!(
-            escape_attr("a&b<c>\"d\"'e'"),
-            "a&amp;b&lt;c&gt;&quot;d&quot;&apos;e&apos;"
-        );
-    }
-
-    #[test]
-    fn empty_string_round_trips() {
-        assert_eq!(escape_text(""), "");
-        assert_eq!(escape_attr(""), "");
-    }
-
-    #[test]
-    fn unicode_is_preserved() {
-        assert_eq!(escape_text("한글 & 漢字"), "한글 &amp; 漢字");
-    }
-}

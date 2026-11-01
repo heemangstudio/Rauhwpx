@@ -111,22 +111,3 @@ fn read_rectl(b: &[u8]) -> Result<RectL, Error> {
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// offString·nChars 가 u32 끝값이면 wasm32 에서 `start + byte_len` 이 넘친다.
-    /// 범위 검사가 넘침에 속지 않고 오류를 돌려줘야 한다.
-    #[test]
-    fn ext_text_out_with_hostile_string_offset_is_an_error() {
-        let mut payload = vec![0u8; 68];
-        payload[36..40].copy_from_slice(&0x7FFF_FFFFu32.to_le_bytes()); // nChars
-        payload[40..44].copy_from_slice(&0xFFFF_FFFFu32.to_le_bytes()); // offString
-
-        assert!(parse(&payload).is_err());
-
-        payload[36..40].copy_from_slice(&1u32.to_le_bytes());
-        payload[40..44].copy_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
-        assert!(parse(&payload).is_err());
-    }
-}

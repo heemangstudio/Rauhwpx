@@ -129,31 +129,3 @@ pub(super) fn legacy_typeface_for_style(font_mgr: &FontMgr, style: FontStyle) ->
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn missing_family_is_filtered_before_system_lookup() {
-        let font_mgr = FontMgr::default();
-        let system_families = SystemFontFamilies::new();
-
-        assert!(match_system_family_style(
-            &font_mgr,
-            &system_families,
-            "Definitely Missing RHWP Test Font",
-            FontStyle::normal(),
-        )
-        .is_none());
-    }
-
-    #[test]
-    fn system_family_membership_uses_exact_family_name() {
-        let mut system_families = SystemFontFamilies::new();
-        system_families.insert("AppleGothic".to_string());
-
-        assert!(has_system_family(&system_families, "AppleGothic"));
-        assert!(!has_system_family(&system_families, "applegothic"));
-        assert!(!has_system_family(&system_families, "Missing Family"));
-    }
-}

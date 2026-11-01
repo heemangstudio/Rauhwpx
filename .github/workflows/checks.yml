@@ -75,7 +75,7 @@ jobs:
           fallback: none
       - name: Test engine
         working-directory: rhwp
-        # Unit tests and the single `it` integration binary. Doc tests and corpus sweeps run nightly.
+        # Unit tests and the single `it` integration binary. Doc tests run nightly.
         run: cargo nextest run --locked
       - name: Check that the hostile-input gates still exist
         working-directory: rhwp

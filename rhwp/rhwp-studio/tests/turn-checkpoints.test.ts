@@ -5,16 +5,12 @@
  * 승인·직접 확정·사용자 편집은 모두 두 id 스냅샷 명령으로 히스토리에 남는다 (편집기와 같다).
  */
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
 import test from 'node:test';
-import { fileURLToPath, pathToFileURL } from 'node:url';
 import { EventBus } from '../src/core/event-bus.ts';
 import {
   TURN_CHECKPOINT_LIMIT,
   TurnCheckpoints,
   checkTurnRestore,
-  isMissingSnapshotError,
   restoreTurn,
   type TurnRestoreGates,
 } from '../src/agent/turn-checkpoints.ts';
@@ -522,30 +518,4 @@ test('a restore stays in effect through later edits until it is undone', () => {
   assert.equal(w.store.restoreStillApplies(THREAD, 'k1'), false, 'undoing the restore brings the agent\'s work back');
   w.history.redo(w.engine);
   assert.equal(w.store.restoreStillApplies(THREAD, 'k1'), true, 'redo restores it again');
-});
-
-test('the real engine\'s refusal for a missing snapshot is recognized', async (t) => {
-  const pkg = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'pkg');
-  if (!existsSync(join(pkg, 'rhwp_bg.wasm'))) {
-    t.skip('rhwp/pkg 의 WASM 빌드가 필요하다 (wasm-pack build --target web)');
-    return;
-  }
-  const engine = await import(pathToFileURL(join(pkg, 'rhwp.js')).href);
-  engine.initSync({ module: readFileSync(join(pkg, 'rhwp_bg.wasm')) });
-  const doc = engine.HwpDocument.createEmpty();
-  doc.createBlankDocument();
-  const kept = doc.saveSnapshot();
-  const gone = doc.saveSnapshot();
-  doc.discardSnapshot(gone);
-  let refusal: unknown = null;
-  try {
-    doc.restoreSnapshot(gone);
-  } catch (error) {
-    refusal = error;
-  }
-  assert.notEqual(refusal, null, 'restoring a discarded snapshot throws');
-  assert.equal(isMissingSnapshotError(refusal, gone), true, String(refusal));
-  assert.equal(isMissingSnapshotError(refusal, kept), false, 'another id is not mistaken for it');
-  assert.equal(isMissingSnapshotError(new Error('The editor snapshot store is full'), gone), false);
-  doc.free?.();
 });

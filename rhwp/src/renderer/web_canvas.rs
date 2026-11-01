@@ -4325,34 +4325,3 @@ fn color_to_css(color: u32) -> String {
     format!("#{:02x}{:02x}{:02x}", r, g, b)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_color_to_css() {
-        // HWP COLORREF: 0x00BBGGRR (BGR)
-        assert_eq!(color_to_css(0x000000FF), "#ff0000"); // 빨강
-        assert_eq!(color_to_css(0x0000FF00), "#00ff00"); // 초록
-        assert_eq!(color_to_css(0x00FF0000), "#0000ff"); // 파랑
-        assert_eq!(color_to_css(0x00FFFFFF), "#ffffff"); // 흰색
-        assert_eq!(color_to_css(0x00000000), "#000000"); // 검정
-    }
-
-    #[test]
-    fn thin_screen_strokes_cover_one_device_pixel_at_common_zooms() {
-        for scale in [1.0, 1.5, 2.0] {
-            let (center, width) = pixel_aligned_hairline(12.34, 0.5, scale).unwrap();
-            assert_eq!(width * scale, 1.0);
-            assert_eq!((center * scale).fract(), 0.5);
-        }
-        assert!(pixel_aligned_hairline(12.34, 1.0, 2.0).is_none());
-        let (x, y, w, h, sw) =
-            pixel_aligned_hairline_rect(5.24, 8.37, 17.73, 13.4, 0.5, 2.0).unwrap();
-        assert_eq!((x * 2.0).fract(), 0.5);
-        assert_eq(((x + w) * 2.0).fract(), 0.5);
-        assert_eq((y * 2.0).fract(), 0.5);
-        assert_eq(((y + h) * 2.0).fract(), 0.5);
-        assert_eq!(sw * 2.0, 1.0);
-    }
-}

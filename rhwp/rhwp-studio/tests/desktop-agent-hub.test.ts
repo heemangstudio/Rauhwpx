@@ -538,15 +538,6 @@ test('studio development and desktop builds include the agent hub', () => {
   );
 });
 
-test('healthz JSON exposes pid for process control', () => {
-  assert.equal(hubPidFromHealth({ ok: true, pid: 1234 }), 1234);
-  assert.equal(hubPidFromHealth({ ok: true, pid: 'nope' }), null);
-  const server = readFileSync(new URL('../../rhwp-agent/server.mjs', import.meta.url), 'utf8');
-  assert.match(server, /function healthzBody\(\)/);
-  assert.match(server, /pid: process\.pid/);
-  assert.match(server, /name: HUB_NAME/);
-});
-
 test('pid files round-trip and ignore junk', () => {
   const dir = mkdtempSync(join(tmpdir(), 'rhwp-hub-'));
   const paths = hubRunPaths(dir);

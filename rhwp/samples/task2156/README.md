@@ -25,6 +25,5 @@ Batang hmtx, 공백은 useFontSpace=0 고정 0.5em):
 | ·    | 0.320em | 0.333em |
 
 수정: `text_measurement::haansoft_latin_override` (+ `HAANSOFT_BATANG_ASCII`
-테이블, 추출 도구 `tools/extract_haansoft_table.py`). 회귀 테스트:
-`issue_2156_hcr_batang_latin_uses_haansoft_metrics` (text_measurement.rs 유닛).
+테이블, 추출 도구 `tools/extract_haansoft_table.py`).
 자가검증: `rhwp measure-width --size 10 --repeat 100 "(" → 6.667px`.

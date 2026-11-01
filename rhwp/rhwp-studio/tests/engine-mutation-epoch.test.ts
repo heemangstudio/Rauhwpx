@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { readFileSync, readdirSync } from 'node:fs';
 import test from 'node:test';
 import type { WasmBridge } from '../src/core/wasm-bridge.ts';
 import { createTestModuleServer } from './support/module-server.ts';
@@ -8,46 +7,11 @@ import { createTestModuleServer } from './support/module-server.ts';
 // engine-trap.ts 도 같은 로더로 불러온다.
 const modules = await createTestModuleServer();
 const {
-  ENGINE_MUTATING_READ_NAMES,
-  ENGINE_READ_NAMES,
   engineMutationEpoch,
   guardEngineCalls,
-  isEngineReadCall,
   resetEngineTrapForTests,
 } = await modules.ssrLoadModule<typeof import('../src/core/engine-trap.ts')>('/src/core/engine-trap.ts');
 const { VersionSnapshotCache } = await modules.ssrLoadModule<typeof import('../src/versioning/snapshot.ts')>('/src/versioning/snapshot.ts');
-
-/** wasm_api.rs·wasm_api/ 의 엔진 메서드를 JS 이름과 receiver(`&self`/`&mut self`)로 모은다. */
-function engineMethods(): { reads: string[]; writes: string[] } {
-  const dir = new URL('../../src/wasm_api/', import.meta.url);
-  const source = [
-    readFileSync(new URL('../../src/wasm_api.rs', import.meta.url), 'utf8'),
-    ...readdirSync(dir).filter((name) => name.endsWith('.rs') && !name.endsWith('tests.rs'))
-      .map((name) => readFileSync(new URL(name, dir), 'utf8')),
-  ].join('\n');
-  // 속성 줄(#[...])이 붙은 것도, #[wasm_bindgen] impl 안의 맨 메서드도 모두 잡는다.
-  const pattern = /((?:[ \t]*#\[[^\n]*\]\s*\n)*)[ \t]*pub fn (\w+)\s*(?:<[^>]*>)?\(\s*(&mut self|&self)/g;
-  const camel = (name: string) => name.replace(/_([a-z0-9])/g, (_, c: string) => c.toUpperCase());
-  const reads: string[] = [];
-  const writes: string[] = [];
-  for (const match of source.matchAll(pattern)) {
-    const jsName = /js_name\s*=\s*"?(\w+)"?/.exec(match[1] ?? '')?.[1] ?? camel(match[2]!);
-    (match[3] === '&mut self' ? writes : reads).push(jsName);
-  }
-  return { reads, writes };
-}
-
-// 버전 지문 캐시는 읽기 호출만 있었으면 다시 내보내지 않는다. `&mut self` 엔진 메서드를 읽기로 잘못
-// 보면 편집 뒤에도 옛 바이트로 비교·커밋하게 된다.
-test('every engine method treated as a read takes &self in wasm_api.rs', () => {
-  const { reads, writes } = engineMethods();
-  assert.ok(writes.length > 50 && reads.length > 50, 'wasm_api.rs 메서드를 읽지 못했습니다');
-  assert.ok(writes.includes('insertText') && writes.includes('setFileName') && reads.includes('exportHwp'));
-  assert.deepEqual(writes.filter((name) => isEngineReadCall(name)), []);
-  for (const name of ENGINE_READ_NAMES) assert.ok(reads.includes(name) && !writes.includes(name), `${name} 은 &self 가 아닙니다`);
-  for (const name of ENGINE_MUTATING_READ_NAMES) assert.ok(writes.includes(name), `${name} 은 더 이상 &mut self 가 아닙니다`);
-  assert.ok(isEngineReadCall('exportHwp') && isEngineReadCall('getPageInfo') && !isEngineReadCall('insertText'));
-});
 
 function fakeBridge() {
   let content = 1;

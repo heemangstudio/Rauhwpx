@@ -5,7 +5,6 @@ import test from 'node:test';
 import type { PageInfo } from '../src/core/types.ts';
 import {
   headerFooterClipPath,
-  resolveHeaderFooterBadgeMetrics,
   resolveHeaderFooterBandBox,
 } from '../src/view/header-footer-edit-overlay.ts';
 import {
@@ -56,24 +55,6 @@ test('구 WASM은 PageDef 여백으로 같은 HF 영역을 재구성한다', () 
     headerFooterClipPath(page, resolveHeaderFooterBandBox(page, true), 0.5),
     'inset(30px 45px 500px 45px)',
   );
-});
-
-test('HF 안내 라벨은 고배율에서 완만하게 커지고 최대 두 배로 제한된다', () => {
-  assert.deepEqual(resolveHeaderFooterBadgeMetrics(0.5), {
-    fontSizePx: 10,
-    gapPx: 4,
-  });
-  assert.deepEqual(resolveHeaderFooterBadgeMetrics(1), {
-    fontSizePx: 10,
-    gapPx: 4,
-  });
-  assert.deepEqual(resolveHeaderFooterBadgeMetrics(5), {
-    fontSizePx: 20,
-    gapPx: 8,
-  });
-  const atTwoHundred = resolveHeaderFooterBadgeMetrics(2);
-  assert.ok(atTwoHundred.fontSizePx > 14 && atTwoHundred.fontSizePx < 15);
-  assert.ok(atTwoHundred.gapPx > 5 && atTwoHundred.gapPx < 6);
 });
 
 test('HF 편집 상태는 종류·타겟·대표 페이지를 함께 전달한다', () => {

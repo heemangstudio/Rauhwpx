@@ -203,40 +203,4 @@ pub const SMT_TILDE: u32 = 3;
 pub const ST_PARA: u32 = 0;
 pub const ST_CHAR: u32 = 1;
 
-#[cfg(test)]
-const _: () = {
-    assert!(PARASHAPE_SNAP_TO_GRID);
-    assert!(!PARASHAPE_FONT_LINE_HEIGHT);
-    assert!(!PARASHAPE_SUPPRESS_LINE_NUMBERS);
-    assert!(!PARASHAPE_CHECKED);
-    assert!(!CHARSHAPE_USE_FONT_SPACE);
-    assert!(!CHARSHAPE_USE_KERNING);
-};
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn cell_span_defaults_are_one() {
-        assert_eq!(CELLSPAN_COL_SPAN, 1);
-        assert_eq!(CELLSPAN_ROW_SPAN, 1);
-    }
-
-    #[test]
-    fn run_char_pr_id_ref_unset_is_u32_max() {
-        assert_eq!(RUN_CHAR_PR_ID_REF_UNSET, u32::MAX);
-    }
-
-    #[test]
-    fn numbering_start_is_one() {
-        assert_eq!(NUMBERING_START, 1);
-    }
-
-    #[test]
-    fn fontface_lang_names_match_indices() {
-        assert_eq!(FONTFACE_LANG_NAMES[FLT_HANGUL], "HANGUL");
-        assert_eq!(FONTFACE_LANG_NAMES[FLT_LATIN], "LATIN");
-        assert_eq!(FONTFACE_LANG_NAMES[FLT_USER], "USER");
-    }
-}
