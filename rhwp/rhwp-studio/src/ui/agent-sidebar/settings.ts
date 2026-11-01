@@ -543,11 +543,11 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
   const destinations: ReadonlyArray<{ id: SettingsDestination; label: string; icon: SettingsNavIconId }> = [
     { id: 'editing', label: '편집', icon: 'editing' },
     { id: 'theme', label: '테마', icon: 'theme' },
-    { id: 'shortcuts', label: '단축키', icon: 'shortcuts' },
     { id: 'ai', label: 'AI', icon: 'ai' },
     { id: 'browser', label: '브라우저', icon: 'browser' },
     { id: 'skills', label: '스킬', icon: 'skills' },
     { id: 'project', label: '프로젝트', icon: 'project' },
+    { id: 'shortcuts', label: '단축키', icon: 'shortcuts' },
     { id: 'archive', label: '보관함', icon: 'archive' },
     ...(desktopAccount.api ? [{ id: 'account' as const, label: '계정', icon: 'account' as const }] : []),
   ];

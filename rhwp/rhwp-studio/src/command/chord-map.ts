@@ -2,7 +2,8 @@
  * 연속 키(chord) 단축키 표 — Ctrl+K,? / Ctrl+M,? / Ctrl+N,? / Alt+V,? / Ctrl+G,?
  *
  * 입력 처리기(input-handler-keyboard.ts)가 두 번째 키를 이 표로 찾고, 단축키 설정은
- * 같은 표로 고정 단축키 이름(Ctrl+M,N)을 보인다. 연속 키는 사용자가 바꾸지 못한다.
+ * 같은 표로 고정 단축키 이름(Ctrl+M,N)을 보인다. 이 기본 연속 키는 사용자가 바꾸지 못한다.
+ * 사용자가 만드는 연속 키는 shortcut-sequence.ts 가 처리한다.
  */
 
 /** 코드 단축키 → 커맨드 ID 매핑 (Ctrl+K,? 형태) */
@@ -96,6 +97,15 @@ const CHORD_TABLES: ReadonlyArray<readonly [string, Record<string, string | [str
   ['Ctrl+G', chordMapG],
   ['Alt+V', chordMapV],
 ];
+
+/** 기본 연속 키의 첫 키(바인딩 ID)와 두 번째 키 표. 사용자 연속 키가 기본 연속 키를 덮지 못하게 본다. */
+export const CHORD_STARTER_TABLES: ReadonlyMap<string, Record<string, string | [string, Record<string, unknown>]>> = new Map([
+  ['mod+k', chordMapK],
+  ['mod+m', chordMapM],
+  ['mod+n', chordMapN],
+  ['mod+g', chordMapG],
+  ['alt+v', chordMapV],
+]);
 
 function chordCommandId(entry: string | [string, Record<string, unknown>]): string {
   return Array.isArray(entry) ? entry[0] : entry;

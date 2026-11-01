@@ -661,6 +661,14 @@ function hitTestAfterPageScroll(
  * 새 단축키 추가 시: shortcut-map.ts의 defaultShortcuts 테이블에 등록
  *   (사용자 지정은 effective-shortcuts.ts 가 기본 표 위에 얹는다)
  */
+export function clearPendingChords(this: any): void {
+  this._pendingChordK = false;
+  this._pendingChordM = false;
+  this._pendingChordN = false;
+  this._pendingChordV = false;
+  this._pendingChordG = false;
+}
+
 export function onKeyDown(this: any, e: KeyboardEvent): void {
   if (!this.active) return;
 

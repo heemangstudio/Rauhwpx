@@ -41,7 +41,7 @@ import { loadWebFonts, resolveCanvasKitFontPlan } from '@/core/font-loader';
 import { withCanvasKitSurfaceBlockers } from '@/core/canvaskit-document-preflight';
 import { CommandRegistry } from '@/command/registry';
 import { CommandDispatcher } from '@/command/dispatcher';
-import { isShortcutRecording, matchEffectiveShortcut, shortcuts } from '@/command/effective-shortcuts';
+import { isShortcutRecording, matchEffectiveShortcut, shortcuts, shortcutSequences } from '@/command/effective-shortcuts';
 import { syncToolbarShortcutTitles } from '@/ui/toolbar-shortcut-titles';
 import {
   configurableCommandIds,
@@ -4453,6 +4453,25 @@ async function commitBeforeLibraryMove(versions: DocumentVersionController): Pro
  * 예: 문서 미로드 상태에서도 Alt+N(새 문서), Ctrl+O(열기) 등.
  */
 function setupGlobalShortcuts(): void {
+  // 사용자 연속 키. 이어지는 글자 키가 문서에 들어가지 않게 입력 처리기보다 먼저 받는다.
+  document.addEventListener('keydown', (e) => {
+    if (e.defaultPrevented || isShortcutRecording()) return;
+    const target = e.target instanceof Element ? e.target : null;
+    if (commandPalette?.isOpen() || !(documentHome?.visible || allowsDocumentShortcut(target))) {
+      shortcutSequences.reset();
+      return;
+    }
+    const step = shortcutSequences.feed(e);
+    if (step.kind === 'none' || (step.kind === 'pending' && !step.consume)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    inputHandler?.clearPendingChords();
+    if (step.kind !== 'match') return;
+    const editing = !documentHome?.visible && inputHandler?.isActive();
+    if (!editing && !['file:new-doc', 'file:open'].includes(step.commandId)) return;
+    if (editing) inputHandler?.focus();
+    dispatcher.dispatch(step.commandId);
+  }, true);
   document.addEventListener('keydown', (e) => {
     if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey
       || e.key !== '/'

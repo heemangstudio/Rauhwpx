@@ -1,8 +1,8 @@
 // 설정 → 단축키 탭: 앱과 같은 단축키 서비스(localStorage 'rhwp-shortcuts')에 미리보기의 표본 명령 목록.
-//  - 분류별 목록과 칩, 탭 안 검색(이름·키), 키로 찾기.
-//  - 기록: + 로 더하기, 다른 명령의 키는 바꾸기·취소, 맨 글자 키 오류, 기록 중 / 와 Esc 가 설정을 건드리지 않음.
+//  - 분류별 목록과 칩, 탭 안 검색(이름·키), 더 보기 메뉴.
+//  - 기록: + 로 더하기, 연속 키, 다른 명령의 키는 바꾸기·취소, 맨 글자 키 오류, 기록 중 / 와 Esc 가 설정을 건드리지 않음.
 //  - 키보드만으로: Tab 으로 + 까지, Enter 로 기록, Esc 취소, Backspace 지우기.
-//  - 다시 열어도 남는 지정, 사용자 지정 거르기, 줄 기본값, 모두 기본값으로(확인 시트), 설정 검색.
+//  - 다시 열어도 남는 지정, 모두 기본값으로(더 보기 메뉴와 확인 시트), 설정 검색.
 import assert from 'node:assert/strict';
 
 const PANE = '#ag-settings-pane-shortcuts';
@@ -22,7 +22,7 @@ const activeInfo = (page) => page.evaluate(() => {
     text: node?.textContent ?? '',
   };
 });
-const customCount = (page) => page.$eval(`${PANE} .ag-shortcuts-filter .ag-settings-segment:last-child`, (node) => node.textContent);
+const customizedCommands = (page) => page.evaluate(() => Object.keys(JSON.parse(localStorage.getItem('rhwp-shortcuts') ?? '{"commands":{}}').commands).sort());
 
 async function openTab(page, open, query) {
   await open(query);
@@ -57,13 +57,13 @@ export async function checkShortcutsTab({ page, open, screenshot }) {
   assert.deepEqual(groups, ['파일', '편집', '보기', '입력', '서식', '쪽', '표', '도움말'], 'category groups in order');
   assert.deepEqual(await bindingsOf(page, 'format:bold'), ['mod+b', 'alt+shift+b'], 'bold shows both default keys');
   assert.equal(await page.$eval(`${row('insert:footnote')} .ag-shortcut-chip-fixed`, (node) => node.title),
-    '연속 키 단축키는 바꿀 수 없습니다.', 'chord keys are fixed chips');
+    '기본 연속 키는 바꿀 수 없습니다.', 'chord keys are fixed chips');
   assert.equal(await page.$(`${row('edit:undo')} .ag-shortcut-add`), null, 'locked rows have no add button');
-  assert.match(await page.$eval(row('edit:undo'), (node) => node.textContent), /고정.*앱 메뉴가 쓰는 키라 바꿀 수 없습니다\./);
+  assert.equal(await page.$eval(row('edit:undo'), (node) => node.querySelector('.ag-shortcuts-badge:not(.ag-shortcuts-badge-overlap)')?.textContent), '고정');
+  assert.equal(await page.$(`${row('edit:undo')} .ag-settings-control-description`), null, 'locked rows carry no description line');
   assert.equal(await page.$eval(row('format:strikethrough'), (node) => node.querySelector('.ag-shortcuts-none')?.textContent), '없음');
-  assert.equal(await page.$eval(`${PANE} .ag-shortcuts-reset-all`, (node) => node.disabled), true, 'nothing to reset yet');
-  assert.equal(await page.$eval(`${PANE} .ag-shortcuts-footnote`, (node) => node.textContent),
-    '화살표·Home·Esc 같은 이동 키, 복사·붙이기, 연속 키(Ctrl+K,H 등)는 바꿀 수 없습니다.');
+  assert.equal(await page.$eval(`${PANE} .ag-shortcuts-more`, (node) => node.disabled), true, 'nothing to reset yet');
+  assert.equal(await page.$eval(`${PANE} .ag-shortcuts-search`, (node) => node.placeholder), '단축키 검색');
   // 비어 있는 상태 줄도 접근성 트리에 남는다(live region 이 미리 있어야 읽힌다).
   assert.equal(await page.$eval(`${PANE} .ag-shortcuts-status`, (node) => node.textContent === ''
     && getComputedStyle(node).display !== 'none'), true, 'empty status live region stays rendered');
@@ -86,29 +86,16 @@ export async function checkShortcutsTab({ page, open, screenshot }) {
   // 고정 칩의 키도 글로 찾는다.
   await setSearch(page, 'ctrl+c');
   assert((await visibleRows(page)).includes('edit:copy'), 'typed Ctrl+C finds the locked copy row');
+  // 조합 중인 글자도 이어서 찾는다 — 'ㅅ → 새 → 샐 → 새로', 초성만 쳐도 된다.
+  for (const typing of ['ㅅ', '새', '샐', '새로', 'ㅅㄹ']) {
+    await setSearch(page, typing);
+    assert((await visibleRows(page)).includes('file:new-doc'), `${typing} finds 새로 만들기`);
+  }
+  await setSearch(page, 'ㅅㄹㅁ');
+  assert.deepEqual(await visibleRows(page), ['file:new-doc'], 'initials narrow to one command');
   await setSearch(page, '없는 명령');
   assert.equal(await page.$eval(`${PANE} .ag-shortcuts-empty`, (node) => node.textContent), '‘없는 명령’에 맞는 명령이 없습니다.');
   await setSearch(page, '');
-  // 키로 찾기: 누른 키를 가진 줄만.
-  await page.click(`${PANE} .ag-shortcuts-keysearch`);
-  assert.equal(await page.$eval(`${PANE} .ag-shortcuts-search`, (node) => node.placeholder), '찾을 키를 누르세요 · Esc 끝내기');
-  await pressChord(page, ['Control'], 'KeyS');
-  assert.deepEqual(await visibleRows(page), ['file:save'], 'key search finds Ctrl+S');
-  // Backspace 는 찾은 키를 지우고 목록을 모두 되돌린다(빈 칸 옆에 예전 키로 거른 목록이 남지 않는다).
-  await page.keyboard.press('Backspace');
-  assert.equal(await page.$eval(`${PANE} .ag-shortcuts-search`, (node) => node.value), '');
-  assert((await visibleRows(page)).length > 50, 'clearing the key search shows every row');
-  // 고정 칩(복사하기 Ctrl+C)도 키로 찾는다.
-  await pressChord(page, ['Control'], 'KeyC');
-  assert((await visibleRows(page)).includes('edit:copy'), 'key search finds the locked Ctrl+C row');
-  // 오류(맨 글자 키)도 찾던 키를 지운다.
-  await page.keyboard.press('KeyX');
-  assert((await visibleRows(page)).length > 50, 'an error clears the key search');
-  await page.keyboard.press('Escape');
-  assert.equal(await page.$eval(`${PANE} .ag-shortcuts-keysearch`, (node) => node.getAttribute('aria-pressed')), 'false');
-  assert.equal(await page.$eval(PANE, (node) => node.checkVisibility()), true, 'Esc ends key search, settings stay open');
-  assert((await visibleRows(page)).length > 50, 'all rows are back');
-
   // ── + 로 더하기 ──
   await startAdd(page, 'format:bold');
   await page.keyboard.down('Control');
@@ -117,15 +104,16 @@ export async function checkShortcutsTab({ page, open, screenshot }) {
   await page.keyboard.press('KeyB');
   await page.keyboard.up('Shift');
   await page.keyboard.up('Control');
+  await page.keyboard.press('Enter');
   assert.deepEqual(await bindingsOf(page, 'format:bold'), ['mod+shift+b', 'mod+b', 'alt+shift+b']);
   assert.match(await statusText(page), /^‘굵게’에 .+B를 지정했습니다\.$/);
+  assert.equal(await page.$eval(`${PANE} .ag-shortcuts-status`, (node) => getComputedStyle(node).position), 'absolute', 'the save message is for screen readers only');
   assert.deepEqual(await activeInfo(page).then(({ binding }) => binding), 'mod+shift+b', 'focus moves to the new chip');
   // 다른 창의 변경(storage 이벤트)으로 다시 그려도 초점은 같은 칩에 남는다.
   await page.evaluate(() => window.dispatchEvent(new StorageEvent('storage', { key: 'rhwp-shortcuts' })));
   assert.deepEqual(await activeInfo(page).then(({ command, binding, className }) => ({ command, binding, className })),
     { command: 'format:bold', binding: 'mod+shift+b', className: 'ag-shortcut-chip' }, 'external re-render keeps chip focus');
-  assert.equal(await page.$eval(row('format:bold'), (node) => node.querySelector('.ag-shortcuts-badge-changed').hidden), false);
-  assert.equal(await page.$eval(`${row('format:bold')} .ag-shortcuts-reset`, (node) => node.hidden), false);
+  assert.equal(await page.$(`${row('format:bold')} .ag-shortcuts-badge-changed, ${row('format:bold')} .ag-shortcuts-reset`), null, 'a changed row looks like any other row');
   assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('rhwp-shortcuts')).commands['format:bold'].add[0]), 'mod+shift+b');
   await screenshot('shortcuts-tab-recorded');
   await page.$eval(PANE, (node) => node.scrollTo({ top: 0 }));
@@ -134,6 +122,7 @@ export async function checkShortcutsTab({ page, open, screenshot }) {
   // ── 다른 명령의 키: 바꾸기 ──
   await startAdd(page, 'format:italic');
   await pressChord(page, ['Control'], 'KeyS');
+  await page.keyboard.press('Enter');
   assert.match(await rowMessage(page, 'format:italic'), /는 ‘저장’에 지정되어 있습니다\.바꾸기취소$/);
   assert.equal((await activeInfo(page)).text, '바꾸기', '바꾸기 is focused');
   await screenshot('shortcuts-tab-conflict');
@@ -171,6 +160,7 @@ export async function checkShortcutsTab({ page, open, screenshot }) {
   await page.keyboard.press('Enter');
   await page.waitForFunction(() => document.activeElement?.classList.contains('ag-shortcut-capture'));
   await page.keyboard.press('F9');
+  await page.keyboard.press('Enter');
   assert.equal((await activeInfo(page)).binding, 'f9', 'F9 alone is allowed and focused');
   assert((await bindingsOf(page, 'format:underline')).includes('f9'));
   await page.keyboard.press('Enter');
@@ -180,36 +170,73 @@ export async function checkShortcutsTab({ page, open, screenshot }) {
   assert.equal(await statusText(page), 'F9를 지웠습니다.');
   assert.match((await activeInfo(page)).className, /ag-shortcut-add/, 'focus moves to + after a delete');
 
+  // ── 연속 키: 이어 눌러 기록하고, 멈추면 저장한다 ──
+  await startAdd(page, 'format:strikethrough');
+  await pressChord(page, ['Control'], 'KeyK');
+  await page.keyboard.press('KeyL');
+  await page.keyboard.press('KeyX');
+  await page.keyboard.press('Backspace');
+  await page.keyboard.press('KeyH');
+  assert.match(await page.$eval(`${PANE} .ag-shortcut-capture`, (node) => node.value), /K,L,H$/, 'steps show as they are pressed');
+  await page.waitForFunction((selector) => document.querySelector(selector), { timeout: 3000 },
+    `${row('format:strikethrough')} .ag-shortcut-binding[data-binding="mod+k l h"]`);
+  assert.equal((await activeInfo(page)).binding, 'mod+k l h', 'a pause saves the sequence and focuses its chip');
+  await setSearch(page, 'ctrl+k,l');
+  assert.deepEqual(await visibleRows(page), ['format:strikethrough'], 'search finds a sequence by its label');
+  await setSearch(page, '');
+  // 기본 연속 키와 겹치면 저장하지 않는다.
+  await startAdd(page, 'format:strikethrough');
+  await pressChord(page, ['Control'], 'KeyK');
+  await page.keyboard.press('KeyH');
+  await page.keyboard.press('Enter');
+  assert.match(await rowMessage(page, 'format:strikethrough'), /K,H는 기본 연속 키와 겹칩니다\.$/);
+  await page.keyboard.press('Escape');
+  // 앞 단계가 다른 명령의 키면 바꾸기로 묻는다.
+  await startAdd(page, 'format:strikethrough');
+  await pressChord(page, ['Control'], 'KeyB');
+  await page.keyboard.press('KeyQ');
+  await page.keyboard.press('Enter');
+  assert.match(await rowMessage(page, 'format:strikethrough'), /B는 ‘굵게’에 지정되어 있습니다\./, 'a first step owned by another command asks first');
+  await page.click(`${row('format:strikethrough')} .ag-shortcuts-cancel`);
+  await screenshot('shortcuts-tab-sequence');
+  await page.click(`${row('format:strikethrough')} .ag-shortcut-binding[data-binding="mod+k l h"] .ag-shortcut-remove`);
+
   // ── 다시 열기: 남는 지정과 사용자 지정 거르기 ──
   await openTab(page, open, URL);
   assert.deepEqual(await bindingsOf(page, 'format:bold'), ['mod+shift+b', 'mod+b', 'alt+shift+b'], 'bold keeps its key after reload');
   assert.deepEqual(await bindingsOf(page, 'format:italic'), ['mod+s', 'mod+i', 'alt+shift+i']);
   // 굵게·기울임에 더하고 저장에서 뺐다 — 세 명령이 기본값과 다르다.
-  assert.equal(await customCount(page), '사용자 지정 3');
-  await page.click(`${PANE} .ag-shortcuts-filter .ag-settings-segment:last-child`);
-  assert.deepEqual(await visibleRows(page), ['file:save', 'format:bold', 'format:italic']);
+  assert.deepEqual(await customizedCommands(page), ['file:save', 'format:bold', 'format:italic']);
 
-  // ── 줄 기본값 ──
-  await page.click(`${row('format:italic')} .ag-shortcuts-reset`);
-  assert.deepEqual(await bindingsOf(page, 'format:italic'), ['mod+i', 'alt+shift+i']);
-  assert.equal(await statusText(page), '‘기울임’ 단축키를 기본값으로 되돌렸습니다.');
-  await page.click(`${row('file:save')} .ag-shortcuts-reset`);
-  assert.deepEqual(await bindingsOf(page, 'file:save'), ['mod+s'], '저장 gets Ctrl+S back');
-  assert.equal(await customCount(page), '사용자 지정 1');
+  // ── 더 보기 메뉴: 다시 누르면 닫히고, Esc 는 설정을 닫지 않는다 ──
+  const menu = `${PANE} .ag-pmenu`;
+  const menuOpen = () => page.$eval(menu, (node) => !node.hidden);
+  await page.click(`${PANE} .ag-shortcuts-more`);
+  assert.equal(await menuOpen(), true);
+  await screenshot('shortcuts-tab-menu');
+  await page.click(`${PANE} .ag-shortcuts-more`);
+  assert.equal(await menuOpen(), false, 'the three dots close their own menu');
+  await page.click(`${PANE} .ag-shortcuts-more`);
+  await page.keyboard.press('Escape');
+  assert.equal(await menuOpen(), false, 'Esc closes the menu');
+  assert.equal(await page.$eval(PANE, (node) => node.checkVisibility()), true, 'Esc leaves settings open');
 
   // ── 모두 기본값으로 (확인 시트) ──
-  await page.click(`${PANE} .ag-shortcuts-reset-all`);
+  await page.click(`${PANE} .ag-shortcuts-more`);
+  assert.equal(await page.$eval(`${menu} button`, (node) => node.textContent), '모두 기본값으로');
+  await page.click(`${menu} button`);
   await page.waitForSelector('.ag-sheet .ag-sheet-confirm', { visible: true });
   assert.equal(await page.$eval('.ag-sheet .ag-sheet-title', (node) => node.textContent), '단축키를 모두 기본값으로');
-  assert.equal(await page.$eval('.ag-sheet .ag-sheet-message', (node) => node.textContent), '직접 지정한 단축키 1개를 지우고 기본 단축키로 되돌립니다.');
+  assert.equal(await page.$eval('.ag-sheet .ag-sheet-message', (node) => node.textContent), '직접 지정한 단축키 3개를 지우고 기본 단축키로 되돌립니다.');
   assert.equal(await page.$eval('.ag-sheet .ag-sheet-confirm', (node) => node.textContent), '되돌리기');
   await page.click('.ag-sheet .ag-sheet-confirm');
   await page.waitForFunction(() => !document.querySelector('.ag-sheet'));
   assert.equal(await statusText(page), '모든 단축키를 기본값으로 되돌렸습니다.');
   assert.deepEqual(await bindingsOf(page, 'format:bold'), ['mod+b', 'alt+shift+b']);
-  assert.equal(await customCount(page), '사용자 지정 0');
-  assert.equal(await page.$eval(`${PANE} .ag-shortcuts-reset-all`, (node) => node.disabled), true);
-  assert((await visibleRows(page)).length > 50, 'the custom filter falls back to 전체 once nothing is customized');
+  assert.deepEqual(await bindingsOf(page, 'format:italic'), ['mod+i', 'alt+shift+i']);
+  assert.deepEqual(await bindingsOf(page, 'file:save'), ['mod+s'], '저장 gets Ctrl+S back');
+  assert.deepEqual(await customizedCommands(page), []);
+  assert.equal(await page.$eval(`${PANE} .ag-shortcuts-more`, (node) => node.disabled), true);
 
   // ── 설정 검색에서 단축키 탭으로 ──
   await page.click('#ag-settings-tab-theme');
@@ -239,11 +266,13 @@ export async function checkShortcutsTab({ page, open, screenshot }) {
   await page.waitForFunction(() => document.documentElement.dataset.themeEffective === 'dark');
   await startAdd(page, 'format:italic');
   await pressChord(page, ['Control'], 'KeyS');
+  await page.keyboard.press('Enter');
   await page.waitForSelector(`${row('format:italic')} .ag-shortcuts-replace`, { visible: true });
   await page.click(`${row('format:italic')} .ag-shortcuts-cancel`);
   assert.deepEqual(await bindingsOf(page, 'format:italic'), ['mod+i', 'alt+shift+i'], '취소 leaves the binding alone');
   await startAdd(page, 'format:bold');
   await pressChord(page, ['Control', 'Shift'], 'KeyB');
+  await page.keyboard.press('Enter');
   await page.$eval(PANE, (node) => node.scrollTo({ top: 0 }));
   await screenshot('shortcuts-tab-dark');
 }

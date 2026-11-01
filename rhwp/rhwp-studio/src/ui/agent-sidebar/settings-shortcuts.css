@@ -1,20 +1,53 @@
 /* 설정 → 단축키. 줄·카드·버튼·입력칸은 설정 공통 클래스(.ag-settings-*)를 그대로 쓰고,
    여기서는 검색 줄, 키 칩, 기록 칸, 줄 안내만 맞춘다. 색은 잉크·면 토큰만 써서 밝게·어둡게 모두 따른다. */
 
-/* ── 머리: 검색, 키로 찾기, 거르기, 모두 되돌리기 ── */
+.ag-shortcuts-content {
+  position: relative;
+}
+
+/* ── 머리: 검색 칸 하나와 더 보기 메뉴 ── */
 .ag-shortcuts-toolbar {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   padding: 0 4px;
 }
 
-.ag-shortcuts-content .ag-shortcuts-search {
-  flex: 1 1 200px;
-  max-width: none;
+.ag-shortcuts-search-field {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
   height: 32px;
-  padding: 0 10px;
+  padding: 0 12px;
+  border: 1px solid var(--ag-border);
+  border-radius: 999px;
+  color: var(--n-ink-secondary);
+  background: var(--n-ink-fill-soft);
+  cursor: text;
+  transition: var(--ag-transition-color);
+}
+
+.ag-shortcuts-search-field:focus-within {
+  border-color: var(--ag-focus-ring-color);
+  color: var(--n-ink);
+}
+
+.ag-shortcuts-search-icon {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+}
+
+.ag-shortcuts-search {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  color: var(--n-ink);
+  background: transparent;
+  font: inherit;
   font-size: var(--ag-fs-secondary);
 }
 
@@ -22,28 +55,36 @@
   color: var(--n-ink-tertiary, var(--ag-text-muted));
 }
 
-.ag-shortcuts-search[readonly] {
-  border-color: var(--ag-focus-ring-color);
-  caret-color: transparent;
+.ag-shortcuts-search::-webkit-search-cancel-button {
+  display: none;
 }
 
-.ag-root .ag-settings-page .ag-settings-btn.ag-shortcuts-keysearch[aria-pressed='true'] {
-  background: var(--n-fill-selected);
-  color: var(--n-ink);
-}
-
-.ag-shortcuts-filter {
-  height: 32px;
-  box-sizing: border-box;
+.ag-shortcuts-more {
+  display: inline-flex;
+  flex: 0 0 auto;
   align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  color: var(--n-ink);
+  background: var(--n-ink-fill-soft);
+  transition: var(--ag-transition-color);
 }
 
-.ag-shortcuts-filter .ag-settings-segment:disabled {
+.ag-shortcuts-more:hover:not(:disabled) {
+  background: var(--n-ink-fill-hover);
+}
+
+.ag-shortcuts-more:focus-visible {
+  outline: 2px solid var(--ag-focus-ring-color);
+  outline-offset: 1px;
+}
+
+.ag-shortcuts-more:disabled {
   color: var(--n-ink-quaternary, var(--ag-text-muted));
-}
-
-.ag-shortcuts-reset-all {
-  margin-left: auto;
 }
 
 .ag-shortcuts-status {
@@ -102,11 +143,6 @@
 
 .ag-shortcuts-badge[hidden] {
   display: none;
-}
-
-.ag-shortcuts-badge-changed {
-  background: var(--n-fill-selected);
-  color: var(--n-ink);
 }
 
 .ag-shortcuts-badge-overlap {
@@ -259,32 +295,6 @@
   color: var(--n-ink-tertiary, var(--ag-text-muted));
 }
 
-.ag-shortcut-capture-hint {
-  color: var(--n-ink-tertiary, var(--ag-text-muted));
-  font-size: var(--ag-micro);
-  white-space: nowrap;
-}
-
-/* 줄 기본값: 이름 옆의 작은 글자 단추라 키 칩 열이 흔들리지 않는다. */
-.ag-root .ag-settings-page .ag-settings-btn.ag-shortcuts-reset {
-  height: 20px;
-  padding: 0 6px;
-  border-radius: var(--ag-r-chip);
-  background: var(--n-ink-fill-soft);
-  color: var(--n-ink-secondary);
-  font-size: var(--ag-micro);
-  font-weight: var(--ag-fw-medium);
-}
-
-.ag-root .ag-settings-page .ag-settings-btn.ag-shortcuts-reset:hover:not(:disabled) {
-  background: var(--n-ink-fill-hover);
-  color: var(--n-ink);
-}
-
-.ag-root .ag-settings-page .ag-settings-btn.ag-shortcuts-reset[hidden] {
-  display: none;
-}
-
 /* 줄 안내: 기록 오류와 바꾸기·취소 묻기. 줄 아래로 한 줄을 다 쓴다. */
 .ag-shortcuts-row-message {
   flex: 1 0 100%;
@@ -327,8 +337,4 @@
 .ag-shortcuts-empty[hidden],
 .ag-shortcuts-group[hidden] {
   display: none;
-}
-
-.ag-shortcuts-footnote {
-  padding: 0 4px;
 }

@@ -5,11 +5,14 @@
  * ShortcutDef.ctrl("Ctrl 또는 Meta")과 같은 뜻이다. 글자 키는 영문 소문자로 적는다 —
  * 한글 IME 상태(자모·Process)와 macOS Option 변환은 matchShortcut 의 물리 키(code) 단계가 맞춘다.
  *
+ * 연속 키는 단계를 공백으로 잇는다 — `mod+k l h`. 둘째 단계부터는 Ctrl·Cmd 를 떼고 적으므로
+ * Cmd 를 누른 채 이어 눌러도 같은 키다. 이 칸의 키 이름에는 공백이 없다.
+ *
  * 이 파일은 DOM·저장소에 기대지 않는 순수 함수만 둔다.
  */
 
 import { defaultShortcuts, type ShortcutDef } from './shortcut-map.ts';
-import { chordCommandIds } from './chord-map.ts';
+import { CHORD_STARTER_TABLES, chordCommandIds } from './chord-map.ts';
 import { formatShortcutLabel, type PlatformKind } from '../engine/navigation-keymap.ts';
 
 export type BindingId = string;
@@ -94,12 +97,20 @@ function isFunctionKey(key: string): boolean {
   return /^f([1-9]|1[0-2])$/.test(key);
 }
 
+/** 연속 키 한 벌의 최대 단계 수 */
+export const MAX_SEQUENCE_STEPS = 4;
+
 function isAllowedKey(key: string): boolean {
   return /^[a-z0-9]$/.test(key)
     || key in PUNCTUATION_CODES
     || key === '+'
     || isFunctionKey(key)
     || NAMED_KEYS.has(key);
+}
+
+/** 연속 키 둘째 단계부터 쓸 수 있는 키. 쉼표는 표기 구분자이고, Enter·Delete 는 기록기가 확정·지우기로 쓴다. */
+function isContinuationKey(key: string): boolean {
+  return isAllowedKey(key) && key !== ',' && !NAMED_KEYS.has(key);
 }
 
 interface BindingParts { mod: boolean; alt: boolean; shift: boolean; key: string }
@@ -123,14 +134,46 @@ function splitBinding(id: string): BindingParts | null {
   return parts;
 }
 
+/** 연속 키의 단계들. 한 키면 원소가 하나다. */
+export function bindingSteps(id: BindingId): BindingId[] {
+  return id.split(' ');
+}
+
+export function isSequenceBinding(id: BindingId): boolean {
+  return id.includes(' ');
+}
+
+/** 같은 키이거나 한쪽이 다른 쪽의 앞 단계라 함께 쓸 수 없는 두 키인지 본다. */
+export function bindingsOverlap(a: BindingId, b: BindingId): boolean {
+  return a === b || a.startsWith(`${b} `) || b.startsWith(`${a} `);
+}
+
+/** 기본 연속 키의 첫 키인지 (Ctrl+K 등). 이 키는 편집기도 받아야 기본 연속 키가 산다. */
+export function isChordStarter(id: BindingId): boolean {
+  return CHORD_STARTER_TABLES.has(id);
+}
+
 /**
  * 저장소나 사용자 입력에서 온 값을 바인딩 ID 로 검증하고 수정자 순서를 맞춘다.
- * 허용하지 않는 키·중복 수정자·빈 값은 null.
+ * 허용하지 않는 키·중복 수정자·빈 값·너무 긴 연속 키는 null.
  */
 export function parseBindingId(raw: unknown): BindingId | null {
   if (typeof raw !== 'string') return null;
   const text = raw.trim().toLowerCase();
-  if (!text || text.length > 32) return null;
+  if (!text || text.length > 32 * MAX_SEQUENCE_STEPS) return null;
+  const steps = text.split(/\s+/);
+  if (steps.length > MAX_SEQUENCE_STEPS) return null;
+  const parsed: BindingId[] = [];
+  for (let index = 0; index < steps.length; index += 1) {
+    const step = parseBindingStep(steps[index], index > 0);
+    if (!step) return null;
+    parsed.push(step);
+  }
+  return parsed.join(' ');
+}
+
+function parseBindingStep(text: string, continuation: boolean): BindingId | null {
+  if (text.length > 32) return null;
   // 수정자는 순서와 상관없이 받아 정규 순서로 다시 적는다.
   const tokens = text === '+' ? ['+']
     : text.endsWith('++') ? [...text.slice(0, -2).split('+'), '+']
@@ -145,6 +188,10 @@ export function parseBindingId(raw: unknown): BindingId | null {
   parts.key = tokens[tokens.length - 1] ?? '';
   // Shift+= 는 US 배열에서 `+` 글리프로 들어온다. 기본 표의 Shift `+` 행과 같은 ID 로 맞춘다.
   if (parts.key === '+' && parts.shift) parts.key = '=';
+  if (continuation) {
+    if (!isContinuationKey(parts.key)) return null;
+    return joinBinding({ ...parts, mod: false });
+  }
   if (!isAllowedKey(parts.key)) return null;
   // 기록기와 같은 규칙 — Ctrl·Alt 없이(Shift 만 있어도) 쓸 수 있는 키는 F1~F12 뿐이다.
   // 손으로 고친 저장값의 'a'·'shift+q' 가 글자 입력을 가로채지 않게 한다.
@@ -168,7 +215,8 @@ export function bindingIdOf(def: ShortcutDef): BindingId | null {
 /** 사용자 바인딩 ID → 매칭용 ShortcutDef. 글자는 code 없이(matchShortcut 이 KeyX 를 만든다), 숫자·부호는 code 를 함께. */
 export function bindingToShortcutDef(id: BindingId): ShortcutDef | null {
   const canonical = parseBindingId(id);
-  if (!canonical) return null;
+  // 연속 키는 한 번의 키 입력으로 맞출 수 없다. shortcut-sequence.ts 가 맡는다.
+  if (!canonical || isSequenceBinding(canonical)) return null;
   const parts = splitBinding(canonical);
   if (!parts) return null;
   const def: ShortcutDef = { key: parts.key };
@@ -184,8 +232,12 @@ function keyLabel(key: string): string {
   return NAMED_KEY_LABELS[key] ?? key.toUpperCase();
 }
 
-/** 'mod+shift+b' → 'Ctrl+Shift+B'. 화면에는 formatShortcutLabel() 을 한 번 더 거쳐 보인다. */
+/** 'mod+shift+b' → 'Ctrl+Shift+B', 'mod+k l h' → 'Ctrl+K,L,H'. 화면에는 formatShortcutLabel() 을 한 번 더 거쳐 보인다. */
 export function formatBindingLabel(id: BindingId): string {
+  return bindingSteps(id).map(formatBindingStep).join(',');
+}
+
+function formatBindingStep(id: BindingId): string {
   const parts = splitBinding(id);
   if (!parts) return id;
   return [
@@ -257,11 +309,50 @@ function keyFromCode(code: string): string | null {
   return null;
 }
 
+/** 키 입력을 바인딩 키 이름으로 읽는다. key 가 Process·자모·Option 기호이거나 keyCode 229 이면 code 로 읽는다. */
+function keyFromEvent(e: KeyboardEvent): string | null {
+  const rawKey = e.key ?? '';
+  const lower = rawKey.toLowerCase();
+  const fromCode = e.keyCode === 229 || rawKey === 'Process' || rawKey === 'Dead' || rawKey === 'Unidentified';
+  if (!fromCode) {
+    if (/^[a-z]$/.test(lower)) return lower;
+    if (isFunctionKey(lower) || NAMED_KEYS.has(lower)) return lower;
+    // Shift 를 누른 숫자·부호 키는 글리프(!, + 등)가 배열마다 달라 물리 키로 읽는다.
+    if (!e.shiftKey && (/^[0-9]$/.test(lower) || lower in PUNCTUATION_CODES || lower === '+')) return lower;
+  }
+  return keyFromCode(e.code ?? '');
+}
+
+/** Shift·Ctrl 같은 수정자 키만 눌렀는지 본다. */
+export function isModifierKeyEvent(e: KeyboardEvent): boolean {
+  const lower = (e.key ?? '').toLowerCase();
+  return MODIFIER_KEYS.has(lower) || IGNORED_KEYS.has(lower);
+}
+
 /**
- * 단축키 기록기 — 키 입력 하나를 바인딩 ID 로 바꾼다.
- * IME 조합 중(isComposing)은 무시하고, key 가 Process·자모·Option 기호이거나 keyCode 229 이면 code 로 읽는다.
+ * 실행 중 연속 키 입력 하나를 단계로 읽는다. 쓸 수 없는 키면 null.
+ * 기록기와 달리 IME 조합 중에도 물리 키로 읽는다 — 이어지는 글자 키는 한글 입력 상태에서 조합으로 들어온다.
  */
-export function bindingFromKeyboardEvent(e: KeyboardEvent, platform: PlatformKind): RecordResult {
+export function sequenceStepFromKeyboardEvent(e: KeyboardEvent, continuation: boolean): BindingId | null {
+  if (e.getModifierState?.('AltGraph')) return null;
+  const key = keyFromEvent(e);
+  if (!key) return null;
+  const alt = e.altKey;
+  const shift = e.shiftKey;
+  if (continuation) return isContinuationKey(key) ? joinBinding({ mod: false, alt, shift, key }) : null;
+  return parseBindingStep(joinBinding({ mod: e.ctrlKey || e.metaKey, alt, shift, key }), false);
+}
+
+/**
+ * 단축키 기록기 — 키 입력 하나를 바인딩 ID 로 바꾼다. continuation 이면 연속 키의 둘째 단계부터다 —
+ * 수정자 없이 눌러도 되고, Ctrl·Cmd 는 떼어 적는다.
+ * IME 조합 중(isComposing)은 무시한다.
+ */
+export function bindingFromKeyboardEvent(
+  e: KeyboardEvent,
+  platform: PlatformKind,
+  { continuation = false }: { continuation?: boolean } = {},
+): RecordResult {
   if (e.isComposing) return { kind: 'ignore' };
   const rawKey = e.key ?? '';
   const lower = rawKey.toLowerCase();
@@ -284,17 +375,13 @@ export function bindingFromKeyboardEvent(e: KeyboardEvent, platform: PlatformKin
   }
   if (!mod && !alt && !shift && (lower === 'backspace' || lower === 'delete')) return { kind: 'clear' };
 
-  let key: string | null = null;
-  const fromCode = e.keyCode === 229 || rawKey === 'Process' || rawKey === 'Dead' || rawKey === 'Unidentified';
-  if (!fromCode) {
-    if (/^[a-z]$/.test(lower)) key = lower;
-    else if (isFunctionKey(lower) || NAMED_KEYS.has(lower)) key = lower;
-    // Shift 를 누른 숫자·부호 키는 글리프(!, + 등)가 배열마다 달라 물리 키로 읽는다.
-    else if (!shift && (/^[0-9]$/.test(lower) || lower in PUNCTUATION_CODES || lower === '+')) key = lower;
-  }
-  if (!key) key = keyFromCode(e.code ?? '');
+  const key = keyFromEvent(e);
   if (!key) return { kind: 'error', message: SHORTCUT_ERROR_UNSUPPORTED };
 
+  if (continuation) {
+    if (!isContinuationKey(key)) return { kind: 'error', message: SHORTCUT_ERROR_UNSUPPORTED };
+    return { kind: 'binding', id: joinBinding({ mod: false, alt, shift, key }) };
+  }
   if (!isFunctionKey(key) && !mod && !alt) return { kind: 'error', message: SHORTCUT_ERROR_NEEDS_MODIFIER };
   return { kind: 'binding', id: joinBinding({ mod, alt, shift, key }) };
 }
@@ -320,6 +407,16 @@ const MAC_BROWSER_RESERVED = new Set(['mod+h']);
 
 /** 이 키를 단축키로 쓸 수 없는 이유. 쓸 수 있으면 null. */
 export function reservedReason(id: BindingId, platform: PlatformKind): string | null {
+  const [first, second] = bindingSteps(id);
+  if (second !== undefined) {
+    const table = CHORD_STARTER_TABLES.get(first);
+    if (!table) return reservedReason(first, platform);
+    // 기본 연속 키는 수정자를 보지 않고 두 번째 키만 찾는다.
+    if (table[splitBinding(second)?.key ?? '']) {
+      return `${formatShortcutLabel(formatBindingLabel(id), platform)}는 기본 연속 키와 겹칩니다.`;
+    }
+    return null;
+  }
   const label = formatShortcutLabel(formatBindingLabel(id), platform);
   if (EDITOR_RESERVED.has(id)) return `${label}는 편집기가 직접 쓰는 키입니다.`;
   if (BROWSER_RESERVED.has(id) || (platform === 'mac' && MAC_BROWSER_RESERVED.has(id))) {

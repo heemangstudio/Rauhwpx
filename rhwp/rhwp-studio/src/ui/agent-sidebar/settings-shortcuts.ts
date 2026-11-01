@@ -7,18 +7,23 @@
  */
 import './settings-shortcuts.css';
 import { confirmSheet } from './sheet.ts';
+import { decomposeHangul, hangulInitials, isInitialsQuery } from './hangul-search.ts';
 import { createIcon } from './icons.ts';
+import { createProjectMenu } from './project/project-ui.ts';
 import {
   bindingFromKeyboardEvent,
   bindingIdFromLabel,
+  bindingSteps,
   formatBindingLabel,
+  isChordStarter,
+  MAX_SEQUENCE_STEPS,
   SHORTCUT_CATEGORY_LABELS,
   type BindingId,
   type RecordResult,
   type ShortcutCategory,
   type ShortcutCommandInfo,
 } from '../../command/shortcut-bindings.ts';
-import { trackShortcutRecording, type SaveResult, type ShortcutService } from '../../command/effective-shortcuts.ts';
+import { trackShortcutRecording, type BindingCheck, type SaveResult, type ShortcutService } from '../../command/effective-shortcuts.ts';
 import { detectPlatformKind, formatShortcutLabel, type PlatformKind } from '../../engine/navigation-keymap.ts';
 
 export interface ShortcutSettingsDeps {
@@ -30,50 +35,42 @@ export interface ShortcutSettingsDeps {
 
 export interface ShortcutSettingsController {
   element: HTMLElement;
-  /** 탭을 열 때마다 검색과 거르기를 비운다 — 설정 검색이 숨은 줄로 가지 않게. */
+  /** 탭을 열 때마다 검색을 비운다 — 설정 검색이 숨은 줄로 가지 않게. */
   open(): void;
-  /** 탭을 떠날 때 기록을 멈추고 거르기를 푼다. */
+  /** 탭을 떠날 때 기록을 멈추고 검색을 비운다. */
   close(): void;
   dispose(): void;
 }
 
 const CATEGORY_ORDER: readonly ShortcutCategory[] = ['file', 'edit', 'view', 'insert', 'format', 'page', 'table', 'tool', 'help'];
 
+/** 마지막 키를 누르고 이만큼 다음 키가 없으면 기록을 끝낸다. Enter 로 바로 끝낼 수 있다. */
+const SEQUENCE_COMMIT_MS = 1000;
+
 const COPY = {
   title: '단축키',
-  description: '명령마다 키를 지정합니다. 한글 입력 상태에서도 같은 자리의 키로 동작합니다.',
-  searchPlaceholder: '명령 이름이나 키로 찾기',
-  searchLabel: '단축키 검색',
-  keySearch: '키로 찾기',
-  keySearchPlaceholder: '찾을 키를 누르세요 · Esc 끝내기',
-  filterAll: '전체',
-  filterCustom: (n: number) => `사용자 지정 ${n}`,
-  filterGroup: '표시할 명령',
+  searchPlaceholder: '단축키 검색',
+  more: '단축키 더 보기',
   resetAll: '모두 기본값으로',
   none: '없음',
-  changed: '변경됨',
   locked: '고정',
   overlap: '겹침',
-  reset: '기본값',
   capturePlaceholder: '키를 누르세요',
-  captureHint: 'Esc 취소 · Backspace 지우기',
-  fixedTitle: '연속 키 단축키는 바꿀 수 없습니다.',
+  captureHint: '이어서 눌러 연속 키를 만듭니다. Enter 완료 · Backspace 지우기 · Esc 취소',
+  fixedTitle: '기본 연속 키는 바꿀 수 없습니다.',
   replace: '바꾸기',
   cancel: '취소',
   readOnly: '새 버전에서 저장한 단축키 설정이라 이 버전에서는 바꿀 수 없습니다.',
-  footnote: '화살표·Home·Esc 같은 이동 키, 복사·붙이기, 연속 키(Ctrl+K,H 등)는 바꿀 수 없습니다.',
   noMatch: (q: string) => `‘${q}’에 맞는 명령이 없습니다.`,
   addLabel: (name: string) => `‘${name}’에 단축키 추가`,
   chipLabel: (name: string, key: string) => `‘${name}’ 단축키 ${key} 바꾸기`,
   removeLabel: (key: string) => `${key} 지우기`,
-  resetLabel: (name: string) => `‘${name}’ 단축키를 기본값으로`,
   captureLabel: (name: string) => `‘${name}’의 새 단축키`,
   lockedOwner: (key: string, owner: string) => `${key}는 ‘${owner}’의 고정 단축키입니다.`,
   conflict: (key: string, owner: string) => `${key}는 ‘${owner}’에 지정되어 있습니다.`,
   assigned: (name: string, key: string) => `‘${name}’에 ${key}를 지정했습니다.`,
   taken: (owner: string, key: string) => `‘${owner}’에서 ${key}를 빼고 여기에 지정했습니다.`,
   removed: (key: string) => `${key}를 지웠습니다.`,
-  resetOne: (name: string) => `‘${name}’ 단축키를 기본값으로 되돌렸습니다.`,
   resetAllDone: '모든 단축키를 기본값으로 되돌렸습니다.',
   resetAllTitle: '단축키를 모두 기본값으로',
   resetAllMessage: (n: number) => `직접 지정한 단축키 ${n}개를 지우고 기본 단축키로 되돌립니다.`,
@@ -108,16 +105,16 @@ interface RowView {
   info: ShortcutCommandInfo;
   name: string;
   root: HTMLElement;
-  changed: HTMLElement;
   overlap: HTMLElement;
   keys: HTMLElement;
   add: HTMLButtonElement | null;
-  reset: HTMLButtonElement;
   message: HTMLElement;
-  /** 이름·ID·키 표기를 모은 검색용 글 */
+  /** 이름·ID·키 표기를 자모로 푼 검색용 글 */
   haystack: string;
   /** 이름·ID 만 모은 검색용 글 (키 표기로 찾을 때 이름도 함께 본다) */
   nameHaystack: string;
+  /** 이름의 초성 */
+  initials: string;
   /** 이 줄이 보이는 키 — 바꿀 수 있는 키와 고정 칩(연속 키는 첫 키) */
   keyIds: Set<BindingId>;
 }
@@ -131,7 +128,10 @@ interface Capture {
   /** 취소하면 초점을 돌려줄 단추 */
   focusTarget: HTMLElement;
   input: HTMLInputElement;
-  hint: HTMLElement;
+  /** 지금까지 누른 단계. 끝나면 공백으로 이어 바인딩 ID 가 된다. */
+  steps: BindingId[];
+  /** 다음 단계를 기다리다 기록을 끝내는 타이머 */
+  commitTimer: ReturnType<typeof setTimeout> | null;
   /** 다른 명령의 키를 눌러 바꾸기·취소를 묻는 중 */
   prompt: { id: BindingId; owner: string } | null;
 }
@@ -146,32 +146,27 @@ export function createShortcutsSettings(deps: ShortcutSettingsDeps): ShortcutSet
 
   const element = el('div', 'ag-settings-destination-content ag-shortcuts-content');
 
-  // ── 머리: 제목, 검색, 거르기, 모두 되돌리기 ──
+  // ── 머리: 검색 칸 하나와 더 보기 메뉴 ──
   const header = el('section', 'ag-settings-group ag-shortcuts-header');
-  const heading = el('div', 'ag-settings-group-heading');
-  heading.append(
-    el('h2', 'ag-settings-group-title', COPY.title),
-    el('p', 'ag-settings-group-description', COPY.description),
-  );
+  // 왼쪽 목록이 이미 이름을 보인다. 제목은 화면 낭독기와 설정 검색에만 남긴다.
+  const heading = el('h2', 'ag-settings-group-title ag-sr-only', COPY.title);
   const toolbar = el('div', 'ag-shortcuts-toolbar');
-  const searchInput = el('input', 'ag-settings-input ag-shortcuts-search');
+  const searchField = el('label', 'ag-shortcuts-search-field');
+  const searchInput = el('input', 'ag-shortcuts-search');
   searchInput.type = 'search';
   searchInput.placeholder = COPY.searchPlaceholder;
-  searchInput.setAttribute('aria-label', COPY.searchLabel);
+  searchInput.setAttribute('aria-label', COPY.searchPlaceholder);
   searchInput.autocomplete = 'off';
   searchInput.spellcheck = false;
-  const keySearchButton = button('ag-settings-btn ag-shortcuts-keysearch', COPY.keySearch);
-  keySearchButton.setAttribute('aria-pressed', 'false');
-  const filter = el('div', 'ag-settings-segmented ag-shortcuts-filter');
-  filter.setAttribute('role', 'radiogroup');
-  filter.setAttribute('aria-label', COPY.filterGroup);
-  const filterAll = button('ag-settings-segment', COPY.filterAll);
-  const filterCustom = button('ag-settings-segment', COPY.filterCustom(0));
-  for (const choice of [filterAll, filterCustom]) choice.setAttribute('role', 'radio');
-  filter.append(filterAll, filterCustom);
-  const resetAllButton = button('ag-settings-btn ag-shortcuts-reset-all', COPY.resetAll);
-  toolbar.append(searchInput, keySearchButton, filter, resetAllButton);
-  const status = el('p', 'ag-shortcuts-status');
+  searchField.append(createIcon('search', 'ag-shortcuts-search-icon'), searchInput);
+  const moreButton = button('ag-shortcuts-more');
+  moreButton.setAttribute('aria-label', COPY.more);
+  moreButton.setAttribute('aria-haspopup', 'menu');
+  moreButton.title = COPY.more;
+  moreButton.append(createIcon('more'));
+  toolbar.append(searchField, moreButton);
+  // 저장 결과는 화면 낭독기에만 알린다. 저장 실패만 화면에 보인다.
+  const status = el('p', 'ag-shortcuts-status ag-sr-only');
   status.setAttribute('role', 'status');
   status.setAttribute('aria-live', 'polite');
   const readOnlyBanner = el('div', 'ag-settings-conflict ag-shortcuts-readonly');
@@ -182,8 +177,8 @@ export function createShortcutsSettings(deps: ShortcutSettingsDeps): ShortcutSet
   const groupsHost = el('div', 'ag-shortcuts-groups');
   const empty = el('p', 'ag-settings-note ag-shortcuts-empty');
   empty.hidden = true;
-  const footnote = el('p', 'ag-settings-note ag-shortcuts-footnote', COPY.footnote);
-  element.append(header, groupsHost, empty, footnote);
+  element.append(header, groupsHost, empty);
+  const moreMenu = createProjectMenu(element, moreButton);
 
   // ── 상태 ──
   let catalogSignature = '';
@@ -191,16 +186,14 @@ export function createShortcutsSettings(deps: ShortcutSettingsDeps): ShortcutSet
   const names = new Map<string, string>();
   const groups = new Map<ShortcutCategory, HTMLElement>();
   let query = '';
-  let keyFilter: BindingId | null = null;
-  let customOnly = false;
   let capture: Capture | null = null;
-  let keySearching = false;
   let listening = false;
   let stopTracking: (() => void) | null = null;
 
   const nameOf = (commandId: string) => names.get(commandId) ?? commandId;
 
-  function setStatus(text: string): void {
+  function setStatus(text: string, { visible = false }: { visible?: boolean } = {}): void {
+    status.classList.toggle('ag-sr-only', !visible);
     status.textContent = text;
   }
 
@@ -256,27 +249,20 @@ export function createShortcutsSettings(deps: ShortcutSettingsDeps): ShortcutSet
     const copy = el('div', 'ag-settings-control-copy');
     const line = el('div', 'ag-shortcuts-name');
     const label = el('span', 'ag-settings-control-label', name);
-    const changed = el('span', 'ag-shortcuts-badge ag-shortcuts-badge-changed', COPY.changed);
-    changed.hidden = true;
     const overlap = el('span', 'ag-shortcuts-badge ag-shortcuts-badge-overlap', COPY.overlap);
     overlap.hidden = true;
-    const reset = button('ag-settings-btn ag-shortcuts-reset', COPY.reset);
-    reset.setAttribute('aria-label', COPY.resetLabel(name));
-    reset.hidden = true;
-    line.append(label, changed, overlap, reset);
+    line.append(label, overlap);
     if (info.locked) line.append(el('span', 'ag-shortcuts-badge', COPY.locked));
     copy.append(line);
-    if (info.locked) copy.append(el('span', 'ag-settings-control-description', info.locked));
     const keys = el('div', 'ag-shortcuts-keys');
     const message = el('div', 'ag-shortcuts-row-message');
     message.setAttribute('role', 'alert');
     message.hidden = true;
     root.append(copy, keys, message);
     const row: RowView = {
-      info, name, root, changed, overlap, keys, add: null, reset, message,
-      haystack: '', nameHaystack: '', keyIds: new Set(),
+      info, name, root, overlap, keys, add: null, message,
+      haystack: '', nameHaystack: '', initials: hangulInitials(normalizeQuery(name)), keyIds: new Set(),
     };
-    reset.addEventListener('click', () => resetCommand(row));
     return row;
   }
 
@@ -295,20 +281,16 @@ export function createShortcutsSettings(deps: ShortcutSettingsDeps): ShortcutSet
     const locked = Boolean(info.locked);
     const readOnly = service.readOnly();
     const bindings = service.bindings(info.id);
-    const customized = !locked && service.isCustomized(info.id);
-    row.changed.hidden = !customized;
-    row.root.classList.toggle('ag-shortcuts-row-customized', customized);
-    row.reset.hidden = !customized;
-    row.reset.disabled = readOnly;
     row.overlap.hidden = !bindings.some((binding) => (overlaps.get(binding.id)?.length ?? 0) > 1
       && overlaps.get(binding.id)!.includes(info.id));
 
     const parts: string[] = [info.label, name, info.id];
-    const nameHaystack = parts.map(normalizeQuery).join('\u0000');
+    const nameHaystack = decomposeHangul(parts.map(normalizeQuery).join('\u0000'));
     const keyIds = new Set<BindingId>();
     row.keys.replaceChildren();
     for (const binding of bindings) {
-      keyIds.add(binding.id);
+      // 연속 키는 첫 키로 찾는다 — 고정 칩과 같다.
+      keyIds.add(bindingSteps(binding.id)[0]);
       const label = keyLabel(binding.id);
       parts.push(binding.id, formatBindingLabel(binding.id), formatShortcutLabel(formatBindingLabel(binding.id), 'mac'));
       if (locked) {
@@ -354,7 +336,7 @@ export function createShortcutsSettings(deps: ShortcutSettingsDeps): ShortcutSet
       row.keys.append(add);
       row.add = add;
     }
-    row.haystack = parts.map(normalizeQuery).join('\u0000');
+    row.haystack = decomposeHangul(parts.map(normalizeQuery).join('\u0000'));
     row.nameHaystack = nameHaystack;
     row.keyIds = keyIds;
   }
@@ -363,33 +345,25 @@ export function createShortcutsSettings(deps: ShortcutSettingsDeps): ShortcutSet
     const overlaps = service.conflicts();
     for (const row of rows.values()) renderRow(row, overlaps);
     const readOnly = service.readOnly();
-    const count = service.customizedCount();
-    if (count === 0) customOnly = false;
-    filterCustom.textContent = COPY.filterCustom(count);
-    filterCustom.disabled = count === 0;
-    resetAllButton.disabled = count === 0 || readOnly;
+    moreButton.disabled = service.customizedCount() === 0 || readOnly;
+    if (moreButton.disabled) moreMenu.close();
     readOnlyBanner.hidden = !readOnly;
     renderFilter();
   }
 
   function renderFilter(): void {
-    filterAll.classList.toggle('ag-active', !customOnly);
-    filterAll.setAttribute('aria-checked', String(!customOnly));
-    filterCustom.classList.toggle('ag-active', customOnly);
-    filterCustom.setAttribute('aria-checked', String(customOnly));
-    filterAll.tabIndex = customOnly ? -1 : 0;
-    filterCustom.tabIndex = customOnly ? 0 : -1;
-    const q = normalizeQuery(query);
+    const typed = normalizeQuery(query);
+    const q = decomposeHangul(typed);
+    const initialsOnly = isInitialsQuery(typed);
     // 'ctrl+s' 처럼 온전한 키 표기면 그 키를 가진 줄만 보인다 — 'ctrls' 가 'ctrlshift…' 의 앞부분이라
     // 글자 일부로 견주면 Ctrl+Shift 줄이 모두 걸린다. 덜 적은 표기('ctrl+sh')는 글자 일부로 견준다.
-    const typedKey = keyFilter ? null : bindingIdFromLabel(query);
+    const typedKey = bindingIdFromLabel(query);
     let shown = 0;
     const groupShown = new Map<ShortcutCategory, boolean>();
     for (const row of rows.values()) {
-      let visible = !customOnly || service.isCustomized(row.info.id);
-      if (visible && keyFilter) visible = row.keyIds.has(keyFilter);
-      else if (visible && typedKey) visible = row.keyIds.has(typedKey) || row.nameHaystack.includes(q);
-      else if (visible && q) visible = row.haystack.includes(q);
+      let visible = true;
+      if (typedKey) visible = row.keyIds.has(typedKey) || row.nameHaystack.includes(q);
+      else if (q) visible = row.haystack.includes(q) || (initialsOnly && row.initials.includes(typed));
       row.root.hidden = !visible;
       if (visible) {
         shown += 1;
@@ -397,14 +371,14 @@ export function createShortcutsSettings(deps: ShortcutSettingsDeps): ShortcutSet
       }
     }
     for (const [category, group] of groups) group.hidden = !groupShown.get(category);
-    const asked = keyFilter ? keyLabel(keyFilter) : query.trim();
+    const asked = query.trim();
     empty.hidden = shown > 0 || !asked;
     empty.textContent = empty.hidden ? '' : COPY.noMatch(asked);
   }
 
   // ── 키 받기 (window 캡처 단계) ──
   function syncListener(): void {
-    const want = capture !== null || keySearching;
+    const want = capture !== null;
     if (want === listening) return;
     listening = want;
     stopTracking?.();
@@ -417,16 +391,10 @@ export function createShortcutsSettings(deps: ShortcutSettingsDeps): ShortcutSet
     }
   }
 
-  /** 기록·키로 찾기를 모두 접는다. 초점은 옮기지 않는다. */
-  function stopReceiving(): void {
-    if (capture) cancelCapture(false);
-    if (keySearching) endKeySearch(false);
-  }
-
   function onCaptureKeyDown(event: KeyboardEvent): void {
     // 문서 탭을 바꿔 설정 화면이 떨어져 나갔으면 키를 가로채지 않고 기록을 접는다.
     if (!element.isConnected) {
-      stopReceiving();
+      if (capture) cancelCapture(false);
       return;
     }
     // 바꾸기·취소를 묻는 동안은 Esc 만 가로채고 나머지(Tab·Enter)는 단추로 보낸다.
@@ -447,22 +415,23 @@ export function createShortcutsSettings(deps: ShortcutSettingsDeps): ShortcutSet
     // Tab 은 기록을 멈추고 초점을 그대로 옮긴다.
     if (event.key === 'Tab' && !event.ctrlKey && !event.altKey && !event.metaKey) {
       if (capture) cancelCapture(true);
-      else if (keySearching) endKeySearch(false);
       return;
     }
     if (event.isComposing) return;
     event.preventDefault();
     event.stopImmediatePropagation();
     if (event.repeat) return;
-    const result = bindingFromKeyboardEvent(event, platform);
+    if (capture && capture.steps.length > 0 && event.key === 'Enter') {
+      commitSteps(capture);
+      return;
+    }
+    const result = bindingFromKeyboardEvent(event, platform, { continuation: Boolean(capture?.steps.length) });
     if (capture) handleCaptureKey(capture, result);
-    else if (keySearching) handleKeySearchKey(result);
   }
 
   function startCapture(row: RowView, replace: BindingId | null, anchor: HTMLElement, focusTarget: HTMLElement): void {
     if (service.readOnly()) return;
     if (capture) cancelCapture(false);
-    if (keySearching) endKeySearch(false);
     setRowMessage(row, '');
     const input = el('input', 'ag-shortcut-capture');
     input.type = 'text';
@@ -471,12 +440,10 @@ export function createShortcutsSettings(deps: ShortcutSettingsDeps): ShortcutSet
     input.autocomplete = 'off';
     input.placeholder = COPY.capturePlaceholder;
     input.setAttribute('aria-label', COPY.captureLabel(row.name));
-    const hint = el('span', 'ag-shortcut-capture-hint', COPY.captureHint);
-    hint.id = `ag-shortcut-capture-hint-${++idSeq}`;
-    input.setAttribute('aria-describedby', hint.id);
-    anchor.before(input, hint);
+    input.setAttribute('aria-description', COPY.captureHint);
+    anchor.before(input);
     anchor.hidden = true;
-    const next: Capture = { row, replace, anchor, focusTarget, input, hint, prompt: null };
+    const next: Capture = { row, replace, anchor, focusTarget, input, steps: [], commitTimer: null, prompt: null };
     capture = next;
     row.root.classList.add('ag-shortcuts-row-recording');
     input.addEventListener('blur', () => {
@@ -493,9 +460,9 @@ export function createShortcutsSettings(deps: ShortcutSettingsDeps): ShortcutSet
     if (!current) return;
     // 먼저 비운다 — 입력칸을 떼면서 오는 blur 가 다시 들어오지 않게.
     capture = null;
+    stopCommitTimer(current);
     syncListener();
     current.input.remove();
-    current.hint.remove();
     current.anchor.hidden = false;
     current.row.root.classList.remove('ag-shortcuts-row-recording');
     if (current.prompt) setRowMessage(current.row, '');
@@ -513,23 +480,88 @@ export function createShortcutsSettings(deps: ShortcutSettingsDeps): ShortcutSet
       case 'ignore':
         return;
       case 'pending':
-        current.input.value = result.preview;
+        // 다음 단계의 수정자를 누르는 중이면 기록을 끝내지 않는다.
+        if (current.steps.length > 0) scheduleCommit(current);
+        else current.input.value = result.preview;
         return;
       case 'cancel':
         cancelCapture(true);
         return;
       case 'clear':
-        if (current.replace) removeBinding(current.row, current.replace);
-        else cancelCapture(true);
+        if (current.steps.length > 0) {
+          current.steps.pop();
+          setRowMessage(current.row, '');
+          showSteps(current);
+          if (current.steps.length > 0) scheduleCommit(current);
+          else stopCommitTimer(current);
+        } else if (current.replace) {
+          removeBinding(current.row, current.replace);
+        } else {
+          cancelCapture(true);
+        }
         return;
       case 'error':
-        current.input.value = '';
         setRowMessage(current.row, result.message);
+        if (current.steps.length > 0) scheduleCommit(current);
+        else current.input.value = '';
         return;
       case 'binding':
-        tryAssign(current, result.id);
+        addStep(current, result.id);
         return;
     }
+  }
+
+  function stopCommitTimer(current: Capture): void {
+    if (current.commitTimer !== null) clearTimeout(current.commitTimer);
+    current.commitTimer = null;
+  }
+
+  function scheduleCommit(current: Capture): void {
+    stopCommitTimer(current);
+    current.commitTimer = setTimeout(() => {
+      if (capture === current) commitSteps(current);
+    }, SEQUENCE_COMMIT_MS);
+  }
+
+  function showSteps(current: Capture): void {
+    current.input.value = current.steps.length > 0 ? keyLabel(current.steps.join(' ')) : '';
+  }
+
+  function clearSteps(current: Capture): void {
+    stopCommitTimer(current);
+    current.steps = [];
+    current.input.value = '';
+  }
+
+  function addStep(current: Capture, step: BindingId): void {
+    const { row } = current;
+    if (current.steps.length === 0 && !isChordStarter(step)) {
+      // 이어 눌러도 쓸 수 없는 첫 키는 기다리지 않고 바로 알린다. 기본 연속 키의 첫 키는 뒤를 이어 쓸 수 있다.
+      const check = service.check(row.info.id, step, platform);
+      if (check.kind === 'reserved') {
+        rejectSteps(current, check.reason);
+        return;
+      }
+      if (check.kind === 'locked') {
+        rejectSteps(current, COPY.lockedOwner(keyLabel(step), nameOf(check.owner)));
+        return;
+      }
+    }
+    setRowMessage(row, '');
+    current.steps.push(step);
+    showSteps(current);
+    if (current.steps.length >= MAX_SEQUENCE_STEPS) commitSteps(current);
+    else scheduleCommit(current);
+  }
+
+  function rejectSteps(current: Capture, message: string): void {
+    clearSteps(current);
+    setRowMessage(current.row, message);
+  }
+
+  function commitSteps(current: Capture): void {
+    stopCommitTimer(current);
+    tryAssign(current, current.steps.join(' '));
   }
 
   function tryAssign(current: Capture, id: BindingId): void {
@@ -538,15 +570,13 @@ export function createShortcutsSettings(deps: ShortcutSettingsDeps): ShortcutSet
     const check = service.check(row.info.id, id, platform);
     switch (check.kind) {
       case 'reserved':
-        current.input.value = '';
-        setRowMessage(row, check.reason);
+        rejectSteps(current, check.reason);
         return;
       case 'locked':
-        current.input.value = '';
-        setRowMessage(row, COPY.lockedOwner(label, nameOf(check.owner)));
+        rejectSteps(current, COPY.lockedOwner(label, nameOf(check.owner)));
         return;
       case 'conflict':
-        openPrompt(current, id, check.owner);
+        openPrompt(current, id, check);
         return;
       case 'same':
         // 이미 이 명령의 키다. 바꾸던 칩이 아니면 그 칩을 지우고 남는 키로 모은다.
@@ -563,14 +593,16 @@ export function createShortcutsSettings(deps: ShortcutSettingsDeps): ShortcutSet
     finishSave(row, result, id, COPY.assigned(row.name, label));
   }
 
-  function openPrompt(current: Capture, id: BindingId, owner: string): void {
+  function openPrompt(current: Capture, id: BindingId, check: Extract<BindingCheck, { kind: 'conflict' }>): void {
     const { row } = current;
-    const label = keyLabel(id);
+    const { owner } = check;
+    const label = keyLabel(check.binding ?? id);
+    const ownerNames = (check.owners ?? [owner]).map(nameOf).join(', ');
     current.prompt = { id, owner };
-    current.input.value = label;
+    current.input.value = keyLabel(id);
     row.message.replaceChildren();
     row.message.classList.add('ag-shortcuts-row-prompt');
-    const text = el('span', 'ag-shortcuts-row-prompt-copy', COPY.conflict(label, nameOf(owner)));
+    const text = el('span', 'ag-shortcuts-row-prompt-copy', COPY.conflict(label, ownerNames));
     const actions = el('span', 'ag-settings-actions ag-shortcuts-row-actions');
     const replace = button('ag-settings-primary ag-shortcuts-replace', COPY.replace);
     const cancel = button('ag-settings-btn ag-shortcuts-cancel', COPY.cancel);
@@ -592,12 +624,11 @@ export function createShortcutsSettings(deps: ShortcutSettingsDeps): ShortcutSet
       if (!result.ok) {
         // 실패하면 묻기를 접고 같은 칸에서 다시 받는다.
         current.prompt = null;
-        current.input.value = '';
-        setRowMessage(row, result.error);
+        rejectSteps(current, result.error);
         current.input.focus();
         return;
       }
-      finishSave(row, result, id, COPY.taken(nameOf(owner), label));
+      finishSave(row, result, id, COPY.taken(ownerNames, label));
     });
     cancel.addEventListener('click', () => {
       if (capture === current) cancelCapture(true);
@@ -607,8 +638,8 @@ export function createShortcutsSettings(deps: ShortcutSettingsDeps): ShortcutSet
 
   function finishSave(row: RowView, result: SaveResult, id: BindingId, message: string): void {
     if (!result.ok) {
-      if (capture?.row === row) capture.input.value = '';
-      setRowMessage(row, result.error);
+      if (capture?.row === row) rejectSteps(capture, result.error);
+      else setRowMessage(row, result.error);
       return;
     }
     // 저장하면 구독이 기록을 끝내고 다시 그린다.
@@ -631,8 +662,8 @@ export function createShortcutsSettings(deps: ShortcutSettingsDeps): ShortcutSet
     const label = keyLabel(id);
     const result = service.remove(row.info.id, id);
     if (!result.ok) {
-      if (capture?.row === row) capture.input.value = '';
-      setRowMessage(row, result.error);
+      if (capture?.row === row) rejectSteps(capture, result.error);
+      else setRowMessage(row, result.error);
       return;
     }
     setRowMessage(row, '');
@@ -640,136 +671,37 @@ export function createShortcutsSettings(deps: ShortcutSettingsDeps): ShortcutSet
     row.add?.focus();
   }
 
-  function resetCommand(row: RowView): void {
-    if (capture) cancelCapture(false);
-    const result = service.resetCommand(row.info.id);
-    if (!result.ok) {
-      setRowMessage(row, result.error);
+  searchInput.addEventListener('input', () => {
+    query = searchInput.value;
+    renderFilter();
+  });
+  moreButton.addEventListener('click', () => {
+    if (moreMenu.isOpen()) {
+      moreMenu.close();
       return;
     }
-    setRowMessage(row, '');
-    setStatus(COPY.resetOne(row.name));
-    if (!row.root.hidden) row.add?.focus();
+    const box = moreButton.getBoundingClientRect();
+    // 메뉴 폭(최소 112px)만큼 왼쪽에서 열어 오른쪽 끝을 단추에 맞춘다.
+    moreMenu.open([{ label: COPY.resetAll, run: resetAll }], box.right - 112, box.bottom + 4, moreButton);
+  });
+  function resetAll(): void {
+    void (async () => {
+      const count = service.customizedCount();
+      if (count === 0) return;
+      if (capture) cancelCapture(false);
+      const confirmed = await confirmSheet(moreButton, COPY.resetAllTitle, COPY.resetAllMessage(count), {
+        confirmLabel: COPY.resetAllConfirm,
+        destructive: true,
+      });
+      if (!confirmed) return;
+      const result = service.resetAll();
+      if (result.ok) setStatus(COPY.resetAllDone);
+      else setStatus(result.error, { visible: true });
+    })();
   }
-
-  // ── 키로 찾기 ──
-  function startKeySearch(): void {
-    if (capture) cancelCapture(false);
-    keySearching = true;
-    keySearchButton.setAttribute('aria-pressed', 'true');
-    searchInput.readOnly = true;
-    searchInput.inputMode = 'none';
-    searchInput.placeholder = COPY.keySearchPlaceholder;
-    searchInput.value = '';
-    query = '';
-    keyFilter = null;
-    syncListener();
-    searchInput.focus();
-    renderFilter();
-  }
-
-  /** clear 면 찾은 키도 지운다. 아니면 찾은 키 이름이 검색 글로 남아 같은 줄을 보인다. */
-  function endKeySearch(clear: boolean): void {
-    if (!keySearching) return;
-    keySearching = false;
-    keySearchButton.setAttribute('aria-pressed', 'false');
-    searchInput.readOnly = false;
-    searchInput.removeAttribute('inputmode');
-    searchInput.placeholder = COPY.searchPlaceholder;
-    if (clear) {
-      keyFilter = null;
-      query = '';
-      searchInput.value = '';
-    }
-    syncListener();
-    renderFilter();
-  }
-
-  function handleKeySearchKey(result: RecordResult): void {
-    switch (result.kind) {
-      case 'ignore':
-        return;
-      case 'pending':
-        searchInput.value = result.preview;
-        return;
-      case 'cancel':
-        endKeySearch(true);
-        searchInput.focus();
-        return;
-      case 'clear':
-        // 찾은 키의 이름(query)도 함께 비운다 — 빈 칸 옆에 예전 키로 거른 목록이 남지 않게.
-        keyFilter = null;
-        query = '';
-        searchInput.value = '';
-        renderFilter();
-        return;
-      case 'error':
-        keyFilter = null;
-        query = '';
-        searchInput.value = '';
-        setStatus(result.message);
-        renderFilter();
-        return;
-      case 'binding':
-        keyFilter = result.id;
-        query = keyLabel(result.id);
-        searchInput.value = query;
-        setStatus('');
-        renderFilter();
-        return;
-    }
-  }
-
-  keySearchButton.addEventListener('click', () => {
-    if (keySearching) {
-      endKeySearch(true);
-      searchInput.focus();
-    } else {
-      startKeySearch();
-    }
-  });
-  searchInput.addEventListener('blur', (event) => {
-    // 키로 찾기 단추를 누르면 그 단추가 끝낸다.
-    if (keySearching && event.relatedTarget !== keySearchButton) endKeySearch(false);
-  });
-  searchInput.addEventListener('input', () => {
-    if (keySearching) return;
-    query = searchInput.value;
-    keyFilter = null;
-    renderFilter();
-  });
-  filterAll.addEventListener('click', () => {
-    customOnly = false;
-    renderFilter();
-  });
-  filterCustom.addEventListener('click', () => {
-    if (service.customizedCount() === 0) return;
-    customOnly = true;
-    renderFilter();
-  });
-  filter.addEventListener('keydown', (event) => {
-    if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return;
-    event.preventDefault();
-    const next = customOnly ? filterAll : filterCustom;
-    if (next.disabled) return;
-    next.click();
-    next.focus();
-  });
-  resetAllButton.addEventListener('click', () => void (async () => {
-    const count = service.customizedCount();
-    if (count === 0) return;
-    if (capture) cancelCapture(false);
-    const confirmed = await confirmSheet(resetAllButton, COPY.resetAllTitle, COPY.resetAllMessage(count), {
-      confirmLabel: COPY.resetAllConfirm,
-      destructive: true,
-    });
-    if (!confirmed) return;
-    const result = service.resetAll();
-    setStatus(result.ok ? COPY.resetAllDone : result.error);
-  })());
 
   /** 다시 그리기 전에 목록 안의 초점 자리를 적어 둔다 (어느 줄의 어느 단추인지). */
-  interface FocusSpot { command: string; kind: 'chip' | 'remove' | 'add' | 'reset'; binding?: BindingId }
+  interface FocusSpot { command: string; kind: 'chip' | 'remove' | 'add'; binding?: BindingId }
   function focusSpot(): FocusSpot | null {
     if (capture) {
       return capture.replace
@@ -782,7 +714,7 @@ export function createShortcutsSettings(deps: ShortcutSettingsDeps): ShortcutSet
     if (!command) return null;
     const binding = active.closest<HTMLElement>('.ag-shortcut-binding')?.dataset.binding;
     if (binding) return { command, kind: active.classList.contains('ag-shortcut-remove') ? 'remove' : 'chip', binding };
-    return { command, kind: active.classList.contains('ag-shortcuts-reset') ? 'reset' : 'add' };
+    return { command, kind: 'add' };
   }
 
   /** 다시 그리며 초점 단추가 사라졌으면 같은 자리(없으면 그 줄의 +, 줄이 숨었으면 검색 칸)로 돌려놓는다. */
@@ -797,8 +729,6 @@ export function createShortcutsSettings(deps: ShortcutSettingsDeps): ShortcutSet
         const wrap = [...row.keys.querySelectorAll<HTMLElement>('.ag-shortcut-binding')]
           .find((node) => node.dataset.binding === spot.binding);
         target = wrap?.querySelector<HTMLElement>(spot.kind === 'remove' ? '.ag-shortcut-remove' : '.ag-shortcut-chip') ?? null;
-      } else if (spot.kind === 'reset' && !row.reset.hidden) {
-        target = row.reset;
       }
       target ??= row.add;
     }
@@ -824,10 +754,8 @@ export function createShortcutsSettings(deps: ShortcutSettingsDeps): ShortcutSet
     open(): void {
       syncCatalog();
       if (capture) cancelCapture(false);
-      endKeySearch(true);
+      moreMenu.close();
       query = '';
-      keyFilter = null;
-      customOnly = false;
       searchInput.value = '';
       setStatus('');
       for (const row of rows.values()) setRowMessage(row, '');
@@ -835,17 +763,16 @@ export function createShortcutsSettings(deps: ShortcutSettingsDeps): ShortcutSet
     },
     close(): void {
       if (capture) cancelCapture(false);
-      endKeySearch(true);
+      moreMenu.close();
       query = '';
-      keyFilter = null;
-      customOnly = false;
       searchInput.value = '';
       renderFilter();
     },
     dispose(): void {
       unsubscribe();
+      if (capture) stopCommitTimer(capture);
       capture = null;
-      keySearching = false;
+      moreMenu.dispose();
       syncListener();
     },
   };

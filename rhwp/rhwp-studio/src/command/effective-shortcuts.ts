@@ -3,16 +3,20 @@
  *
  * 입력 처리기와 전역 단축키는 모두 matchEffectiveShortcut() 으로 키를 찾는다. 메뉴·명령 팔레트·
  * 컨텍스트 메뉴·네이티브 메뉴·도구 막대 표시는 shortcutLabelFor() 하나로 읽는다. 사용자 지정이
- * 없으면 기본 표와 기본 표시가 그대로다.
+ * 없으면 기본 표와 기본 표시가 그대로다. 사용자가 만든 연속 키는 sequences() 로 따로 읽는다 —
+ * 한 번의 키 입력으로 맞출 수 없어 table() 에 들어가지 않는다.
  */
 
 import { defaultShortcuts, matchShortcut, type ShortcutDef } from './shortcut-map.ts';
 import { chordLabelsFor } from './chord-map.ts';
 import {
   bindingIdOf,
+  bindingsOverlap,
+  bindingSteps,
   bindingToShortcutDef,
   configurableCommandIds,
   formatBindingLabel,
+  isSequenceBinding,
   LOCKED_SHORTCUT_COMMANDS,
   parseBindingId,
   reservedReason,
@@ -32,6 +36,7 @@ import {
   type ShortcutOverrides,
   type ShortcutStorage,
 } from './shortcut-overrides.ts';
+import { createSequenceMatcher } from './shortcut-sequence.ts';
 import { detectPlatformKind, type PlatformKind } from '../engine/navigation-keymap.ts';
 import type { CommandDef } from './types.ts';
 
@@ -44,12 +49,18 @@ export type BindingCheck =
   | { kind: 'same' }
   | { kind: 'reserved'; reason: string }
   | { kind: 'locked'; owner: string }
-  | { kind: 'conflict'; owner: string };
+  /**
+   * binding 은 겹친 키가 누른 키와 다를 때(연속 키의 앞 단계) 그 키, owners 는 겹친 명령이 여럿일 때 전부다.
+   * 바꾸면 겹친 키를 모두 뺀다.
+   */
+  | { kind: 'conflict'; owner: string; binding?: BindingId; owners?: string[] };
 
 export type SaveResult = { ok: true } | { ok: false; error: string };
 
 export interface ShortcutService {
   table(): readonly [ShortcutDef, string][];
+  /** 사용자가 만든 연속 키와 그 명령 */
+  sequences(): readonly (readonly [BindingId, string])[];
   bindings(commandId: string): CommandBinding[];
   isCustomized(commandId: string): boolean;
   customizedCount(): number;
@@ -96,7 +107,7 @@ function usableAdds(
   lockedIds: ReadonlySet<BindingId>,
   platform: PlatformKind,
 ): BindingId[] {
-  return (entry?.add ?? []).filter(id => !lockedIds.has(id) && !reservedReason(id, platform));
+  return (entry?.add ?? []).filter(id => !lockedIds.has(bindingSteps(id)[0]) && !reservedReason(id, platform));
 }
 
 /**
@@ -181,8 +192,13 @@ export function createShortcutService(opts: {
 
   let { overrides, readOnly } = loadShortcutOverrides(storage, defaults);
   let cached: [ShortcutDef, string][] | null = null;
+  let cachedSequences: [BindingId, string][] | null = null;
 
   const table = () => (cached ??= buildEffectiveShortcuts(defaults, overrides, locked));
+  const clearCaches = () => {
+    cached = null;
+    cachedSequences = null;
+  };
   const notify = (source: 'local' | 'external') => {
     for (const listener of [...listeners]) {
       try {
@@ -194,7 +210,7 @@ export function createShortcutService(opts: {
   };
   const reload = () => {
     ({ overrides, readOnly } = loadShortcutOverrides(storage, defaults));
-    cached = null;
+    clearCaches();
     notify('external');
   };
   // 다른 창(같은 출처)의 저장은 storage 이벤트로 따라간다. 주입한 저장소에는 listen 을 함께 넣는다.
@@ -205,6 +221,15 @@ export function createShortcutService(opts: {
   const isActiveOverride = (commandId: string) => !locked.has(commandId) && isKnownCommand(commandId, defaults);
   const lockedIds = lockedBindingIds(defaults, locked);
   const addsOf = (entry: CommandOverride | undefined) => usableAdds(entry, lockedIds, detectPlatformKind());
+  const sequences = (): [BindingId, string][] => {
+    if (cachedSequences) return cachedSequences;
+    const out: [BindingId, string][] = [];
+    for (const [commandId, entry] of Object.entries(overrides.commands)) {
+      if (!isActiveOverride(commandId)) continue;
+      for (const id of addsOf(entry)) if (isSequenceBinding(id)) out.push([id, commandId]);
+    }
+    return (cachedSequences = out);
+  };
 
   const bindings = (commandId: string): CommandBinding[] => {
     const out: CommandBinding[] = [];
@@ -240,7 +265,20 @@ export function createShortcutService(opts: {
     for (const [def, commandId] of table()) {
       if (bindingIdOf(def) === canonical) return commandId;
     }
+    for (const [other, commandId] of sequences()) if (other === canonical) return commandId;
     return null;
+  };
+
+  /** 이 키와 함께 쓸 수 없는 키와 그 명령 — 같은 키, 앞 단계가 겹치는 연속 키. 같은 키가 먼저다. */
+  const overlapsOf = (canonical: BindingId): { id: BindingId; owner: string }[] => {
+    const out: { id: BindingId; owner: string }[] = [];
+    const push = (id: BindingId | null, owner: string) => {
+      if (!id || !bindingsOverlap(id, canonical)) return;
+      if (!out.some(item => item.id === id && item.owner === owner)) out.push({ id, owner });
+    };
+    for (const [def, commandId] of table()) push(bindingIdOf(def), commandId);
+    for (const [id, commandId] of sequences()) push(id, commandId);
+    return out.sort((a, b) => Number(b.id === canonical) - Number(a.id === canonical));
   };
 
   const check = (commandId: string, id: BindingId, platform: PlatformKind = detectPlatformKind()): BindingCheck => {
@@ -248,15 +286,23 @@ export function createShortcutService(opts: {
     if (!canonical) return { kind: 'reserved', reason: SHORTCUT_ERROR_UNSUPPORTED };
     if (locked.has(commandId)) return { kind: 'locked', owner: commandId };
     if (bindings(commandId).some(binding => binding.id === canonical)) return { kind: 'same' };
-    const owner = ownerOf(canonical);
-    if (owner && locked.has(owner)) return { kind: 'locked', owner };
+    const overlaps = overlapsOf(canonical);
+    const lockedOverlap = overlaps.find(item => locked.has(item.owner));
+    if (lockedOverlap) return { kind: 'locked', owner: lockedOverlap.owner };
     // 그 명령의 기본 키는 예약 목록과 겹쳐도(macOS Cmd+H 등) 언제나 되살릴 수 있다.
     if (!ownDefaults(commandId).has(canonical)) {
       const reason = reservedReason(canonical, platform);
       if (reason) return { kind: 'reserved', reason };
     }
-    if (owner && owner !== commandId) return { kind: 'conflict', owner };
-    return { kind: 'ok' };
+    const [first] = overlaps;
+    if (!first) return { kind: 'ok' };
+    const owners = [...new Set(overlaps.map(item => item.owner))];
+    return {
+      kind: 'conflict',
+      owner: first.owner,
+      ...(first.id === canonical ? {} : { binding: first.id }),
+      ...(owners.length > 1 ? { owners } : {}),
+    };
   };
 
   const entryOf = (next: ShortcutOverrides, commandId: string): CommandOverride => {
@@ -291,7 +337,7 @@ export function createShortcutService(opts: {
     const saved = trySaveShortcutOverrides(next, storage);
     if (!saved.ok) return saved;
     overrides = next;
-    cached = null;
+    clearCaches();
     notify('local');
     return { ok: true };
   };
@@ -304,6 +350,7 @@ export function createShortcutService(opts: {
 
   return {
     table,
+    sequences,
     bindings,
     isCustomized,
     customizedCount: () => Object.keys(overrides.commands).filter(isCustomized).length,
@@ -314,6 +361,11 @@ export function createShortcutService(opts: {
       for (const [def, commandId] of table()) {
         const id = bindingIdOf(def);
         if (!id) continue;
+        const list = owners.get(id);
+        if (!list) owners.set(id, [commandId]);
+        else if (!list.includes(commandId)) list.push(commandId);
+      }
+      for (const [id, commandId] of sequences()) {
         const list = owners.get(id);
         if (!list) owners.set(id, [commandId]);
         else if (!list.includes(commandId)) list.push(commandId);
@@ -338,7 +390,9 @@ export function createShortcutService(opts: {
       if (result.kind === 'same' && !replace) return { ok: true };
       const next = cloneOverrides(overrides);
       if (replace) dropBinding(next, commandId, replace);
-      if (result.kind === 'conflict') dropBinding(next, result.owner, canonical);
+      if (result.kind === 'conflict') {
+        for (const item of overlapsOf(canonical)) dropBinding(next, item.owner, item.id);
+      }
       if (result.kind !== 'same') addBinding(next, commandId, canonical);
       return commit(next);
     },
@@ -360,7 +414,7 @@ export function createShortcutService(opts: {
       const restored = ownDefaults(commandId);
       for (const [otherId, entry] of Object.entries(next.commands)) {
         if (otherId === commandId) continue;
-        entry.add = entry.add.filter(other => !restored.has(other));
+        entry.add = entry.add.filter(other => ![...restored].some(id => bindingsOverlap(id, other)));
       }
       return commit(next);
     },
@@ -383,10 +437,13 @@ export function createShortcutService(opts: {
 /** 앱 전체가 쓰는 단축키 서비스 */
 export const shortcuts: ShortcutService = createShortcutService();
 
+/** 앱 전체가 쓰는 연속 키 입력 상태 */
+export const shortcutSequences = createSequenceMatcher(() => shortcuts.sequences());
+
 const recorders = new Set<() => boolean>();
 
 /**
- * 단축키 설정이 키를 기록(또는 키로 찾기)하는 동안 true. 기록기보다 먼저 등록된 window 캡처 처리기
+ * 단축키 설정이 키를 기록하는 동안 true. 기록기보다 먼저 등록된 window 캡처 처리기
  * (사이드바 ⌃⌘S·⌃⌘J, Ctrl+Tab 문서 전환)는 이 값을 보고 키를 기록기에 넘긴다.
  */
 export function isShortcutRecording(): boolean {
