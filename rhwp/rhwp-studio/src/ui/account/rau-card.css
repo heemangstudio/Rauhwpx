@@ -210,6 +210,25 @@
   white-space: nowrap;
 }
 
+/* 프로모션이 끝나 가면 막대 아래에 안내와 구매 단추를 둔다. */
+.rc .acct-plan-promo-foot {
+  position: relative;
+  z-index: 1;
+  grid-column: 1 / -1;
+}
+
+.rc .acct-plan-promo {
+  margin: 12px 0 0;
+  color: var(--rc-accent-text);
+  font-size: 13px;
+  font-weight: 590;
+}
+
+.rc .acct-plan-buy {
+  width: 100%;
+  margin-top: 10px;
+}
+
 /* 단추 */
 .rc .acct-btn {
   background: var(--rc-btn);

@@ -140,6 +140,17 @@ export function planCardKind(plan: AccountPlan): PlanCardKind {
   return plan.plan === 'annual' ? 'yearly' : 'monthly';
 }
 
+/** 프로모션이 끝나 가는 안내를 띄우는 날 수. */
+const PROMO_NOTICE_DAYS = 31;
+
+/** 끝나기 한 달 전부터의 프로모션 안내. 30일 밑으로는 남은 날을 센다. 해당 없으면 빈 글. */
+export function promoEndingLine(plan: AccountPlan, now = Date.now()): string {
+  if (planCardKind(plan) !== 'gift' || !plan.expiresAt) return '';
+  const left = daysLeft(plan.expiresAt, now);
+  if (left <= 0 || left > PROMO_NOTICE_DAYS) return '';
+  return `프로모션 기간이 ${left >= 30 ? '1달' : `${left}일`} 남았습니다`;
+}
+
 /** 갱신일이나 끝나는 날. 평생·무료는 빈 글. */
 export function planTermLine(plan: AccountPlan): string {
   if (plan.tier === 'free' || plan.plan === 'lifetime' || !plan.expiresAt) return '';

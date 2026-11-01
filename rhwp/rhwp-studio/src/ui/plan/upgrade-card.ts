@@ -10,7 +10,7 @@ import { createSheetFrame } from '../agent-sidebar/sheet.ts';
 import { createIcon } from '../agent-sidebar/icons.ts';
 import { openAccountPage } from '../account/account-page.ts';
 import { accountStore, type AccountStore } from '../account/account-store.ts';
-import { trialButtonLabel } from '../account/account-format.ts';
+import { planCardKind, trialButtonLabel } from '../account/account-format.ts';
 import { createHamaMark } from './hama-mark.ts';
 import type { DesktopLicenseApi } from '../agent-sidebar/settings-license.ts';
 import { PLAN_CYCLES, PLAN_FAMILY_LABEL, planPrice, planSkuAvailable, won, type PlanFamily } from './plan-offers.ts';
@@ -122,6 +122,12 @@ export function createPlanChooser(options: PlanChooserOptions): PlanChooser {
 
   function available(sku: PlanSku): boolean {
     return planSkuAvailable(status(), sku);
+  }
+
+  /** 프로모션 키로 쓰는 중. 그 등급의 정식 버전을 살 수 있다. */
+  function onPromo(): boolean {
+    const current = account.status();
+    return current?.state === 'signed_in' && planCardKind(current.plan) === 'gift';
   }
 
   /** 계정의 Rau 체험. 로그아웃이면 상태를 모르므로 단추를 두고 로그인으로 보낸다. */
@@ -269,7 +275,7 @@ export function createPlanChooser(options: PlanChooserOptions): PlanChooser {
     }
     for (const line of FEATURES[plan]) features.append(el('li', '', line));
 
-    // 체험 중인 Rau 는 '체험 중'을 두고 계속 쓸 결제 단추를 그대로 둔다.
+    // 체험 중이거나 프로모션으로 쓰는 등급은 표시를 두고 계속 쓸 결제 단추를 그대로 둔다.
     if (view === 'done' && doneTier === plan) {
       const done = button('ag-pricing-btn ag-pricing-btn-primary ag-pricing-btn-success', '');
       done.disabled = true;
@@ -278,10 +284,11 @@ export function createPlanChooser(options: PlanChooserOptions): PlanChooser {
       actions.setAttribute('role', 'status');
       actions.setAttribute('aria-label', `${TIER_LABEL[plan]} 활성화 완료`);
       actions.append(done);
-    } else if (current && trial !== 'active') {
+    } else if (current && trial !== 'active' && !onPromo()) {
       actions.append(el('span', 'ag-pricing-current', '사용 중'));
     } else if (plan !== 'free' && !(plan === 'hama' && tier === 'rau')) {
       if (trial === 'active') actions.append(el('span', 'ag-pricing-current ag-pricing-trial-tag', '체험 중'));
+      else if (current) actions.append(el('span', 'ag-pricing-current ag-pricing-trial-tag', '프로모션'));
       const { monthly, yearly } = PLAN_CYCLES[plan];
       // 체험을 쓸 수 있으면 체험만 권한다. 체험을 쓴 뒤에 결제 단추가 선다.
       const skus = trial === 'available' ? [] : [monthly, yearly].filter(available);

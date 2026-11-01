@@ -95,6 +95,11 @@
   max-width: calc(100% - 123px);
 }
 
+/* 선물 상자는 하마 왼쪽에 놓여 글이 더 일찍 꺾인다. */
+.hc[data-kind='gift'] .acct-plan-copy {
+  max-width: calc(100% - 165px);
+}
+
 .hc .acct-plan-name {
   flex-wrap: wrap;
   gap: 2px 7px;
@@ -141,6 +146,15 @@
   color: var(--hc-ink);
   font-size: 13px;
   font-weight: 510;
+  word-break: keep-all;
+}
+
+/* 프로모션이 끝나 가는 안내 */
+.hc .acct-plan-promo {
+  margin: 3px 0 0;
+  color: var(--hc-ink);
+  font-size: 13px;
+  font-weight: 590;
   word-break: keep-all;
 }
 
@@ -250,7 +264,8 @@
     display: block;
   }
 
-  .hc .acct-plan-copy {
+  .hc .acct-plan-copy,
+  .hc[data-kind='gift'] .acct-plan-copy {
     max-width: 400px;
   }
 

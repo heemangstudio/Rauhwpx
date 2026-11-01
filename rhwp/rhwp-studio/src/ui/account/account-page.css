@@ -1005,10 +1005,6 @@ html:is(.desktop-mac, .desktop-windows) .acct-page.acct-embedded {
   gap: 8px;
 }
 
-.acct-manage:not([hidden]) + .acct-plan-term {
-  margin-top: 10px;
-}
-
 .acct-manage-text {
   margin: 0;
   color: var(--n-ink-secondary);

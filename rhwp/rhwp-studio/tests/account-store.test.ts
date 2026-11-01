@@ -7,6 +7,7 @@ import {
   licenseLine,
   planCancelled,
   planTermLine,
+  promoEndingLine,
   rauCredits,
   rauCreditsLine,
   rauResetLine,
@@ -181,6 +182,22 @@ test('a renewing plan shows its renewal day, and a cancelled plan shows the day 
   const license = { keyId: 'k1', maskedKey: 'HAMA-…', tier: 'paid' as const, edition: 'hama' as const, plan: 'annual' as const, status: 'active' as const, expiresAt, autoRenew: true, primary: true };
   assert.equal(licenseLine(license), 'Hama · 연간 · 2027년 10월 20일에 갱신');
   assert.equal(licenseLine({ ...license, autoRenew: false }), 'Hama · 연간 · 2027년 10월 20일까지');
+});
+
+test('promo plans warn one month before they end, and other plans never do', () => {
+  const day = 86_400_000;
+  const now = Date.UTC(2026, 10, 1, 3);
+  const promo: AccountStatus['plan'] = { ...FREE_PLAN, tier: 'rau', edition: 'rau', plan: null, expiresAt: now + 200 * day, autoRenew: false, manageUrl: null };
+  assert.equal(promoEndingLine(promo, now), '');
+  assert.equal(promoEndingLine({ ...promo, expiresAt: now + 32 * day }, now), '');
+  assert.equal(promoEndingLine({ ...promo, expiresAt: now + 31 * day }, now), '프로모션 기간이 1달 남았습니다');
+  assert.equal(promoEndingLine({ ...promo, expiresAt: now + 30 * day }, now), '프로모션 기간이 1달 남았습니다');
+  assert.equal(promoEndingLine({ ...promo, expiresAt: now + 29 * day }, now), '프로모션 기간이 29일 남았습니다');
+  assert.equal(promoEndingLine({ ...promo, expiresAt: now + day }, now), '프로모션 기간이 1일 남았습니다');
+  // 해지한 구독과 갱신되는 구독은 프로모션이 아니다.
+  const paid = { ...promo, plan: 'annual' as const, expiresAt: now + 10 * day, manageUrl: 'https://groble.im/manage/purchase' };
+  assert.equal(promoEndingLine({ ...paid, autoRenew: false }, now), '');
+  assert.equal(promoEndingLine({ ...paid, autoRenew: true }, now), '');
 });
 
 test('Rau credits show what is left of the allowance, with the reset day or the trial days', () => {

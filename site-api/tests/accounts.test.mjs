@@ -127,6 +127,21 @@ async function setup(t, env = {}, { clock = { now: T0 } } = {}) {
   };
 }
 
+test('a bought plan becomes primary over a promo key that runs longer', async (t) => {
+  const s = await setup(t);
+  const me = await s.signIn({ email: 'promo@example.com' }, device(1));
+  const issued = await s.post('/v1/admin/gift-codes/issue', { plan: 'rau', durationMonths: 12, count: 1 }, s.bearer(ADMIN)).then(s.json);
+  assert.equal(issued.status, 200, JSON.stringify(issued.body));
+  const redeemed = await s.post('/v1/account/gift-codes/redeem', { code: issued.body.codes[0] }, s.bearer(me.session)).then(s.json);
+  assert.deepEqual([redeemed.body.plan.tier, redeemed.body.plan.plan, redeemed.body.plan.autoRenew, redeemed.body.plan.manageUrl], ['rau', null, false, null]);
+
+  await s.buy(planPaid({ sku: 'rauMonthly', merchantUid: 'promo_buy', ref: 'ref-promo', email: 'promo@example.com' }));
+  const { plan, licenses } = (await s.refresh(me.session)).body;
+  assert.deepEqual([plan.tier, plan.plan, plan.autoRenew], ['rau', 'monthly', true]);
+  assert.ok(plan.manageUrl);
+  assert.equal(licenses.length, 2);
+});
+
 test('config: defaults, provider and device-limit checks fail startup on a typo', () => {
   const config = resolveAccountConfig({});
   assert.deepEqual(config, {

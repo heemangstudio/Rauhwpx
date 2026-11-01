@@ -26,6 +26,7 @@ import {
   rauCredits,
   planCancelled,
   planCardKind,
+  promoEndingLine,
   formatAccountDate,
   rauCreditsLine,
   rauResetLine,
@@ -293,12 +294,18 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
   const planAlertText = el('p', 'acct-alert-text');
   planAlertText.setAttribute('role', 'alert');
   const fixPayment = button('acct-btn acct-btn-primary', '결제 수단 바꾸기');
+  // 프로모션이 끝나 가면 안내와 함께 정식 버전을 살 길을 둔다.
+  const promoNotice = el('p', 'acct-plan-promo');
+  promoNotice.setAttribute('role', 'status');
+  const buyFull = button('acct-btn acct-btn-primary acct-plan-buy', '정식 버전 구매');
+  // Rau 는 안내와 단추를 크레딧 막대 아래에 둔다.
+  const promoFoot = el('div', 'acct-plan-promo-foot');
   const planError = alertLine();
-  planActions.append(fixPayment);
-  planCopy.append(planName, planTerm, planAlertText);
+  planActions.append(fixPayment, buyFull);
+  planCopy.append(planName, planTerm, promoNotice, planAlertText);
   planSky.append(skyArt, planCopy);
   planWater.append(waterArt, planActions);
-  planCard.append(rauArtHost, planSky, planWater, managePanel, credits);
+  planCard.append(rauArtHost, planSky, planWater, credits, promoFoot, managePanel);
   planSection.root.append(planCard, planError);
 
   // ── 사용량 ──────────────────────────────────────────
@@ -598,6 +605,12 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
       ? rauCardLook(kind, planInfo.rau?.remainingPercent === 0, panel === 'confirm')
       : null;
     const hama = planInfo.tier === 'hama' ? hamaCardLook(kind) : null;
+    if (look && promoNotice.parentElement !== promoFoot) {
+      promoFoot.append(promoNotice, buyFull);
+    } else if (!look && promoNotice.parentElement === promoFoot) {
+      planCopy.insertBefore(promoNotice, planAlertText);
+      planActions.append(buyFull);
+    }
     planCard.classList.toggle('hc', Boolean(hama));
     planCard.classList.toggle('rc', Boolean(look));
     if (hama || look) planSection.root.dataset.card = planInfo.tier;
@@ -764,7 +777,11 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
     const families: PlanFamily[] = plan?.api && !planInfo.paymentFailed
       ? (onTrial ? ['rau'] : upgradeFamilies(planInfo.tier))
       : [];
-    upgrade.hidden = families.length === 0;
+    const promoLine = promoEndingLine(planInfo);
+    promoNotice.textContent = promoLine;
+    promoNotice.hidden = !promoLine;
+    buyFull.hidden = !promoLine || !plan?.api;
+    upgrade.hidden = families.length === 0 || !buyFull.hidden;
     upgradeFocus = families.length === 1 ? families[0]! : undefined;
     if (plan?.status()?.pendingCheckout) say(planError, '');
     else if (plan?.status()?.lastCheckout?.code === 'timed_out') {
@@ -867,6 +884,11 @@ export function openAccountPage(options: AccountPageOptions = {}): AccountPageHa
   upgrade.addEventListener('click', () => {
     if (!plan) return;
     openPlanCard({ store: plan, license: null, account: store, ...(upgradeFocus ? { focus: upgradeFocus } : {}) });
+  });
+  buyFull.addEventListener('click', () => {
+    const tier = status()?.plan.tier;
+    if (!plan) return;
+    openPlanCard({ store: plan, license: null, account: store, ...(tier === 'hama' || tier === 'rau' ? { focus: tier } : {}) });
   });
   manage.addEventListener('click', () => {
     const current = status();
