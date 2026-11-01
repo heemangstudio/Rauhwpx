@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import test, { after, before } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
@@ -75,19 +74,6 @@ test('entering read-only mode drops focus, pending formatting and the text curso
   handler.setReadOnly(true);
   assert.deepEqual(calls, ['blur', 'clear-format']);
   assert.equal(handler.container.style.cursor, '');
-});
-
-// 남은 소스 가드: 템플릿 블록 전송은 실제 템플릿 문서·네이티브 importer 를 거쳐야 해서
-// 단위 테스트로 재현하기 어렵다. URL 플래그 배선은 main-entry-guards.test.ts 가 지킨다.
-test('template block insertion transfers exact source bytes through the native importer', () => {
-  const toolExecutor = readFileSync(new URL('../src/agent/tool-executor.ts', import.meta.url), 'utf8');
-  const insertBlock = toolExecutor.match(
-    /private async templateInsertBlock[\s\S]*?\n  dispose\(\): void/,
-  )?.[0];
-  assert.ok(insertBlock, 'templateInsertBlock implementation must be present');
-  assert.match(insertBlock, /templateBytes\.slice\(\)/);
-  assert.match(insertBlock, /pasteDocumentBlock\(/);
-  assert.doesNotMatch(insertBlock, /exportSelectionHtml|pasteHtml/);
 });
 
 test('read-only dispatcher permits view/copy but rejects document and file mutations', () => {

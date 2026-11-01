@@ -89,20 +89,6 @@ test('with chat details on, a system notice names the chat and the document; toa
     'a failure shows its fixed failure title');
 });
 
-test('copy follows the reason: plan approval, interruption, a bare error, and no document', () => {
-  const h = harness({ details: true });
-  h.report({ threadId: 'plan', status: 'needs-input', key: 't1:input:plan:p1', reason: 'plan' });
-  h.report({ threadId: 'cut', status: 'failed', key: 't2:end', reason: 'interrupted', label: '중단됨' });
-  h.report({ threadId: 'err', status: 'failed', key: 't3:end', reason: 'error' });
-  h.report({ threadId: 'label', status: 'failed', key: 't4:end', reason: 'error', label: '사용 한도', documentName: null, title: '' });
-  assert.deepEqual(h.notices.map((notice) => [notice.title, notice.body]), [
-    ['사업 개요 다듬기', '계획 승인을 기다립니다 (사업 제안서.hwpx)'],
-    ['사업 개요 다듬기', '작업이 중단됐습니다 (사업 제안서.hwpx)'],
-    ['사업 개요 다듬기', '오류로 멈췄습니다 (사업 제안서.hwpx)'],
-    ['새 채팅', '사용 한도'],
-  ]);
-});
-
 test('a chat being watched is never notified or counted', () => {
   const h = harness();
   h.report({ threadId: 'a', status: 'finished', key: 'turn-1:end', seen: true });

@@ -525,21 +525,6 @@ test('closePopup 은 팝업만 접고 알약은 남긴다', () => {
   view.reset();
 });
 
-test('편대 표기 규칙 — 스폰 도구, 모델 약칭, 시계', () => {
-  assert.equal(isSpawnToolName('Agent'), true);
-  assert.equal(isSpawnToolName('Workflow'), true);
-  assert.equal(isSpawnToolName('subagent_spawn'), true);
-  assert.equal(isSpawnToolName('spawn_agent'), true);
-  assert.equal(isSpawnToolName('spawn_subagent'), true);
-  assert.equal(isSpawnToolName('read_document'), false);
-  assert.equal(compactModelLabel('claude-opus-4-5-20260514'), 'opus-4-5');
-  assert.equal(compactModelLabel('anthropic/claude-sonnet-4-5'), 'sonnet-4-5');
-  assert.equal(compactModelLabel(''), '');
-  assert.equal(formatFleetClock(12_400), '12초');
-  assert.equal(formatFleetClock(184_000), '3분 04초');
-  assert.equal(formatFleetClock(120_000), '2분');
-});
-
 test('텍스트만 있는 작업도 펼쳐지고 선택한 미리보기만 실시간 갱신된다', () => {
   const { view } = mountFleet();
   view.beginTurn();

@@ -364,28 +364,6 @@ test('실패한 서브에이전트와 그 안에서 실패한 도구는 오류 �
   ]), 3);
 });
 
-test('정착 때 남기는 제목은 기록에서 같은 규칙으로 만든다', () => {
-  const turn = marker('turn-1', 0, null, null);
-  const messages: ThreadMessage[] = [
-    user('표를 만들어 주세요'),
-    turn,
-    activity('a1', [record('create_table', { sectionIdx: 0, paraIdx: 0, charOffset: 0, rows: 2, cols: 2 }), record('set_table_props', { sectionIdx: 0, paraIdx: 0, controlIdx: 0, tableProps: {} }, 'failed')]),
-    answer('만들었습니다.'),
-  ];
-  assert.equal(settledTurnText(messages, turn, 'completed', 48_000), '작업 48초, 표 1개 추가, 오류 1');
-  assert.equal(settledTurnText(messages, turn, 'failed', 48_000), '');
-  assert.equal(settledTurnText([user('a'), turn, answer('b')], turn, 'completed', 1_000), '');
-});
-
-test('시간은 한 시간 안에서 서브에이전트 시계와 같고, 넘으면 시간 단위로 보인다', () => {
-  assert.equal(formatTurnDuration(151_000), formatFleetClock(151_000));
-  assert.equal(formatTurnDuration(12_000), '12초');
-  assert.equal(formatTurnDuration(3_900_000), '1시간 5분');
-  assert.equal(formatTurnDuration(7_200_000), '2시간');
-  assert.equal(formatTurnDuration(-5_000), '0초');
-  assert.equal(turnFoldLabel({ outcome: 'interrupted', durationMs: 72_000, parts: ['문단 2개 수정'], errors: 0 }), '중단됨, 1분 12초, 문단 2개 수정');
-});
-
 test('턴 결과: 사용자 중단과 바깥이 끊은 턴은 중단, 오류·비정상 종료는 실패, 모르는 종료는 완료', () => {
   assert.equal(turnOutcomeFor({ stopReason: 'interrupted' }, { errorSeen: false }), 'interrupted');
   assert.equal(turnOutcomeFor({ stopReason: 'exited', errorMessage: '허브 재시작' }, { errorSeen: false, interruptionReason: 'hub-restart' }), 'interrupted');

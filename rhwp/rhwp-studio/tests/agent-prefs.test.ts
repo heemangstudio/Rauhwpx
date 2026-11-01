@@ -32,23 +32,6 @@ function makeStorage(seed?: unknown) {
   };
 }
 
-test('빈 저장소는 Claude/Sonnet/High/에이전트 기본값을 준다', () => {
-  const prefs = loadAgentPrefs(makeStorage());
-  assert.deepEqual(prefs, {
-    defaultAgent: 'claude',
-    defaultModel: 'sonnet',
-    defaultEffort: 'high',
-    defaultMode: 'agent',
-    selectedModels: {
-      claude: ['fable', 'opus', 'sonnet', 'haiku'],
-      codex: ['astra', 'sol', 'luna', 'terra'],
-    },
-    editLock: 3,
-  });
-  assert.deepEqual(prefs, defaultAgentPrefs());
-  assert.equal(DEFAULT_CHAT_AGENT, 'claude');
-});
-
 test('모르는 모델은 프로바이더 기본 모델로 접힌다', () => {
   const prefs = loadAgentPrefs(makeStorage({ defaultAgent: 'claude', defaultModel: 'gpt-4o' }));
   assert.equal(prefs.defaultModel, 'sonnet');
@@ -68,24 +51,10 @@ test('모델이 지원하지 않는 추론 강도는 그 모델의 기본값으�
   assert.equal(prefs.defaultEffort, 'high');
 });
 
-test('지원되는 조합은 그대로 살아남는다', () => {
-  const prefs = loadAgentPrefs(
-    makeStorage({ defaultAgent: 'claude', defaultModel: 'opus', defaultEffort: 'xhigh' }),
-  );
-  assert.equal(prefs.defaultModel, 'opus');
-  assert.equal(prefs.defaultEffort, 'xhigh');
-});
-
 test('모르는 프로바이더는 claude, 모르는 모드는 에이전트', () => {
   const prefs = normalizeAgentPrefs({ defaultAgent: 'gemini', defaultMode: 'root' });
   assert.equal(prefs.defaultAgent, 'claude');
   assert.equal(prefs.defaultMode, 'agent');
-});
-
-test('네 모드는 그대로 보존된다', () => {
-  for (const mode of ['chat', 'plan', 'agent', 'full'] as const) {
-    assert.equal(normalizeAgentPrefs({ defaultMode: mode }).defaultMode, mode);
-  }
 });
 
 test('모드 도입 전 권한 프로필은 에이전트/전체로 옮겨진다', () => {

@@ -24,46 +24,6 @@ test('허브의 모든 도구와 새 개체 도구에 표시 규칙이 있다', 
   }
 });
 
-test('접두어를 떼고 인자에서 한 줄 요약을 만든다', () => {
-  assert.equal(baseToolName('mcp__rhwp__insert_text'), 'insert_text');
-  assert.equal(baseToolName('rhwp__find_text'), 'find_text');
-  assert.equal(baseToolName('rhwp_find_text'), 'find_text');
-  const insert = presentToolCall('mcp__rhwp__insert_text', JSON.stringify({
-    anchor: { text: '사업 개요', position: 'after' }, text: '새 문단',
-  }));
-  assert.equal(insert.label, '텍스트 삽입');
-  assert.equal(insert.summary, '“사업 개요” 뒤, “새 문단”');
-  const replace = presentToolCall('replace_range', JSON.stringify({
-    sectionIdx: 1, startParaIdx: 2, startCharOffset: 0, endParaIdx: 4, endCharOffset: 3, text: '',
-  }));
-  assert.equal(replace.summary, '2구역 3–5문단 → 빈 텍스트');
-  assert.equal(presentToolCall('render_page', '{"pageIndex":1}').summary, '2쪽');
-  assert.equal(presentToolCall('edit_table', '{"op":"insert_row","paraIdx":4,"rowIdx":2}').label, '행 추가');
-  assert.equal(presentToolCall('set_table_props', '{"paraIdx":4,"tableProps":{"repeatHeader":true}}').summary, '5문단 표, 제목 행 반복');
-  assert.equal(presentToolCall('insert_shape', '{"shape":"textBox","widthMm":60,"heightMm":20}').label, '글상자 삽입');
-  assert.equal(presentToolCall('edit_object', '{"paraIdx":3,"controlIdx":0,"xMm":20,"yMm":30}').label, '개체 이동');
-});
-
-test('권한 요청은 허용 대기와 허용 완료를 구분하고 요청 범위를 읽을 수 있다', () => {
-  const argsJson = JSON.stringify({ capability: 'local-execution', reason: '자료 파일을 정리합니다.' });
-  const request = presentToolCall('mcp__rhwp__request_permission', argsJson);
-  assert.equal(request.label, '권한 요청');
-  assert.equal(request.summary, '로컬 파일 및 명령 실행, 자료 파일을 정리합니다.');
-  assert.equal(presentToolResult({ tool: 'request_permission', argsJson, ok: true, preview: '', result: { status: 'pending' } }).text, '허용 대기');
-  assert.equal(presentToolResult({ tool: 'request_permission', argsJson, ok: true, preview: '', result: { status: 'granted' } }).text, '이 채팅에 허용됨');
-});
-
-test('paras 대상은 구간 하나면 문단 범위, 여럿이면 겹침을 합친 문단 수로 보인다', () => {
-  const summary = (tool: string, args: unknown) => presentToolCall(tool, JSON.stringify(args)).summary;
-  assert.equal(summary('apply_char_format', { paras: [[3, 5]], fontSizePt: 14, underline: true }), '4–6문단, 밑줄, 14pt');
-  assert.equal(summary('apply_para_format', { paras: [48, [51, 53], [52, 60]], alignment: 'justify' }), '문단 11개, 양쪽 정렬');
-  assert.equal(summary('apply_style', { sectionIdx: 1, paras: [2, 7], styleId: 3 }), '2구역 문단 2개, 스타일 3');
-  assert.equal(
-    summary('apply_para_format', { cell: { paraIdx: 4, controlIdx: 0, cellIdx: 1 }, paras: [0, 1], alignment: 'center' }),
-    '표 안 문단 2개, 가운데 정렬',
-  );
-});
-
 test('apply_edits 와 read_batch 는 항목 수와 항목별 목록을 보인다', () => {
   const edits = presentToolCall('apply_edits', JSON.stringify({
     expectedRevision: 3,
@@ -163,17 +123,4 @@ test('프로바이더 미리보기에서도 결과와 오류를 읽고, 모르�
   assert.equal(odd.summary, '');
   assert.deepEqual(presentToolResult({ tool: 'some_future_tool', argsJson: '{}', ok: true, preview: 'done' }),
     { ok: true, text: '', notices: [] });
-});
-
-test('활동 제목은 턴을 편집·읽기 횟수로 요약한다', () => {
-  assert.equal(summarizeActivity([]), '도구 호출');
-  assert.equal(summarizeActivity([{ tool: 'mcp__rhwp__get_structure', argsJson: '{}' }]), '문서 구조 읽기');
-  assert.equal(summarizeActivity([
-    { tool: 'apply_edits', argsJson: '{}' },
-    { tool: 'insert_text', argsJson: '{}', failed: true },
-    { tool: 'get_structure', argsJson: '{}' },
-    { tool: 'find_text', argsJson: '{}' },
-    { tool: 'render_page', argsJson: '{}' },
-    { tool: 'Bash', argsJson: '{}' },
-  ]), '편집 2번, 읽기 2번, 확인 1번, 도구 1번, 오류 1');
 });

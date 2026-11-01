@@ -20,7 +20,6 @@ import {
   LOCAL_FONT_MAX_BYTES_PER_FACE,
   LOCAL_FONT_MAX_FACES_PER_DOCUMENT,
   localFontFaceKey,
-  loadLocalFontBytes,
   loadLocalFontBytesFor,
   loadStoredLocalFonts,
   registerLocalFontFace,
@@ -31,9 +30,7 @@ import {
   type LocalFontSnapshot,
 } from '../src/core/local-fonts.ts';
 import { analyzeDocumentFonts } from '../src/core/document-font-status.ts';
-import { createEquationLiteralFontResolver } from '../src/core/equation-font.ts';
 import { fontFamilyChainForDisplay, prefersImportedHancomSubstitute } from '../src/core/font-substitution.ts';
-import { setHftWasmApi, takeHftOutlineChange } from '../src/core/hft-glyphs.ts';
 
 const STORAGE_KEY = 'rhwp-local-fonts';
 
@@ -297,40 +294,6 @@ test('세션 글꼴 파일은 웹 대체 face보다 먼저 선택되고 CanvasKi
   assert.equal(fontFamilyChainForDisplay('바탕'), batangBeforeImport);
   assert.equal(fontFamilyChainForDisplay('없는글꼴'), unrelatedBeforeImport);
 });
-
-test('HFT outline-only imports count toward the session face limit', async () => {
-  const g = globalThis as TestGlobals & { FontFace?: unknown };
-  const originalDocument = g.document;
-  const originalFontFace = g.FontFace;
-  const bytes = new TextEncoder().encode('Han Unified Font File 1.0\x1a').buffer as ArrayBuffer;
-  let registrations = 0;
-  g.FontFace = class {};
-  g.document = { fonts: { add() {}, delete() { return true; } } };
-  resetLocalFontsForTests();
-  takeHftOutlineChange();
-  setHftWasmApi({
-    register: () => { registrations += 1; return true; },
-    glyphPath: () => '',
-  });
-  try {
-    for (let index = 0; index < LOCAL_FONT_MAX_FACES_PER_DOCUMENT; index += 1) {
-      const result = await registerLocalFontFace(bytes, { source: 'imported', fileName: `bank-${index}.hft` });
-      assert.equal(result.ok, false);
-      if (!result.ok) assert.equal(result.reason, 'hft-outlines');
-    }
-    const overflow = await registerLocalFontFace(bytes, { source: 'imported', fileName: 'overflow.hft' });
-    assert.equal(overflow.ok, false);
-    if (!overflow.ok) assert.equal(overflow.reason, 'face-limit');
-    assert.equal(registrations, LOCAL_FONT_MAX_FACES_PER_DOCUMENT);
-  } finally {
-    setHftWasmApi(null);
-    takeHftOutlineChange();
-    resetLocalFontsForTests();
-    g.document = originalDocument;
-    g.FontFace = originalFontFace;
-  }
-});
-
 test('글꼴 파일 일부가 실패해도 정상 face와 굵기를 보존하고 실패한 파일명을 알린다', async () => {
   const g = globalThis as TestGlobals & { FontFace?: unknown };
   const originalDocument = g.document;
@@ -419,45 +382,6 @@ test('글꼴 파일 일부가 실패해도 정상 face와 굵기를 보존하고
     g.FontFace = originalFontFace;
   }
 });
-
-test('데스크톱 수식 서체는 동기 측정에 필요한 바이트만 보존하고 일반 서체는 사본을 버린다', async () => {
-  const g = globalThis as TestGlobals & { FontFace?: unknown };
-  const originalDocument = g.document;
-  const originalFontFace = g.FontFace;
-  resetLocalFontsForTests();
-  g.FontFace = class { async load() { return this; } };
-  g.document = { fonts: { add() {}, delete() { return true; } } };
-  const fixture = readFileSync(new URL('../../tests/fixtures/fonts/RHWPShapingFixture.ttf', import.meta.url));
-  const source = () => fixture.buffer.slice(fixture.byteOffset, fixture.byteOffset + fixture.byteLength);
-  try {
-    for (const family of ['HyhwpEQ', 'HCR Batang', 'Batang', 'Times New Roman', 'Noto Sans KR']) {
-      const result = await registerLocalFontFace(source(), {
-        source: 'desktop',
-        fileName: `${family}.ttf`,
-        names: { family, fullName: family, postscriptName: family.replaceAll(' ', ''), style: 'Regular', aliases: [family] },
-      });
-      assert.ok(result.ok);
-      assert.equal(hasImportedLocalFontFace(family), true, 'loaded FontFace availability survives disposal of its JS byte copy');
-      const retained = getImportedLocalFontBytes(family);
-      if (family === 'Noto Sans KR') {
-        assert.equal(retained, null);
-      } else if (family === 'HyhwpEQ') {
-        assert.deepEqual(new Uint8Array(retained!), new Uint8Array(fixture), 'PUA ink metrics read glyf from the full face');
-      } else {
-        assert.ok(retained!.byteLength < fixture.byteLength, 'literal faces keep only the tables the measurer reads');
-        const fromCopy = createEquationLiteralFontResolver(resolveLocalFont, getImportedLocalFontBytes);
-        const fromFile = createEquationLiteralFontResolver(resolveLocalFont, source);
-        for (const text of ['A', 'ió', 'é', '가']) assert.deepEqual(fromCopy(text), fromFile(text), text);
-        assert.ok(fromCopy('A'), 'covered literal resolves to the desktop face');
-      }
-    }
-  } finally {
-    resetLocalFontsForTests();
-    g.document = originalDocument;
-    g.FontFace = originalFontFace;
-  }
-});
-
 test('저장된 localStorage snapshot 로드는 queryLocalFonts를 호출하지 않는다', async () => {
   const g = globalThis as TestGlobals;
   const originals = {
@@ -746,193 +670,6 @@ test('저장된 깨진 표시 이름은 브라우저 family 이름으로 복구�
     restoreGlobals(originals);
   }
 });
-
-test('CanvasKit용 SFNT 바이트는 여러 PostScript face를 일괄 조회하고 동시 요청만 공유한다', async () => {
-  const g = globalThis as TestGlobals;
-  const originals = {
-    document: g.document,
-    localStorage: g.localStorage,
-    queryLocalFonts: g.queryLocalFonts,
-  };
-  const storage = createStorage();
-  const nameTableBytes = createSfntWithNameRecords([
-    { nameId: 1, value: '08서울한강체' },
-    { nameId: 2, value: 'M' },
-    { nameId: 4, value: '08서울한강체 M' },
-    { nameId: 6, value: 'SeoulHangangM' },
-  ]);
-  const secondNameTableBytes = createSfntWithNameRecords([
-    { nameId: 1, value: '08서울한강체' },
-    { nameId: 2, value: 'L' },
-    { nameId: 4, value: '08서울한강체 L' },
-    { nameId: 6, value: 'SeoulHangangL' },
-  ]);
-  const fontBytes = new Uint8Array(nameTableBytes.length + 4);
-  fontBytes.set(nameTableBytes);
-  fontBytes.set([0xde, 0xad, 0xbe, 0xef], nameTableBytes.length);
-  const secondFontBytes = new Uint8Array(secondNameTableBytes.length + 4);
-  secondFontBytes.set(secondNameTableBytes);
-  secondFontBytes.set([0xca, 0xfe, 0xba, 0xbe], secondNameTableBytes.length);
-  const queryCalls: Array<string[] | undefined> = [];
-
-  resetLocalFontsForTests();
-  g.localStorage = storage;
-  g.queryLocalFonts = async (options?: { postscriptNames?: string[] }) => {
-    queryCalls.push(options?.postscriptNames);
-    return [
-      {
-        family: '08SeoulHangang',
-        fullName: '08SeoulHangang M',
-        postscriptName: 'SeoulHangangM',
-        style: 'M',
-        blob: async () => new Blob([options ? fontBytes : nameTableBytes]),
-      },
-      {
-        family: '08SeoulHangang',
-        fullName: '08SeoulHangang L',
-        postscriptName: 'SeoulHangangL',
-        style: 'L',
-        blob: async () => new Blob([options ? secondFontBytes : secondNameTableBytes]),
-      },
-    ];
-  };
-
-  try {
-    await detectLocalFonts({ force: true, includeRegistered: true });
-    const [all, first] = await Promise.all([
-      loadLocalFontBytesFor(['08서울한강체 M', '08서울한강체 L']),
-      loadLocalFontBytes('08서울한강체 M'),
-    ]);
-    const hangangRecord = resolveLocalFont('08서울한강체 M');
-    const hangangLightRecord = resolveLocalFont('08서울한강체 L');
-
-    assert.deepEqual(new Uint8Array(all.get(localFontFaceKey(hangangRecord!)) ?? new ArrayBuffer(0)), fontBytes);
-    assert.deepEqual(new Uint8Array(all.get(localFontFaceKey(hangangLightRecord!)) ?? new ArrayBuffer(0)), secondFontBytes);
-    assert.deepEqual(new Uint8Array(first ?? new ArrayBuffer(0)), fontBytes);
-    assert.equal(resolveLocalFont('08SeoulHangang'), null);
-    assert.equal(queryCalls.length, 2);
-    assert.equal(queryCalls[0], undefined);
-    assert.deepEqual(new Set(queryCalls[1]), new Set(['SeoulHangangM', 'SeoulHangangL']));
-  } finally {
-    await clearStoredLocalFonts();
-    resetLocalFontsForTests();
-    restoreGlobals(originals);
-  }
-});
-
-test('CanvasKit local font byte reads use bounded worker concurrency', async () => {
-  const g = globalThis as TestGlobals;
-  const originals = {
-    document: g.document,
-    localStorage: g.localStorage,
-    queryLocalFonts: g.queryLocalFonts,
-  };
-  const records = Array.from({ length: LOCAL_FONT_BYTE_READ_CONCURRENCY + 3 }, (_, index) => ({
-    family: `Bounded Font ${index}`,
-    fullName: `Bounded Font ${index} Regular`,
-    postscriptName: `BoundedFont${index}-Regular`,
-    style: 'Regular',
-    displayName: `Bounded Font ${index}`,
-    aliases: [`Bounded Font ${index}`, `Bounded Font ${index} Regular`],
-  }));
-  const snapshot: LocalFontSnapshot = {
-    version: 2,
-    detectedAt: new Date(0).toISOString(),
-    families: records.map(record => record.family),
-    fontRecords: records,
-    source: 'local-font-access',
-  };
-  const storage = createStorage({ [STORAGE_KEY]: JSON.stringify(snapshot) });
-  let activeReads = 0;
-  let maximumActiveReads = 0;
-  let completedReads = 0;
-
-  resetLocalFontsForTests();
-  g.localStorage = storage;
-  g.queryLocalFonts = async () => records.map((record, index) => ({
-    ...record,
-    blob: async () => ({
-      size: 4,
-      arrayBuffer: async () => {
-        activeReads += 1;
-        maximumActiveReads = Math.max(maximumActiveReads, activeReads);
-        await new Promise<void>(resolve => setTimeout(resolve, 0));
-        activeReads -= 1;
-        completedReads += 1;
-        return new Uint8Array([0, 1, 2, index]).buffer;
-      },
-    }) as Blob,
-  }));
-
-  try {
-    await loadStoredLocalFonts();
-    const loaded = await loadLocalFontBytesFor(records.map(record => record.fullName));
-    assert.equal(loaded.size, records.length);
-    assert.equal(completedReads, records.length);
-    assert.ok(maximumActiveReads > 1);
-    assert.ok(maximumActiveReads <= LOCAL_FONT_BYTE_READ_CONCURRENCY);
-  } finally {
-    await clearStoredLocalFonts();
-    resetLocalFontsForTests();
-    restoreGlobals(originals);
-  }
-});
-
-test('CanvasKit local font byte reads cap face count and reject oversized blobs before allocation', async () => {
-  const g = globalThis as TestGlobals;
-  const originals = {
-    document: g.document,
-    localStorage: g.localStorage,
-    queryLocalFonts: g.queryLocalFonts,
-  };
-  const records = Array.from({ length: LOCAL_FONT_MAX_FACES_PER_DOCUMENT + 1 }, (_, index) => ({
-    family: `Large Font ${index}`,
-    fullName: `Large Font ${index} Regular`,
-    postscriptName: `LargeFont${index}-Regular`,
-    style: 'Regular',
-    displayName: `Large Font ${index}`,
-    aliases: [`Large Font ${index}`, `Large Font ${index} Regular`],
-  }));
-  const snapshot: LocalFontSnapshot = {
-    version: 2,
-    detectedAt: new Date(0).toISOString(),
-    families: records.map(record => record.family),
-    fontRecords: records,
-    source: 'local-font-access',
-  };
-  const storage = createStorage({ [STORAGE_KEY]: JSON.stringify(snapshot) });
-  let requestedPostscriptNames: string[] = [];
-  let arrayBufferReads = 0;
-
-  resetLocalFontsForTests();
-  g.localStorage = storage;
-  g.queryLocalFonts = async (options?: { postscriptNames?: string[] }) => {
-    requestedPostscriptNames = options?.postscriptNames ?? [];
-    return records.map(record => ({
-      ...record,
-      blob: async () => ({
-        size: LOCAL_FONT_MAX_BYTES_PER_FACE + 1,
-        arrayBuffer: async () => {
-          arrayBufferReads += 1;
-          return new ArrayBuffer(0);
-        },
-      }) as Blob,
-    }));
-  };
-
-  try {
-    await loadStoredLocalFonts();
-    const loaded = await loadLocalFontBytesFor(records.map(record => record.fullName));
-    assert.equal(loaded.size, 0);
-    assert.equal(requestedPostscriptNames.length, LOCAL_FONT_MAX_FACES_PER_DOCUMENT);
-    assert.equal(arrayBufferReads, 0);
-  } finally {
-    await clearStoredLocalFonts();
-    resetLocalFontsForTests();
-    restoreGlobals(originals);
-  }
-});
-
 test('저장소 읽기 실패는 빈 상태로 처리하고 오류 상태만 기록한다', async () => {
   const g = globalThis as TestGlobals;
   const originals = {

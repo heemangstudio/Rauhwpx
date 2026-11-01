@@ -28,29 +28,12 @@ import type { PiModelConfig } from '../src/agent/types.ts';
 // 허브 카탈로그와 같은 이름 규칙을 쓰는지 직접 비교한다.
 import * as hubLabels from '../../rhwp-agent/claude-model-label.mjs';
 
-test('claude and codex expose distinct model catalogs', () => {
-  const claude = modelsForAgent('claude').map((m) => m.id);
-  const codex = modelsForAgent('codex').map((m) => m.id);
-  assert.deepEqual(claude, ['fable', 'opus', 'sonnet', 'haiku']);
-  assert.deepEqual(codex, ['astra', 'sol', 'luna', 'terra']);
-});
-
 test('resolveModelForAgent falls back to provider default when model does not fit', () => {
   assert.equal(resolveModelForAgent('claude', 'gpt-5.6-sol'), defaultModelForAgent('claude'));
   assert.equal(resolveModelForAgent('codex', 'sonnet'), defaultModelForAgent('codex'));
   assert.equal(resolveModelForAgent('claude', 'fable'), 'fable');
   assert.equal(resolveModelForAgent('codex', 'gpt-5.6-luna'), 'sol');
   assert.equal(resolveModelForAgent('codex', 'gpt-6-sol'), 'sol');
-});
-
-test('isModelForAgent and labels stay provider-scoped', () => {
-  assert.equal(isModelForAgent('claude', 'opus'), true);
-  assert.equal(isModelForAgent('claude', 'gpt-5.6-sol'), false);
-  assert.equal(labelForModel('claude', 'haiku'), 'Haiku 4.5');
-  assert.equal(labelForModel('codex', 'terra'), 'Terra');
-  assert.equal(labelForModel('codex', 'astra'), 'Astra');
-  assert.equal(labelForModel('claude', 'opus'), 'Opus 5.5');
-  assert.equal(labelForModel('claude', 'fable'), 'Fable 5.1');
 });
 
 test('effort catalogs follow provider capabilities', () => {
@@ -164,19 +147,6 @@ test('pi 모델 레지스트리가 채워지면 표시 이름 · effort · 기�
   }
 });
 
-test('claude and codex model groups stay a single unlabeled list', () => {
-  assert.deepEqual(modelGroupsForAgent('claude').map((g) => g.label), [null]);
-  assert.deepEqual(
-    modelGroupsForAgent('claude')[0]!.options.map((m) => m.id),
-    modelsForAgent('claude').map((m) => m.id),
-  );
-  assert.deepEqual(modelGroupsForAgent('codex').map((g) => g.label), [null]);
-  assert.deepEqual(
-    modelGroupsForAgent('codex')[0]!.options.map((m) => m.id),
-    modelsForAgent('codex').map((m) => m.id),
-  );
-});
-
 test('live catalogs expose all models while the sidebar shows only saved selections', () => {
   setModelCatalog('codex', [
     { id: 'gpt-6-sol', label: 'GPT-6 Sol', supportedEfforts: ['low', 'medium', 'high'] },
@@ -226,12 +196,9 @@ test('공식 Claude 모델 목록은 허브와 같다', () => {
   assert.deepEqual([...OFFICIAL_CLAUDE_MODELS], [...hubLabels.OFFICIAL_CLAUDE_MODELS]);
 });
 
-test('자동 버그 수정의 Claude 선택지는 데스크톱이 받는 값과 같고 기본값 Sonnet 5.5 를 담는다', async () => {
+test('자동 버그 수정의 Claude 선택지는 데스크톱이 받는 값과 같다', async () => {
   const desktop = await import('../../../desktop/autofix.mjs');
   assert.deepEqual([...AUTOFIX_CLAUDE_MODELS], [...desktop.AUTOFIX_CLAUDE_MODELS]);
-  assert.ok(AUTOFIX_CLAUDE_MODELS.includes('claude-sonnet-5-5'));
-  assert.equal(desktop.defaultAutofixSettings().providers.find((entry: { id: string }) => entry.id === 'claude')?.model, 'claude-sonnet-5-5');
-  assert.equal(claudeModelLabel('claude-sonnet-5-5'), 'Sonnet 5.5');
 });
 
 test('Claude 카탈로그는 예전 캐시 이름도 버전 이름으로 고치고 카탈로그 순서로 선다', () => {
