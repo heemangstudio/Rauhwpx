@@ -1,9 +1,32 @@
+/* 120×40 칸 장면을 입력기 하마와 같은 3배로 키운다. 좁은 화면에서는 폭에 맞춰 줄어든다. */
+.ag-focus-greeting-art {
+  display: block;
+  width: 360px;
+  max-width: 100%;
+  height: auto;
+  aspect-ratio: 120 / 40;
+  image-rendering: pixelated;
+  cursor: pointer;
+  pointer-events: auto;
+}
+.ag-focus-greeting.ag-leaving .ag-focus-greeting-art,
+.ag-focus-greeting.ag-leaving .ag-focus-greeting-doc {
+  pointer-events: none;
+}
+
 /* 빈 채팅의 문서 이름은 문서 선택기를 여는 버튼이다. */
 .ag-focus-greeting-doc {
+  overflow: hidden;
+  max-width: 100%;
+  margin: 0;
   border: 0;
   padding: 2px 4px;
   background: transparent;
   font-family: inherit;
+  font-size: var(--ag-fs-secondary);
+  line-height: 1.4;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   color: var(--ag-text-muted);
   cursor: pointer;
   pointer-events: auto;
@@ -21,6 +44,9 @@
   outline-offset: 4px;
   border-radius: 4px;
 }
-.ag-focus-greeting.ag-leaving .ag-focus-greeting-doc {
-  pointer-events: none;
+
+/* 무대에 하마가 있는 동안 입력기 위의 하마는 숨는다. 첫 메시지를 보내면 무대가 사라지며
+   입력기 하마가 제자리로 돌아온다. */
+.ag-fullscreen .ag-chat-page.ag-chat-empty .ag-hama-perch {
+  visibility: hidden;
 }

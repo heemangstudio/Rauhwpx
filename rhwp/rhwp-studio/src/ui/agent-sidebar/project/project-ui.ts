@@ -258,10 +258,11 @@ export function worktreeColors(
 export interface ProjectMenu {
   open(entries: ReadonlyArray<{ label: string; run(): void }>, clientX: number, clientY: number, returnFocus?: HTMLElement | null): void;
   close(): void;
+  isOpen(): boolean;
   dispose(): void;
 }
 
-export function createProjectMenu(host: HTMLElement): ProjectMenu {
+export function createProjectMenu(host: HTMLElement, trigger?: HTMLElement): ProjectMenu {
   const menu = el('div', 'ag-pgraph-menu ag-pmenu');
   menu.setAttribute('role', 'menu');
   menu.hidden = true;
@@ -287,7 +288,9 @@ export function createProjectMenu(host: HTMLElement): ProjectMenu {
     event.stopPropagation();
   });
   const onOutside = (event: PointerEvent) => {
-    if (!menu.hidden && !menu.contains(event.target as Node | null)) close();
+    const target = event.target as Node | null;
+    // 여는 단추는 자기 click 에서 여닫는다. 여기서 닫으면 같은 click 이 다시 연다.
+    if (!menu.hidden && !menu.contains(target) && !trigger?.contains(target)) close();
   };
   document.addEventListener('pointerdown', onOutside, true);
 
@@ -313,6 +316,7 @@ export function createProjectMenu(host: HTMLElement): ProjectMenu {
       menu.querySelector<HTMLButtonElement>('button')?.focus({ preventScroll: true });
     },
     close: () => close(),
+    isOpen: () => !menu.hidden,
     dispose() {
       document.removeEventListener('pointerdown', onOutside, true);
       menu.remove();

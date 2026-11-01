@@ -48,6 +48,8 @@ export class MenuBar {
     this.onMenuOpen = options.onMenuOpen;
     this.menuItems = Array.from(container.querySelectorAll('.menu-item'));
     syncMenuShortcutLabels(container, registry);
+    // 사용자 지정 단축키가 바뀌면 메뉴 표시를 다시 맞춘다.
+    eventBus.on('shortcuts-changed', () => syncMenuShortcutLabels(container, registry));
     this.setupAccessibility();
     this.setupTitleClicks();
     this.setupTitleHover();

@@ -110,7 +110,8 @@ export function formatShortcutLabel(
 ): string {
   if (platform !== 'mac') return label;
   // 연속 입력(Ctrl+M,K)은 조각마다 앞쪽 modifier만 떼어 Apple 순서(⌃⌥⇧⌘)로 다시 붙인다.
-  return label.split(',').map(formatMacChord).join(',');
+  // `+` 바로 뒤의 쉼표는 쉼표 키(Ctrl+,)라 연속 입력 구분자로 자르지 않는다.
+  return label.split(/(?<!\+),/).map(formatMacChord).join(',');
 }
 
 const MAC_MODIFIER_ORDER = ['⌃', '⌥', '⇧', '⌘'] as const;

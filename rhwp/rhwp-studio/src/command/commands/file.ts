@@ -1229,6 +1229,7 @@ async function runDesktopPdfExport(
     }
     const result = await exportPdf(target.token);
     console.info(`[file:print-to-pdf] PDF 내보내기 완료 (pages=${pageCount}, file=${result.fileName})`);
+    services.eventBus.emit('document-exported', { format: 'pdf', fileName: result.fileName });
     const reveal = desktop.revealPdfExport;
     showToast({
       message: `PDF로 내보냈습니다: ${result.fileName}`,

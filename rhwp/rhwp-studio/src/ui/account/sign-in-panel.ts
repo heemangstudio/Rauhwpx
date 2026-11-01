@@ -2,7 +2,7 @@
 // 계정 페이지와 처음 설정의 계정 장이 같이 쓴다. 로그인을 마치면 부른 쪽이 다음 화면을 정한다.
 // 가입을 고르면 단추 글이 '가입'으로 바뀌고, 이메일은 AuthKit 의 가입 화면으로 연다.
 import './account-page.css';
-import { createTypingHama } from '../agent-sidebar/chat-hama.ts';
+import { createTypingHama } from '../agent-sidebar/hama-art.ts';
 import { formatLastSeen, platformLabel } from './account-format.ts';
 import { PROVIDER_LABEL, platformGlyph, providerGlyph } from './account-glyphs.ts';
 import type { AccountStore } from './account-store.ts';

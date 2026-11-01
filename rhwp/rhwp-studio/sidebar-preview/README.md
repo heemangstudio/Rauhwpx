@@ -142,6 +142,7 @@ for layout review at other settings. Fixture controls are hidden in this mode.
 | `?preset=hacker&accent=2f9e5a` | Theme preset (`default`, `catppuccin`, `hancom`, `hacker`, `absolutely`, `reset`) and accent (`accent=default` returns to the preset accent); both persist like the setting |
 | `?page=settings&destination=ai-usage` | 사용량 head picks 한도 or 토큰 (remembered per session). 토큰 shows the period total, per-provider rows and the hand-drawn 일별 처리 토큰 chart (hover or arrow keys for a day's values). `&tokens=empty`, `partial` (Codex read error), `fail`, `slow` (60 s first scan, skeleton) |
 | `?page=settings&destination=theme` | Settings → 테마 (presets, mode, accent) |
+| `?page=settings&destination=shortcuts` | Settings → 단축키: commands grouped 파일 to 도움말 (the preview catalog is `mock-shortcuts.ts`, picked by the app's `configurableCommandIds()`), key chips with ×, fixed chord chips, locked 고정 rows, search by name or key, recording keys and key sequences on `+` or a chip (Esc 취소, Backspace 지우기, Enter 완료), the 바꾸기 / 취소 prompt for a key another command owns, **모두 기본값으로** in the `⋯` menu. Bindings use the app's service and persist in `localStorage['rhwp-shortcuts']` (cleared by `reset=1`); `sidebarPreview.shortcuts` is that service |
 | `?page=settings&destination=ai-connection` / `ai-usage` / `ai-custom` | Settings → AI → 연결 (defaults, provider connections, models, autofix) / 사용량 / 사용자화 (edit lock, instructions, templates, notifications). The instructions (AGENTS.md) are user-only: agents and Rau-0.1 no longer propose changes. `destination=ai` opens the last AI tab |
 | `?controls=0` | Hide preview controls for clean captures |
 | `?reset=1` | Clear preview storage before mounting |
@@ -356,6 +357,14 @@ origin and is unaffected.
   marker's labels from `item.change` with account undo. It saves `rau-tab-open.png`,
   `rau-tab-memory.png`, `rau-tab-running.png`, `rau-tab-result.png`, `rau-tab-locked.png`,
   `rau-tab-dark.png`, `rau-pill.png` and `rau-marker.png` in `artifacts/`.
+  `node sidebar-preview/check.mjs shortcuts-tab` (`npm run test:sidebar:shortcuts` from the root)
+  covers Settings → 단축키: groups and chips, in-tab search by name and key, the `⋯` menu, adding with
+  `+`, recording key sequences, the 바꾸기 prompt, rejected and reserved keys, `/` and Esc during
+  capture, keyboard-only Tab → `+` → record → Esc / Backspace, persistence after reopening, reset all, and global settings search. It saves `shortcuts-tab.png`,
+  `shortcuts-tab-recorded.png`, `shortcuts-tab-sequence.png`, `shortcuts-tab-menu.png`,
+  `shortcuts-tab-conflict.png` and
+  `shortcuts-tab-dark.png` in `artifacts/`. When a command gains
+  or loses a default key, keep `mock-shortcuts.ts` labels in step with the registry.
 
 `vite.sidebar.config.ts` is independent of the application's Vite config. Keep it
 free of the agent-hub plugin and imports of the application entry point.

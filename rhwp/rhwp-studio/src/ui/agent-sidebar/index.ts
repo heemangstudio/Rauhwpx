@@ -208,7 +208,7 @@ import { createEffortSlider } from './effort-slider.ts';
 import { createChatScrollRail } from './chat-scroll-rail.ts';
 import { formatTokens } from './usage-format.ts';
 import { createComposerRestingMotion } from './composer-resting.ts';
-import { createChatHama, type ChatHama } from './chat-hama.ts';
+import { createChatHama, type ChatHama, type HamaActionName } from './chat-hama.ts';
 import { createArrivalGuard, typingActivity as windowTypingActivity, type TypingActivity } from './typing-guard.ts';
 import { createDelayedStatus, revealAfterDelay } from './delayed-status.ts';
 import { ownsTextInput } from '../../command/shortcut-target.ts';
@@ -237,6 +237,8 @@ import {
   type ToolOutcomeView,
 } from './tool-presentation.ts';
 import { createSettingsPanel } from './settings.ts';
+import type { ShortcutSettingsDeps } from './settings-shortcuts.ts';
+import { isShortcutRecording } from '../../command/effective-shortcuts.ts';
 import type { SignInWindow } from './web-assistant-settings.ts';
 import {
   isSettingsDestination,
@@ -374,6 +376,8 @@ export interface AgentSidebarDeps {
   /** inset 전환 후 용지 가운데 정렬을 요청할 때 사용 */
   eventBus?: EventBus;
   editorSettingsRuntime?: EditorSettingsRuntime;
+  /** 설정 → 단축키의 서비스와 명령 목록. 앱은 명령 레지스트리에서, 미리보기는 표본에서 만든다. */
+  shortcutSettings?: ShortcutSettingsDeps;
   /** 설정 → Pi 의 선물 크레딧. 생략하면 macOS 데스크톱의 rhwpDesktop.gift 를 쓰고, null 이면 없다. */
   gift?: DesktopGiftApi | null;
   /** 처음 설정의 라이선스 장. 생략하면 rhwpDesktop.license 를 쓰고, null 이면 장이 없다. */
@@ -547,6 +551,8 @@ export interface AgentSidebarHandle {
   startDraftChat(): void;
   /** 이 사이드바가 보이는 채팅. 초안이거나 비어 있으면 null. */
   currentThreadId(): string | null;
+  /** 입력기 위 하마에게 이름으로 몸짓을 시킨다(미리보기·시험용). 하마가 꺼져 있으면 false. */
+  playHama(name: HamaActionName): boolean;
   /** 기록에서 배운 구분선을 그 채팅의 끝에 남긴다. 보이는 채팅에서 턴이 돌면 턴이 끝난 뒤에. */
   addTasteHistoryMarker(threadId: string, learned: TasteHistoryLearned): void;
   /** 보이는 채팅에 아직 문서가 없다 (초안 포함). 문서를 이을 수 있다. */
@@ -2951,6 +2957,8 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   // 캡처 단계에서 받아 문서 단축키·입력기 처리보다 먼저 가져간다.
   const onAgentShortcutKeyDown = (e: KeyboardEvent) => {
     if (!active || e.defaultPrevented || e.isComposing || e.keyCode === 229) return;
+    // 설정 → 단축키가 키를 기록하는 중이면 그 키는 기록기 몫이다.
+    if (isShortcutRecording()) return;
     if (isMacPlatform && e.ctrlKey && e.metaKey && !e.altKey && !e.shiftKey
       && (e.code === 'KeyS' || e.code === 'KeyJ')) {
       e.preventDefault();
@@ -4483,7 +4491,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     input,
     hitRoot: chatPage,
     enabled: () => userSettings.getViewSettings().showHama,
-    shown: () => active && (root.classList.contains('ag-fullscreen') || !root.classList.contains('ag-collapsed')),
+    // 전체 화면의 빈 채팅에서는 픽셀 무대의 하마가 주인공이라 입력기 하마는 쉬고 숨는다.
+    shown: () => active && (root.classList.contains('ag-fullscreen') || !root.classList.contains('ag-collapsed'))
+      && !chatPage.classList.contains('ag-chat-empty'),
   });
   // 학습이 도는 중에 열린 사이드바도 다음 진행 프레임을 기다리지 않고 바로 맞춘다.
   syncStyleHama(rauMemory.state());
@@ -4685,9 +4695,9 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
   // 사이드바에서는 변경 검토와 계획을 분리한다. 계획은 입력기 바로 위에
   // 머물러 접었을 때 작은 진행 표시로 이어지고, 변경 검토는 가려지지 않는다.
   // 질문 카드와 입력기는 인접 형제여야 하나의 입력 면으로 이어진다.
-  /* 전체 화면의 빈 채팅은 인사와 입력기를 가운데에 모은다. 첫 메시지를 보내면
+  /* 전체 화면의 빈 채팅은 픽셀 장면과 입력기를 가운데에 모은다. 첫 메시지를 보내면
      같은 채팅 안에서만 입력기가 아래로 미끄러진다 — 채팅을 바꾸거나 전체 화면을
-     오갈 때는 즉시 바뀌고, 새 빈 채팅마다 새 문장을 고른다. */
+     오갈 때는 즉시 바뀌고, 새 빈 채팅마다 새 장면을 고른다. */
   const focusGreeting = createFocusGreeting({ page: chatPage, composer, conversation: messages });
   focusGreeting.documentButton.addEventListener('click', () => {
     openDocumentPalette(focusGreeting.documentButton, { link: true });
@@ -4700,6 +4710,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       animate: fullscreen && !threadChanged,
       reroll: threadChanged,
     });
+    chatHama?.sync();
   }
   chatPage.append(header, messages, focusGreeting.root, review, compactChanges, planSurface, planRestore, reconnectChip, setupChip, styleLegacyChip, styleInviteChip, styleLearnPill.root, rauUpgradeChip.root, watchStrip.root, followUpStrip.root, questionController.root, composer);
   messages.after(latestDock);
@@ -5187,6 +5198,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
     refreshSkills: () => bridge.listSkills(),
     deleteArchivedThread: (thread) => deleteThreadWithConfirm(thread),
     gift: deps.gift === undefined ? desktopGiftApi() : deps.gift,
+    shortcutSettings: deps.shortcutSettings,
   });
   const settingsPage = settingsPanel.element;
   const initialSetupDeps: InitialSetupDeps = {
@@ -9388,6 +9400,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       // 초안마다 새 인사를 고른다 — 이미 집중 모드여도 빈 채팅 배치를 다시 세운다.
       syncFocusGreeting();
       input.focus({ preventScroll: true });
+      chatHama?.react('newChat');
       return;
     }
     selectTemplate(null);
@@ -13678,6 +13691,11 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
         }),
         eventBus.on('history-jumped', () => { turnChanges.clear(); rebuildReview(); scheduleChangesRefresh(); }),
         eventBus.on('document-swapped', () => { turnChanges.clear(); rebuildReview(); scheduleChangesRefresh(); updateDocumentContext(); }),
+        // 하마가 앱의 순간에 답한다 — 보이고 한가할 때만, 잦지 않게(chat-hama.ts).
+        eventBus.on('document-saved', () => chatHama?.react('saved')),
+        eventBus.on('document-exported', () => chatHama?.react('exported')),
+        eventBus.on('history-jumped', () => chatHama?.react('undone')),
+        eventBus.on('document-swapped', () => chatHama?.react('opened')),
         eventBus.on('document-context-changed', updateDocumentContext),
         eventBus.on('cursor-format-changed', updateDocumentContext),
         eventBus.on('picture-object-selection-changed', updateDocumentContext),
@@ -14102,6 +14120,7 @@ export function initAgentSidebar(deps: AgentSidebarDeps): AgentSidebarHandle {
       setFullscreen(false);
     },
     startupChatSettled: () => startupChatSettled,
+    playHama: (name) => chatHama?.perform(name) ?? false,
     openThreadFromHost(threadId: string): void {
       if (root.dataset.disposed === 'true') return;
       setCollapsed(false);

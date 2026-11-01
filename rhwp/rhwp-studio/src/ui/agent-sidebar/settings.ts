@@ -30,6 +30,8 @@ import { createProviderQuota } from './provider-quota.ts';
 import { createUsageViews } from './token-usage-view.ts';
 import { createEditingSettings } from './settings-editing.ts';
 import { createThemeSettings } from './settings-theme.ts';
+import { createShortcutsSettings, type ShortcutSettingsDeps } from './settings-shortcuts.ts';
+import { shortcuts } from '../../command/effective-shortcuts.ts';
 import { createProjectSettingsPane } from './settings-project.ts';
 import { projectClientOf, type ProjectService } from '../../agent/project-service.ts';
 import { userSettings } from '../../core/user-settings.ts';
@@ -357,6 +359,8 @@ export interface SettingsPanelDeps {
   openSignInWindow?: (url: string) => Promise<SignInWindow>;
   /** 창이 함께 보는 계정의 기억. 생략하면 창의 것을 쓴다. */
   rauMemory?: RauMemoryStore;
+  /** 설정 → 단축키의 서비스와 명령 목록. 없으면 앱 단축키 서비스에 빈 목록이다. */
+  shortcutSettings?: ShortcutSettingsDeps;
   /** 무료 요금제면 true. AI 설정은 잠기고, 들어가려는 길마다 요금제 카드가 열린다. */
   agentLocked?: () => boolean;
   openPlans?: () => void;
@@ -543,6 +547,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     { id: 'browser', label: '브라우저', icon: 'browser' },
     { id: 'skills', label: '스킬', icon: 'skills' },
     { id: 'project', label: '프로젝트', icon: 'project' },
+    { id: 'shortcuts', label: '단축키', icon: 'shortcuts' },
     { id: 'archive', label: '보관함', icon: 'archive' },
     ...(desktopAccount.api ? [{ id: 'account' as const, label: '계정', icon: 'account' as const }] : []),
   ];
@@ -643,6 +648,8 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     },
   });
   panes.get('theme')?.appendChild(themeSettings.element);
+  const shortcutsPane = createShortcutsSettings(deps.shortcutSettings ?? { service: shortcuts, catalog: () => [] });
+  panes.get('shortcuts')?.appendChild(shortcutsPane.element);
   const accountSection = desktopAccount.api ? createAccountSettingsSection(desktopAccount, deps.plan) : null;
   if (accountSection) {
     const accountContent = el('div', 'ag-settings-destination-content');
@@ -1665,6 +1672,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
         return themeSettings.isDirty();
       case 'ai':
         return isAiDirty();
+      case 'shortcuts':
       case 'browser':
       case 'skills':
       case 'archive':
@@ -1834,6 +1842,8 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
     if (destination === 'skills') refreshSkills?.();
     if (destination === 'project') projectPane.open();
     if (destination === 'archive') archivePane.open();
+    if (destination === 'shortcuts') shortcutsPane.open();
+    else shortcutsPane.close();
     syncRauPane();
     if (destination === 'ai') for (const row of assistantRows) void row.refresh(true);
     panes.get(destination)?.scrollTo({ top: 0 });
@@ -1995,6 +2005,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
         case 'ai':
           cancelAiDraft();
           return true;
+        case 'shortcuts':
         case 'browser':
       case 'skills':
         case 'archive':
@@ -2016,6 +2027,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
         return themeSettings.apply();
       case 'ai':
         return applyAiDraft();
+      case 'shortcuts':
       case 'browser':
       case 'skills':
       case 'archive':
@@ -3584,6 +3596,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       rauPane.close();
       accountSection?.close();
       browserPane.close();
+      shortcutsPane.close();
       syncUsagePolling();
       if (editingSettings.isDirty()) editingSettings.cancel();
       if (themeSettings.isDirty()) themeSettings.cancel();
@@ -3857,6 +3870,7 @@ export function createSettingsPanel(deps: SettingsPanelDeps): SettingsPanel {
       piGift?.dispose();
       editingSettings.dispose();
       themeSettings.dispose();
+      shortcutsPane.dispose();
       element.remove();
       setupOverlay.remove();
       finishTemplateName(null);

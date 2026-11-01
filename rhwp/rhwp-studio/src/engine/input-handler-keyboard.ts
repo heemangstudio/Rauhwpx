@@ -5,7 +5,8 @@ import { isBodyControl } from './picture-hit-policy';
 import { InsertTextCommand, InsertLineBreakCommand, InsertTabCommand, SplitParagraphCommand, SplitParagraphInCellCommand, InsertTextInHeaderFooterCommand, SplitParagraphInHeaderFooterCommand, SplitParagraphInFootnoteCommand, InsertTextInFootnoteCommand, DeleteTextInFootnoteCommand, MergeParagraphInFootnoteCommand, deleteSelectionImmediate, notePathOf } from './command';
 import type { NoteContentInfo } from '@/core/types';
 import { confirmNoteDelete, NOTE_NUMBER_DELETE_MESSAGE } from '@/ui/note-delete-dialog';
-import { matchShortcut, defaultShortcuts } from '@/command/shortcut-map';
+import { matchEffectiveShortcut } from '@/command/effective-shortcuts';
+import { chordMapG, chordMapK, chordMapM, chordMapN, chordMapV, dispatchChordM } from '@/command/chord-map';
 import * as _connector from './input-handler-connector';
 import {
   detectPlatformKind,
@@ -77,7 +78,7 @@ const NOTE_GLOBAL_COMMANDS = new Set([
 
 function dispatchSubmodeGlobalShortcut(this: any, e: KeyboardEvent): boolean {
   if (!this.dispatcher) return false;
-  const commandId = matchShortcut(e, defaultShortcuts);
+  const commandId = matchEffectiveShortcut(e);
   const allowed = this.cursor.isInFootnote?.() ? NOTE_GLOBAL_COMMANDS : SUBMODE_GLOBAL_COMMANDS;
   if (!commandId || !allowed.has(commandId)) return false;
 
@@ -545,89 +546,6 @@ export async function writeImageToClipboard(
   await navigator.clipboard.write([item]);
 }
 
-/** 코드 단축키 → 커맨드 ID 매핑 (Ctrl+K,? 형태) */
-const chordMapK: Record<string, string> = {
-  h: 'insert:hyperlink',
-  ㅗ: 'insert:hyperlink', // 한글 IME 상태
-  b: 'insert:bookmark',
-  ㅠ: 'insert:bookmark', // 한글 IME 상태
-  n: 'format:para-num-shape',
-  ㅜ: 'format:para-num-shape', // 한글 IME 상태
-};
-
-/** 코드 단축키 → 커맨드 ID 매핑 (Ctrl+M,? 형태)
- *
- * 한컴 표준은 Ctrl+N으로 chord를 시작하지만 Chrome에서 reserved shortcut
- * (새 창)이라 JS로 차단 불가하여 Ctrl+M으로 변경 (PR #786 후속 정정).
- */
-const chordMapM: Record<string, string | [string, Record<string, unknown>]> = {
-  n: 'insert:footnote',
-  ㅜ: 'insert:footnote', // 한글 IME
-  e: 'insert:endnote',
-  ㄷ: 'insert:endnote', // 한글 IME
-  s: 'page:hide',
-  ㄴ: 'page:hide', // 한글 IME
-  // 글자 색 chord (한컴 Ctrl+M,? 정합 — 검정/빨강/파랑/자주/초록/노랑/청록/흰색)
-  k: ['format:text-color', { color: '#000000' }],
-  ㅏ: ['format:text-color', { color: '#000000' }], // 한글 IME
-  r: ['format:text-color', { color: '#FF0000' }],
-  ㄱ: ['format:text-color', { color: '#FF0000' }], // 한글 IME
-  b: ['format:text-color', { color: '#0000FF' }],
-  ㅠ: ['format:text-color', { color: '#0000FF' }], // 한글 IME
-  d: ['format:text-color', { color: '#800080' }],
-  ㅇ: ['format:text-color', { color: '#800080' }], // 한글 IME
-  g: ['format:text-color', { color: '#008000' }],
-  ㅎ: ['format:text-color', { color: '#008000' }], // 한글 IME
-  y: ['format:text-color', { color: '#FFFF00' }],
-  ㅛ: ['format:text-color', { color: '#FFFF00' }], // 한글 IME
-  c: ['format:text-color', { color: '#008080' }],
-  ㅊ: ['format:text-color', { color: '#008080' }], // 한글 IME
-  w: ['format:text-color', { color: '#FFFFFF' }],
-  ㅈ: ['format:text-color', { color: '#FFFFFF' }], // 한글 IME
-};
-
-/** 코드 단축키 → 커맨드 ID 매핑 (Ctrl+N,? 형태)
- *
- * 한컴과 같은 Ctrl+N,M 수식. 데스크톱 앱(Electron)에는 Ctrl+N을 쓰는 메뉴가 없어
- * 편집기가 받는다. 일반 Chrome 탭에서는 브라우저가 새 창으로 가로챈다.
- */
-const chordMapN: Record<string, string> = {
-  m: 'insert:equation',
-  ㅡ: 'insert:equation', // 한글 IME
-};
-
-/** chordMapM 항목을 dispatch 한다 (색상 chord 는 params 동반). */
-function dispatchChordM(
-  dispatcher: { dispatch: (id: string, params?: Record<string, unknown>) => boolean },
-  entry: string | [string, Record<string, unknown>],
-): void {
-  if (Array.isArray(entry)) {
-    dispatcher.dispatch(entry[0], entry[1]);
-  } else {
-    dispatcher.dispatch(entry);
-  }
-}
-
-/** 코드 단축키 → 커맨드 ID 매핑 (Alt+V,? 형태 — 보기 메뉴) */
-const chordMapV: Record<string, string> = {
-  t: 'view:border-transparent',
-  ㅅ: 'view:border-transparent', // 한글 IME
-};
-
-/** 코드 단축키 → 커맨드 ID 매핑 (Ctrl+G,? 형태 — 보기/조판 메뉴) */
-const chordMapG: Record<string, string> = {
-  c: 'view:ctrl-mark',        // 조판 부호
-  ㅊ: 'view:ctrl-mark',       // 한글 IME
-  t: 'view:para-mark',        // 문단 부호
-  ㅅ: 'view:para-mark',       // 한글 IME
-  p: 'view:zoom-fit-page',    // 쪽 맞춤
-  ㅍ: 'view:zoom-fit-page',   // 한글 IME
-  w: 'view:zoom-fit-width',   // 폭 맞춤
-  ㅈ: 'view:zoom-fit-width',  // 한글 IME
-  q: 'view:zoom-100',         // 100%
-  ㅂ: 'view:zoom-100',        // 한글 IME
-};
-
 /**
  * PgUp/PgDn 처리 — 화면을 쪽 단위로 옮기고, 캐럿을 **화면상 같은 자리**에 남긴다.
  *
@@ -741,7 +659,16 @@ function hitTestAfterPageScroll(
  * 12. 본문 키 처리 (Esc, Backspace, Enter, Arrow 등)
  *
  * 새 단축키 추가 시: shortcut-map.ts의 defaultShortcuts 테이블에 등록
+ *   (사용자 지정은 effective-shortcuts.ts 가 기본 표 위에 얹는다)
  */
+export function clearPendingChords(this: any): void {
+  this._pendingChordK = false;
+  this._pendingChordM = false;
+  this._pendingChordN = false;
+  this._pendingChordV = false;
+  this._pendingChordG = false;
+}
+
 export function onKeyDown(this: any, e: KeyboardEvent): void {
   if (!this.active) return;
 
@@ -756,7 +683,7 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
 
   if (this.readOnly || this.userEditingLocked) {
     const key = e.key.toLowerCase();
-    const commandId = matchShortcut(e, defaultShortcuts);
+    const commandId = matchEffectiveShortcut(e);
     const selecting = commandId === 'edit:select-all' || commandId === 'edit:find';
     const primaryShortcut = commandId?.startsWith('view:')
       || commandId === 'file:print'
@@ -875,7 +802,7 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
 
   // IME 조합 중 처리 (한국어 IME에서 e.key는 항상 'Process'이므로 e.code로 판별)
   const idleImeShortcut = !e.isComposing && !this.isComposing
-    && (e.ctrlKey || e.metaKey || e.altKey) && matchShortcut(e, defaultShortcuts);
+    && (e.ctrlKey || e.metaKey || e.altKey) && matchEffectiveShortcut(e);
   if (e.isComposing || (e.keyCode === 229 && !idleImeShortcut)) {
     // [PR #786 후속] Ctrl+M chord 1번째/2번째 키는 IME 합성 중에도 활성화.
     // 한글 IME에서는 e.key === 'Process'이므로 e.code (KeyM/KeyN/KeyS/KeyF/KeyK 등)로 판별.
@@ -1579,13 +1506,12 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
       this.dispatcher?.dispatch('table:cell-split');
       return;
     }
-    if (e.altKey && !e.ctrlKey && !e.metaKey) {
-      const cmdId = matchShortcut(e, defaultShortcuts);
-      if (cmdId === 'edit:format-copy') {
-        e.preventDefault();
-        this.dispatcher?.dispatch(cmdId);
-        return;
-      }
+    // 모양 복사는 셀 블록을 유지한 채 실행해야 복사한 셀 속성이 블록에 들어간다.
+    // 사용자가 Alt+C 대신 Ctrl·기능 키 조합으로 옮겨도 같은 자리에서 받는다.
+    if (matchEffectiveShortcut(e) === 'edit:format-copy') {
+      e.preventDefault();
+      this.dispatcher?.dispatch('edit:format-copy');
+      return;
     }
     if (this.cursor.isProtectedCellSelectionMode()) {
       e.preventDefault();
@@ -1597,7 +1523,7 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
       return;
     }
     // 모두 선택은 셀 블록에서 시작해 표 전체 → 바깥으로 넓힌다 (모드를 먼저 풀지 않는다).
-    if ((e.ctrlKey || e.metaKey) && !e.altKey && matchShortcut(e, defaultShortcuts) === 'edit:select-all') {
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && matchEffectiveShortcut(e) === 'edit:select-all') {
       e.preventDefault();
       handleSelectAll.call(this);
       return;
@@ -1632,7 +1558,7 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
       this._pendingChordV = true;
       return;
     }
-    const cmdId = matchShortcut(e, defaultShortcuts);
+    const cmdId = matchEffectiveShortcut(e);
     if (cmdId) {
       e.preventDefault();
       this.dispatcher.dispatch(cmdId);
@@ -1849,7 +1775,7 @@ export function onKeyDown(this: any, e: KeyboardEvent): void {
     default: {
       // Function 키(F1~F12) 등 Ctrl 없는 단축키 처리
       if (this.dispatcher) {
-        const cmdId = matchShortcut(e, defaultShortcuts);
+        const cmdId = matchEffectiveShortcut(e);
         if (cmdId) {
           e.preventDefault();
           this.dispatcher.dispatch(cmdId);
@@ -1876,7 +1802,7 @@ export function handleCtrlKey(this: any, e: KeyboardEvent): void {
 
   // 커맨드 시스템 경유 단축키 처리
   if (this.dispatcher) {
-    const cmdId = matchShortcut(e, defaultShortcuts);
+    const cmdId = matchEffectiveShortcut(e);
     if (cmdId) {
       e.preventDefault();
       this.dispatcher.dispatch(cmdId);

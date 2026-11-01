@@ -28,7 +28,7 @@ import {
   SUGGESTED_AGENT,
 } from './catalog.ts';
 import { createHippo } from './hippo.ts';
-import { createPartyHama } from '../agent-sidebar/chat-hama.ts';
+import { createPartyHama } from '../agent-sidebar/hama-art.ts';
 import { trialButtonLabel } from '../account/account-format.ts';
 import { accountStore, type AccountStore } from '../account/account-store.ts';
 import type { PlanStore } from '../plan/plan-store.ts';

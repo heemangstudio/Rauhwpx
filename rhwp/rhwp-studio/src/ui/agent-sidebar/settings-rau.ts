@@ -35,7 +35,8 @@ import {
 } from '../../agent/user-memory.ts';
 import { ByteLimitError, readBlobBytesWithLimit } from '../../core/document-input-limits.ts';
 import { createHamaScene } from './rau-hero-scene.ts';
-import { createPartyHama, Hama, type ChatHamaMode } from './chat-hama.ts';
+import { Hama, type ChatHamaMode } from './chat-hama.ts';
+import { createPartyHama } from './hama-art.ts';
 import { createIcon } from './icons.ts';
 import {
   styleLearnErrorMessage,
