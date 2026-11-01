@@ -287,3 +287,25 @@ test('폴더의 WOFF·WOFF2는 브라우저 압축 해제로 SFNT가 되어 TTF�
     rhwp.clearRuntimeFontMetrics();
   }
 });
+
+test('고른 한컴 폴더 안의 엔진 표는 색인에 실리고 원본 바이트 그대로 읽힌다', async () => {
+  const bytes = (text: string) => new Uint8Array(Buffer.from(text, 'latin1'));
+  const indexer = createFontFolderIndexer();
+  const index = await indexer.index({ kind: 'handle', handle: fakeFolder('Hnc', {
+    Shared: { Fonts: {
+      'FontMap.dat': bytes('fontmap'),
+      'hftinfo.dat': bytes('hftinfo'),
+      'HGSMJ.HFT': bytes('Han Unified Font File 1.0\x1a\x04\x03'),
+    } },
+    Bin: { Code: { 'u300_949.dat': bytes('code-949'), 'u320_hnc.dat': bytes('other') } },
+  }) });
+  const tables = index.engineTables ?? [];
+  assert.deepEqual(tables.map(table => [table.kind, table.path]).sort(), [
+    ['code', 'Hnc/Bin/Code/u300_949.dat'],
+    ['fontmap', 'Hnc/Shared/Fonts/FontMap.dat'],
+    ['hftinfo', 'Hnc/Shared/Fonts/hftinfo.dat'],
+  ]);
+  for (const table of tables) {
+    assert.equal(Buffer.from(await indexer.read(table.id)).toString('latin1'), table.kind === 'code' ? 'code-949' : table.kind);
+  }
+});

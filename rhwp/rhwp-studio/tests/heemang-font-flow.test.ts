@@ -18,11 +18,17 @@ const stubs = new Map([
       open() { return {...e().doc}; }
       addFontFile(path, file) {
         const id = file.read(0,1)[0];
+        if (this.env !== e()) return 1;
         e().events.push('font:' + id); e().registered.push(path);
         e().outlines = e().outlines.filter(p => p !== path);
         assertFile(file);
         return 1;
       }
+      // 앞선 테스트의 엔진도 같은 글꼴 수신자를 남기므로 표는 만든 테스트의 기록에만 남긴다.
+      constructor() { this.env = e(); }
+      addFontMap(b) { this.env.events.push('table:fontmap:' + b[0]); return true; }
+      addHftInfo(b) { this.env.events.push('table:hftinfo:' + b[0]); return true; }
+      addCodeTable(b) { this.env.events.push('table:code:' + b[0]); return true; }
       outlineRequests() { return JSON.stringify(e().outlines); }
       glyphCoverage() { return '[]'; }
       fontCharacters() { return 'A각'; }
@@ -36,7 +42,9 @@ const stubs = new Map([
     export const isDesktopFontMatch = match => Array.isArray(match.slots);`],
   ['/core/content-hash.ts', `export const blake3Hex = () => 'digest'; export const setBlake3WasmApi = () => {};`],
   ['/core/font-loader.ts', `export const resolveCanvasKitFontPlan = () => { globalThis.heemangFontTest().plans++; return {sources: []}; };`],
-  ['/fonts/font-index-core.mjs', `export const streamWebFontDecoders = () => null; export const decodeWebFont = b => b;`],
+  ['/fonts/font-index-core.mjs', `export const streamWebFontDecoders = () => null; export const decodeWebFont = b => b;
+    export const HANCOM_ENGINE_TABLE_ORDER = ['fontmap','hftinfo','code'];
+    export const hancomEngineTableKind = name => /^fontmap/i.test(name) ? 'fontmap' : /^hftinfo/i.test(name) ? 'hftinfo' : /^u300_/i.test(name) ? 'code' : null;`],
   ['/view/heemang-player.ts', `export class Pictures { constructor(ready) { globalThis.heemangFontTest().pictureReady = ready; } get() { return null; } clear() {}
       async prepare(doc,page,items) { const e = globalThis.heemangFontTest(); e.picturePreparations.push({page,items}); await e.pictureWait?.(); }
     }
@@ -348,4 +356,34 @@ test('metric-only faces defer outline transfer while retaining their native metr
   assert.deepEqual(plans,['\0']);
   assert.equal(adapter.getDocumentInfo().pageCount,3);
   assert.deepEqual(adapter.getDocumentInfo().fontsUsed,[]);
+});
+
+test('host Hancom engine tables reach the engine once, in order, before any HFT bank', async () => {
+  const { HeemangAdapter } = await setup([], () => req(['Body'], []));
+  env.index = {
+    faces:[{id:'hft',path:'/hnc/Shared/Fonts/BODY.HFT',size:4,families:['Body']}],
+    engineTables:[
+      {id:'code',kind:'code',path:'/hnc/Bin/Code/u300_949.dat',size:4},
+      {id:'info',kind:'hftinfo',path:'/hnc/Bin/FontDB/hftinfo.dat',size:4},
+      {id:'map',kind:'fontmap',path:'/hnc/Shared/Fonts/FontMap.dat',size:4},
+    ],
+  };
+  const fill: Record<string, number> = {hft:9, code:3, info:2, map:1};
+  const reads: string[] = [];
+  env.host = {read:async (id: string) => { reads.push(id); return new Uint8Array(4).fill(fill[id]!); }};
+  env.families.set(9,['Body']); env.families.set(8,['Early']);
+  const adapter = new HeemangAdapter(); await adapter.initialize();
+  adapter.loadDocument(new Uint8Array([0x50,0x4b]));
+  // 데스크톱 글꼴 준비가 엔진보다 먼저 HFT 를 넘겨도 표가 먼저 들어간다.
+  provideEngineFont('/hnc/Shared/Fonts/EARLY.HFT', new Uint8Array(4).fill(8));
+  await adapter.prepareFonts(['Body'],{});
+  const fonts = env.events.filter((event: string) => event.startsWith('font:') || event.startsWith('table:'));
+  assert.deepEqual(fonts.slice(0,3),['table:fontmap:1','table:hftinfo:2','table:code:3']);
+  assert.deepEqual(new Set(fonts.slice(3)),new Set(['font:8','font:9']));
+  // 같은 엔진의 다음 문서는 표를 다시 읽거나 넣지 않는다.
+  const next = new HeemangAdapter(); await next.initialize();
+  next.loadDocument(new Uint8Array([0x50,0x4b]));
+  await next.prepareFonts(['Body'],{});
+  assert.equal(env.events.filter((event: string) => event.startsWith('table:')).length,3);
+  assert.ok(['code','info','map'].every(id => reads.includes(id)));
 });

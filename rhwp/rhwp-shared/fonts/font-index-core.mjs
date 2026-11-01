@@ -13,6 +13,18 @@ export const MAX_TABLE_READ = 8 * 1024 * 1024;
 export const HEAD_CHUNK = 64 * 1024;
 export const HANCOM_MAP_FILE = /^(hftinfo\.dat|fontlist\.lst|privatefontlist[^\\/]*\.ini)$/i;
 export const HANGUL = /[ᄀ-ᇿ㄰-㆏가-힣]/;
+/**
+ * 한컴 조판 엔진이 HFT 서체와 함께 읽는 표. FontMap.dat(서체 대응), hftinfo.dat(HFT 목록),
+ * u300_*.dat(코드 변환: 없으면 HFT 가 ASCII·한글 밖의 글자를 그리지 못한다).
+ * 엔진에는 이 순서로, HFT 파일보다 먼저 등록한다.
+ */
+export const HANCOM_ENGINE_TABLE_ORDER = Object.freeze(['fontmap', 'hftinfo', 'code']);
+export function hancomEngineTableKind(name) {
+  if (/^fontmap\.dat$/i.test(name)) return 'fontmap';
+  if (/^hftinfo\.dat$/i.test(name)) return 'hftinfo';
+  if (/^u300_[^\\/]*\.dat$/i.test(name)) return 'code';
+  return null;
+}
 // app: 다른 앱이 자기용으로 둔 글꼴. 사용자·OS 가 설치한 같은 글꼴을 가리지 않도록 맨 뒤에 둔다.
 export const KIND_ORDER = Object.freeze({ hancom: 0, user: 1, system: 2, app: 3 });
 /** 글꼴 파일 하나(컬렉션이면 모든 face 합계)에서 펼칠 이름 붙은 인스턴스 상한 */

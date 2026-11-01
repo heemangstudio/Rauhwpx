@@ -47,6 +47,7 @@ import {
 } from './local-fonts.ts';
 import { hftWasmApiGeneration, registerHftOutlines } from './hft-glyphs.ts';
 import { isLegacyEquationFont } from './equation-font.ts';
+import type { HancomEngineTableKind } from '../../../rhwp-shared/fonts/font-index-core.mjs';
 import { sfntMetricsSubset } from './sfnt-subset.ts';
 
 // ─── preload 계약 ─────────────────────────────────────────────
@@ -100,7 +101,16 @@ export interface SystemFontIndex {
   }>;
   faces: SystemFontFace[];
   hancomFaceMap: Array<{ name: string; file: string; script: string; faceId: string | null }>;
+  /** 한컴 설치본 하나의 엔진 표. 바이트는 face 처럼 read(id)로 원본 그대로 받는다. 오래된 host는 보내지 않는다. */
+  engineTables?: HancomEngineTable[];
   errors: Array<{ path: string; message: string }>;
+}
+
+export interface HancomEngineTable {
+  id: string;
+  kind: HancomEngineTableKind;
+  path: string;
+  size: number;
 }
 
 export interface DesktopFontHostApi {
@@ -751,6 +761,11 @@ export function createCombinedFontHost(members: ReadonlyArray<readonly [string, 
           ...entry,
           faceId: entry.faceId ? prefix(tag, entry.faceId) : null,
         }))),
+        // 설치본끼리 표를 섞지 않는다. 표를 가진 첫 host의 것만 쓴다.
+        engineTables: (() => {
+          const owner = indexes.find(([, index]) => index.engineTables?.length);
+          return owner ? owner[1].engineTables!.map(table => ({ ...table, id: prefix(owner[0], table.id) })) : [];
+        })(),
         errors: [...errors, ...indexes.flatMap(([, index]) => index.errors ?? [])],
       };
     },

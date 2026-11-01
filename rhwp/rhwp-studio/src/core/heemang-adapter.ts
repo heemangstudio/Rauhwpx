@@ -6,7 +6,7 @@ import { getSystemFontHost, loadDesktopFontIndex, getDesktopFontLookup, matchDes
 import { blake3Hex, setBlake3WasmApi } from './content-hash';
 import { EngineNotSupportedError, nextDocumentGeneration, nextDocumentInstance, receiveEngineFonts, type EngineFontReader } from './engine-support';
 import { resolveCanvasKitFontPlan, type WebFontLoadOptions } from './font-loader';
-import { decodeWebFont, streamWebFontDecoders } from '../../../rhwp-shared/fonts/font-index-core.mjs';
+import { HANCOM_ENGINE_TABLE_ORDER, decodeWebFont, hancomEngineTableKind, streamWebFontDecoders, type HancomEngineTableKind } from '../../../rhwp-shared/fonts/font-index-core.mjs';
 import { readResponseBytesWithLimit } from './document-input-limits';
 import { Pictures, Player, decodePacket, patchImage, type Box, type PagePacket, type PaintRecord, type PatchState, type Picture } from '../view/heemang-player';
 import { guardHeemangEngineCalls } from './engine-trap';
@@ -14,6 +14,7 @@ import { detectDocumentByteKind } from './document-signature';
 import { readHmlSourceMetadata } from './hm/hml-source';
 import type { HmlOpenMetadata } from './hm/bridge-types';
 import { fontGlyphCoverage } from './heemang-font-coverage';
+import { isHftBytes } from './hft-glyphs';
 
 export type { Address, Affinity, Caret, CharPatch, Copied, Located, LocateRequest, Match, Motion, NavigateRequest, ParagraphInfo, ParaPatch, Receipt, Rect, SearchResult, Selected, SelectRequest, Step } from '../../vendor/hm-wasm/hm_wasm';
 export type { TextSelection, CellSelection, EditingSelection } from './heemang-editing';
@@ -52,9 +53,41 @@ async function initializeRuntime() {
   let faces = 0;
   const families = new Set<string>();
   const coverage = new Map<string, Uint8Array>();
+  // 한컴 엔진 표(FontMap·hftinfo·코드 표)는 엔진마다 한 번, 첫 HFT 등록 전에만 넣는다.
+  // 표 없이 HFT 가 먼저 들어가면 그 뒤에는 넣지 않는다.
+  let tablesClosed = false;
+  let tablesLoad: Promise<void> | null = null;
+  const isHft = (name: string, bytes: Uint8Array) => /\.hft$/i.test(name) || isHftBytes(bytes);
+  const addTables = (tables: { kind: HancomEngineTableKind; bytes: Uint8Array }[]) => {
+    const order = (kind: HancomEngineTableKind) => HANCOM_ENGINE_TABLE_ORDER.indexOf(kind);
+    let added = 0;
+    for (const { kind, bytes } of [...tables].sort((a, b) => order(a.kind) - order(b.kind))) {
+      const ok = kind === 'fontmap' ? engine.addFontMap(bytes) : kind === 'hftinfo' ? engine.addHftInfo(bytes) : engine.addCodeTable(bytes);
+      if (ok) added++;
+    }
+    tablesClosed = true;
+    return added;
+  };
+  // 호스트 색인(데스크톱·허브·글꼴 폴더)이 알려 준 한 설치본의 표를 읽어 등록한다.
+  const prepareTables = (): Promise<void> => {
+    if (tablesClosed) return Promise.resolve();
+    const host = getSystemFontHost();
+    if (!host) return Promise.resolve();
+    return tablesLoad ??= (async () => {
+      const list = (await loadDesktopFontIndex()).engineTables ?? [];
+      if (!list.length || tablesClosed) return;
+      const tables = await Promise.all(list.map(async table => ({ kind: table.kind, bytes: new Uint8Array(await readDesktopFace(host, table.id)) })));
+      if (tablesClosed) return;
+      // 엔진은 쓰는 코드 표만 받고 나머지에는 false 를 돌려준다.
+      const added = addTables(tables);
+      console.info(`[Heemang] 한컴 엔진 표 ${tables.length}개 중 ${added}개 사용`);
+    })().catch(error => { console.warn('[Heemang] 한컴 엔진 표를 읽지 못했습니다:', error); })
+      .finally(() => { tablesLoad = null; });
+  };
   const register = (label: string, bytes: Uint8Array, names?: string[], name = label, refill = false) => {
     const key = copyKey(name, bytes.length);
     if (!refill && registered.has(key)) return;
+    if (!tablesClosed && isHft(name, bytes)) tablesClosed = true;
     const included = fontGlyphCoverage(bytes);
     if (included) coverage.set(label, included); else coverage.delete(label);
     const file = fontFile(bytes);
@@ -87,8 +120,14 @@ async function initializeRuntime() {
     const identity = sourceUrl ?? label;
     if (read) sources.set(identity, read);
     if (sourceUrl && loadedAssets.has(sourceUrl)) return;
-    register(identity, bytes, undefined, label);
-    if (sourceUrl) loadedAssets.add(sourceUrl);
+    const deliver = () => {
+      if (sourceUrl && loadedAssets.has(sourceUrl)) return;
+      register(identity, bytes, undefined, label);
+      if (sourceUrl) loadedAssets.add(sourceUrl);
+    };
+    // HFT 는 엔진 표를 먼저 넣은 뒤 등록한다.
+    if (!tablesClosed && isHft(label, bytes) && getSystemFontHost()) void prepareTables().then(deliver);
+    else deliver();
   });
   // 배포에 한컴 자산을 넣지 않는다. 명시적으로 설정한 개발용 파일만 받는다.
   if (import.meta.env.DEV && import.meta.env.VITE_HEEMANG_FONT_ASSETS === '1') {
@@ -96,17 +135,18 @@ async function initializeRuntime() {
     if (!response.ok) throw new Error(`Heemang 글꼴 목록 오류: ${response.status}`);
     for (const asset of await response.json() as FontAsset[]) addAsset(asset);
     for (const asset of assets) sources.set(asset.url, () => readAsset(asset));
-    for (const asset of assets.filter(a => /\.dat$/i.test(a.name))) {
-      const bytes = await readAsset(asset);
-      if (/^fontmap\.dat$/i.test(asset.name)) engine.addFontMap(bytes);
-      else if (/^hftinfo\.dat$/i.test(asset.name)) engine.addHftInfo(bytes);
-      else engine.addCodeTable(bytes);
+    const tables = assets.filter(a => /\.dat$/i.test(a.name));
+    if (tables.length) {
+      addTables(await Promise.all(tables.map(async asset => ({
+        kind: hancomEngineTableKind(asset.name) ?? 'code', bytes: await readAsset(asset),
+      }))));
     }
   }
   const hasFamily = (name: string) => families.has(normalize(name));
   const hasAvailableFamily = (name: string) => hasFamily(name) || assetsByFamily.has(normalize(name));
   const loadFonts = async (requests: FontRequests) => {
     const before = loadedAssets.size;
+    await prepareTables();
     // 일반 실행에서도 호스트 색인에서 엔진이 고른 대체 서체를 직접 연결한다.
     const host = getSystemFontHost();
     if (host) {
