@@ -8,7 +8,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import puppeteer from 'puppeteer-core';
 
 import {
@@ -78,7 +78,7 @@ try {
 
   for (const file of files) {
     if (interrupted) break;
-    const flow = (await import(path.join(here, file))).default;
+    const flow = (await import(pathToFileURL(path.join(here, file)).href)).default;
     const context = await browser.createBrowserContext();
     const t0 = performance.now();
     let error = null;
